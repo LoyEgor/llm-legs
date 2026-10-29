@@ -230,7 +230,7 @@ wait_clock() {
 # An empty WAIT_STAMP forces a full pass (the first and the last). Between them a slurped log is
 # re-read only after ten times its last read, and the tokens after max(60 s, ten times their last count),
 # so a long run's reads stay a bounded share of its wall time.
-# Every tick reads meta.json afresh: a walled reroute moves the account and restamps started_at mid-run.
+# meta.json is read again whenever it changes: a walled reroute moves the account and restamps started_at mid-run.
 # wait_run's liveness and deadline checks read the WAIT_PID* fields this call leaves.
 wait_progress() { # directory run-id stream
   local directory="$1" vendor account workdir started transcript='' stamp size row now prefix tokens out='' force=false began

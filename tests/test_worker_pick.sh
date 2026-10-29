@@ -31,34 +31,23 @@ contains() { [[ $1 == *"$2"* ]]; }
 vline() { grep -m1 -- "^$1" <<<"$output"; }
 # The table is columns now, so a case asserts VALUES: every helper squeezes the padding away and
 # a row reads `budget wk 5h name model·eff [↺ reset] [flags]`, the order the columns print in.
-# The views below run ~320 times a run: bash string work, no grep/sed/awk start per call.
-shopt -s extglob
-squeeze_line() { local s=${1//+( )/ }; s=${s# }; printf '%s\n' "${s% }"; }
-squeeze() { local line; while IFS= read -r line || [ -n "$line" ]; do squeeze_line "$line"; done; }
-first_line() { local line; while IFS= read -r line; do [[ $line != "$1"* ]] || { printf '%s\n' "$line"; return 0; }; done <<<"$output"; return 1; }
+squeeze() { sed 's/  */ /g; s/^ *//; s/ *$//'; }
 # One ranked NEXT row. Row 1 is the answer, and `ACCOUNT:` under it is the same value for a brief.
-nrow() { local row; row=$(first_line " $1  ") && squeeze_line "${row#" $1  "}"; }
-acct_line() { first_line 'ACCOUNT: '; }
+nrow() { grep -m1 -- "^ $1  " <<<"$output" | sed "s/^ $1  *//" | squeeze; }
+acct_line() { grep -m1 -- '^ACCOUNT: ' <<<"$output"; }
 # Every ranked row in order, for a case about the ORDER rather than about one row.
-next_block() { local line; while IFS= read -r line; do [[ ! $line =~ ^\ [0-9]+\ \  ]] || squeeze_line "$line"; done <<<"$output"; }
+next_block() { grep -E -- '^ [0-9]+  ' <<<"$output" | squeeze; }
 # The vendor labels in the order their sections print.
-section_order() {
-  local line labels=''
-  while IFS= read -r line; do
-    [[ $line != light:* && $line =~ ^([a-z]*): ]] && labels+="${BASH_REMATCH[1]} "
-  done <<<"$output"
-  squeeze_line "$labels"
-}
+section_order() { grep -v '^light:' <<<"$output" | grep -o -- '^[a-z]*:' | tr -d ':' | tr '\n' ' ' | squeeze; }
 # The one-line NEXT of a run that picked nothing: no ranking rows, only the reason.
-next_fail() { first_line 'NEXT: '; }
+next_fail() { grep -m1 -- '^NEXT: ' <<<"$output"; }
 # Every row of one vendor section as its own line, the label and the continuation indent dropped.
 vsection() {
-  local line inside=''
-  while IFS= read -r line; do
-    if [[ $line == "$1:"* ]]; then inside=1; squeeze_line "${line#"$1:"}"
-    elif [ -n "$inside" ] && [[ $line == '         '* ]]; then squeeze_line "$line"
-    else inside=''; fi
-  done <<<"$output"
+  awk -v head="^$1:" '
+    $0 ~ head {inside = 1; sub(head, ""); print; next}
+    inside && /^         / {print; next}
+    inside {inside = 0}
+  ' <<<"$output" | squeeze
 }
 not_contains() { [[ $1 != *"$2"* ]]; }
 before() {

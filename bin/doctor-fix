@@ -1351,16 +1351,15 @@ outside_handoffs() { # record evidence -> path of each cited handoff naming a gi
   done < <(cited_handoffs "$@")
 }
 
-untraded_handoff() { # egor_handoffs output -> the cited handoff addressed to Egor that lacks Cost:/Loss:/Recommendation:
+untraded_handoff() { # record evidence -> the cited handoff addressed to Egor that lacks Cost:/Loss:/Recommendation:
   local word path key missing
   while IFS=$'\t' read -r word path; do
-    [ -n "$path" ] || continue
     missing=''
     for key in Cost Loss Recommendation; do
       grep -qE "^[*_ >-]*$key[*_ ]*:" "$path" || missing+=" $key:"
     done
     [ -z "$missing" ] || { printf '%s lacks%s\n' "$word" "$missing"; return; }
-  done <<<"$1"
+  done < <(egor_handoffs "$1" "$2")
 }
 
 measured() { # evidence -> whether it carries what was measured and tried: wall <N> s, cpu <N> s, tried <what>
@@ -1396,7 +1395,7 @@ review_refusal() { # round -> why the run's review round keeps it open, empty wh
 
 close_run() { # id --decisions <file> note...
   local id=${1:-} decisions='' doc file doctor as_of launched judge_then judge_now line_no=0
-  local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line rule base wt growth handoffs
+  local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line rule base wt growth
   local pairs=() codes=() checks owed speed_batch left=()
   file=$(record_file "$id")
   [ -n "$id" ] && [ -f "$file" ] || die "no run $id"
@@ -1457,14 +1456,12 @@ close_run() { # id --decisions <file> note...
     [ "$touch" = 0 ] ||
       { bad+=("line $line_no ($pid): purpose '$purpose' does not touch the component: cite one of its files or a commit that changed one (doctor-fix show $id)"); continue; }
     [ -n "$evidence" ] || { bad+=("line $line_no ($pid): no evidence"); continue; }
-    handoffs=''
-    [ "$verdict" != handoff ] || handoffs=$(egor_handoffs "$file" "$evidence")
-    if [ "$verdict" = handoff ] && failure=$(untraded_handoff "$handoffs") && [ -n "$failure" ]; then
+    if [ "$verdict" = handoff ] && failure=$(untraded_handoff "$file" "$evidence") && [ -n "$failure" ]; then
       bad+=("line $line_no ($pid): handoff to Egor $failure: Egor decides only a trade (each way's cost and loss, the recommendation); otherwise hand it to an owner or decide what research settles")
       continue
     fi
     if [ "$verdict" = handoff ] && [ -n "$rule" ] && [[ $NIGHT_FIX_RULES == *" $rule "* ]] &&
-      [ -z "$handoffs" ] && [ -z "$(outside_handoffs "$file" "$evidence")" ]; then
+      [ -z "$(egor_handoffs "$file" "$evidence")" ] && [ -z "$(outside_handoffs "$file" "$evidence")" ]; then
       bad+=("line $line_no ($pid): handoff refused: a Speed or floor row is this run's to fix; only a trade to Egor (a cited handoff whose To: names him) or a handoff to the owner chat of the repository outside the night's where its lever lives (a cited handoff naming that repository's path) leaves it")
       continue
     fi

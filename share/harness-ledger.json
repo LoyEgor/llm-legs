@@ -2826,7 +2826,7 @@
         }
       ],
       "same_cause": [],
-      "note": "2026-10-05 (harness-doctor-20261005T061224Z-4873): ruled out as a harness bug. logo-vectorizer-bench bench/throttle.py slot_count clamps to WARN_JOBS (3) at kern.memorystatus_vm_pressure_level 2 and to 1 at level 4 or under 25 % free, the RAM-incident guard; the 06:12Z snapshot read 9 jobs, 9 min, level 2 at 43 % free, and at 11:00Z 4 holds of two Vector Magic chats still waited at level 2, 47-52 % free, swap 5.7 of 6 GB, load average ~330 under the night. Holds were live (pids alive, started before since), not leaks; the alert reached the menu as design §12 intends. Ruled out: a stale pressure read (level re-read each 2 s poll), the doctor counting one hold twice (one file per thread key). Found and handed off: throttle.py hold_clear journals no wait_note, so Wait classes miss this limiter (blind spot wait-journal-throttle-py). Decided 2026-10-06 by Harness Doctor: a hold past 5 min while a suite or night-fixer slot runs is the night's own requested load, judged a watch like the load and collector rows; outside such load a hold past 5 min stays red. Item 1 (throttle.py hold_clear journals no wait) stays with the chat «Vector Magic macOS ARM migration».",
+      "note": "2026-10-29 (run 387d): handoff reopened (Status open, To the owner chat): item 1 hold_clear still journals no wait, plus the status naming its clamp. 2026-10-05 (harness-doctor-20261005T061224Z-4873): ruled out as a harness bug. logo-vectorizer-bench bench/throttle.py slot_count clamps to WARN_JOBS (3) at kern.memorystatus_vm_pressure_level 2 and to 1 at level 4 or under 25 % free, the RAM-incident guard; the 06:12Z snapshot read 9 jobs, 9 min, level 2 at 43 % free, and at 11:00Z 4 holds of two Vector Magic chats still waited at level 2, 47-52 % free, swap 5.7 of 6 GB, load average ~330 under the night. Holds were live (pids alive, started before since), not leaks; the alert reached the menu as design §12 intends. Ruled out: a stale pressure read (level re-read each 2 s poll), the doctor counting one hold twice (one file per thread key). Found and handed off: throttle.py hold_clear journals no wait_note, so Wait classes miss this limiter (blind spot wait-journal-throttle-py). Decided 2026-10-06 by Harness Doctor: a hold past 5 min while a suite or night-fixer slot runs is the night's own requested load, judged a watch like the load and collector rows; outside such load a hold past 5 min stays red. Item 1 (throttle.py hold_clear journals no wait) stays with the chat «Vector Magic macOS ARM migration».",
       "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md",
       "last_reviewed": "2026-10-06",
       "reviewed_by": "Harness Doctor"
@@ -4039,7 +4039,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, cause gone: the relays and their 540 s rounds retired (ee185fa8, 92a22609); a model's own fixed-sleep polls are row tool-idea-wait-until's. Night e2f7: quiet; cause gone (ee185fa8, 92a22609), dismissal proposed in the handoff. Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository. Night 20261007T213650Z-7b98: kept. worker-run wait returns the moment a run ends, so a longer round saves only Sonnet relay turns, never time, and would slow a SendMessage note to the next round; raising the chats' Bash cap is live settings no branch carries. logo-vectorizer-bench's 'all busy, 4 of 8 slots open' is correct: 4 slots allowed under pressure of 8, all 4 held. Night 817e: the relay rounds are gone (ee185fa8): a chat waits with a background worker-run wait, light-research waits its run out (92a22609). Night 4c4e: quiet; relay rounds are gone with the relays (ee185fa8), waits are background Bash. Night 3131: quiet; cause still gone. A worker's own 46x30 s grep poll on run-all (row worker-suite-run-waits) is its command, not a relay round.",
+      "note": "2026-10-29 (run 387d): quiet; cause still gone (relays retired, ee185fa8). 2026-10-20 (run 2c2a): ruled out, cause gone: the relays and their 540 s rounds retired (ee185fa8, 92a22609); a model's own fixed-sleep polls are row tool-idea-wait-until's. Night e2f7: quiet; cause gone (ee185fa8, 92a22609), dismissal proposed in the handoff. Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository. Night 20261007T213650Z-7b98: kept. worker-run wait returns the moment a run ends, so a longer round saves only Sonnet relay turns, never time, and would slow a SendMessage note to the next round; raising the chats' Bash cap is live settings no branch carries. logo-vectorizer-bench's 'all busy, 4 of 8 slots open' is correct: 4 slots allowed under pressure of 8, all 4 held. Night 817e: the relay rounds are gone (ee185fa8): a chat waits with a background worker-run wait, light-research waits its run out (92a22609). Night 4c4e: quiet; relay rounds are gone with the relays (ee185fa8), waits are background Bash. Night 3131: quiet; cause still gone. A worker's own 46x30 s grep poll on run-all (row worker-suite-run-waits) is its command, not a relay round.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -4106,7 +4106,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out: no debt round runs while block 10 Debt stays paused (docs/directions/README.md, Egor 2026-10-14; bin/night-run PILOT_RULES: no debt job or pass); a debt round read after the pause reopens it. Night e2f7: quiet, no component changed; kept. docs/night-run.md step 5 states one round of each kind per debt job; the extra rounds were the orchestrator's. Also seen: resume_night adds debt-<n> whenever none is pending. A mechanical cap is proposed in the handoff. Night 20261007T213650Z-7b98: kept, no cap. The extra rounds followed the fit-round anchor bug (review-bench e53e183, reverted: only a bugs read retires debt), a one-off; resume_night's debt-<n> is documented in docs/night-run.md (a resumed night lands more work, which gets its own pass). Night 817e: quiet, no component changed; kept. Night 4c4e: quiet; the debt pass is now fit, legacy and bugs (981c1486), still no mechanical cap. Night 3131: quiet, no component changed; kept.",
+      "note": "2026-10-29 (run 387d): quiet; block 10 Debt still paused (docs/directions/README.md). 2026-10-20 (run 2c2a): ruled out: no debt round runs while block 10 Debt stays paused (docs/directions/README.md, Egor 2026-10-14; bin/night-run PILOT_RULES: no debt job or pass); a debt round read after the pause reopens it. Night e2f7: quiet, no component changed; kept. docs/night-run.md step 5 states one round of each kind per debt job; the extra rounds were the orchestrator's. Also seen: resume_night adds debt-<n> whenever none is pending. A mechanical cap is proposed in the handoff. Night 20261007T213650Z-7b98: kept, no cap. The extra rounds followed the fit-round anchor bug (review-bench e53e183, reverted: only a bugs read retires debt), a one-off; resume_night's debt-<n> is documented in docs/night-run.md (a resumed night lands more work, which gets its own pass). Night 817e: quiet, no component changed; kept. Night 4c4e: quiet; the debt pass is now fit, legacy and bugs (981c1486), still no mechanical cap. Night 3131: quiet, no component changed; kept.",
       "handoff": null
     },
     {
@@ -4777,7 +4777,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out as a class of its own: share/test_health.py's flaky finding (a48cbb24b) reads a suite red then green on the same tree from runs.jsonl, each such suite its own test-health/flaky row (speed-flaky-test-harness-doctor and two review-bench ones fixed-pending); 7 d: 21 suites with such reds, the largest 1.02 min/day (test_worker_run_lifecycle). Blind spot suite-flake-unseen removed. Night e2f7: quiet; dismissal still the owner's (handoff). Not reproduced: 4 copies each of test_run_suites_journal and test_slots in parallel at load 51 all passed; night 7777 already replaced test_run_suites_journal's fixed sleep with a poll (33eb4e77); test_statusline_hooks is tonight's suite job. No doctor rule sees a flake (blind spot suite-flake-unseen). Night 817e: same family as log_audit:run-all-load-flakes; test_test_journal's direct-run restamp was one deterministic cause, fixed tonight. Night 4c4e: quiet; the load-bound asserts were made CPU-based (ae0d28dd, review-bench speed suite in row load-bound-timing-assertions). Night 3131: quiet; no suite or run-suites change since 18481754 (a direct suite run waits for a slot); dismissal still the owner's.",
+      "note": "2026-10-29 (run 387d): quiet; share/test_health.py's flaky finding still raises each such suite. 2026-10-20 (run 2c2a): ruled out as a class of its own: share/test_health.py's flaky finding (a48cbb24b) reads a suite red then green on the same tree from runs.jsonl, each such suite its own test-health/flaky row (speed-flaky-test-harness-doctor and two review-bench ones fixed-pending); 7 d: 21 suites with such reds, the largest 1.02 min/day (test_worker_run_lifecycle). Blind spot suite-flake-unseen removed. Night e2f7: quiet; dismissal still the owner's (handoff). Not reproduced: 4 copies each of test_run_suites_journal and test_slots in parallel at load 51 all passed; night 7777 already replaced test_run_suites_journal's fixed sleep with a poll (33eb4e77); test_statusline_hooks is tonight's suite job. No doctor rule sees a flake (blind spot suite-flake-unseen). Night 817e: same family as log_audit:run-all-load-flakes; test_test_journal's direct-run restamp was one deterministic cause, fixed tonight. Night 4c4e: quiet; the load-bound asserts were made CPU-based (ae0d28dd, review-bench speed suite in row load-bound-timing-assertions). Night 3131: quiet; no suite or run-suites change since 18481754 (a direct suite run waits for a slot); dismissal still the owner's.",
       "handoff": null
     },
     {
@@ -7969,7 +7969,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out; ~/.claude/worker-model still reads gemini_workers=off, gemini_reviewers=off. The doctrine gap is fixed: share/worker-policy.md now says Flash is Light only. Ruled out now: Egor switched Gemini workers and reviewers off in the menu (~/.claude/worker-model gemini_workers=off, gemini_reviewers=off), so worker-pick ranks no Gemini row for either role; the Flash judges and the re-delegation were the chats' own picks (one says so at 14:09). Left for the owner: share/worker-policy.md still calls Gemini a full implementation worker, against Egor's «Flash is Light only»; it bites only if he switches Gemini workers back on (handoff). Night 3131: still ruled out, ~/.claude/worker-model reads gemini_workers=off and gemini_reviewers=off.",
+      "note": "2026-10-29 (run 387d): quiet; ~/.claude/worker-model still reads gemini_workers=off, gemini_reviewers=off. 2026-10-20 (run 2c2a): ruled out; ~/.claude/worker-model still reads gemini_workers=off, gemini_reviewers=off. The doctrine gap is fixed: share/worker-policy.md now says Flash is Light only. Ruled out now: Egor switched Gemini workers and reviewers off in the menu (~/.claude/worker-model gemini_workers=off, gemini_reviewers=off), so worker-pick ranks no Gemini row for either role; the Flash judges and the re-delegation were the chats' own picks (one says so at 14:09). Left for the owner: share/worker-policy.md still calls Gemini a full implementation worker, against Egor's «Flash is Light only»; it bites only if he switches Gemini workers back on (handoff). Night 3131: still ruled out, ~/.claude/worker-model reads gemini_workers=off and gemini_reviewers=off.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7984,7 +7984,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, by design: review-bench share/rbench/catalog.py still gives RATER_TIMEOUT_S 1800 under DURATION_CAP_LEARNING_SAMPLES 15. Ruled out: by design. A pair with under DURATION_CAP_LEARNING_SAMPLES (15) completions gets RATER_TIMEOUT_S 1800 (review-bench share/rbench/catalog.py, Egor 2026-09-01), and `--uncapped` exists for exactly this probe; the chat did not pass it. The cut was reported (killed_cap_s; the chat said «обрезан лимитом»), not read as a zero. Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; review-bench catalog.py still RATER_TIMEOUT_S 1800 under DURATION_CAP_LEARNING_SAMPLES 15, by design. 2026-10-20 (run 2c2a): ruled out, by design: review-bench share/rbench/catalog.py still gives RATER_TIMEOUT_S 1800 under DURATION_CAP_LEARNING_SAMPLES 15. Ruled out: by design. A pair with under DURATION_CAP_LEARNING_SAMPLES (15) completions gets RATER_TIMEOUT_S 1800 (review-bench share/rbench/catalog.py, Egor 2026-09-01), and `--uncapped` exists for exactly this probe; the chat did not pass it. The cut was reported (killed_cap_s; the chat said «обрезан лимитом»), not read as a zero. Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -7999,7 +7999,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: an ad-hoc experiment the chat assembled in a scratch directory; its answer key was its own choice. No review-bench command builds a truth set. Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; chat conduct, no component. 2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: an ad-hoc experiment the chat assembled in a scratch directory; its answer key was its own choice. No review-bench command builds a truth set. Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -8014,7 +8014,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: model conduct. The chat picked Codex Astra high itself (worker-pick pointed elsewhere, 14:09) and launched the writer in the shared checkout instead of a worktree; Egor accepted the choice («ничего не меняем»). Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; chat conduct, no component. 2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: model conduct. The chat picked Codex Astra high itself (worker-pick pointed elsewhere, 14:09) and launched the writer in the shared checkout instead of a worktree; Egor accepted the choice («ничего не меняем»). Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -8029,7 +8029,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: the chat's own brief (it said so at 19:51); Egor then declined a speed test for tokenmap («лучше я сам буду решать»). Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; chat conduct, no component. 2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: the chat's own brief (it said so at 19:51); Egor then declined a speed test for tokenmap («лучше я сам буду решать»). Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -8044,7 +8044,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: chat conduct in conversation, no hook, gate or launcher; the menu-side wording is token-map's and the owner chats'. Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; chat conduct, no component. 2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: chat conduct in conversation, no hook, gate or launcher; the menu-side wording is token-map's and the owner chats'. Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -8059,7 +8059,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: the chat's own fan-out choice for a logo-vectorizer-bench judging batch; no harness rule sizes a brief. Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; chat conduct, no component. 2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: the chat's own fan-out choice for a logo-vectorizer-bench judging batch; no harness rule sizes a brief. Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -8074,7 +8074,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, logo-vectorizer-bench's own lane work, not a sweep repository. Ruled out as a harness bug: logo-vectorizer-bench's own judging lane (results/lanes/coord/tools) and the Vector Magic chat's sample size; that repository is not a sweep repository. Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; logo-vectorizer-bench lane work, the ruling stands. 2026-10-20 (run 2c2a): ruled out, logo-vectorizer-bench's own lane work, not a sweep repository. Ruled out as a harness bug: logo-vectorizer-bench's own judging lane (results/lanes/coord/tools) and the Vector Magic chat's sample size; that repository is not a sweep repository. Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -8089,7 +8089,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, logo-vectorizer-bench's own lane work, not a sweep repository. Ruled out: worker-run wait returns when a run ends; the gap is the Vector Magic chat sequencing its lane (judging, the 23:02 Fable exam, Egor's talk), not a harness wait. Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; logo-vectorizer-bench lane work, the ruling stands. 2026-10-20 (run 2c2a): ruled out, logo-vectorizer-bench's own lane work, not a sweep repository. Ruled out: worker-run wait returns when a run ends; the gap is the Vector Magic chat sequencing its lane (judging, the 23:02 Fable exam, Egor's talk), not a harness wait. Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -8104,7 +8104,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, logo-vectorizer-bench's own lane work, not a sweep repository. Ruled out: logo-vectorizer-bench's c46-pad research loop (held-out checks are the lane's method), not the harness. Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; logo-vectorizer-bench lane work, the ruling stands. 2026-10-20 (run 2c2a): ruled out, logo-vectorizer-bench's own lane work, not a sweep repository. Ruled out: logo-vectorizer-bench's c46-pad research loop (held-out checks are the lane's method), not the harness. Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -8119,7 +8119,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, logo-vectorizer-bench's own lane work, not a sweep repository. Ruled out: logo-vectorizer-bench tracer work (wsplice.py repair step), not the harness. Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; logo-vectorizer-bench lane work, the ruling stands. 2026-10-20 (run 2c2a): ruled out, logo-vectorizer-bench's own lane work, not a sweep repository. Ruled out: logo-vectorizer-bench tracer work (wsplice.py repair step), not the harness. Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -8134,7 +8134,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: the chats scheduled them. The 17:56 frontier panel kept the members Egor's frontier composition names (Fable, Astra, Grok) and he kept extending the brief meanwhile; the 23:02 Fable exam waited for Claude's own reset. Weather plus chat choice; no launcher held them. Night 3131: quiet; the ruling stands, no component changed.",
+      "note": "2026-10-29 (run 387d): quiet; chat conduct, no component. 2026-10-20 (run 2c2a): ruled out, chat conduct; no hook, gate or launcher to change. Ruled out: the chats scheduled them. The 17:56 frontier panel kept the members Egor's frontier composition names (Fable, Astra, Grok) and he kept extending the brief meanwhile; the 23:02 Fable exam waited for Claude's own reset. Weather plus chat choice; no launcher held them. Night 3131: quiet; the ruling stands, no component changed.",
       "handoff": "docs/handoffs/2026-10-10-log-audit-night-4c4e.md"
     },
     {
@@ -8192,7 +8192,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, measured: 550 multi-suite runs in the last 7 d of runs.jsonl, 0 at -j 1. 2026-10-13 (Harness Doctor): closed by the owner, its cause gone: no one-slot multi-suite run since 2026-10-06 and run-suites never goes under -j 2; the finding leaves the window 2026-10-13 18:32, so any serial finding after that is a new one. Ruled out 2026-10-12: all 15 one-slot multi-suite runs ended 2026-10-05/06 (12 worker runs at -j 1 in feat-* worktrees, the last 10-06 03:54; 3 full runs of a tmp fixture repo the live journal took before 33eb4e77 stopped run-suites passing RUN_SUITES_JOURNAL on); none since, so the row leaves the 168 h window by 2026-10-13 18:32. run-suites' own -j never goes under 2 (slots_from_cores 2 2). Dismissal proposed to the owner.",
+      "note": "2026-10-29 (run 387d): quiet; cause gone: 183 multi-suite runs in the last 7 d of runs.jsonl, 0 at -j 1. 2026-10-20 (run 2c2a): ruled out, measured: 550 multi-suite runs in the last 7 d of runs.jsonl, 0 at -j 1. 2026-10-13 (Harness Doctor): closed by the owner, its cause gone: no one-slot multi-suite run since 2026-10-06 and run-suites never goes under -j 2; the finding leaves the window 2026-10-13 18:32, so any serial finding after that is a new one. Ruled out 2026-10-12: all 15 one-slot multi-suite runs ended 2026-10-05/06 (12 worker runs at -j 1 in feat-* worktrees, the last 10-06 03:54; 3 full runs of a tmp fixture repo the live journal took before 33eb4e77 stopped run-suites passing RUN_SUITES_JOURNAL on); none since, so the row leaves the 168 h window by 2026-10-13 18:32. run-suites' own -j never goes under 2 (slots_from_cores 2 2). Dismissal proposed to the owner.",
       "handoff": "docs/handoffs/2026-10-12-test-health-retests-serial.md"
     },
     {
@@ -8502,7 +8502,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): quiet; the weather reading stands, dismissal is the owner's. Weather: Claude capacity, the cause of row launch-into-exhausted-limit. With codex, Gemini and Grok workers off by Egor's menu, com walled weekly and notcom at 87 % of its 5 h, worker-run's own-account headroom guard held the night's own account (the owner chat's reading, 2026-10-12 23:27). Night 3131 hit the same wall and resumed at 06:04.",
+      "note": "2026-10-29 (run 387d): quiet; the weather reading stands. 2026-10-20 (run 2c2a): quiet; the weather reading stands, dismissal is the owner's. Weather: Claude capacity, the cause of row launch-into-exhausted-limit. With codex, Gemini and Grok workers off by Egor's menu, com walled weekly and notcom at 87 % of its 5 h, worker-run's own-account headroom guard held the night's own account (the owner chat's reading, 2026-10-12 23:27). Night 3131 hit the same wall and resumed at 06:04.",
       "handoff": null
     },
     {
@@ -9372,7 +9372,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, measured over runs.jsonl: median wall 31.0 -> 25.9 s, cpu 8.8 -> 7.4 s, idle 22.2 -> 18.5 s (n 176 -> 83, 7 d before 10-13 against the last 7 d); the idle is worker-run's detached work (blind spot test-health-idle-detached-cpu). 2026-10-13 ruled out as sleeps: none in the suite or tests/light_research_harness.sh. Each `run`/`wr` is a worker-run start whose detached supervisor does the work outside the suite's reaped-children `times`; one claudeb research call's run-dir files at load ~197 land back to back 50-600 ms apart over ~4.3 s (no 1 s hop; the vendor stub ~0.7 s), and worker-run wait wakes on exit_code by kqueue (exit_file_wait; WORKER_RUN_WAIT_POLL_S=1 is only its fallback). Same cause as speed-test-idle-worker-run-reliability; blind spot test-health-idle-detached-cpu.",
+      "note": "2026-10-29 (run 387d): quiet; 7 d n 19 green: median wall 37.1 s, cpu 8.5 s, idle 28.6 s (was 25.9 / 7.4 / 18.5): idle grew, unprofiled; the next fixer this row reaches profiles it. 2026-10-20 (run 2c2a): ruled out, measured over runs.jsonl: median wall 31.0 -> 25.9 s, cpu 8.8 -> 7.4 s, idle 22.2 -> 18.5 s (n 176 -> 83, 7 d before 10-13 against the last 7 d); the idle is worker-run's detached work (blind spot test-health-idle-detached-cpu). 2026-10-13 ruled out as sleeps: none in the suite or tests/light_research_harness.sh. Each `run`/`wr` is a worker-run start whose detached supervisor does the work outside the suite's reaped-children `times`; one claudeb research call's run-dir files at load ~197 land back to back 50-600 ms apart over ~4.3 s (no 1 s hop; the vendor stub ~0.7 s), and worker-run wait wakes on exit_code by kqueue (exit_file_wait; WORKER_RUN_WAIT_POLL_S=1 is only its fallback). Same cause as speed-test-idle-worker-run-reliability; blind spot test-health-idle-detached-cpu.",
       "handoff": null
     },
     {
@@ -9387,7 +9387,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out, measured over runs.jsonl: median wall 63.1 -> 56.5 s, cpu 24.0 -> 23.9 s, idle 39.8 -> 32.7 s (n 79 -> 50) after 7daff540 cut image_composite's second difference and decode; the rest is scipy's import, kept for the reason above. 2026-10-13 ruled out as sleeps: nested xtrace of the whole suite at load ~150 (67 s): 23 s in 66 `uv run --script share/image_composite.py` composites, ~1.2 s wall on ~0.3 CPU-s each. uv adds nothing (verbose: cached script env, no resolution; --offline interleaved A/B equal; bare python equal); `import scipy.ndimage` alone is ~0.9-1.1 s wall on 0.16 CPU-s (its _support_alternative_backends pulls scipy.special and scipy.linalg). image-leg.sh's tee drain polled at 0.05 s though the tee is gone ~1 ms after its pipe closes: 10 ms since 6d040f3b (image_leg_exit 96 -> 54 ms, ~2.9 s a run). Cheapest cut: cut scipy from image_composite.py saves ~1000 ms x ~80 composite calls a run (this suite and test_chatgpt_web), costs rewriting gaussian_filter, label and the binary morphology in numpy with masks that must replay pixel-identical: not taken, a production quality risk for a test-only gain.",
+      "note": "2026-10-29 (run 387d): quiet; cause gone: 7 d n 5 green, median wall 17.3 s, cpu 16.8 s, idle 0.5 s. 2026-10-20 (run 2c2a): ruled out, measured over runs.jsonl: median wall 63.1 -> 56.5 s, cpu 24.0 -> 23.9 s, idle 39.8 -> 32.7 s (n 79 -> 50) after 7daff540 cut image_composite's second difference and decode; the rest is scipy's import, kept for the reason above. 2026-10-13 ruled out as sleeps: nested xtrace of the whole suite at load ~150 (67 s): 23 s in 66 `uv run --script share/image_composite.py` composites, ~1.2 s wall on ~0.3 CPU-s each. uv adds nothing (verbose: cached script env, no resolution; --offline interleaved A/B equal; bare python equal); `import scipy.ndimage` alone is ~0.9-1.1 s wall on 0.16 CPU-s (its _support_alternative_backends pulls scipy.special and scipy.linalg). image-leg.sh's tee drain polled at 0.05 s though the tee is gone ~1 ms after its pipe closes: 10 ms since 6d040f3b (image_leg_exit 96 -> 54 ms, ~2.9 s a run). Cheapest cut: cut scipy from image_composite.py saves ~1000 ms x ~80 composite calls a run (this suite and test_chatgpt_web), costs rewriting gaussian_filter, label and the binary morphology in numpy with masks that must replay pixel-identical: not taken, a production quality risk for a test-only gain.",
       "handoff": null
     },
     {
@@ -9824,7 +9824,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): ruled out: the deny rule is Egor's and works; the recipe that meets it is row tool-idea-red-on-old's. Blind spot: 19 rm -rf denials and 22 sh -c rm prompts in 24 h are Egor's own deny rule (Bash(rm -rf *)) working as set; most targets were hand-rolled red-on-old-code checks (rm -rf a scratch copy, git archive HEAD, copy the new test in, run), and share/tool_mining.py scans only inline scripts, so that plain-shell recipe never becomes an adhoc opportunity (blind spot tool-mining-plain-shell-recipes). find -delete on the run's own scratch or sed on its own file bypasses nothing the rules guard; the tm-measure retry until Egor removed it was one worker's conduct.",
+      "note": "2026-10-29 (run 387d): quiet; the deny rule is Egor's; red-on-old still not built (block 9 postponed). 2026-10-20 (run 2c2a): ruled out: the deny rule is Egor's and works; the recipe that meets it is row tool-idea-red-on-old's. Blind spot: 19 rm -rf denials and 22 sh -c rm prompts in 24 h are Egor's own deny rule (Bash(rm -rf *)) working as set; most targets were hand-rolled red-on-old-code checks (rm -rf a scratch copy, git archive HEAD, copy the new test in, run), and share/tool_mining.py scans only inline scripts, so that plain-shell recipe never becomes an adhoc opportunity (blind spot tool-mining-plain-shell-recipes). find -delete on the run's own scratch or sed on its own file bypasses nothing the rules guard; the tm-measure retry until Egor removed it was one worker's conduct.",
       "handoff": null
     },
     {
@@ -9839,7 +9839,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): quiet; blind spot worker-bash-env-unrecorded stands. The 3.9 failures a Homebrew-less PATH causes now surface as test-health/flaky rows (speed-flaky-test-harness-doctor and the two review-bench ones). Blind spot: two workers in the 05:44-06:34 load window on 10-13 got a login-only PATH (~/.zprofile's; /opt/homebrew/bin comes only from ~/.zshrc, so python3 was /usr/bin's 3.9), most likely a Claude Code shell snapshot that failed under load; nothing records a worker Bash's environment (blind spot worker-bash-env-unrecorded). One of them found and fixed a real 3.9 fromisoformat bug in the production /usr/bin/python3 fallback. The zsh-isms (==, unsplit lists) each cost one failed call, self-corrected (conduct).",
+      "note": "2026-10-29 (run 387d): quiet; blind spot worker-bash-env-unrecorded stands. 2026-10-20 (run 2c2a): quiet; blind spot worker-bash-env-unrecorded stands. The 3.9 failures a Homebrew-less PATH causes now surface as test-health/flaky rows (speed-flaky-test-harness-doctor and the two review-bench ones). Blind spot: two workers in the 05:44-06:34 load window on 10-13 got a login-only PATH (~/.zprofile's; /opt/homebrew/bin comes only from ~/.zshrc, so python3 was /usr/bin's 3.9), most likely a Claude Code shell snapshot that failed under load; nothing records a worker Bash's environment (blind spot worker-bash-env-unrecorded). One of them found and fixed a real 3.9 fromisoformat bug in the production /usr/bin/python3 fallback. The zsh-isms (==, unsplit lists) each cost one failed call, self-corrected (conduct).",
       "handoff": null
     },
     {
@@ -9938,7 +9938,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): not built: Breakages goal bash-cap (docs/directions/breakages.md) lets a worker's timed-out call move to the background instead, and says this tool is not built. Evidence: ~/.claude/projects transcripts 2026-10-07..14: 64 foreground tests/run-all|run-suites calls ended 'Command timed out after Nm' (41 at timeout=1500000, the claudeb worker cap bin/worker-run:1120), 61 of them followed by another run-all within 15 calls; those 61 killed calls held 1360 min = 8.7 reruns/day x 22.3 min lost each = 194 min/day of worker wall (30 d: 337 timed-out suite calls, 3860 min). Causes vary (slot waits under night load, wide selections, slow suites: RUN_SUITES_SUITE_FLOOR 1800 s is above the 1500 s worker cap, so a suite past 25 min is always killed by Claude Code, never by run-suites' own bound), which is why rows log_audit:worker-suite-run-waits (ruled-out: load), log_audit:foreground-run-all-10min-cap and log_audit:runall-foreground-timeout-cap (fixed by raising the cap) never removed the rerun; this tool removes the lost work whatever the cause. Native route checked: CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 (bin/worker-run:1116) stays, -p still drops background shells ~5 s after its result (claude-code issue 65498, CLI 2.1.299 here). Build: share/run-suites.sh starts its run body in its own session (python3 os.setsid, macOS has no setsid(1)) writing the existing per-suite logs and table under a run dir; the foreground waits until BASH_MAX_TIMEOUT_MS (exported by worker-run) minus a margin, then prints 'still running: tests/run-all --attach <dir>' and exits with a distinct code, never a FAIL; --attach waits on the same run and prints its table. Reuse the slot hold, owner_watch and journal unchanged. Proof: test_run_suites_timeout-style fixture with a cap shorter than a sleeping suite: the attach prints the suite's PASS and the journal holds one run, not two; Speed reads timed-out-then-rerun calls per 1000 suite runs before against after.",
+      "note": "2026-10-29 (run 387d): quiet; not built: goal bash-cap (35d604a3) moves a capped call to the background. 2026-10-20 (run 2c2a): not built: Breakages goal bash-cap (docs/directions/breakages.md) lets a worker's timed-out call move to the background instead, and says this tool is not built. Evidence: ~/.claude/projects transcripts 2026-10-07..14: 64 foreground tests/run-all|run-suites calls ended 'Command timed out after Nm' (41 at timeout=1500000, the claudeb worker cap bin/worker-run:1120), 61 of them followed by another run-all within 15 calls; those 61 killed calls held 1360 min = 8.7 reruns/day x 22.3 min lost each = 194 min/day of worker wall (30 d: 337 timed-out suite calls, 3860 min). Causes vary (slot waits under night load, wide selections, slow suites: RUN_SUITES_SUITE_FLOOR 1800 s is above the 1500 s worker cap, so a suite past 25 min is always killed by Claude Code, never by run-suites' own bound), which is why rows log_audit:worker-suite-run-waits (ruled-out: load), log_audit:foreground-run-all-10min-cap and log_audit:runall-foreground-timeout-cap (fixed by raising the cap) never removed the rerun; this tool removes the lost work whatever the cause. Native route checked: CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 (bin/worker-run:1116) stays, -p still drops background shells ~5 s after its result (claude-code issue 65498, CLI 2.1.299 here). Build: share/run-suites.sh starts its run body in its own session (python3 os.setsid, macOS has no setsid(1)) writing the existing per-suite logs and table under a run dir; the foreground waits until BASH_MAX_TIMEOUT_MS (exported by worker-run) minus a margin, then prints 'still running: tests/run-all --attach <dir>' and exits with a distinct code, never a FAIL; --attach waits on the same run and prints its table. Reuse the slot hold, owner_watch and journal unchanged. Proof: test_run_suites_timeout-style fixture with a cap shorter than a sleeping suite: the attach prints the suite's PASS and the journal holds one run, not two; Speed reads timed-out-then-rerun calls per 1000 suite runs before against after.",
       "handoff": null
     },
     {
@@ -9987,7 +9987,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): not built: block 9 (ad-hoc scripts become tools) is postponed (docs/directions/README.md, Egor 2026-10-20). Evidence: ~/.claude/projects transcripts 2026-10-07..14: 209 in-place swaps of old code (git show REF:P > P with the same path, git checkout REF -- P, git stash) = 29.9 episodes/day, each spanning 6.4 assistant turns until the restore (cp back, stash pop, git checkout HEAD --); one call instead saves 5.4 turns x 4.8 s (median tool_result -> next turn gap over 203k turns of 30 d) = 12.9 min/day (30 d: 11.2 episodes/day, 6.8 turns). The worker preamble prescribes exactly this dance (bin/worker-run BRIEF_PREAMBLE: 'a mutation check is one run of the covering suite (revert -> fails -> restore)') and every P1/P2 fix needs a red-on-old-code test, so the rate follows the night's fix count. A forgotten restore in a shared checkout is the side risk the trap removes. Build: bin/red-on-old in bash: copy the current files to a mktemp dir, git show <ref>:<path> over each, run the command, restore by trap on EXIT/INT/TERM, rerun the command on the restored tree, print 'old: FAIL n / new: PASS n' from the command's exit codes; no git index use (memory rule never stage in the shared index). Name it in BRIEF_PREAMBLE in place of the parenthesised steps. Proof: a fixture repo suite asserting the tree is byte-identical after a killed run; Speed counts in-place swap episodes per 1000 Bash calls before against after.",
+      "note": "2026-10-29 (run 387d): quiet; block 9 still postponed (docs/directions/README.md). 2026-10-20 (run 2c2a): not built: block 9 (ad-hoc scripts become tools) is postponed (docs/directions/README.md, Egor 2026-10-20). Evidence: ~/.claude/projects transcripts 2026-10-07..14: 209 in-place swaps of old code (git show REF:P > P with the same path, git checkout REF -- P, git stash) = 29.9 episodes/day, each spanning 6.4 assistant turns until the restore (cp back, stash pop, git checkout HEAD --); one call instead saves 5.4 turns x 4.8 s (median tool_result -> next turn gap over 203k turns of 30 d) = 12.9 min/day (30 d: 11.2 episodes/day, 6.8 turns). The worker preamble prescribes exactly this dance (bin/worker-run BRIEF_PREAMBLE: 'a mutation check is one run of the covering suite (revert -> fails -> restore)') and every P1/P2 fix needs a red-on-old-code test, so the rate follows the night's fix count. A forgotten restore in a shared checkout is the side risk the trap removes. Build: bin/red-on-old in bash: copy the current files to a mktemp dir, git show <ref>:<path> over each, run the command, restore by trap on EXIT/INT/TERM, rerun the command on the restored tree, print 'old: FAIL n / new: PASS n' from the command's exit codes; no git index use (memory rule never stage in the shared index). Name it in BRIEF_PREAMBLE in place of the parenthesised steps. Proof: a fixture repo suite asserting the tree is byte-identical after a killed run; Speed counts in-place swap episodes per 1000 Bash calls before against after.",
       "handoff": null
     },
     {
@@ -10003,7 +10003,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "harness-doctor-20261020T113845Z-2c2a",
-      "note": "2026-10-20 (run 2c2a): not built: block 9 (ad-hoc scripts become tools) is postponed (docs/directions/README.md, Egor 2026-10-20); 4.6 min/day is also under the night's 5 min/day admission. Evidence: ~/.claude/projects transcripts 2026-10-07..14: 371 tests/run-all calls whose previous call was a separate tests/affected = 53 pairs/day (30 d: 486 pairs, 2232 affected calls); folding each into one call saves a turn (4.8 s median gap, 3.7 s for these pairs) plus the separate exec (tests/affected 0.46 s here): 53 x 5.3 s = 4.6 min/day. The two-step form is what the worker preamble and the night briefs spell ('tests/affected <file>... lists them', 'Run the suites tests/affected names in one tests/run-all call'). Build: share/run-suites.sh --affected takes file paths, calls the repo's tests/affected (reuse, no second heuristic; its slow-layer skip notice passes through) and proceeds as a named run; the preamble and brief wording name the flag instead of the pair. Proof: test_run_suites_* fixture: --affected on a file runs exactly tests/affected's suites; Speed counts affected->run-all pairs per 1000 suite runs before against after, net of the wording bytes.",
+      "note": "2026-10-29 (run 387d): quiet; block 9 still postponed (docs/directions/README.md). 2026-10-20 (run 2c2a): not built: block 9 (ad-hoc scripts become tools) is postponed (docs/directions/README.md, Egor 2026-10-20); 4.6 min/day is also under the night's 5 min/day admission. Evidence: ~/.claude/projects transcripts 2026-10-07..14: 371 tests/run-all calls whose previous call was a separate tests/affected = 53 pairs/day (30 d: 486 pairs, 2232 affected calls); folding each into one call saves a turn (4.8 s median gap, 3.7 s for these pairs) plus the separate exec (tests/affected 0.46 s here): 53 x 5.3 s = 4.6 min/day. The two-step form is what the worker preamble and the night briefs spell ('tests/affected <file>... lists them', 'Run the suites tests/affected names in one tests/run-all call'). Build: share/run-suites.sh --affected takes file paths, calls the repo's tests/affected (reuse, no second heuristic; its slow-layer skip notice passes through) and proceeds as a named run; the preamble and brief wording name the flag instead of the pair. Proof: test_run_suites_* fixture: --affected on a file runs exactly tests/affected's suites; Speed counts affected->run-all pairs per 1000 suite runs before against after, net of the wording bytes.",
       "handoff": null
     },
     {
@@ -10531,7 +10531,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "night fixer harness-speed-adhoc-image-probe-20261020T113914Z-3d87",
-      "note": "2026-10-20: 58 sampled calls, 53 in /Users/egorloy/Arbostar/arbostar-logo, 4 here, 1 in logo-vectorizer-bench; median exec 0.2 s, 272 B out. 36 are crop+resize+print-size to view a detail (Image.open/cv2.resize/ffmpeg crop,vstack), about 10 mean RGB or Laplacian sharpness over video frames, the rest size/mode lookups. The job is arbostar-logo's (its CLAUDE.md-less repository, tools/README.md map; logocheck.py judges by eye, no pixel metrics), outside every night worktree and owned by the chat «Логотип CRM для арбористов»: its command and hint go there. Not built here: a harness always-loaded hint would cost every session for a one-project job.",
+      "note": "2026-10-29 (run 387d): quiet; handoff 2026-10-20-image-probe-arbostar-logo.md still open. 2026-10-20: 58 sampled calls, 53 in /Users/egorloy/Arbostar/arbostar-logo, 4 here, 1 in logo-vectorizer-bench; median exec 0.2 s, 272 B out. 36 are crop+resize+print-size to view a detail (Image.open/cv2.resize/ffmpeg crop,vstack), about 10 mean RGB or Laplacian sharpness over video frames, the rest size/mode lookups. The job is arbostar-logo's (its CLAUDE.md-less repository, tools/README.md map; logocheck.py judges by eye, no pixel metrics), outside every night worktree and owned by the chat «Логотип CRM для арбористов»: its command and hint go there. Not built here: a harness always-loaded hint would cost every session for a one-project job.",
       "handoff": "docs/handoffs/2026-10-20-image-probe-arbostar-logo.md"
     },
     {
@@ -10839,6 +10839,356 @@
       "last_reviewed": "2026-10-29",
       "reviewed_by": "night fixer harness-wait-classes-20261029T053353Z-2e51",
       "note": "2026-10-29: 5563 s against a 3015 s limit (usual 1507 s), every row reason room, no MB refusal (available 4.0-7.4 GB against the 3548 MB line throughout). Each room wait replayed in 5 s steps against memlogd's load1 (load15 rebuilt as its 900 s EMA) and avail_mb: workers 10-29 load clause 5473 s, neither MB nor load 767 s; 10-28 3976 / 1121 s; 10-26 0 / 1357 s (one wait of 1371 s at 4.8-7.3 GB, load clear: the level-2 veto); run-suites 10-28/29 655 / 516 s. Fixed by doctrine (image-fanout 39e352a8, same line): only critical pressure (4) refuses room; the MB and load clauses still decide. Ruled out as a bug: the load clause, 88 % of 10-29's room time. It held above-floor admission from +90 s to +540 s after 01:56:41Z while load1 climbed 85 -> 254 over a 144-190 base, under logo-vectorizer-bench (8 runset.py lanes) plus the night's own 13 fixer launches in 66 s; the waits ended within 6 s of the clause clearing. That is the owner's settled pacing (log_audit:night-worker-queue-wait), so this row stays red on such nights until that pacing is changed. Polling CPU: 7 ms a floor scan every 2 s and 12 ms a room check every 15 s, about 25 s over the day's waits. The hold's why never reaches the wait row (blind spot slot-room-clause-unseen), so the split is a replay, not a reading.",
+      "handoff": null
+    },
+    {
+      "id": "fix_audit:20261009T021216Z-69fd578/F32",
+      "title": "false fix llm-legs@b615c977 bin/worker-run",
+      "match": {
+        "rule": "fix_audit",
+        "ident": "20261009T021216Z-69fd578/F32"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:30:00+03:00",
+          "by": "harness-doctor-20261029T053038Z-387d",
+          "files": [
+            "llm-legs/share/worker-run-wait.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): false fix: no hunk of b615c977 is its own: the hunks near its line are the round's F18/F33 transcript skip between row/token deadlines, the walled-reroute meta.json re-read (since cached by meta_unchanged) and the pid/attempt hand-off, all kept; the revert commit names it with nothing to undo. Its stale comment 'Every tick reads meta.json afresh' now says it is read again whenever it changes.",
+      "handoff": null
+    },
+    {
+      "id": "fix_audit:20261009T021216Z-69fd578/F51",
+      "title": "false fix llm-legs@b615c977 bin/worker-run",
+      "match": {
+        "rule": "fix_audit",
+        "ident": "20261009T021216Z-69fd578/F51"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:30:00+03:00",
+          "by": "harness-doctor-20261029T053038Z-387d",
+          "files": [
+            "llm-legs/share/worker-run-wait.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): false fix: no hunk of b615c977 is its own: the hunks near its line are the round's F18/F33 transcript skip between row/token deadlines, the walled-reroute meta.json re-read (since cached by meta_unchanged) and the pid/attempt hand-off, all kept; the revert commit names it with nothing to undo. wait_run_loop still checks exit_code before the loop-top wait_progress (share/worker-run-wait.sh).",
+      "handoff": null
+    },
+    {
+      "id": "fix_audit:20261009T021216Z-69fd578/F52",
+      "title": "false fix llm-legs@b615c977 bin/worker-run",
+      "match": {
+        "rule": "fix_audit",
+        "ident": "20261009T021216Z-69fd578/F52"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:30:00+03:00",
+          "by": "harness-doctor-20261029T053038Z-387d",
+          "files": [
+            "llm-legs/share/worker-run-wait.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): false fix: no hunk of b615c977 is its own: the hunks near its line are the round's F18/F33 transcript skip between row/token deadlines, the walled-reroute meta.json re-read (since cached by meta_unchanged) and the pid/attempt hand-off, all kept; the revert commit names it with nothing to undo. Rows print through wait_print_rows (bash, perl only without a UTF-8 locale).",
+      "handoff": null
+    },
+    {
+      "id": "fix_audit:20261009T021216Z-69fd578/F48",
+      "title": "useless fix llm-legs@b615c977 bin/doctor-fix",
+      "match": {
+        "rule": "fix_audit",
+        "ident": "20261009T021216Z-69fd578/F48"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:30:00+03:00",
+          "by": "harness-doctor-20261029T053038Z-387d",
+          "files": [
+            "llm-legs/bin/doctor-fix"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): useless fix with code added (+3 lines): reverted in bin/doctor-fix close_run: untraded_handoff takes record and evidence again and the NIGHT_FIX_RULES check calls egor_handoffs itself; the double walk ran only for a handoff on a Speed or floor row. Kept: the snapshot's slot probe only when a kind is chosen (another finding's).",
+      "handoff": null
+    },
+    {
+      "id": "fix_audit:20261014T022633Z-8e34c2e/F18",
+      "title": "useless fix llm-legs@547a8a7a,c6f61831 tests/test_worker_pick.sh",
+      "match": {
+        "rule": "fix_audit",
+        "ident": "20261014T022633Z-8e34c2e/F18"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:30:00+03:00",
+          "by": "harness-doctor-20261029T053038Z-387d",
+          "files": [
+            "llm-legs/tests/test_worker_pick.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): useless fix with code added: c6f61831's bash-string output views (+11 lines, CPU 88.6 -> 87.4 s, no wall change) reverted to the grep/sed/awk helpers of c6f61831^; 547a8a7a (worker-pick reads every vendor's walls in one jq) is a production gain and stays.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:a-gimp-trace-took-65-minutes-to-confirm-no-fire-under-a-24-h",
+      "title": "A gimp trace took 65 minutes to confirm no fire, under a 24-hour slot wait",
+      "match": {
+        "rule": "log_audit",
+        "ident": "a-gimp-trace-took-65-minutes-to-confirm-no-fire-under-a-24-h"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own bench/throttle.py working as designed: at pressure level 1 and 46-56 % free slot_count gives QUIET_JOBS 4 of MAX_JOBS 8 while keyboard input is under BENCH_IDLE_SECONDS, and all 4 were held by the lane's own long traces (38-98 min); BENCH_PRIORITY lane orders the queue but never preempts a held slot. Bench pool size is Egor's trade and load is weather. The chat itself set BENCH_SLOT_WAIT=86400; the 65 min is one trace's own time under contention. Not ours, handed to the owner chat: the status names no clamp (read as memory pressure and as 4 free slots) and hold_clear journals no wait (blind spot wait-journal-throttle-py).",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md"
+    },
+    {
+      "id": "log_audit:batch-a-starved-on-slotrun-for-about-100-min-while-batch-b-h",
+      "title": "Batch a starved on slotrun for about 100 min while batch b held a slot for one 98-min e2e run",
+      "match": {
+        "rule": "log_audit",
+        "ident": "batch-a-starved-on-slotrun-for-about-100-min-while-batch-b-h"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own bench/throttle.py working as designed: at pressure level 1 and 46-56 % free slot_count gives QUIET_JOBS 4 of MAX_JOBS 8 while keyboard input is under BENCH_IDLE_SECONDS, and all 4 were held by the lane's own long traces (38-98 min); BENCH_PRIORITY lane orders the queue but never preempts a held slot. Bench pool size is Egor's trade and load is weather. Batch b's 98-min e2e held its slot as FIFO allows. Not ours, handed to the owner chat: the status names no clamp (read as memory pressure and as 4 free slots) and hold_clear journals no wait (blind spot wait-journal-throttle-py).",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md"
+    },
+    {
+      "id": "log_audit:c98b-aigrid3-batch-waited-45-min-for-a-bench-slot-and-never-",
+      "title": "c98b aigrid3 batch waited 45 min for a bench slot and never ran",
+      "match": {
+        "rule": "log_audit",
+        "ident": "c98b-aigrid3-batch-waited-45-min-for-a-bench-slot-and-never-"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own bench/throttle.py working as designed: at pressure level 1 and 46-56 % free slot_count gives QUIET_JOBS 4 of MAX_JOBS 8 while keyboard input is under BENCH_IDLE_SECONDS, and all 4 were held by the lane's own long traces (38-98 min); BENCH_PRIORITY lane orders the queue but never preempts a held slot. Bench pool size is Egor's trade and load is weather. The coordinator stopped the batch before its turn. Not ours, handed to the owner chat: the status names no clamp (read as memory pressure and as 4 free slots) and hold_clear journals no wait (blind spot wait-journal-throttle-py).",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md"
+    },
+    {
+      "id": "log_audit:e2e-and-2x-batches-queued-47-min-for-a-slot-under-memory-pre",
+      "title": "e2e and 2x batches queued 47 min for a slot under memory pressure",
+      "match": {
+        "rule": "log_audit",
+        "ident": "e2e-and-2x-batches-queued-47-min-for-a-slot-under-memory-pre"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own bench/throttle.py working as designed: at pressure level 1 and 46-56 % free slot_count gives QUIET_JOBS 4 of MAX_JOBS 8 while keyboard input is under BENCH_IDLE_SECONDS, and all 4 were held by the lane's own long traces (38-98 min); BENCH_PRIORITY lane orders the queue but never preempts a held slot. Bench pool size is Egor's trade and load is weather. Pressure level 1 is no memory pressure: the 4 is the keyboard clamp. Not ours, handed to the owner chat: the status names no clamp (read as memory pressure and as 4 free slots) and hold_clear journals no wait (blind spot wait-journal-throttle-py).",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md"
+    },
+    {
+      "id": "log_audit:holdout-driver-reached-only-60-traces-in-2-h-under-slot-cont",
+      "title": "Holdout driver reached only 60 traces in ~2 h under slot contention",
+      "match": {
+        "rule": "log_audit",
+        "ident": "holdout-driver-reached-only-60-traces-in-2-h-under-slot-cont"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own bench/throttle.py working as designed: at pressure level 1 and 46-56 % free slot_count gives QUIET_JOBS 4 of MAX_JOBS 8 while keyboard input is under BENCH_IDLE_SECONDS, and all 4 were held by the lane's own long traces (38-98 min); BENCH_PRIORITY lane orders the queue but never preempts a held slot. Bench pool size is Egor's trade and load is weather. 0.5 traces/min is 4 slots shared by the lane's batches. Not ours, handed to the owner chat: the status names no clamp (read as memory pressure and as 4 free slots) and hold_clear journals no wait (blind spot wait-journal-throttle-py).",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md"
+    },
+    {
+      "id": "log_audit:oracle-batches-starved-for-slots-and-cpu-a-gradient-run-sat-",
+      "title": "Oracle batches starved for slots and CPU; a gradient run sat 20+ min and then ended with no usable result",
+      "match": {
+        "rule": "log_audit",
+        "ident": "oracle-batches-starved-for-slots-and-cpu-a-gradient-run-sat-"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own bench/throttle.py working as designed: at pressure level 1 and 46-56 % free slot_count gives QUIET_JOBS 4 of MAX_JOBS 8 while keyboard input is under BENCH_IDLE_SECONDS, and all 4 were held by the lane's own long traces (38-98 min); BENCH_PRIORITY lane orders the queue but never preempts a held slot. Bench pool size is Egor's trade and load is weather. The gradient run's empty result is the lane's tracer, not a wait. Not ours, handed to the owner chat: the status names no clamp (read as memory pressure and as 4 free slots) and hold_clear journals no wait (blind spot wait-journal-throttle-py).",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md"
+    },
+    {
+      "id": "log_audit:shared-bench-throttle-queues-lane-slot-jobs-25-55-min-lane-p",
+      "title": "Shared bench throttle queues lane slot jobs 25–55 min; lane priority gives no lead",
+      "match": {
+        "rule": "log_audit",
+        "ident": "shared-bench-throttle-queues-lane-slot-jobs-25-55-min-lane-p"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own bench/throttle.py working as designed: at pressure level 1 and 46-56 % free slot_count gives QUIET_JOBS 4 of MAX_JOBS 8 while keyboard input is under BENCH_IDLE_SECONDS, and all 4 were held by the lane's own long traces (38-98 min); BENCH_PRIORITY lane orders the queue but never preempts a held slot. Bench pool size is Egor's trade and load is weather. Lane priority gives a lead only in the queue, behind held slots. Not ours, handed to the owner chat: the status names no clamp (read as memory pressure and as 4 free slots) and hold_clear journals no wait (blind spot wait-journal-throttle-py).",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md"
+    },
+    {
+      "id": "log_audit:slot-gate-waits-while-its-own-message-shows-3-4-of-8-slots-o",
+      "title": "Slot gate waits while its own message shows 3-4 of 8 slots open",
+      "match": {
+        "rule": "log_audit",
+        "ident": "slot-gate-waits-while-its-own-message-shows-3-4-of-8-slots-o"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own bench/throttle.py working as designed: at pressure level 1 and 46-56 % free slot_count gives QUIET_JOBS 4 of MAX_JOBS 8 while keyboard input is under BENCH_IDLE_SECONDS, and all 4 were held by the lane's own long traces (38-98 min); BENCH_PRIORITY lane orders the queue but never preempts a held slot. Bench pool size is Egor's trade and load is weather. 'all busy, 4 of 8 slots open' means 4 allowed and all 4 held. Not ours, handed to the owner chat: the status names no clamp (read as memory pressure and as 4 free slots) and hold_clear journals no wait (blind spot wait-journal-throttle-py).",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md"
+    },
+    {
+      "id": "log_audit:slot-throttle-held-bench-jobs-for-about-40-min-while-4-of-8-",
+      "title": "Slot throttle held bench jobs for about 40 min while 4 of 8 slots were open",
+      "match": {
+        "rule": "log_audit",
+        "ident": "slot-throttle-held-bench-jobs-for-about-40-min-while-4-of-8-"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own bench/throttle.py working as designed: at pressure level 1 and 46-56 % free slot_count gives QUIET_JOBS 4 of MAX_JOBS 8 while keyboard input is under BENCH_IDLE_SECONDS, and all 4 were held by the lane's own long traces (38-98 min); BENCH_PRIORITY lane orders the queue but never preempts a held slot. Bench pool size is Egor's trade and load is weather. 'all busy, 4 of 8 slots open' means 4 allowed and all 4 held. Not ours, handed to the owner chat: the status names no clamp (read as memory pressure and as 4 free slots) and hold_clear journals no wait (blind spot wait-journal-throttle-py).",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md"
+    },
+    {
+      "id": "log_audit:e2e-check-re-traces-the-full-base-38-min-per-key-second-batc",
+      "title": "e2e check re-traces the full base: 38 min per key, second batch killed at 68 min",
+      "match": {
+        "rule": "log_audit",
+        "ident": "e2e-check-re-traces-the-full-base-38-min-per-key-second-batc"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own tracer chain and memo cache, not a sweep repository: the e2e re-traces the whole champ base chain per key, the cause of open handoff item 3 (a champN/run.sh re-runs its parent chain instead of taking out/<parent>).",
+      "handoff": "docs/handoffs/2026-10-14-logo-bench-own-tools.md"
+    },
+    {
+      "id": "log_audit:el-graft-run-tail-waited-30-min-on-cold-jpeg-traces-it-then-",
+      "title": "el-graft run tail waited ~30 min on cold JPEG traces it then killed",
+      "match": {
+        "rule": "log_audit",
+        "ident": "el-graft-run-tail-waited-30-min-on-cold-jpeg-traces-it-then-"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own tracer chain and memo cache, not a sweep repository: cold JPEG traces are the same parent-chain re-trace (handoff item 3); the coordinator's wrap-up killed them.",
+      "handoff": "docs/handoffs/2026-10-14-logo-bench-own-tools.md"
+    },
+    {
+      "id": "log_audit:memo-cache-key-drift-invalidates-prior-el-graft-candidates-f",
+      "title": "Memo cache key drift invalidates prior el-graft candidates, forcing re-traces",
+      "match": {
+        "rule": "log_audit",
+        "ident": "memo-cache-key-drift-invalidates-prior-el-graft-candidates-f"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own tracer chain and memo cache, not a sweep repository: only 6 of 42 of the lane's 10-27 memo entries matched its current key (code hash or env, the lane's own check); a re-trace is the cache doing its job.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:judge-s-white-snap-bytes-came-from-a-stale-cache-h5-seam-cha",
+      "title": "Judge's white-snap bytes came from a stale cache (h5-seam/champ94), not from the white-snap tracer",
+      "match": {
+        "rule": "log_audit",
+        "ident": "judge-s-white-snap-bytes-came-from-a-stale-cache-h5-seam-cha"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, logo-vectorizer-bench's own tracer chain and memo cache, not a sweep repository: a stale champ94/97 output the lane's judge read; the lane found it itself (18:29).",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:coordinator-s-stage-2-bar-hair-px-to-zero-was-unreachable-so",
+      "title": "Coordinator's stage-2 bar (hair px to zero) was unreachable, so the tm-hair lane was dropped and needed a resume",
+      "match": {
+        "rule": "log_audit",
+        "ident": "coordinator-s-stage-2-bar-hair-px-to-zero-was-unreachable-so"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, chat conduct in logo-vectorizer-bench's lane; no hook, gate or launcher: the coordinator's own stage-2 bar, which it called too strict itself.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:each-tm-hair-acceptance-rule-change-reruns-the-full-39-file-",
+      "title": "Each tm-hair acceptance-rule change reruns the full 39-file batch, about 9 to 15 minutes per iteration",
+      "match": {
+        "rule": "log_audit",
+        "ident": "each-tm-hair-acceptance-rule-change-reruns-the-full-39-file-"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-doctor-20261029T053038Z-387d",
+      "note": "2026-10-29 (run 387d): ruled out, chat conduct in logo-vectorizer-bench's lane; no hook, gate or launcher: the lane's acceptance loop reruns its 39-file batch per rule change by its own choice.",
       "handoff": null
     }
   ],
