@@ -11646,13 +11646,6 @@
       "would_catch_if": "hook-time's line carried the tool_use_id (contract row da)"
     },
     {
-      "id": "headless-suites",
-      "what": "test suites run by headless workers and night fixers",
-      "reason": "`tests running` and test-history come from statusline work probes, and a `claude -p` session renders no statusline: 03:19 sampled 0 while four night worktrees ran run-suites",
-      "since": "2026-09-30",
-      "would_catch_if": "run-suites.sh wrote a start and end line per suite to a journal this doctor reads"
-    },
-    {
       "id": "tripwire-duplicate-records",
       "what": "one instruction-file write journaled by two tripwire records",
       "reason": "the guards rule counts each record per file; a record carries no write key (hash@mtime), so a second record of the same write reads as new growth",
