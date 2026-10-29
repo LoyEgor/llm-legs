@@ -2201,8 +2201,8 @@ jq -cn --argjson at $((held_now - 5 * 86400)) '{class: "suite-slots", source: "s
   > "$WORK/held/waits/$(date -r $((held_now - 5 * 86400)) +%Y-%m-%d).jsonl"
 run_held() {
   HARNESS_LEDGER="$WORK/hold-ledger.json" RUN_SUITES_SLOTS_DIR="$WORK/no-slots" WORKER_SLOTS_DIR="$WORK/no-slots" \
-    HARNESS_HOLDS_DIR="$holds" HARNESS_DOCTOR_DIR="$WORK/held" HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" \
-    MEMLOGD_DIR="$WORK/held-memlogd" "$DOCTOR" --quiet
+    HARNESS_HOLDS_DIR="$holds" HARNESS_DOCTOR_DIR="$WORK/held" HARNESS_WAITS_DIR="$WORK/held/waits" \
+    HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" MEMLOGD_DIR="$WORK/held-memlogd" "$DOCTOR" --quiet
 }
 run_held || fail "a run over live and leaked holds failed"
 kill "$reused_pid" 2>/dev/null
