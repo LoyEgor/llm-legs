@@ -6753,6 +6753,29 @@ def wait_classes(now):
 RUN_CUT_REASONS = ("wall", "idle", "deadline", "silent", "term", "signal")
 
 
+def orphan_family(command):
+    """The program an orphan ran: an app bundle, `<shell> -c`, or the first word past interpreters and flags
+    (worker-run records 80 characters, so a cut Python framework path still reads python)."""
+    app = re.search(r"([^/]+\.app)/", command)
+    if app:
+        return app.group(1)
+    words, shell = command.split(), None
+    while words and (INTERPRETER.search("/" + os.path.basename(words[0])) or "ython" in words[0]
+                     or os.path.basename(words[0]) in ("nohup", "exec", "uv", "run") or words[0].startswith("-")):
+        if words[0] == "-c":
+            return (shell or "sh") + " -c"
+        shell = shell or ("python" if "ython" in words[0] else os.path.basename(words[0]))
+        words = words[1:]
+    if not words:
+        return shell or "?"
+    name = os.path.basename(words[0])
+    if name and not (len(words) == 1 and len(command) >= 80 and "/" in words[0]):
+        return name
+    parts = words[0].split("/")
+    repo = parts[parts.index("Projects") + 1] if "Projects" in parts[:-2] else os.path.basename(os.path.dirname(words[0]))
+    return repo + "/…"
+
+
 def worker_orphans_line(now):
     """Processes a worker run that ended on its own left behind outside its own tree, ended by worker-run at the
     run's end (row ec); a run the watchdog cut ends its detached jobs with it, so they are no leak."""
@@ -6765,6 +6788,9 @@ def worker_orphans_line(now):
             ended += [(at, str(run.get("run") or ""), o) for o in run["orphans"] if isinstance(o, dict)]
     count, limit = len(ended), LIMITS["worker_orphans"]
     red = count > limit
+    families = {}
+    for at, run, o in sorted(ended, key=lambda e: -e[0]):
+        families.setdefault(orphan_family(str(o.get("command") or "")), []).append((at, run, o))
     out = line("worker-run orphans ended today: %d" % count, dim=not red, red=red, menu=section("", [
         row([clock(at, now), clip(run, 34), fmt_long(o.get("age_s")), clip(str(o.get("command") or ""), 60)])
         for at, run, o in sorted(ended, key=lambda e: -e[0])], ["ended", "run", "age", "command"],
@@ -6772,9 +6798,14 @@ def worker_orphans_line(now):
     out.update(key="waits:orphans", say="%d processes worker runs left behind were ended today, fine up to %d" % (
         count, limit), judge=[verdict("worker_orphans", "worker-run", count, limit, "processes", 24, count,
                                       "red" if red else None, bad=count, evidence=[
-                                          evidence(at, "worker-stats/runs.jsonl %s" % run, "pid %s · %s" % (
-                                              o.get("pid"), o.get("command"))) for at, run, o in
-                                          sorted(ended, key=lambda e: -e[0])[:3]])])
+                                          evidence(group[0][0], "worker-stats/runs.jsonl %s" % family,
+                                                   "%d process%s in %d run%s · %s" % (
+                                                       len(group), "" if len(group) == 1 else "es",
+                                                       len({r for _, r, _ in group}),
+                                                       "" if len({r for _, r, _ in group}) == 1 else "s",
+                                                       group[0][2].get("command")))
+                                          for family, group in sorted(families.items(),
+                                                                      key=lambda f: (-len(f[1]), -f[1][0][0]))[:3]])])
     return out
 
 

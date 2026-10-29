@@ -12537,13 +12537,6 @@
       "would_catch_if": "a limiter wait row carried the holders when it cleared (pid, repo, worker run and whether it still lives, the suite running longest)"
     },
     {
-      "id": "worker-orphans-unclassified",
-      "what": "whether a worker_orphans process was a leak or a job detached on purpose",
-      "reason": "the rule counts every process carrying the run id; 2026-10-07 the 148 were mostly a SessionEnd hook and worker-run's own pack, told apart only by grouping runs.jsonl commands by hand",
-      "since": "2026-10-07",
-      "would_catch_if": "the row's evidence grouped today's orphans by command family with counts, top family first"
-    },
-    {
       "id": "menu-journal-caller",
       "what": "which caller wrote a foreground menu-build line",
       "reason": "llm-limits timedMenu journals start, end and name only; the Doctors menu's foreground lines could not be traced to a click, a pick or an hs -c read (night 20261007T213650Z-7b98)",

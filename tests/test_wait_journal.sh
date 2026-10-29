@@ -147,6 +147,11 @@ assert jqe '.lead[0] | .cells == ["worker-run orphans ended today: 3"] and .dim 
   and ([.judge[] | [.rule, .ident, .value, .limit, .level]] == [["worker_orphans", "worker-run", 3, 3, null]])
   and ([.menu.rows[].cells] == [["08:03", "r-b", "30 s", "sleep 300"], ["08:03", "r-b", "31 s", "sleep 301"],
                                 ["08:01", "r-a", "14 min", "bash -x tests/test_slots.sh"]])' "$WORK/section.json"
+# Its evidence groups the orphans by the program they ran, the largest family first, so a leak reads apart from
+# a job one run detached many times.
+assert jqe '[.lead[0].judge[0].evidence[] | [.ref, .excerpt]] == [
+  ["worker-stats/runs.jsonl sleep", "2 processes in 1 run · sleep 300"],
+  ["worker-stats/runs.jsonl test_slots.sh", "1 process in 1 run · bash -x tests/test_slots.sh"]]' "$WORK/section.json"
 cls() { jq -c --arg c "$1" '.rows[] | select(.key == "waits:" + $c)' "$WORK/section.json"; }
 assert jqe '.name == "Wait classes" and .state == "problem" and ([.rows[].cells[0]] | sort) == ["lock", "poll", "run-suites", "workers"]' \
   "$WORK/section.json"
