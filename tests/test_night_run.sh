@@ -1983,4 +1983,44 @@ assert [ "$(cat "$WORK/sa/.claude/worktrees/dn/wip")" = wip ]
 assert git -C "$WORK/sa" rev-parse -q --verify refs/heads/night/sx/dirty-n >/dev/null
 fi
 
+if suite_shard_owns 3 nr-dig; then
+# Dig (docs/directions/README.md Rules): a weekly job kind, carried once no night ran it to an end in 7 days, its ref
+# the ISO week, its brief share/briefs/dig.md on a strong model; on every night type, a pilot night's beside its goal.
+export DOCTORS_DIR="$WORK/dig/doctors"; NIGHTS="$DOCTORS_DIR/nights"; mkdir -p "$NIGHTS"
+DL="$WORK/dig/llm-legs" week=$(date -u +%G-W%V)
+git init -q -b main "$DL" && mkdir -p "$DL/docs/directions"
+printf '# T\n\n## Goals\n\n### goal waits: measured\n\nTimed.\n' >"$DL/docs/directions/lost-time.md"
+git -C "$DL" add -A && git -C "$DL" -c user.name=t -c user.email=t@t commit -qm init
+printf '%s\n' "$DL" >"$WORK/sweep-dig"
+dnight() { NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-dig" night "$@"; }
+dago() { date -u -v-"$1"d +%Y-%m-%dT%H:%M:%SZ; }
+dnew() { jq -n --arg id "$1" --arg t "$(dago 0)" --arg p "${2:-}" '{id: $id, started_at: $t, finished_at: null, session: null, jobs: []}
+  + (if $p == "" then {} else {pilot: $p} end)' >"$NIGHTS/$1.json" && dnight base "$1" >/dev/null || fail "night base $1 failed"; }
+jq -n --arg t "$(dago 8)" '{id: "W0", started_at: $t, finished_at: $t, jobs: [{kind: "dig", ref: "dig-x", state: "merged"}]}' >"$NIGHTS/W0.json"
+dnew W1
+dnight carry W1 >"$WORK/w1.out" 2>/dev/null || fail "carry W1 failed"
+assert grep -qxF "dig-$week	$NIGHTS/W1.dig-$week.brief.md	$DL/.claude/worktrees/night-W1-dig-$week" "$WORK/w1.out"
+assert jqe --arg r "dig-$week" '.jobs[] | select(.ref == $r) | [.kind, .state, .priority, .direction] == ["dig", "pending", "P2", "harness"]' "$NIGHTS/W1.json"
+assert [ "$(head -2 "$NIGHTS/W1.dig-$week.brief.md")" = "ROUND: none
+STRONG: yes" ]
+assert grep -qxF '## Dig — weekly, structural waste no number shows' "$NIGHTS/W1.dig-$week.brief.md"
+dnight carry W1 >"$WORK/w1b.out" 2>/dev/null || fail "a second carry W1 failed"
+assert_fails grep -q '^dig-' "$WORK/w1b.out"
+# A pilot night carries it beside its goal, once; a dig ended within 7 days carries none.
+dnew W2 lost-time
+dnight carry W2 >"$WORK/w2.out" 2>/dev/null || fail "pilot carry W2 failed"
+assert [ "$(cut -f1 "$WORK/w2.out")" = "dig-$week
+goal-waits" ]
+dnight carry W2 >"$WORK/w2b.out" 2>/dev/null || fail "a second pilot carry W2 failed"
+assert [ ! -s "$WORK/w2b.out" ]
+dnight job W2 set "dig-$week" state=nothing-to-do >/dev/null || fail "dig-$week not settled"
+dnew W3 lost-time
+dnight carry W3 >"$WORK/w3.out" 2>/dev/null || fail "pilot carry W3 failed"
+assert [ "$(cut -f1 "$WORK/w3.out")" = goal-waits ]
+dnew W4
+dnight carry W4 >"$WORK/w4.out" 2>/dev/null || fail "carry W4 failed"
+assert_fails grep -q '^dig-' "$WORK/w4.out"
+export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
+fi
+
 echo "PASS: test_night_run.sh ($asserts asserts)"

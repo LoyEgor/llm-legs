@@ -24,7 +24,7 @@ from spend import read_json  # noqa: E402
 DOCTORS = ("harness", "llm", "updater")
 RULE_DAY = "2026-10-02"
 EXCLUDED = {"log_audit", "suites_at_once", "floor", "statusline", "menu_build", "collector", "worker_orphans", "load",
-            "opportunity", "regression", "time_floor", "tool_idea", "store_size", "ledger", "event-waiting"}
+            "opportunity", "regression", "time_floor", "tool_idea", "dig", "store_size", "ledger", "event-waiting"}
 EXCLUDED_PREFIXES = ("test_", "hook_", "wait", "growth-", "debt-")  # wait: Speed's Waits section, wait_* too
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _BORN = {}

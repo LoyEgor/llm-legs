@@ -23,9 +23,9 @@ sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
 # a faked sweep list means a test: the real helpers would get its night refs
 helper_repos="${NIGHT_RUN_HELPER_REPOS-${NIGHT_RUN_SWEEP_REPOS:+/dev/null}}"
 helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
-KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage vendor-watch tool-ideas directions-refresh goal deep-search fix-audit reread '
-# kind:days: carry adds the kind once no night ran it to an end in that many days
-PERIODIC='vendor-watch:30 tool-ideas:30 directions-refresh:30'
+KINDS=' fixer vendor debt leftover handoff suite owner-chat trade coverage vendor-watch tool-ideas directions-refresh goal deep-search fix-audit reread dig '
+# kind:days: carry adds the kind once no night ran it to an end in that many days, a pilot night dig too
+PERIODIC='vendor-watch:30 tool-ideas:30 directions-refresh:30 dig:7'
 # The directions in queue order (docs/directions/README.md): a new night is their pilot and works only the goals of
 # docs/directions/<each>.md, one at a time, a direction once the one before has none left; empty runs the full night.
 PILOT=${NIGHT_RUN_PILOT-doctors legacy vendors}
@@ -65,7 +65,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
-       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat|trade|coverage|vendor-watch|tool-ideas|directions-refresh|goal|deep-search|fix-audit|reread> <ref> [--branch B] [--ready "<why>" [--repo R]...]
+       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat|trade|coverage|vendor-watch|tool-ideas|directions-refresh|goal|deep-search|fix-audit|reread|dig> <ref> [--branch B] [--ready "<why>" [--repo R]...]
        night-run carry <id>
        night-run suites <id> [--wait]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed, suites, answer, done)
@@ -152,7 +152,7 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   <ref>\t<prompt>\topened <account> <session>|message <owner>. Then one handoff job per other open
   docs/handoffs/*.md of the sweep repositories not addressed to a chat live now, and one suite job per
   suite the newest earlier night's full run failed, nothing-to-do with no worker when it is green in the
-  press-time tree (stderr names it), and one job per PERIODIC kind (vendor-watch, tool-ideas, directions-refresh: 30 days) no
+  press-time tree (stderr names it), and one job per PERIODIC kind (vendor-watch, tool-ideas, directions-refresh: 30 days, ref <kind>-<YYYY-MM>; dig: 7 days, ref dig-<YYYY>-W<ww>) no
   night ran to an end within its days, in the llm-legs sweep repository from share/briefs/<kind>.md, and one reread
   job per llm-legs ledger or direction file holding a decision past its re-read date (share/decision_reread.py); each
   gets its night worktree and a brief; prints
@@ -166,7 +166,7 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   goals, which wait while its jobs are pending or live: carry runs NIGHT_RUN_DOCTOR_FIX (bin/doctor-fix) launch <doctor>
   --night once per doctor (.block7.launched; a failure in .block7.failed, never retried; --no-audits while a direction
   file linked from the "Audit rules" sentence of doctors.md has a goal), a fixer job and line per printed run, then
-  one deep-search job. After the last goal, directions-refresh when it is due
+  one deep-search job. After the last goal, directions-refresh when it is due; dig when due, beside the goals
 speed-gate, run by worker-run once a night worker takes its slot: exits 3 while a process stands in the
   job's night worktree (a resumed night's earlier worker), naming it, the job untouched — never the launching chat's own; a Speed fixer (a harness run of area
   speed-<first lever>, up to 5 levers of one repository) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
@@ -896,7 +896,7 @@ carry_list() { # id -> kind<TAB>slug<TAB>repo<TAB>what<TAB>log, one per job carr
     | .repo as $r | .log as $l | .failed[]? | ["suite", "\($r | split("/") | last)-\(sub("\\.[a-z]+$"; ""))", $r, ., $l] | @tsv'
   periodic_due | while IFS= read -r kind; do
     repo=$(repo_dir llm-legs) || { printf 'night-run: no llm-legs sweep repository: %s not carried\n' "$kind" >&2; continue; }
-    printf '%s\t%s\t%s\tshare/briefs/%s.md\t-\n' "$kind" "$(date -u +%Y-%m)" "$repo" "$kind"
+    printf '%s\t%s\t%s\tshare/briefs/%s.md\t-\n' "$kind" "$(periodic_slug "$kind")" "$repo" "$kind"
   done
   repo=$(repo_dir llm-legs) && fix_audit_line "$repo" && reread_lines "$repo"
 }
@@ -921,11 +921,13 @@ goal_text() { # direction-file slug -> that goal's section
 pilot_goal() { # id directions -> the carry line of the next goal in queue order (the first with no job tonight), none
   # while one is at work or once one did not land tonight (the 10-16 queue: the next starts once the earlier ones
   # landed); once doctors.md has none left, block 7's lines before the next direction's goals, which wait while
-  # its jobs work; after the last goal the monthly directions-refresh when due, the direction files settled by then
+  # its jobs work; after the last goal the monthly directions-refresh when due, the direction files settled by then;
+  # the weekly dig when due, beside the goals: it changes no code, it writes the queue's next goals
   local repo dir file slug slugs night state lines
   night=$(night_file "$1")
-  ! jq -e 'any(.jobs[]; .kind == "goal" and (.state | IN("pending", "live")))' "$night" >/dev/null || return 0
   repo=$(repo_dir llm-legs) || { printf 'night-run: no llm-legs sweep repository: pilot %s not carried\n' "$2" >&2; return 0; }
+  ! periodic_due | grep -qx dig || printf 'dig\t%s\t%s\tshare/briefs/dig.md\t-\n' "$(periodic_slug dig)" "$repo"
+  ! jq -e 'any(.jobs[]; .kind == "goal" and (.state | IN("pending", "live")))' "$night" >/dev/null || return 0
   for dir in $2; do
     file="docs/directions/$dir.md"
     [ -r "$repo/$file" ] || { printf 'night-run: no %s/%s: pilot %s has no goals\n' "$repo" "$file" "$dir" >&2; continue; }
@@ -947,7 +949,7 @@ pilot_goal() { # id directions -> the carry line of the next goal in queue order
   fix_audit_line "$repo"
   reread_lines "$repo"
   ! periodic_due | grep -qx directions-refresh ||
-    printf 'directions-refresh\t%s\t%s\tshare/briefs/directions-refresh.md\t-\n' "$(date -u +%Y-%m)" "$repo"
+    printf 'directions-refresh\t%s\t%s\tshare/briefs/directions-refresh.md\t-\n' "$(periodic_slug directions-refresh)" "$repo"
 }
 
 pilot_reached() { # directions direction -> true when the direction is among them and none before it has a goal left
@@ -990,6 +992,10 @@ block7_lines() { # night-file repo -> a fixer line per doctor carry has not laun
   done
   ! jq -e 'any(.jobs[]; .kind == "deep-search")' "$1" >/dev/null || return 0
   printf 'deep-search\t%s\t%s\tshare/briefs/deep-search.md\t-\n' "$(date -u +%Y-%m-%d)" "$2"
+}
+
+periodic_slug() { # kind -> its job's ref slug: the ISO week for a weekly kind, else the month
+  if [[ " $PERIODIC " == *" $1:7 "* ]]; then date -u +%G-W%V; else date -u +%Y-%m; fi
 }
 
 periodic_due() { # -> each PERIODIC kind no night ran to an end (merged, nothing-to-do, blocked-on-egor) within its days

@@ -42,6 +42,10 @@ printf '{"pid": %s, "sessionId": "live-1"}\n' "$$" >"$HOME/.claude/sessions/1.js
 printf '{"type": "custom-title", "customTitle": "Live Chat", "sessionId": "live-1"}\n' >"$HOME/.claude/projects/p/live-1.jsonl"
 for name in repo other; do git -C "$WORK/$name" add -A && git -C "$WORK/$name" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init; done
 
+dug() { # a dig ran to an end yesterday: the weekly dig is not due, out of sections that test other kinds
+  jq -n --arg t "$(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ)" '{id: "dug", started_at: $t, finished_at: $t,
+    jobs: [{kind: "dig", ref: "dig-x", state: "merged"}]}' >"$NIGHTS/dug.json"; }
+
 if suite_shard_owns 1 nc-carry-and-suites; then
 assert [ "$(python3 "$ROOT/share/handoffs.py" | jq -sc 'map([.slug, .to, .live])')" = \
   '[["2026-09-28-old",["Gone Chat"],[]],["2026-10-03-live",["Live Chat"],["Live Chat"]]]' ]
@@ -263,6 +267,7 @@ if suite_shard_owns 2 nc-periodic; then
 # on a strong model with web search, with its brief from share/briefs.
 # Its own nights directory: an unsharded run would also carry N0's failed suites.
 export DOCTORS_DIR="$WORK/periodic/doctors"; NIGHTS="$DOCTORS_DIR/nights"; mkdir -p "$NIGHTS"
+dug
 P="$WORK/periodic/llm-legs"
 git init -q -b main "$P" && gt -C "$P" commit -q --allow-empty -m init
 printf '%s\n' "$P" >"$WORK/sweep-periodic"
@@ -322,6 +327,7 @@ if suite_shard_owns 2 nc-pilot; then
 # none left, and nothing a full night would: no handoff, owner chat or periodic job; the next goal only once the last
 # one landed.
 export DOCTORS_DIR="$WORK/pilot/doctors"; NIGHTS="$DOCTORS_DIR/nights"; mkdir -p "$NIGHTS"
+dug
 L="$WORK/pilot/llm-legs" C="$WORK/pilot/claude-setup"
 git init -q -b main "$L" && mkdir -p "$L/docs/directions" "$L/docs/handoffs"
 printf '# B\n\n## Goals\n\n### goal gates: one parser\n\nIn claude-setup hooks/lib.\n\n### goal stop-hooks: capped\n\nBounded.\n\n## Done\n\n### goal old: landed\n' \
@@ -631,6 +637,7 @@ if suite_shard_owns 3 nc-block7; then
 # night through doctor-fix (a stub here, every call logged) and adds one deep-search job, before the next direction's
 # goals; audit rules stay out (--no-audits) while a direction the doctors.md "Audit rules" sentence links has a goal.
 export DOCTORS_DIR="$WORK/b7/doctors"; NIGHTS="$DOCTORS_DIR/nights"; mkdir -p "$NIGHTS"
+dug
 B="$WORK/b7/llm-legs" calls="$WORK/b7/calls"
 night7='## How the block runs at night\n\n- Audit rules wait (`--no-audits`) while [Lost time](lost-time.md), [System](system.md)\n  or [Spend](spend.md) holds a goal.\n'
 git init -q -b main "$B" && mkdir -p "$B/docs/directions"
