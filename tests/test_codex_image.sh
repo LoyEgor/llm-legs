@@ -766,6 +766,9 @@ assert grep -qx "dest=$OUTPUT_DIR/tiles.png" "$IMAGE_OUT"
 assert grep -qx "dest=$OUTPUT_DIR/tiles-3.png" "$IMAGE_OUT"
 assert test "$(sips -g pixelWidth "$OUTPUT_DIR/tiles-3.png" | awk '/pixelWidth:/ {print $2}')" = 73
 assert test ! -e "$OUTPUT_DIR/tiles-2.png"
+assert grep -qx "$OUTPUT_DIR/tiles.landing" <<<"$(grep -A1 -x -- --dest "$WEB_CALLS" | tail -n 1)"
+assert test ! -e "$OUTPUT_DIR/tiles.landing"
+assert test ! -e "$OUTPUT_DIR/tiles.landing-3"
 assert grep -qx 'failed=1 reason=chatgpt_take_failed' "$IMAGE_OUT"
 assert grep -qx 'codex-image: take 2 failed: no image came back' "$IMAGE_ERR"
 assert jq -se '.[-1] | .requested == 3 and .delivered == 2' "$IMAGE_LEG_LOG" >/dev/null

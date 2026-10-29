@@ -316,17 +316,17 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
 restored, or enlarged, through ChatGPT web edits (free route, via `media-run image`). ChatGPT returns at
 most ~1672 px, so the work happens at the OUTPUT size: the base is resized (Lanczos) to it and cut into tiles
 shaped like ChatGPT's own renders (1254x1254, 1672x941 or 941x1672, whichever needs the fewest; a fifth
-overlap), so a render comes back unresampled. Every tile is one `--no-composite` edit, and no pass waits for
-another: the tiles go out together as packs on every free account (signed in, in the pool, unwalled, its lock
-free), up to 4 tabs of its one browser (codex `--each`), as many browsers as free memory holds (1200 MB a
-Chrome and 400 MB a tab over chat-load's 2 GB floor, measured 2.2 GB for a 4-tab pack); an account takes the
-next pack when its last ends, and a failed tile goes straight to the next account that is done (2 renders at
-most; an account that sent nothing hands its tiles on at no cost). Each render is registered back onto its
-tile (SIFT similarity, plain resize when no fit holds) and the tiles cross-fade over the overlap; a tile
-missing after that is named (exit 1), `logs/` in the work folder holds one log per pack. Times on a
-2752x1536 wall (2026-10-29): photo, 4 tiles, 81 s (1024 squares on one tab per account: 162 s); strong with
-2 takes 146 s (346 s); restore x2 to 5504x3072, 16 tiles, 146 s with memory for 3 browsers x 4 tabs. The
-floor is ChatGPT's own render, 30-75 s a tile.
+overlap), so a render comes back unresampled. Every tile is one `--no-composite` edit, nothing waits: the
+tiles go out together as packs of up to 4 tabs (codex `--each`) on the free accounts (signed in, in the pool,
+unwalled, lock free; Plus last, its tail is longest), as many browsers as free memory holds (1200 MB a Chrome,
+400 MB a tab, over a 2 GB floor; one more whenever memory frees). The round's spare tabs take a copy of a
+tile on another account; a tile is taken as its first render lands, and the packs left once all have landed
+are stopped: the slow tile's tail is cut at up to twice the images (`--no-copies` opts out). A failed tile
+goes to the next free account (2 renders at most; an account that sent nothing hands it on at no cost).
+Renders are registered onto their tiles (SIFT) and cross-faded; a tile still missing is named (exit 1),
+`logs/` holds a log per pack. 2752x1536 wall, 2026-10-29: photo, 4 tiles, 70 s (no copies 81 s, one tab per
+account 162 s); strong, 2 takes, 146-156 s; restore x2, 16 tiles, 146 s on 3 browsers, 315 s on 1. The floor
+is ChatGPT's own render, 30-75 s a tile.
 
 ```bash
 image-enhance --in /abs/a.png --dest /abs/b.png                              # photo: real texture, same size

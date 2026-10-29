@@ -262,11 +262,10 @@ when a codex home holds it, else the web's). Exit 5 without a fallback prints `A
   stderr, and a limit seen walls the account; none delivered fails as one take would. Never with `--resume`,
   `--region`, `--point`, `--remove-bg` or re-aspect, never on `--route cli` (image_gen renders one image), and
   no CLI fallback. `image-fanout` packs codex takes into one `--count` launch.
-- **`--each <img>`** (2-4 of them, web only): different images edited by one prompt, a tab each in the same
-  pack (tab k uploads image k, then the `--ref`s). Tab k lands at `--dest` (k = 1) or `<stem>-k.<ext>`, each as a
-  `take=<k>` line followed by the lone-edit block, composited onto its own image unless `--no-composite`; a
-  failed tab leaves its own path absent and moves no other take. One `--each` is a plain `--edit`. Never with
-  `--edit`, `--count` or `--resume`. `image-enhance` sends its tiles this way.
+- **`--each <img>`** (2-4, web only): different images edited by one prompt, a tab each in one pack (tab k
+  uploads image k, then the `--ref`s). Its bytes land at `<stem>.landing` (k = 1) or `<stem>-k.landing`; at
+  the end tab k goes to `--dest` or `<stem>-k.<ext>` as a `take=<k>` line and the lone-edit block, composited
+  unless `--no-composite`, the `.landing` files gone; a failed tab leaves its path absent. One `--each` is an `--edit`; never with `--edit`, `--count` or `--resume`. Used by `image-enhance`.
 - **Images project**: every new chat (one take, a `--count` tab, a `--ref` edit) opens on the account's own
   ChatGPT project "Images", so generations stay off the owner's chats. The engine finds it in the sidebar or
   creates it once with project-only memory (its chats neither read his other chats nor feed his memory) and

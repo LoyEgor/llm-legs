@@ -8,9 +8,11 @@ ChatGPT returns at most ~1672 px, so a picture is worked on at its OUTPUT size i
 is resized (Lanczos) to the output size, every tile is one edit, each render is registered back onto its tile
 and the tiles are cross-faded over their overlap. A tile has the shape of one of ChatGPT's own renders
 (1254x1254, 1672x941, 941x1672), the one that needs the fewest tiles, so a render comes back 1:1. The tiles go out
-at once over every free ChatGPT account, up to 4 per account as tabs of its one browser (chatgpt-web --each), and
-a tile that failed goes straight to the next account that is done: a 2752x1536 picture is 4 tiles, 24 tiles are one
-round of 6 accounts.
+at once over every free ChatGPT account, up to 4 per account as tabs of its one browser (chatgpt-web --each), each
+tile taken the moment its tab lands; the round's free places carry a copy of a tile on another account, the first
+render of a tile wins and the packs left with nothing to deliver are stopped (ChatGPT's render time varies 30-150 s,
+so the slowest tile sets the run's time: copies cut a 4-tile run from ~78 to ~55 s for 4 more images); a tile that
+failed goes straight to the next account that is done.
 Modes (the 2026-10-20 enhancer test, arbostar-logo renders/upscale):
   restore  redraw nothing, bring back detail lost to blur, compression or a resize: soft video frames, small or
            smeared pictures; with --size/--scale this is the upscaler
@@ -27,15 +29,17 @@ Exit 0 delivered, 1 failed (missing renders named), 2 usage, 3 every account usa
 from __future__ import annotations
 
 import argparse
+import collections
+import contextlib
 import fcntl
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
-import threading
 import time
-from collections import deque
 from pathlib import Path
 
 import cv2
@@ -50,6 +54,7 @@ MAX_TILES = 48
 TABS = 4  # tabs one ChatGPT browser takes at once (the codex manifest's web.counts)
 # A pack's Chrome, each tab past its first, and the floor chat-load's memory guard keeps free
 BROWSER_MB, TAB_MB, GUARD_MB = 1200, 400, 2048
+RAMP_S = 30  # a pack's Chrome reaches its memory this long after launch; until then the reading still lacks it
 ATTEMPTS = 2  # renders asked per tile; a pack its account never sent (walled, busy, signed out) costs none
 ASPECTS = ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"]
 RESTORE = ("Clean up this photograph without redrawing it: remove compression noise, blur, motion smear and painterly "
@@ -190,8 +195,9 @@ def chatgpt_accounts(lister: str) -> tuple[list[str], list[str]]:
         rows = json.loads(lines[-1])["accounts"]
     except (IndexError, ValueError, KeyError, TypeError):
         rows = []
+    # Plus seats last: their render tail is the longest (ledger 2026-10, p90 98 s on com against 67-82 s on Business)
     rows = sorted((r for r in rows if r.get("login") and r.get("roster") is not False),
-                  key=lambda r: r.get("last_used") or 0)
+                  key=lambda r: (r.get("plan") == "plus", r.get("last_used") or 0))
     if not rows:
         fail(4, "no ChatGPT account is signed in and in the pool (chatgpt-web accounts)")
     rows = [r for r in rows if (r.get("walled_until") or 0) <= time.time()]
@@ -215,10 +221,10 @@ def room_mb() -> int | None:
     return pages * int(page[1]) // 2**20 - GUARD_MB if page and pages else None
 
 
-def plan(n: int, accounts: int) -> tuple[int, int]:
+def plan(n: int, accounts: int, room: int | None) -> tuple[int, int]:
     """(packs at once, tabs per pack): every tile in one round over the fewest tabs per account, as many browsers as
-    the free memory holds."""
-    room, browsers = room_mb(), max(1, min(accounts, n))
+    the free memory (room MB) holds."""
+    browsers = max(1, min(accounts, n))
     while True:
         tabs = min(TABS, -(-n // browsers))
         if browsers == 1 or room is None or browsers * (BROWSER_MB + (tabs - 1) * TAB_MB) <= room:
@@ -226,77 +232,145 @@ def plan(n: int, accounts: int) -> tuple[int, int]:
         browsers -= 1
 
 
-def render_tiles(media_run: str, lister: str, tiles: list[tuple[Path, Path]], prompt: str, aspect: str,
-                 work: Path) -> tuple[list[Path], bool]:
+def descendants(pid: int) -> list[int]:
+    rows = subprocess.run(["ps", "-Ao", "pid=,ppid="], capture_output=True, text=True).stdout.split()
+    parent = dict(zip(map(int, rows[0::2]), map(int, rows[1::2])))
+    found, frontier = [], {pid}
+    while frontier:
+        frontier = {child for child, up in parent.items() if up in frontier}
+        found += frontier
+    return found
+
+
+def stop(procs: list[subprocess.Popen]) -> None:
+    """TERM each pack's process group and every descendant (Chrome runs in a group of its own), KILL what is left
+    after 5 s, the way image-fanout stops a spare."""
+    trees = [(proc, descendants(proc.pid)) for proc in procs]
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for proc, tree in trees:
+            for kill, target in [(os.killpg, proc.pid)] + [(os.kill, pid) for pid in tree]:
+                with contextlib.suppress(OSError):
+                    kill(target, sig)
+        deadline = time.time() + 5
+        while sig == signal.SIGTERM and time.time() < deadline and any(proc.poll() is None for proc, _ in trees):
+            time.sleep(0.2)
+    for proc, _ in trees:
+        proc.wait()
+
+
+def tab_file(dest: Path, k: int, suffix: str) -> Path:
+    """Where tab k of the pack at dest lands: its delivered file (.png) or the engine's own bytes the moment the
+    tab is done (.landing, codex-image --each)."""
+    return dest.with_name(f"{dest.stem}{'' if k == 1 else f'-{k}'}{suffix}")
+
+
+def render_tiles(media_run: str, lister: str, tiles: list[tuple[Path, Path]], prompt: str, aspect: str, work: Path,
+                 copies: bool) -> tuple[list[Path], bool]:
     """Every (tile, out) edited with no queue behind a pass: packs of up to TABS tabs on as many free accounts as
-    plan() allows, each account taking the next pack the moment its last one ends, a failed tile straight to the
-    next account that is done (ATTEMPTS renders at most), an account that sent nothing replaced by an unused one.
-    Returns the outs still missing and whether every account was walled."""
+    plan() allows (one more whenever memory frees), the round's free places filled with a copy of a tile on another
+    account, each tile taken the moment its first render lands; an account takes the next pack the moment its last
+    one ends, a tile left with no live render goes to the next free account (ATTEMPTS renders at most), an account
+    that sent nothing hands its tiles on at no cost. Returns the outs still missing and whether every account was walled."""
     free, busy = chatgpt_accounts(lister)
     wait = None if free else 900  # every account busy: their packs queue behind the other jobs
-    accounts = free or busy
-    browsers, tabs = plan(len(tiles), len(accounts))
-    spare, pending, tries, walled = iter(accounts[browsers:]), deque(tiles), {t: 0 for t, _ in tiles}, set()
-    running, cond = [0], threading.Condition()
-    print(f"image-enhance: {len(tiles)} tile(s): {browsers} account(s) x {tabs} tab(s) in parallel", file=sys.stderr)
+    accounts, n = free or busy, len(tiles)
+    extra, room = (n if copies else 0), room_mb()
+    while True:
+        browsers, tabs = plan(n + extra, len(accounts), room)
+        if browsers * tabs >= n + extra or not extra:
+            break
+        extra -= 1
+    # Round one dealt round-robin, a copy shifted one pack along when the originals fill every pack evenly: never
+    # beside its original on one account. Tiles past the round's places go to the first account that frees.
+    queue = [[] for _ in range(browsers)]
+    for j, i in enumerate((list(range(n)) + list(range(extra)))[:browsers * tabs]):
+        queue[(j + (j >= n and n % browsers == 0 and browsers > 1)) % browsers].append(i)
+    queue = collections.deque(pack for pack in queue if pack)
+    landed, live, tries, launches = set(), collections.Counter(), collections.Counter(), collections.Counter()
+    idle, running, walled, seq, looked = list(accounts), [], set(), 0, 0.0
+    print(f"image-enhance: {n} tile(s) + {extra} copies: {browsers} account(s) x {tabs} tab(s) in parallel",
+          file=sys.stderr)
 
-    def run_pack(account: str, pack: list[tuple[Path, Path]], seq: int) -> tuple[int, set[Path]]:
-        dest = work / "out" / f"pack-{account}-{seq}.png"
-        cmd = [media_run, "image", "--vendor", "codex", "--", "--account", account, "--prompt", prompt, "--aspect",
-               aspect, "--no-composite", "--dest", str(dest)] + (["--lock-wait", str(wait)] if wait else [])
-        cmd += ["--edit", str(pack[0][0])] if len(pack) == 1 else [a for tile, _ in pack for a in ("--each", str(tile))]
-        started = time.time()
-        with open(work / "logs" / f"{dest.stem}.log", "w") as log:
-            code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT).returncode
-        landed = set()
-        for k, (tile, out) in enumerate(pack, 1):
-            got = dest if k == 1 else dest.with_name(f"{dest.stem}-{k}.png")
-            if got.is_file():
-                got.replace(out)
-                landed.add(tile)
-        print(f"image-enhance: {account}: {len(landed)} of {len(pack)} tile(s) in {time.time() - started:.0f} s "
-              f"(exit {code})", file=sys.stderr)
-        return code, landed
+    def roomier() -> bool:
+        """Memory freed since the plan (another job's browser closed): one more pack fits over the packs still
+        ramping up. Read every 5 s at most."""
+        nonlocal looked
+        if room is None or time.time() - looked < 5:
+            return False
+        looked = time.time()
+        ramping = sum(BROWSER_MB + (len(pack["tiles"]) - 1) * TAB_MB for pack in running
+                      if looked - pack["started"] < RAMP_S)
+        return (room_mb() or 0) - ramping >= BROWSER_MB + (tabs - 1) * TAB_MB
 
-    def worker(account: str) -> None:
-        seq = 0
-        while True:
-            with cond:
-                while not pending and running[0]:
-                    cond.wait()
-                if not pending:
-                    return
-                pack = [pending.popleft() for _ in range(min(tabs, len(pending)))]
-                running[0] += 1
+    def take(pack: dict, k: int, got: Path, move: bool) -> None:
+        i = pack["tiles"][k - 1]
+        pack["got"].add(k)
+        if i not in landed:
+            (got.replace if move else lambda out: shutil.copyfile(got, out))(tiles[i][1])
+            landed.add(i)
+
+    while True:
+        for pack in running:
+            for k in range(1, len(pack["tiles"]) + 1):
+                got = tab_file(pack["dest"], k, ".landing")
+                if k not in pack["got"] and got.is_file():
+                    with contextlib.suppress(OSError):
+                        take(pack, k, got, False)
+        for pack in [pack for pack in running if pack["proc"].poll() is not None]:
+            running.remove(pack)
+            pack["log"].close()
+            code = pack["proc"].returncode
+            for k, i in enumerate(pack["tiles"], 1):
+                got = tab_file(pack["dest"], k, ".png")
+                if got.is_file():
+                    take(pack, k, got, True)
+                live[i] -= 1
+            if code in (3, 4, 5) and not pack["got"]:
+                tries.subtract(pack["tiles"])
+                walled.update([pack["account"]] if code == 3 else [])
+            else:
+                idle.append(pack["account"])
+            print(f"image-enhance: {pack['account']}: {len(pack['got'])} of {len(pack['tiles'])} tile(s) in "
+                  f"{time.time() - pack['started']:.0f} s (exit {code})", file=sys.stderr)
+        if len(landed) == n:
+            stop([pack["proc"] for pack in running])
+            for pack in running:
+                pack["log"].close()
+                print(f"image-enhance: {pack['account']}: {len(pack['got'])} of {len(pack['tiles'])} tile(s), "
+                      f"stopped at {time.time() - pack['started']:.0f} s", file=sys.stderr)
+            break
+        while idle:
+            need = [i for i in range(n) if i not in landed and not live[i] and tries[i] < ATTEMPTS]
+            if not (queue or need) or len(running) >= browsers and not roomier():
+                break
+            batch = queue.popleft() if queue else need[:tabs]
+            idle.sort(key=lambda account: launches[account])
+            account = idle.pop(0)
             seq += 1
-            code, landed = run_pack(account, pack, seq)
-            with cond:
-                running[0] -= 1
-                gone = code in (3, 4, 5) and not landed
-                for item in pack:
-                    if item[0] in landed:
-                        continue
-                    tries[item[0]] += not gone
-                    if tries[item[0]] < ATTEMPTS:
-                        pending.append(item)
-                if gone:
-                    walled.update([account] if code == 3 else [])
-                    account, seq = next(spare, None), 0
-                cond.notify_all()
-                if account is None:
-                    return
-
-    threads = [threading.Thread(target=worker, args=(a,)) for a in accounts[:browsers]]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+            launches[account] += 1
+            dest = work / "out" / f"pack-{account}-{seq}.png"
+            cmd = [media_run, "image", "--vendor", "codex", "--", "--account", account, "--prompt", prompt,
+                   "--aspect", aspect, "--no-composite", "--dest", str(dest)] + (
+                ["--lock-wait", str(wait)] if wait else [])
+            cmd += (["--edit", str(tiles[batch[0]][0])] if len(batch) == 1
+                    else [a for i in batch for a in ("--each", str(tiles[i][0]))])
+            log = open(work / "logs" / f"{dest.stem}.log", "w")
+            running.append({"account": account, "tiles": batch, "dest": dest, "log": log, "got": set(),
+                            "started": time.time(), "proc": subprocess.Popen(
+                                cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)})
+            live.update(batch)
+            tries.update(batch)
+        if not running:
+            break
+        time.sleep(0.5)
+    for left in [*work.glob("out/pack-*"), *work.glob("out/.pack-*")]:  # a stopped tab's half-saved .part too
+        left.unlink()
     missing = [out for _, out in tiles if not out.is_file()]
     return missing, bool(missing) and walled == set(accounts)
 
 
 def tiled(media_run: str, lister: str, bases: list[tuple[str, Image.Image]], size: tuple[int, int], prompt: str,
-          work: Path) -> list[Image.Image]:
+          work: Path, copies: bool) -> list[Image.Image]:
     """Every base at the output size, all their tiles in ONE pass (no account idles between bases), merged."""
     w, h = size
     boxes, overlap, aspect = layout(w, h)
@@ -310,7 +384,7 @@ def tiled(media_run: str, lister: str, bases: list[tuple[str, Image.Image]], siz
             Image.fromarray(big[y0:y1, x0:x1]).save(tile)
             out.unlink(missing_ok=True)
             tiles.append((tile, out))
-    missing, walled = render_tiles(media_run, lister, tiles, prompt, aspect, work)
+    missing, walled = render_tiles(media_run, lister, tiles, prompt, aspect, work, copies)
     if missing:
         fail(3 if walled else 1, f"{len(missing)} of {len(tiles)} tile edits failed (logs in {work / 'logs'}): "
              + " ".join(map(str, missing)))
@@ -333,6 +407,7 @@ def main() -> None:
     ap.add_argument("--focus")
     ap.add_argument("--change")
     ap.add_argument("--takes", type=int, default=1)
+    ap.add_argument("--no-copies", action="store_true", help="no copy of a tile in the round's free places")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
@@ -393,7 +468,7 @@ def main() -> None:
     (work / "prompts.txt").write_text(f"mode={a.mode}\n" + (f"whole-frame: {strong}\n" if a.mode == "strong" else "")
                                       + f"tiles: {tile_prompt}\n")
     if a.mode != "strong":
-        tiled(media_run, lister, [("x", img)], size, tile_prompt, work)[0].save(dest)
+        tiled(media_run, lister, [("x", img)], size, tile_prompt, work, not a.no_copies)[0].save(dest)
         print(f"dest={dest} size={size[0]}x{size[1]} mode={a.mode} tiles={n} work={work}")
         return
 
@@ -407,7 +482,7 @@ def main() -> None:
     if not takes:
         fail(1, f"the whole-frame edit failed (media-run exit {code})")
     merged = tiled(media_run, lister, [(f"take{k}", Image.open(rendered(t))) for k, t in enumerate(takes, 1)], size,
-                   tile_prompt, work)
+                   tile_prompt, work, not a.no_copies)
     for k, picture in enumerate(merged, 1):
         out = dest if k == 1 else dest.with_name(f"{dest.stem}-{k}.png")
         picture.save(out)

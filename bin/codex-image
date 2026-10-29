@@ -116,13 +116,16 @@ deliver_variants() {
 }
 
 # --each: one block per delivered tab, `take=<k>` first, then the lines a lone edit prints, each take
-# composited onto the image it edited; a failed tab leaves its path absent and is named on stderr.
+# composited onto the image it edited; a failed tab leaves its path absent and is named on stderr. The
+# engine saved each tab's render the moment it landed as <stem>.landing, <stem>-k.landing beside dest (a
+# caller may take it from there before the slowest tab is done); the delivered file replaces it.
 deliver_each() {
-  local take tab base_dir=${IMAGE_LEG_COMPOSITE_BASE%/*} dest_each=$dest landed=0
+  local take tab base_dir=${IMAGE_LEG_COMPOSITE_BASE%/*} dest_each=$dest landed=0 landings=()
   while IFS= read -r take; do
     landed=$((landed + 1))
     tab=$(jq -r '.tab' <<<"$take")
     generated=$(jq -r '.path' <<<"$take") session=$(jq -r '.chat // empty' <<<"$take")
+    landings+=("$generated")
     dest=$dest_each
     [ "$tab" = 1 ] || dest="${dest_each%.*}-$tab.${dest_each##*.}"
     edit_input=${eaches[tab - 1]}
@@ -139,6 +142,7 @@ deliver_each() {
   jq -r '(.failures // [])[] | "codex-image: take \(.tab) failed: \(.reason)"' <<<"$web_result" >&2
   jq -r '.failed // 0 | select(. > 0) | "failed=\(.) reason=chatgpt_take_failed"' <<<"$web_result"
   image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
+  rm -f ${landings[@]+"${landings[@]}"}
 }
 
 # `%A` alone reports the channel, not its contents: a PNG carrying a fully opaque alpha channel
@@ -561,6 +565,7 @@ if [ "$route" = web ]; then
     for point in "${points[@]}"; do web_args+=(--point "$point"); done
   else
     web_args=(generate --prompt "$web_prompt" --dest "$tmp_dir/web-image")
+    [ "${#eaches[@]}" -le 1 ] || web_args=(generate --prompt "$web_prompt" --dest "${dest%.*}.landing")
   fi
   [ -z "$region" ] || web_args+=(--region "$region")
   if [ "${#eaches[@]}" -gt 1 ]; then
