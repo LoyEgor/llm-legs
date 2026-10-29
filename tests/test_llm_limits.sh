@@ -598,7 +598,7 @@ account=main
 [ "$HOME" = "$GEMINI_PARALLEL_MAIN_HOME" ] || account=$(basename "$HOME")
 touch "$GEMINI_PARALLEL_GATE/started-$account"
 ready=0
-for attempt in $(seq 1 50); do
+for attempt in $(seq 1 600); do
   set -- "$GEMINI_PARALLEL_GATE"/started-*
   if [ -e "$1" ] && [ "$#" -ge 2 ]; then ready=1; break; fi
   sleep 0.1
@@ -766,8 +766,8 @@ for big_i in $(seq 1 180); do
 done >"$big_rollout"
 [ "$(wc -c <"$big_rollout")" -gt 32768 ] && [ "$(wc -c <"$big_rollout")" -lt 65536 ] \
   || fail "the big rollout fixture left the 16-64 KiB pipe window"
-big_out=$(HOME="$BIG_HOME" LLM_LIMITS_CACHE="$WORK/big-cache.json" timeout 60 bash "$SCRIPT" --json) \
-  || fail "a 16-64 KiB rollout body did not collect within 60 s"
+big_out=$(HOME="$BIG_HOME" LLM_LIMITS_CACHE="$WORK/big-cache.json" timeout 180 bash "$SCRIPT" --json) \
+  || fail "a 16-64 KiB rollout body did not collect within 180 s"
 jq -e '.vendors.codex.five_hour.used_pct == 30' <<<"$big_out" >/dev/null \
   || fail "the newest event of a 16-64 KiB rollout body was not the one collected"
 jq -e '.refresh_heartbeat == {last_tick_at:null, limit_s:900, stalled:false}' <<<"$big_out" >/dev/null \

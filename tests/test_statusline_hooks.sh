@@ -1350,7 +1350,7 @@ run_statusline() {
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
     STATUSLINE_CODEX_REFRESH_CMD="${CODEX_REFRESH_CMD:-/usr/bin/true}" \
     STATUSLINE_REVIEW_GATE="${GATE_CMD:-}" STATUSLINE_REVIEW_DEBT="${DEBT_CMD:-}" \
-    env ${NO_TIMEOUT_BIN:+STATUSLINE_TIMEOUT_BIN=} "$STATUSLINE"
+    ${NO_TIMEOUT_BIN:+env STATUSLINE_TIMEOUT_BIN=} "$STATUSLINE"
 }
 
 
@@ -2554,10 +2554,11 @@ t_reset; t_boundary $((NOW - 600))
 yes "{\"type\":\"user\",\"filler\":\"$(printf '%01000d' 0)\"}" | head -c 150000000 >> "$TRANSCRIPT"
 printf '\n' >> "$TRANSCRIPT"
 t_assist $((NOW - 5))
-big_start=${EPOCHREALTIME//[!0-9]/}
+# CPU, not wall: the tail -c +N scan burned ~6 s of CPU on 150 MB, the dd scan ~0.2 s, and wall at load 100+ is queueing.
+suite_journal_cpu_ms big_cpu0 "$WORK/big-cpu.times" 1
 run_statusline "$(statusline_payload ctx-bnd-big "$(warm_extra "$TRANSCRIPT" 55 111000)")" >/dev/null
-big_ms=$(( (${EPOCHREALTIME//[!0-9]/} - big_start) / 1000 ))
-assert test "$big_ms" -lt 2500
+suite_journal_cpu_ms big_cpu1 "$WORK/big-cpu.times" 1
+assert test "$((big_cpu1 - big_cpu0))" -lt 2500
 assert_eq "$(iso_utc $((NOW - 600)))" "$(awk '{print $2}' "$(bnd_file ctx-bnd-big)")"
 t_reset
 
