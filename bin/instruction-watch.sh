@@ -70,8 +70,6 @@ visible_paths() {
   printf '%s\n' "$visible_set"
 }
 
-_watch_empty_sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-
 # The harness rewrites settings.json whenever the model or the permission mode changes, and
 # those are Egor's own switches, not an edit to the file's meaning: five alerts in seventeen
 # minutes about `opus` becoming `sonnet` is how an alarm teaches everyone to ignore it. Both
@@ -81,13 +79,14 @@ _watch_empty_sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85
 # as the original. Hashing the copy raw and the original filtered makes the two never compare
 # equal, which silently disabled every guard built on that comparison.
 hash_of() {
-  local f=$1 class=${2:-$1} h=''
+  # Inline: the watcher evals this function alone out of the file, so no variable outside it exists there.
+  local f=$1 class=${2:-$1} h='' empty=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
   case "$class" in
     */.claude/settings.json)
       h=$(jq -S 'del(.model) | del(.permissions.defaultMode)' "$f" 2>/dev/null |
           shasum -a 256 | cut -d' ' -f1)
       # An unparseable settings.json falls back to the raw bytes rather than to a constant.
-      [ -n "$h" ] && [ "$h" != "$_watch_empty_sha" ] &&
+      [ -n "$h" ] && [ "$h" != "$empty" ] &&
         { printf '%s\n' "$h"; return 0; }
       ;;
   esac
