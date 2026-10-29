@@ -1,6 +1,6 @@
 # Gemini images through Antigravity CLI
 
-Verified on 2026-10-20 against **agy 1.4.3** (help and the binary's `generate_image` schema; the last
+Verified on 2026-10-29 against **agy 1.4.10** (help and the binary's `generate_image` schema; the last
 live `--route cli` generation ran on 1.2.16), launched by `geminib` with a Google
 subscription. The runtime contract is [gemini.json](../../share/image-caps/gemini.json);
 its `field_sources` maps each capability to evidence. This page concerns the subscription
@@ -18,7 +18,7 @@ direct call. Flow is video-first ([image-vendors.md](../image-vendors.md)): `gem
 | Text to image | `generate_image`, required `Prompt` and `ImageName` | B1; Google [tool inventory](https://antigravity.google/docs/sdk/tools/) |
 | Edit, combine, references | Optional absolute `ImagePaths`; schema `maxItems=3` | B1, B2 |
 | Aspect ratios, generate and edit | `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`; default `1:1` | B1, B2 |
-| Panoramic `1:4`, `4:1`, `1:8`, `8:1` | API only (`api_only`): Nano Banana 2.1 in the Gemini API since 2026-10-06; neither agy 1.4.3's enum nor Flow's composer (build 20261018.05) offers them | [API changelog](https://ai.google.dev/gemini-api/docs/changelog); B1; live composer read 2026-10-20 |
+| Panoramic `1:4`, `4:1`, `1:8`, `8:1` | API only (`api_only`): Nano Banana 2.1 in the Gemini API since 2026-10-06; neither agy 1.4.10's enum nor Flow's composer (build 20261018.05) offers them | [API changelog](https://ai.google.dev/gemini-api/docs/changelog); B1; live composer read 2026-10-20 |
 | Outpainting | **Soft-supported:** reference + wider aspect + instructions to extend the scene | Inference from B1/B2's editing and aspect inputs; not live-verified |
 | Exact dimensions / resolution | No exposed control | B1, B3; `agy --help` |
 | Transparency | Wrapper chroma key; PNG destination required. Native alpha unproven | H1 JPEG output; B1 has no alpha/background parameter; [chroma implementation](../../share/image-chroma.sh) |
