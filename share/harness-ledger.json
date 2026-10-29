@@ -9107,7 +9107,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/llm-legs/test_image_fanout"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-13T13:55:00+03:00",
@@ -9122,12 +9122,30 @@
             "data": "xtrace-timed direct runs at load 70-147",
             "result": "359 asserts green before and after; the two sections 11.6 s -> 3.3 s a run; with the Chrome check deleted the chromey assert reads g=7.4 s and fails, as it did with the fixed sleep"
           }
+        },
+        {
+          "at": "2026-10-29T19:55:00+03:00",
+          "by": "night fixer harness-speed-test-health-flaky-llm-legs-test-llm-limits-20261029T165030Z-7f33",
+          "files": [
+            "llm-legs/bin/image-fanout",
+            "llm-legs/share/image-caps.sh",
+            "llm-legs/tests/test_image_fanout.sh",
+            "llm-legs/tests/fixtures/image-fanout/ref.png",
+            "llm-legs/tests/fixtures/image-fanout/edit-shape.png"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "bin/image-fanout --dry-run stdout, stderr and exit over 66 invocations (vendors grok, gemini, codex, elevenlabs, suno; video, edit, upscale, takes/pack, size, aspect, 16 refs, account pin/pick), HEAD script vs the batched-manifest script; the suite's kill grace 500 -> 100 ms, committed PNG fixtures for two magick launches, EPOCHREALTIME for a perl per START",
+            "data": "dry runs side by side at load ~100 with a counting jq shim; test_image_fanout 372 asserts",
+            "result": "66/66 outputs identical (job ids aside); jq forks a grok --takes 3 run 12 -> 6 (manifest reads 9 -> 3: facts, roster argv, spares); 372 asserts green; magick launches 2 -> 0, perl launches per fake start 1 -> 0, straggler/chromeorphan runs return ~0.4 s sooner each"
+          }
         }
       ],
       "same_cause": [],
       "last_reviewed": "2026-10-13",
       "reviewed_by": "night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e",
-      "note": "Traced at load 70-147: 62 bin/image-fanout runs ~0.7 s each (43 s, its own startup and forks; the scheduler's idle tick is 0.1 s) and ~38 s of deliberate timing windows. Kept, each the length its check needs: the 1.5 s launch gap under FANOUT_SLEEP=2 (gap >= 1.2), the 8 s kill grace of the linger section (l - f >= 7 against a 1 s busy retry, b - a < 5), the lazy-spare runs (2 s / 0.8 s), memory admission's 0.5 s negative window; scaling the grace down would let b - a < 5 no longer prove the retry is not stalled by it.",
+      "note": "Traced at load 70-147: 62 bin/image-fanout runs ~0.7 s each (43 s, its own startup and forks; the scheduler's idle tick is 0.1 s) and ~38 s of deliberate timing windows. Kept, each the length its check needs: the 1.5 s launch gap under FANOUT_SLEEP=2 (gap >= 1.2), the 8 s kill grace of the linger section (l - f >= 7 against a 1 s busy retry, b - a < 5), the lazy-spare runs (2 s / 0.8 s), memory admission's 0.5 s negative window; scaling the grace down would let b - a < 5 no longer prove the retry is not stalled by it. 2026-10-29 (night 74c1): the 0.7 s per run is the product's own startup, not the deliberate windows: 9 manifest jq forks a vendor (about 40 ms each at load 100) now one; per-launch ones (next_route, aspect_list_for, spare_count) stay. Left: roster listers (a uv/Python start) and the jq in the lister, outside this suite's fake.",
       "handoff": null
     },
     {
@@ -12509,6 +12527,66 @@
       "note": "New exposure, not a new failure: llm-legs@bfb86732 (10-29 08:45Z) moved claudeb's <account>.json.lock, the busiest locks, onto share/store-lock.sh, so its journal saw them for the first time (before, the same breaks read claudeb.lock-stale, 7 in 24 h). Breaks 12:06:17Z notcom.json.lock (115 s) and 15:46:34Z locomthebest.json.lock (102 s), each by a claudeb revive's usage merge (token-attempts pids 86903, 77623) that waited 2.8 and 3.2 s (waits journal); no store-lock.retries give-up and no other hit touched them, so nothing claimed them in between and nothing was lost beyond those waits. The directory sat 100+ s with no readable pid: a claim stopped between mkdir and its pid write, or a release between rm's unlink and rmdir. Only claudeb writes these locks; no claudeb bash process from before bfb86732 still runs; no killer journaled a kill near 12:04Z or 15:44Z; load was busy 1.0. Creator unattributed: blind spot store-lock-ownerless-creator.",
       "handoff": null,
       "ruled_at": null
+    },
+    {
+      "id": "speed-flaky-test-llm-limits",
+      "title": "test_llm_limits red once at 952 s wall on 39 s CPU (load ~140): fixed 5 s and 60 s waits that prove parallelism and a hang",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/flaky/llm-legs/test_llm_limits"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T19:55:00+03:00",
+          "by": "night fixer harness-speed-test-health-flaky-llm-legs-test-llm-limits-20261029T165030Z-7f33",
+          "files": [
+            "llm-legs/tests/test_llm_limits.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the Gemini parallel-profile gate's wait for the second profile's start (50 x 0.1 s -> 600 x 0.1 s, exits at once when both started) and the 16-64 KiB rollout collection bound (timeout 60 -> 180); a sequential refresh still fails the gate, after the cap",
+            "data": "suite run at load ~140 (751 s wall), journal row 2026-10-29T13:53 rc 1 / 952.6 s / cpu 39.4 s in worktree harness-speed-background-hs-lag",
+            "result": "green; checks unchanged, only the waits that read a loaded machine as a defect are longer"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-speed-test-health-flaky-llm-legs-test-llm-limits-20261029T165030Z-7f33",
+      "note": "One red in 7 days (2026-10-29 13:53, a worker worktree, wall 952 s on 39 s CPU); the journal keeps no failing text, so the cause is inferred, not read: the only fixed waits in the suite are the parallel-profile gate (5 s for a second agy process to start) and the 60 s collection bound, both scaled by load, not by the code. Both widened; neither changes what passes. Ruled out: ElevenLabs/real HOME reads (the harness shields them, 2026-10-08 row), the 35/61 mtime sleeps. Left: run-suites deletes its logs on completion, so a red cleared by a rerun leaves no assert name (blind spot suite-red-text-lost).",
+      "handoff": null
+    },
+    {
+      "id": "speed-flaky-test-statusline-hooks",
+      "title": "test_statusline_hooks flaky reds: the 150 MB cold-sidecar render asserted wall < 2500 ms (read 2962 ms at load 140) and the suite reads claude-setup's review gate and argv.sh outside the tree digest",
+      "match": {
+        "rule": "opportunity",
+        "ident": "test-health/flaky/llm-legs/test_statusline_hooks"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T19:55:00+03:00",
+          "by": "night fixer harness-speed-test-health-flaky-llm-legs-test-llm-limits-20261029T165030Z-7f33",
+          "files": [
+            "llm-legs/tests/test_statusline_hooks.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "assert 898 (ctx-bnd-big): wall of one cold-sidecar render of a 150 MB transcript < 2500 ms vs the same render's children CPU < 2500 ms; run_statusline through env on every render vs only when NO_TIMEOUT_BIN is set",
+            "data": "the scan paths measured by hand at load 141: dd+grep 150 MB 0.9-1.2 s wall / 0.18 s CPU, tail -c +1000 71 s wall / 6.2 s CPU; the suite run at load ~140 failed `test 2962 -lt 2500` before the change",
+            "result": "the same run passes (1641 asserts); a tail -c +N scan (6.2 s CPU) still fails the CPU bound, the dd scan (0.2 s) passes; ~1000 env execs a run dropped"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-speed-test-health-flaky-llm-legs-test-llm-limits-20261029T165030Z-7f33",
+      "note": "Six reds in 7 days. 16:16, 16:17, 16:18 and 16:26 (2026-10-29): main checkouts of claude-setup moved under an unchanged llm-legs tree, because the suite runs the real hooks/review-flow-gate.sh and hooks/lib/argv.sh from $PROJECTS/claude-setup (lines 5061, 5332): the tree digest does not cover them, so the doctor reads the later green as the same code; the missing selection was fixed in fd37ae0f (affected). 17:38 (night grok worktree) and 18:10 (drop-verifier worker worktree, 390 s wall) left no failing text, probably the same neighbour or load; the 150 MB wall assert reproduced here as `test 2962 -lt 2500` and is now CPU. Ruled out: the suite's other date +%s bounds (600 s slack). Left: the neighbour dependency stays by design (the suite pins the real gate), see blind spot suite-red-text-lost.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -12924,6 +13002,13 @@
       "reason": "2026-10-29 (fixer harness-speed-adhoc-logo-bench-20261029T165024Z-73f6): adhoc/logo-bench and adhoc/logo-verdict got four fixer runs in one day (2800, 2a66, 4564, 73f6). Each re-handed the same two handoffs. Every night since 10-14 was a pilot, and pilots skip carry_owner_chats (bin/night-run:1177), so the handoffs never reached the owners. doctor-fix snapshot holds a row only on a ruled-out or weather ruling (held_since), never on an open handoff",
       "since": "2026-10-29",
       "would_catch_if": "the night report counted, per ledger row with an open handoff, the fixer runs that closed it as handoff again and the night's owner-chat jobs carrying that handoff (zero on a pilot)"
+    },
+    {
+      "id": "suite-red-text-lost",
+      "what": "which assert a suite's red run failed, once a rerun cleared it",
+      "reason": "2026-10-29: run-suites deletes its log directory on completion and the journal row keeps only rc/secs/cpu, so flaky rows for test_llm_limits (13:53) and test_statusline_hooks (17:38, 18:10) could be traced only by inference",
+      "since": "2026-10-29",
+      "would_catch_if": "a red suite row in runs.jsonl carried its last failing assert line (the FAIL: line), so flaky evidence names the check and the doctor can tell load, neighbour state and code apart"
     }
   ]
 }
