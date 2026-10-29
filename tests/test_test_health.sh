@@ -85,7 +85,11 @@ write("tests/test_ondemand.sh", "slow\n")
 write("tests/test_probe_live.sh", "live\n")
 write("tests/slow-suites", "test_ondemand.sh\n")
 write("tests/test_made.sh", 'mkdir -p "$ROOT/out/cache"\n[ ! -e "$ROOT/bin/removed" ]\necho \'$ROOT/bin/quoted\'\n'
-      'python3 - <<\'PY\'\nprint("$ROOT/bin/in-heredoc")\nPY\ncat > "$ROOT/bin/written"\n')
+      'python3 - <<\'PY\'\nprint("$ROOT/bin/in-heredoc")\nPY\ncat > "$ROOT/bin/written"\n'
+      'fail() { echo "$1"; exit 1; }\nrun() {\n  jq -cn --arg p "$1" \'{tool_input:{file_path:$p}}\' | bash "$HOOK"\n}\n'
+      'deny() { grep -q deny <<<"$(run "$1")" || fail "$1"; }\ndeny "$ROOT/commands/model.md"\n'
+      'test -z "$(run "$ROOT/skills/x/SKILL.md")"\n'
+      'grep -q \'"permissionDecision":"deny"\' <<<"$(jq -cn --arg p "$ROOT/commands/nested.md" \'{}\' | bash "$HOOK")"\n')
 write("docs/notes.md", "notes\n")
 pin = "assert grep -qF 'line %d' \"$ROOT/docs/notes.md\"\n"
 write("tests/test_pinned.sh", "".join(pin % i for i in range(4)) + "assert grep -q z \"$ROOT/bin/tool-z\"\n"
@@ -269,8 +273,8 @@ check(pinned.get("kind") == "pins" and pinned["reason"].startswith("6 source-tex
       "is queued for its audit: %s" % pinned)
 dead = {k: v for k, v in section["candidates"].items() if v.get("kind") != "pins"}
 check(set(dead) == {"alpha/test_b"} and "bin/gone-tool" in dead["alpha/test_b"]["reason"],
-      "dead: a suite naming a $ROOT path the repo lost, never one it creates, removes, asserts absent or never "
-      "expands; never-run is unjudged while the journal covers < 30 days: %s" % sorted(dead))
+      "dead: a suite naming a $ROOT path the repo lost, never one it creates, removes, asserts absent, never "
+      "expands or hands a hook under test as its payload; never-run is unjudged while the journal covers < 30 days: %s" % sorted(dead))
 with open(journal) as handle:
     kept = handle.read()
 with open(journal, "w") as handle:

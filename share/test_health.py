@@ -49,6 +49,9 @@ ROOT_VAR = r"\$\{?(?:ROOT|ROOT_DIR|REPO_ROOT)\}?/"
 ROOT_REF = re.compile(ROOT_VAR + r"([\w.@+-]+(?:/[\w.@+-]+)*)")
 HEREDOC = re.compile(r"<<-?\s*(?:(['\"])(\w+)\1|\\(\w+))")
 MADE = re.compile(r"(?:!\s*-[a-zA-Z]\s+\"?|>>?\s*\"?)$|\b(?:mkdir|touch|tee|ln|cp|mv|rm|install)\b")
+FUNC = re.compile(r"^\s*(?:function\s+)?([\w-]+)\s*\(\)\s*\{(?:([^\n]*)\}[ \t]*$|(.*?)^\})", re.M | re.S)
+HOOK_PAYLOAD = re.compile(r"\btool_input\b|permissionDecision")
+COMMAND_WORD = re.compile(r"(?:^|[;&|(`]|\$\()\s*(?:\w+=\S*\s+)*([\w-]+)(?:\s+[^;&|(`]*)?$")
 PIN = re.compile(r"\bgrep\b[^|;&<>\n]*?\s\"?" + ROOT_VAR + r"([\w.@+${}/-]+)\"?[ \t]*(?:$|[;)\]&|`])", re.M)
 RUN = re.compile(r"[\w.+-]+")
 WORD = re.compile(r"\w+")
@@ -373,10 +376,25 @@ def read(path):
         return ""
 
 
+def payload_funcs(text):
+    """The suite's shell functions that feed a hook a tool payload, directly or through another such function."""
+    bodies = {m.group(1): m.group(2) or m.group(3) or "" for m in FUNC.finditer(text)}
+    out = {name for name, body in bodies.items() if HOOK_PAYLOAD.search(body)}
+    grown = True
+    while grown:
+        grown = False
+        for name, body in bodies.items():
+            if name not in out and any(re.search(r"\b%s\b" % re.escape(f), body) for f in out):
+                out.add(name)
+                grown = True
+    return out
+
+
 def gone_refs(top, text, known):
     """The $ROOT paths a suite reads that the repo lacks, past ones it creates, removes or asserts absent, ignored
-    ones a run makes and single-quoted or quoted-heredoc ones the shell never expands."""
-    found, end = set(), None
+    ones a run makes, single-quoted or quoted-heredoc ones the shell never expands and ones handed to a hook under
+    test as its payload."""
+    found, end, payload = set(), None, payload_funcs(text)
     for line in text.splitlines():
         if end is not None:
             end = None if line.strip() == end else end
@@ -385,8 +403,10 @@ def gone_refs(top, text, known):
         end = (quoted.group(2) or quoted.group(3)) if quoted else None
         for m in ROOT_REF.finditer(line):
             path, before = m.group(1).rstrip("."), line[:m.start()]
+            word = COMMAND_WORD.search(before)
+            fed = word and word.group(1) in payload or HOOK_PAYLOAD.search(line)
             if path not in known and before.count("'") % 2 == 0 and not MADE.search(before.rstrip("\"")) \
-                    and not os.path.exists(os.path.join(top, path)):
+                    and not fed and not os.path.exists(os.path.join(top, path)):
                 found.add(path)
     if not found:
         return []

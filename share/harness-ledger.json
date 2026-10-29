@@ -12663,13 +12663,6 @@
       "would_catch_if": "test_hs_cli_lock.sh also failed an hs call line without </dev/null, or the lock wait inside lockf were journaled with the holder's command"
     },
     {
-      "id": "suite-dead-path-is-a-gate-target",
-      "what": "the dead-suite scan reads a double-quoted $ROOT/<path> in a suite as a file the suite needs",
-      "reason": "claude-setup test_slash_collision names $ROOT/commands/model.md as the Write target the slash-collision gate must deny; the path is meant to be absent, so the suite read 'gone from the repo' and was queued for audit as dead (2026-10-13, harness-speed-suite-audit-claude-setup-test-worker-pin-gate-20261012T235224Z-1292)",
-      "since": "2026-10-13",
-      "would_catch_if": "repo_scan's dead check skipped a $ROOT path the suite passes as a payload to the hook under test (a deny assert beside it) rather than reads, creates or removes"
-    },
-    {
       "id": "chat-start-before-session-start",
       "what": "the part of a chat start before its SessionStart hooks begin",
       "reason": "fold_starts' s row is claudeb entry -> SessionStart batch end, so Claude Code's own boot and any interactive wait before SessionStart count as chat/start and price the instruction-watch lever: of 2026-10-06..13, a 414 s and a 120 s start on 2026-10-09 (after 701f21d9 took the baseline off the start path) are 57 % of the window's 930 s, while the SessionStart hook floor reads p90 82 ms and the baseline's foreground 109 ms mean over 873 runs since 2026-10-10; the hook journal does not reach 2026-10-09, so those two stay unattributed (2026-10-13, night fixer harness-speed-test-health-flaky-llm-legs-test-harness-doctor-20261012T235439Z-211e)",
