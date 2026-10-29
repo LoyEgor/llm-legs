@@ -78,7 +78,7 @@ before the launch). Classes 2–5 (*): a hand keyword partition of the 79 and 82
 | 4.* a log-audit reading of model or chat conduct sent to a fixer | 23 / 7 | 0.18 / 0.10 % | 98 / 138 | open (conduct-gate stopped) |
 | 5.* a landed fix's pre-fix tail still in a 7-day window | 9 / 12 | 0.11 / 0.10 % | 122 / 227 | closed (cf193646, ebf5bde1) |
 | 6. a cause no doctor shows: blind spots added and never built | 27 / 26 added, 5 / 0 closed | | | here |
-| 7. a landed fix that was not needed goes unseen (retro sample, 10-28) | 11 of 40 | | | fix-audit (done), worth-bar |
+| 7. a landed fix that was not needed goes unseen (retro sample, 10-28) | 11 of 40 | | | closed (fix-audit, worth-bar) |
 
 Why they come back:
 1. Only the Harness doctor remembered a ruling; other rows came back and were ruled out again (LLM M2, M4, `I48`,
@@ -98,20 +98,6 @@ Reads need section 7 back (How the block runs at night).
 Deep search 10-23, window 10-09…23 (no fixer run after 10-20): non-audit false-alarm share 33.5 % (150 of 448),
 103 of the 150 from `opportunity` and `log_audit`.
 
-### goal worth-bar: the judge confirms a finding only for a gain that matters
-
-Class 7. Of the retro 40, the judge confirmed 10 that were not needed:
-- 5 speed savings under a second a day, or on a path that never blocks;
-- 2 comment and line-number touch-ups;
-- 3 claimed costs the pre-fix code did not have, all from Opus speed cells.
-- Change: the judge, and doctor-fix for its own rows, rejects a finding that does not meet the bar:
-  - speed: ≥ 1 s a day, or on a path that blocks a chat or the night, with its frequency;
-  - fit and legacy: the code shrinks or one owner replaces copies.
-  The judge also re-reads the pre-fix code for the claimed cost.
-- First step: the 10 claims state no frequency or name no blocking path, or the code lacks the cost; else stop.
-- Proof, fixed in advance: the judge, replayed blind over the 40 claims, rejects ≥ 7 of the 10 and keeps ≥ 28 of
-  the 29 needed.
-- Must not get worse: confirmed P1 and P2 kept; judge wall.
 
 ## How the block runs at night
 
@@ -163,6 +149,13 @@ Class 7. Of the retro 40, the judge confirmed 10 that were not needed:
   lands. Retro baseline 10-28: 40 judge-confirmed fixes, 11 not needed, git caught 1. Proof: replay 37 of 40 same
   verdict (≥ 36; 06 useless→needed, 36 needed→harmful, 38 needed→useless); fixture night 4 of 4 mapped; a fixture
   `false` raises a row. Spend ≈ 0.1–0.2 % of a full night a week, ≤ 1 %.
+- worth-bar (review-bench lenses speed/fit/legacy and 3437137, llm-legs 82f0b7ed): the judge confirms a speed saving
+  only at ≥ 1 s a day or on a path a chat or the night waits on, a fit or legacy one only when the tree shrinks or one
+  owner replaces copies; a fixer re-reads the pre-fix code, since the retro's 07, 27, 31 lost their cost to 19e9f508
+  before their fix. Blind replay of the retro 40, 3× per arm: rejects 1.3 → 6.0 of 10 (9.0 with the fixer re-read,
+  target ≥ 7); kept 25.7 → 25.7 of 29, the old judge alike, so ≥ 28 is unreadable there (no round diff, sibling repos
+  missing); P1/P2 13.7 → 14.3 of 15; wall 543 → 545 s. Read weekly on fix-audit's needed share: a fall reverts the
+  lens bars; the wording was tuned 4 rounds on these 40, so overfit is the risk.
 
 ## Decisions
 
