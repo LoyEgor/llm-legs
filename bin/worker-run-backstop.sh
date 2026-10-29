@@ -18,7 +18,18 @@ self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || exit 0
 [ "$#" -eq 0 ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
-[ "${CLAUDEB_WORKER:-}" = 1 ] && exit 0
+# A headless run stays open after its last turn while a background task of its own lives, a shell up to
+# its own timeout, and that task's end wakes it past its answer: a forgotten dev server held two runs 8 and
+# 30 min (2026-10-29), one killed idle with its result lost, the other's report replaced by a note on the
+# server. Asked once; a stop the model continued past goes through.
+if [ "${CLAUDEB_WORKER:-}" = 1 ]; then
+  jq -c --arg hook "${0##*/}" 'select(.stop_hook_active != true and (.agent_id // "") == "")
+    | [.background_tasks[]? | select((has("status") | not) or .status == "running" or .status == "pending")
+       | "- " + (.description // .command // .id | tostring | .[0:160])]
+    | select(length > 0)
+    | {decision: "block", reason: ("[" + $hook + "] Still running, and a headless run cannot exit while they do; their end wakes you after your answer, and that last message replaces your report:\n" + join("\n") + "\nStop what you no longer need with TaskStop, wait in the foreground for what you still need, then give your whole final answer again.")}' 2>/dev/null
+  exit 0
+fi
 . "${self%/*}/../share/run-liveness.sh" 2>/dev/null || exit 0
 . "${self%/*}/../share/processes.sh" 2>/dev/null || exit 0
 
