@@ -593,12 +593,12 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   no guarded literal (`'CLAU'+'DE.md'`), a prefixed literal (`r'…'`, `f'…'`), an annotated assignment (`p: str = '…'`) and perl's parenthesis-free `open my $f, ">>", $p`.
 - **Growth roots.** One change is one problem per root: the nearest skill directory (holding a `SKILL.md`),
   else its `docs` tree, else the file; value = bytes added under the root, count = files, listed in the
-  evidence (2026-09-30: one third-party skills install read as 233 problems). A plugin version dir
-  (`~/.claude/plugins/cache/<market>/<plugin>/<version>`) is one root over the 24 h window (2026-10-12:
-  one vercel install, five events, read as 39 rows).
+  evidence. A plugin version dir (`~/.claude/plugins/cache/<market>/<plugin>/<version>`) is one root
+  over the 24 h window.
 - **On-demand skill files are out of scope.** The rule prices context every chat loads unaudited: only
   a skill's `SKILL.md` (still watched). Growth of its `references/` and other files, loaded when the
-  skill runs, is left out of the value and count; the evidence names how many.
+  skill runs, is left out of the value and count; the evidence names how many. So is every file of a
+  skill under `skills-on-demand/`, which no chat lists.
 - **Deploys** compares every copy in `DEPLOYS` (shared-invariants row ef) with its source in the main
   checkout (`HARNESS_DEPLOY_SOURCE`; deployed wrappers under `HARNESS_LIBEXEC_DIR`, default
   `~/.local/libexec`): a byte copy must match, a generated wrapper must exec the source script, a
