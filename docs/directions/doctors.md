@@ -78,7 +78,7 @@ before the launch). Classes 2–5 (*): a hand keyword partition of the 79 and 82
 | 4.* a log-audit reading of model or chat conduct sent to a fixer | 23 / 7 | 0.18 / 0.10 % | 98 / 138 | open (conduct-gate stopped) |
 | 5.* a landed fix's pre-fix tail still in a 7-day window | 9 / 12 | 0.11 / 0.10 % | 122 / 227 | closed (cf193646, ebf5bde1) |
 | 6. a cause no doctor shows: blind spots added and never built | 27 / 26 added, 5 / 0 closed | | | here |
-| 7. a landed fix that was not needed goes unseen (retro sample, 10-28) | 11 of 40 | | | fix-audit, worth-bar |
+| 7. a landed fix that was not needed goes unseen (retro sample, 10-28) | 11 of 40 | | | fix-audit (done), worth-bar |
 
 Why they come back:
 1. Only the Harness doctor remembered a ruling; other rows came back and were ruled out again (LLM M2, M4, `I48`,
@@ -97,31 +97,6 @@ Why they come back:
 Reads need section 7 back (How the block runs at night).
 Deep search 10-23, window 10-09…23 (no fixer run after 10-20): non-audit false-alarm share 33.5 % (150 of 448),
 103 of the 150 from `opportunity` and `log_audit`.
-
-### goal fix-audit: every landed fix is read again, blind, a week later
-
-Class 7. Retro audit 10-28: 40 judge-confirmed fixes of fit, legacy and speed rounds 09-30…10-14. Two blind Opus
-readers judged them, and the key and packets are in `~/.cache/fix-audit/retro-2026-10-28*`. Results, as needed /
-useless / false / harmful:
-- found by Haiku: 13 / 6 / 0 / 1;
-- found by Opus: 16 / 1 / 3 / 0 (speed 1 / 1 / 3 / 0 of 5; fit 15 of 15);
-- not-fixed: 0;
-- Sonnet fixers: 9 of 12 needed.
-
-Git caught 1 of the 11 (the reverted `DIM_GREEN`), and kept-or-changed lines split no verdict. Run records before
-10-19 are pruned, so 363 of 784 fixed findings map to no hunk.
-- Change: a fixer commit names its round and finding positions. `share/fix-ledger.json` records the commit, lens,
-  cell model, fixer model and the audit's verdict. A weekly `fix-audit` job reads 20 fixes ≥ 7 days old per lens
-  × finder model, blind. The reader is outside the judge's family when the toggles allow, else Opus.
-  - False and harmful fixes become Harness rows whose fixer reverts them.
-  - A useless fix is reverted only if it added code.
-  - Per kind: cost per needed fix (Opus = 1) and the share not needed.
-- First step: the retro audit (done).
-- Proof, fixed in advance:
-  - the 40 retro items through `fix-audit` give the same verdict for ≥ 36;
-  - a fixture night's fixer commits all map to their findings;
-  - a fixture `false` verdict raises a row.
-- Must not get worse: night spend + ≤ 1 % for the audit; fixer wall unchanged.
 
 ### goal worth-bar: the judge confirms a finding only for a gain that matters
 
@@ -181,6 +156,13 @@ Class 7. Of the retro 40, the judge confirmed 10 that were not needed:
   21Z, 10-25 09Z: 2 / 16 / 23 / 33 / 38 → 0 / 1 / 1 / 2 / 1: 05eb stays, the 26 `measured slower` of 10-25 and the
   probe rows of 10-25…26 go; the second at 10-20 is 174d's hook unit (`commit-report.sh` 1424 → 3224 ms/call), kept on
   HEAD's rule. Gains and hook and stop proofs equal HEAD's at all six instants.
+- fix-audit (7bc8b6a2, da2a7ac1): fixer commits name `<round> F<n>`; `bin/fix-audit` keeps `share/fix-ledger.json`
+  (lens, finder, judge, fixer, Opus-eq cost, verdict); `fix-audit read` (prep) reads ≤ 20 blind packets per lens ×
+  finder weekly, each reader in its own workdir, outside the judge's family or Opus; the `fix-audit` night job records
+  verdicts; false, harmful and code-adding useless fixes are Harness `fix_audit` rows until `revert <round> F<n>`
+  lands. Retro baseline 10-28: 40 judge-confirmed fixes, 11 not needed, git caught 1. Proof: replay 37 of 40 same
+  verdict (≥ 36; 06 useless→needed, 36 needed→harmful, 38 needed→useless); fixture night 4 of 4 mapped; a fixture
+  `false` raises a row. Spend ≈ 0.1–0.2 % of a full night a week, ≤ 1 %.
 
 ## Decisions
 
