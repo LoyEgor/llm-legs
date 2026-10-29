@@ -2319,9 +2319,9 @@
     "I41",
     "I48"
    ],
-   "last_reviewed": "2026-10-20",
-   "reviewed_by": "Fixer llm-image-20261020T114225Z-20f2",
-   "note": "5 legs 19:48-20:34Z 2026-10-19, all from arbostar-logo chat bd2c928e (transcript): 3 codex-image calls combining --count with --region (r17/bin/run_a.sh, then two parallel tag edits), 2 a --region edit with --edit plus a --ref. Each refused before any request with its reason named above the usage (bin/codex-image:340, :375), and the caller's next turn reran without the combination. The wrapper working as designed, like I35/I41/I48: proposed not-a-bug; `until` bounds it to this window. Not changed: --count with --region (N Markup chats of one edit) is a feature no caller has asked for; image-fanout refuses --region too.",
+   "last_reviewed": "2026-10-29",
+   "reviewed_by": "Fixer llm-image-20261029T111952Z-5473",
+   "note": "5 legs 19:48-20:34Z 2026-10-19, all from arbostar-logo chat bd2c928e (transcript): 3 codex-image calls combining --count with --region (r17/bin/run_a.sh, then two parallel tag edits), 2 a --region edit with --edit plus a --ref. Each refused before any request with its reason named above the usage (bin/codex-image:351, :386 as of 2026-10-29, still before any spend; no such refusal since), and the caller's next turn reran without the combination. The wrapper working as designed, like I35/I41/I48: proposed not-a-bug; `until` bounds it to this window. Not changed: --count with --region (N Markup chats of one edit) is a feature no caller has asked for; image-fanout refuses --region too.",
    "handoff": null
   },
   {
@@ -2467,6 +2467,51 @@
    "last_reviewed": "2026-10-20",
    "reviewed_by": "Fixer llm-light-20261020T114234Z-28a9",
    "note": "2026-10-20: grok-1792494701-51041-05cd (rawilimo, blind ElevenLabs web research, workdir the main checkout) made only web_search/web_fetch calls, yet the before/after tree digest moved: bin/log-sweep and share/log_stores.py (dirty before) and share/log-stores.json were edited by the concurrent log_stores fixer (2f64d43c), so the answer was thrown away for a co-tenant's write. Grok research now runs under the gemini research leg's Seatbelt write-deny profile (its GROK_HOME instead of the gemini roots; live-checked: a grok run answers under it, its write tool gets Operation not permitted, the tree stays clean) and only a write/edit tool call the sandbox failed is READ_ONLY_VIOLATION; the digest is gone. Same detail on a later leg = the model tried to write, a different cause; read the run's out before calling it a regression. Left: llm-doctor DIGEST_RE (W1) now only matches pre-fix runs, removable once they leave the 14-day window (judge, the owner's). 2026-10-20 (fix orchestrator): back to open, not fixed: the sandbox fix is unlanded (branch only) and its covering suites are red, test_light_research_vendors.sh and test_light_research_fanout.sh ('light-research: could not resolve sandbox write paths' -> GROK_UNAVAILABLE); worker not resumed per Egor's stop. 2026-10-20 (cleanup-20261020): fixed-pending again, landed with both suites green: a grok profile home not created yet resolves through resolve_path instead of failing readlink -f, and test_light_research_vendors' digest-era check now pins that a co-tenant's edit keeps the answer.",
+   "handoff": null
+  },
+  {
+   "id": "I63",
+   "block": "image",
+   "match": {
+    "word": "browser drift",
+    "model": "^codex-image$",
+    "detail": "Remove BG started nothing"
+   },
+   "title": "ChatGPT's Remove BG clicked once on a fresh upload started nothing",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-29T13:36:48+02:00",
+     "by": "Fixer llm-image-20261029T111952Z-5473",
+     "files": [
+      "llm-legs/share/chatgpt_web.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-29",
+   "reviewed_by": "Fixer llm-image-20261029T111952Z-5473",
+   "note": "locomthebest 03:00Z 2026-10-29 (Rentiva chat 922b548f, --route web --ref <car> --remove-bg --composite) and borodatch 00:47Z 2026-10-16: both a new project chat, the viewer open on the just-uploaded ref, Remove BG hovered in the shot (the click landed), nothing for 20 s; the same request 1 min later on egbogd sent in 3 s. remove_background clicked once with no upload wait, while send() awaits SEND_READY and re-clicks a swallowed send. Now it awaits the upload (a ref only) and clicks up to SEND_TRIES, SEND_CHECK_S each (tests/test_chatgpt_web.sh, red on the old code). Not reproduced live: a Remove BG is a generation. A recurrence after landing with the upload awaited means the click itself changed: read the .txt beside the shot.",
+   "handoff": null
+  },
+  {
+   "id": "I64",
+   "block": "image",
+   "match": {
+    "word": "soft outcome",
+    "model": "^codex-image$",
+    "detail": "^composite skipped: redrawn",
+    "until": "2026-10-29T05:01:59+02:00"
+   },
+   "title": "Remove BG --composite delivered the cutout as is: ChatGPT redrew the subject (2026-10-29)",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-29",
+   "reviewed_by": "Fixer llm-image-20261029T111952Z-5473",
+   "note": "egbogd 03:01Z 2026-10-29, the retry of I63's request: image_matte's edge band read 51.7 mean abs RGB over REDRAWN_LIMIT 45 (harness-ledger limit_hit:llm-legs:image-matte.redrawn, its first hit), so the cutout came back as is, as docs/image-vendors.md 'Background removal' specifies; the caller looked, rejected it and used image-cutout --edge hard. The guard working: a composite over a redrawn car shows the seam. Proposed not-a-bug; `until` bounds it to this event. Not changed: the limit (a judge-side threshold of the harness doctor, not this fixer's).",
    "handoff": null
   }
  ],

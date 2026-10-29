@@ -218,6 +218,9 @@ class Locator:
             self.page.shown["decline"] = False
         if self.key == "role:Comment":
             self.page.commenting = True
+        if self.key == "role:Remove BG" and self.page.remove_bg_swallow:
+            self.page.remove_bg_swallow -= 1
+            return
         if self.key == "role:Send" or self.key == "role:Remove BG" and self.page.remove_bg_starts:
             self.page.sent = True
         if picked:
@@ -300,7 +303,7 @@ class Page:
         self.viewer, self.menu, self.menu_open, self.points, self.strokes, self.draws = False, [], False, [], 0, True
         self.overlay, self.toolbar = None, (100, 40, 400, 40)
         self.commenting, self.comment_opens, self.comment_open, self.pins, self.typed = False, True, False, [], None
-        self.remove_bg_starts = True
+        self.remove_bg_starts, self.remove_bg_swallow = True, 0
         self.send_ready, self.uploads_land, self.multiple, self.scrambles, self.waits = True, True, False, False, []
         self.chat, self.closed, self.swallow, self.ghost = NEW_CHAT, False, 0, False
     def on(self, event, listener): self.listeners.append(listener)
@@ -630,14 +633,29 @@ assert not any(e[0] in ("type", "pin") for e in page.events), page.events
 page = Page()
 result, _ = render(page, ref=[str(chat_root / "r.png")], prompt=None, tool="remove-bg")
 assert isinstance(result, dict) and ("click", "attachment") in page.events, page.events
+assert (cw.SEND_READY, 120000, 100) in page.waits, page.waits
+# A click swallowed before the ref's upload ended (live 2026-10-29) is clicked again, never failed whole.
+page = Page()
+page.remove_bg_swallow, page.viewer = 1, True
+cw.remove_background(page, cw.probe(page), False, wait_s=0.05)
+assert page.events.count(("click", "role:Remove BG")) == 2 and page.sent, page.events
+page = Page()
+page.send_ready, page.viewer = False, True
+failure = None
+try:
+    cw.remove_background(page, cw.probe(page), True, wait_s=0.05)
+except gw.Failure as caught:
+    failure = caught
+assert failure and "the send button stays disabled for 120s" in failure.reason and ("click", "role:Remove BG") not in page.events, failure
 page = Page()
 page.remove_bg_starts = False
 page.viewer = True
 try:
-    cw.remove_background(page, cw.probe(page), wait_s=0.05)
+    cw.remove_background(page, cw.probe(page), False, wait_s=0.05)
     raise AssertionError("a Remove BG that started nothing passed")
 except gw.Failure as failure:
-    assert failure.code == 1 and "Remove BG started nothing" in failure.reason, failure
+    assert failure.code == 1 and "Remove BG started nothing (3 clicks" in failure.reason, failure
+    assert page.events.count(("click", "role:Remove BG")) == 3, page.events
 
 # The send button and every upload are awaited as page events with the old caps and drift messages.
 STUCK = "ChatGPT UI drift: the send button stays disabled for {}s (an upload still running?)"

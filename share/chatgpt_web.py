@@ -482,6 +482,13 @@ def attach(page, refs: list[str], wait_s: float = 120, begun: tuple[int, list[st
         index += len(files)
 
 
+def await_send_ready(page, wait_s: float = 120) -> None:
+    try:
+        page.wait_for_function(SEND_READY, arg=SELECTORS, timeout=wait_s * 1000, polling=100)
+    except Exception as error:  # noqa: BLE001
+        raise drift(f"the send button stays disabled for {wait_s:.0f}s (an upload still running?)") from error
+
+
 def send(page, prompt: str, wait_s: float = 120) -> None:
     composer = live(page, "composer").first
     decline_offers(page)
@@ -493,11 +500,7 @@ def send(page, prompt: str, wait_s: float = 120) -> None:
     page.keyboard.press("Backspace")
     page.keyboard.insert_text(prompt)
     button = live(page, "send").first
-    stuck = f"the send button stays disabled for {wait_s:.0f}s (an upload still running?)"
-    try:
-        page.wait_for_function(SEND_READY, arg=SELECTORS, timeout=wait_s * 1000, polling=100)
-    except Exception as error:  # noqa: BLE001
-        raise drift(stuck) from error
+    await_send_ready(page, wait_s)
     head = " ".join(prompt.split())[:40]
     for attempt in range(SEND_TRIES):
         if attempt:
@@ -674,19 +677,24 @@ def send_comments(page) -> None:
         raise drift("no Send on the Comment toolbar") from error
 
 
-def remove_background(page, before: dict, wait_s: float = 20) -> None:
-    """One click sends the viewer's own fixed prompt: no text field, and a composer draft is not sent with it."""
-    try:
-        editor_button(page, "remove_bg").click(timeout=10000)
-    except Exception as error:  # noqa: BLE001
-        raise drift("no Remove BG in the image viewer") from error
-    deadline = time.time() + wait_s
-    while time.time() < deadline:
-        state = probe(page)
-        if state["streaming"] or len(state["replies"]) > len(before["replies"]) or state["images"] != before["images"]:
-            return
-        page.wait_for_timeout(500)
-    raise drift(f"Remove BG started nothing within {wait_s:.0f}s")
+def remove_background(page, before: dict, uploaded: bool, wait_s: float = SEND_CHECK_S) -> None:
+    """One click sends the viewer's own fixed prompt: no text field, and a composer draft is not sent with it.
+    A click before the ref's upload ended, or one the page swallowed, started nothing (live 2026-10-16 and
+    2026-10-29, the same request served on the next account): the upload is awaited and the click repeated."""
+    if uploaded:
+        await_send_ready(page)
+    for _ in range(SEND_TRIES):
+        try:
+            editor_button(page, "remove_bg").click(timeout=10000)
+        except Exception as error:  # noqa: BLE001
+            raise drift("no Remove BG in the image viewer") from error
+        deadline = time.time() + wait_s
+        while time.time() < deadline:
+            state = probe(page)
+            if state["streaming"] or len(state["replies"]) > len(before["replies"]) or state["images"] != before["images"]:
+                return
+            page.wait_for_timeout(500)
+    raise drift(f"Remove BG started nothing ({SEND_TRIES} clicks, {wait_s:.0f}s each)")
 
 
 def resize_options(page) -> list[str]:
@@ -966,7 +974,7 @@ def render_on(account: str, args, meta: dict) -> dict:
             pick_resize(page, args.aspect)
         elif args.tool == "remove-bg":
             before = probe(page)
-            remove_background(page, before)
+            remove_background(page, before, bool(args.ref))
         else:
             if args.region:
                 mark_region(page, args.region)
