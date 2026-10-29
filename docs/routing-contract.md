@@ -305,10 +305,8 @@ and failed ones moved under a trailing `UNVERIFIED:` block. An answer with no ci
 `CITATIONS: 0/0` and passes through unchanged, so a closed yes/no answer stays legal. Stdout adds
 `CITATIONS:`, `ANSWER:` and `LINES:` after the `ACCOUNT:` line and nothing of the answer itself.
 `--prompt-file` may repeat: the questions run as parallel research runs under `## Q1`, `## Q2`… with
-one combined header, and the whole call takes the worst exit of its runs (3 beats 4 beats 0). On a
-vendor that cannot take extra directories — grok, whose `--cwd` is its whole grant — several
-`--repo`s fan out into one run per repository, each brief naming its own, concatenated under
-`## <repository>` headings; every other vendor keeps the single run with `--add-dir`.
+one combined header, and the whole call takes the worst exit of its runs (3 beats 4 beats 0). Several
+`--repo`s are one run with `--add-dir` on every vendor.
 
 The ladder is **pin > roles > pool**. A closed role walls everything the pool would choose:
 without a usable pin the query answers exit 3 / `<vendor> is switched off for <role>`, and the
