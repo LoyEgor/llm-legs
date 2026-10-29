@@ -88,6 +88,7 @@ record_run_wall() {
     # end_run_orphans end it while it waits for the arm lock.
     if [ -f "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/reset-arm/${target/\//-}" ]; then
       wall=$(worker_walls_kind "$vendor" "${reset:+$epoch}" "$directory/out" "$directory/err")
+      child_group_prefix
       (env -u WORKER_RUN_ID ${CHILD_GROUP_PREFIX[@]+"${CHILD_GROUP_PREFIX[@]}"} "$SCRIPT_DIRECTORY/llm-reset-redeem" \
         --fire-armed "$target" --wall "$wall" </dev/null >/dev/null 2>&1 &)
     fi

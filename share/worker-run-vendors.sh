@@ -90,7 +90,11 @@ claudeb_discover_session() { # directory
 }
 
 config_value() {
-  sed -n "s/^$1=//p" "$CONFIG_FILE" 2>/dev/null | head -n1
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" != "$1="* ]] || { printf '%s\n' "${line#"$1="}"; return 0; }
+  done 2>/dev/null <"$CONFIG_FILE"
+  return 0
 }
 
 vendor_name() {
@@ -472,7 +476,8 @@ session_id() { # directory [vendor]
       ;;
     codex)
       # Live codex exec prints 'session id: <uuid>' to stderr, not stdout.
-      session=$(grep -Ehio 'session[_ -]?id[[:space:]:=]+[A-Za-z0-9._-]+' "$directory/err" "$directory/out" 2>/dev/null | head -n1 | sed -E 's/.*[[:space:]:=]+//')
+      { IFS= read -r session || :; } < <(grep -Ehio -m1 'session[_ -]?id[[:space:]:=]+[A-Za-z0-9._-]+' "$directory/err" "$directory/out" 2>/dev/null)
+      session=${session##*[[:space:]:=]}
       ;;
     gemini)
       # Live agy v1.1.9 log shapes: 'Created conversation <id>' on a fresh run,

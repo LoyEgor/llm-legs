@@ -70,13 +70,19 @@ activity_fingerprint() { # directory vendor workdir
 # vendor here is reached through a wrapper (`claudeb`, `codexb`, `agy`), and a TERM delivered to
 # the wrapper alone leaves the CLI it launched editing the workdir with nobody supervising it.
 # perl and not setsid(1), which is absent on stock macOS and forks when the caller already leads a
-# group — `wait` would then reap the wrapper and report a run that is still going.
+# group — `wait` would then reap the wrapper and report a run that is still going. Probed on first
+# use: most worker-run calls (wait, report, stop) launch nothing and need no perl start.
 CHILD_GROUP_PREFIX=()
-if command -v perl >/dev/null 2>&1 && perl -MPOSIX -e 'exit 0' 2>/dev/null; then
-  # `or exit 127`: a failed exec leaves perl running the rest of the script, and a missing CLI
-  # would exit 0 and report the run as a success that produced nothing.
-  CHILD_GROUP_PREFIX=(perl -MPOSIX -e 'POSIX::setsid(); exec {$ARGV[0]} @ARGV or exit 127' --)
-fi
+CHILD_GROUP_PROBED=''
+child_group_prefix() {
+  [ -z "$CHILD_GROUP_PROBED" ] || return 0
+  CHILD_GROUP_PROBED=1
+  if command -v perl >/dev/null 2>&1 && perl -MPOSIX -e 'exit 0' 2>/dev/null; then
+    # `or exit 127`: a failed exec leaves perl running the rest of the script, and a missing CLI
+    # would exit 0 and report the run as a success that produced nothing.
+    CHILD_GROUP_PREFIX=(perl -MPOSIX -e 'POSIX::setsid(); exec {$ARGV[0]} @ARGV or exit 127' --)
+  fi
+}
 
 # The group where the child leads one, the child alone otherwise. Asked NOW and never at launch:
 # the wrapper has not reached setsid() when the pid first appears, and a group kill aimed at a pid
@@ -109,6 +115,7 @@ run_with_deadline() {
   # <&0 is load-bearing: without an explicit stdin redirect, a background
   # command in a non-interactive shell gets /dev/null instead of the brief
   # the caller redirected in (live-caught: claudeb saw an empty stdin).
+  child_group_prefix
   ${CHILD_GROUP_PREFIX[@]+"${CHILD_GROUP_PREFIX[@]}"} "$@" <&0 &
   child=$!
   # The CLI's own pid, for memlogd's memory guard: that guard kills the DESCENDANTS of the pid a

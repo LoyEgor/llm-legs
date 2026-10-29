@@ -31,14 +31,20 @@ fail() {
 
 # The symlink walk the self-edit guard needs anyway, hoisted here so the include below resolves
 # against the same root instead of a second copy of the same loop.
+script_parent() { # path -> SCRIPT_PARENT, dirname's answer without its fork
+  SCRIPT_PARENT=.
+  case $1 in */*) SCRIPT_PARENT=${1%/*} SCRIPT_PARENT=${SCRIPT_PARENT:-/} ;; esac
+}
 SCRIPT_PATH=${BASH_SOURCE[0]}
 while [ -L "$SCRIPT_PATH" ]; do
-  SCRIPT_DIRECTORY=$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd) || exit 4
+  script_parent "$SCRIPT_PATH"
+  SCRIPT_DIRECTORY=$(cd -P "$SCRIPT_PARENT" && pwd) || exit 4
   SCRIPT_PATH=$(readlink "$SCRIPT_PATH")
   [[ "$SCRIPT_PATH" = /* ]] || SCRIPT_PATH="$SCRIPT_DIRECTORY/$SCRIPT_PATH"
 done
-SCRIPT_DIRECTORY=$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd) || exit 4
-SCRIPT_PATH="$SCRIPT_DIRECTORY/$(basename "$SCRIPT_PATH")"
+script_parent "$SCRIPT_PATH"
+SCRIPT_DIRECTORY=$(cd -P "$SCRIPT_PARENT" && pwd) || exit 4
+SCRIPT_PATH="$SCRIPT_DIRECTORY/${SCRIPT_PATH##*/}"
 umask 077
 
 enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :

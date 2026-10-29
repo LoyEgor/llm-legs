@@ -8,27 +8,32 @@
 # A cell is split into argv words on whitespace, so a flag taking a LIST takes it comma-joined the
 # way ask_claude.sh spells it: `--disallowedTools A,B` is one word, while `A B` would reach the CLI
 # as a second, positional argument — which for `claude -p` is the prompt itself.
-web_search_table() {
-  cat <<'TABLE'
+IFS= read -r -d '' WEB_SEARCH_TABLE <<'TABLE' || :
 claudeb	-	--disallowedTools WebSearch,WebFetch
 codex	-c web_search=live	-c web_search=disabled
 gemini	-	!
 grok	-	--disable-web-search
 TABLE
-}
+web_search_table() { printf '%s' "$WEB_SEARCH_TABLE"; }
 
 web_search_column() { # vendor on|off — the table cell; rc 1 when the vendor has no row
-  local field=2
-  [ "$2" = on ] || field=3
-  web_search_table | awk -F'\t' -v vendor="$1" -v field="$field" \
-    '$1 == vendor { print $field; found = 1 } END { exit found ? 0 : 1 }'
+  local vendor on off found=1
+  while IFS=$'\t' read -r vendor on off; do
+    [ "$vendor" = "$1" ] || continue
+    if [ "$2" = on ]; then printf '%s\n' "$on"; else printf '%s\n' "$off"; fi
+    found=0
+  done <<<"${WEB_SEARCH_TABLE%$'\n'}"
+  return "$found"
 }
 
 web_search_vendors() { # [on|off] — the vendors that can reach that state, for a refusal to name
-  local field=2
-  [ "${1:-on}" = on ] || field=3
-  web_search_table | awk -F'\t' -v field="$field" \
-    '$field != "!" { printf "%s%s", separator, $1; separator = ", " } END { print "" }'
+  local vendor on off cell out=''
+  while IFS=$'\t' read -r vendor on off; do
+    cell=$on
+    [ "${1:-on}" = on ] || cell=$off
+    [ "$cell" = '!' ] || out+=${out:+, }$vendor
+  done <<<"${WEB_SEARCH_TABLE%$'\n'}"
+  printf '%s\n' "$out"
 }
 
 web_search_state() { # vendor requested(true|false) — the state the run really launches in
