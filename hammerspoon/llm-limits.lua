@@ -3562,6 +3562,22 @@ local function awayNow()
   return presence and presence.away and presence.away() or false
 end
 
+-- worker-pick --menu reads the store: one launch per store state (ino:mtime:size), not per watcher event.
+local lastRoutingStoreKey = nil
+
+local function storeKey()
+  local attrs = hs.fs and hs.fs.attributes and hs.fs.attributes(M.cachePath)
+  if not attrs then return nil end
+  return string.format("%s:%s:%s", attrs.ino or "", attrs.modification or "", attrs.size or "")
+end
+
+local function refreshRoutingIfStoreMoved()
+  local key = storeKey()
+  if key and key == lastRoutingStoreKey then return end
+  lastRoutingStoreKey = key
+  M.refreshRouting()
+end
+
 local function onStoreChanged()
   if awayNow() then
     routingStaleWhileAway = true
@@ -3582,7 +3598,7 @@ local function onStoreChanged()
     M.storeRerenderTimer = nil
   end
   lastStoreRenderEpoch = now
-  M.refreshRouting()
+  refreshRoutingIfStoreMoved()
   notifyRefreshState()
 end
 
@@ -3611,6 +3627,7 @@ if hs.pathwatcher then
   if M.storeWatcher then M.storeWatcher:start() end
   M.workerModelWatcher = hs.pathwatcher.new(M.workerModelPath, onWorkerModelChanged)
   if M.workerModelWatcher then M.workerModelWatcher:start() end
+  lastRoutingStoreKey = storeKey()
   M.refreshRouting()
 end
 

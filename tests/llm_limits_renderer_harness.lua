@@ -2624,6 +2624,41 @@ do
   watchHs.timer = nil
 end
 
+-- One store write runs worker-pick --menu once: the throttle's trailing re-render sees the same
+-- ino:mtime:size and launches nothing, while a new inode in the same second is a new document.
+do
+  local attrs = { ino = 7, modification = 5000, size = 100 }
+  watchHs.fs = { attributes = function() return attrs end }
+  local function settleTasks()
+    local seen = 0
+    while seen < #watchTasks do
+      seen = #watchTasks
+      watchTasks[seen].callback(0, routingText)
+    end
+  end
+  settleTasks()
+  local pendingTimers = {}
+  watchHs.timer = { doAfter = function(seconds, fn)
+    local timer = { seconds = seconds, fn = fn }
+    function timer:stop() self.stopped = true end
+    table.insert(pendingTimers, timer)
+    return timer
+  end }
+  local launched, notified = #watchTasks, watchNotifies
+  watchClock.now = 5000; watchCallbacks[watchModule.cachePath]()
+  assert(#watchTasks == launched + 1, "a store write whose key moved launched no routing refresh")
+  settleTasks()
+  watchClock.now = 5001; watchCallbacks[watchModule.cachePath]()
+  watchClock.now = 5003; pendingTimers[1].fn()
+  assert(watchNotifies > notified + 1, "the trailing re-render after a suppressed write never ran")
+  assert(#watchTasks == launched + 1, "the trailing re-render relaunched worker-pick on an unchanged store")
+  attrs = { ino = 8, modification = 5000, size = 100 }
+  watchClock.now = 5006; watchCallbacks[watchModule.cachePath]()
+  assert(#watchTasks == launched + 2, "a new inode in the same second launched no routing refresh")
+  settleTasks()
+  watchHs.timer, watchHs.fs = nil, nil
+end
+
 -- Away (presence.lua, handed in by the Auto menu): store and worker-model changes only mark the routing
 -- table stale and his return refreshes it once; a module no menu handed Presence to never gates.
 ;(function()
