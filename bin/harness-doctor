@@ -3420,11 +3420,15 @@ def hooks_section(hooks, calls, cuts, samples_h, hooks_since, timed24, timed1, n
         tool_calls = sum(n for tool, n in tool_counts.items() if any(matches(h["matcher"], tool) for h in tool_hooks))
         if every_call(members) and total is not None and p50 is not None:
             costly.append((p50 * tool_calls, name, tool_calls, p50))
+        cut_fact = "%s was cut %d times in the last hour at its %s limit" % (
+            name, cut1, fmt_s(float(limit or DEFAULT_HOOK_TIMEOUT_S)))
+        cut_note = None if not cut1 else cut_fact if 4 in red else "%s, under %d" % (
+            cut_fact, LIMITS["cut_min"]) if cut1 < LIMITS["cut_min"] else "%s, %s of %s calls, under %g %%" % (
+            cut_fact, fmt_count(cut1), fmt_count(calls1), LIMITS["cut_share"] * 100)
         if 2 in red:
             say = "%d %s waited %s for %s in the last hour" % (count1, waiter, fmt_s(p50_1), name)
         elif red:
-            say = "%s was cut %d times in the last hour at its %s limit" % (
-                name, cut1, fmt_s(float(limit or DEFAULT_HOOK_TIMEOUT_S)))
+            say = cut_fact
         elif watch:
             say = "%d %s waited %s for %s in 24 h" % (count, waiter, fmt_s(p50), name)
         elif synchronous and recent_ms is not None and recent_ms > LIMITS["hook_note_ms"]:
@@ -3443,8 +3447,7 @@ def hooks_section(hooks, calls, cuts, samples_h, hooks_since, timed24, timed1, n
             say = "%s takes %s ms on a trivial Bash call, as on the rest (%s ms), %s" % (
                 name, num(trivial_ms), num(other_ms), "in the last hour" if span else "in 24 h")
         elif cut1:
-            say = "%s was cut %d times in the last hour at its %s limit, under %d" % (
-                name, cut1, fmt_s(float(limit or DEFAULT_HOOK_TIMEOUT_S)), LIMITS["cut_min"])
+            say = cut_note
         else:
             say = None
         watch = watch or (not red and say is not None)
@@ -3455,6 +3458,7 @@ def hooks_section(hooks, calls, cuts, samples_h, hooks_since, timed24, timed1, n
                           values=hook_values),
                   verdict("hook_cut", key, cut1, LIMITS["cut_min"], "cuts", 1, calls1 if calls1 is not None else count1,
                           "red" if 4 in red else "watch" if cut1 else None,
+                          cut_note,
                           evidence=[evidence(cut[1], "tool_use %s" % cut[8] if cut[8] else "cut %s %s" % (
                               cut[3], cut[1]), "%s cut after %s ms in %s" % (name, cut[5], cut[2]))
                                     for cut in sorted(mine, key=lambda c: -c[1])[:3]])]

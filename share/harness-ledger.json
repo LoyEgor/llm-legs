@@ -11245,6 +11245,162 @@
       "reviewed_by": "night fixer harness-speed-regression-test-health-contention-20261029T053334Z-62e0",
       "note": "2026-10-29 undecided, left to rank again: 24 h to 07:30, 850 calls in 101 sessions, 666 by Claude workers (no codex session among them): pixel-forge 366, logo-vectorizer-bench 191, Rentiva sites 157, llm-legs 109, claude-setup 23; the top session (88) is the pixel-art chat's own. The md hint already exists and misses: every worker brief carries worker-run's EDITS line (Edit and Write tools where an edit can do it), while Claude Code's bypass-mode system prompt tells the model to prefer sed, heredocs or short scripts over Read/Edit/Write. Where the script starts is claude-setup hooks/worker-edit-guard.sh, the PreToolUse/Bash door that already parses every worker shell write (python sources included) and records it to $WORKER_RUN_RECORD/shell-writes before letting it through (line 466); the lever is an additionalContext nudge toward Edit on its allow path for a python read-replace-write of a tracked file. This run had no claude-setup worktree, so it did not land; the next run needs claude-setup as ADD-DIR, the hook's adversarial edge-case pass and the bench (a multi-replace script is one call where Edit needs a Read plus one call per replace, so the bench decides).",
       "handoff": null
+    },
+    {
+      "id": "hook_cut:launchagent-name-gate.sh",
+      "title": "launchagent-name-gate cut at once with the other hooks of one tool call",
+      "match": {
+        "rule": "hook_cut",
+        "ident": "launchagent-name-gate\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "hook_cut:statusline-workdir-hook.sh",
+        "hook_cut:pages-hint.sh",
+        "hook_cut:worker-launch-gate.sh",
+        "hook_cut:chat-switch-link.sh",
+        "hook_cut:dia-not-chrome.sh"
+      ],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-hooks-20261029T053122Z-64d6",
+      "note": "Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): a stall outside the hook. The call's hooks were cut at once (12 on tool_use TW7cdfmsqy 05:15:51Z and NLSfWoden4 02:17:56Z, 11 on D85Hv9y6jT 2026-10-28 13:18:27Z), all in pid 84129, the 8-day `claude --resume 2ddedf36` chat in ~ (326 MB transcript): its client spawned them 3.6, 4.9 and 18.5 s after the tool_use and cancelled them 2.4, 0.7 and 1.4 s past their 5 s timeout, so its event loop was blocked; that chat's 1960 Bash calls of 10-25..29 spawn hooks p50 0.07 s after the tool_use, 22 over 3 s, max 35 s (a 63 MB chat: 2 of 393 over 3 s, max 9.9 s). A8X8xDtCbA 02:56:51Z (Rentiva-design) was a machine stall: no hook of any session journaled from 02:56:42.8 to 02:56:50.6Z; samples busy 1.0, kernel 0.44. On the TW7cdfmsqy payload the gate exits at its .plist screen: 15.9 ms a run at load 103. Blind spot hook-cut-call-stall.",
+      "handoff": null
+    },
+    {
+      "id": "hook_cut:statusline-workdir-hook.sh",
+      "title": "statusline-workdir-hook cut at once with the other hooks of one tool call",
+      "match": {
+        "rule": "hook_cut",
+        "ident": "statusline-workdir-hook\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "hook_cut:launchagent-name-gate.sh",
+        "hook_cut:pages-hint.sh",
+        "hook_cut:worker-launch-gate.sh",
+        "hook_cut:chat-switch-link.sh",
+        "hook_cut:dia-not-chrome.sh"
+      ],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-hooks-20261029T053122Z-64d6",
+      "note": "Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): a stall outside the hook. The call's hooks were cut at once (12 on tool_use TW7cdfmsqy 05:15:51Z and NLSfWoden4 02:17:56Z, 11 on D85Hv9y6jT 2026-10-28 13:18:27Z), all in pid 84129, the 8-day `claude --resume 2ddedf36` chat in ~ (326 MB transcript): its client spawned them 3.6, 4.9 and 18.5 s after the tool_use and cancelled them 2.4, 0.7 and 1.4 s past their 5 s timeout, so its event loop was blocked; that chat's 1960 Bash calls of 10-25..29 spawn hooks p50 0.07 s after the tool_use, 22 over 3 s, max 35 s (a 63 MB chat: 2 of 393 over 3 s, max 9.9 s). A8X8xDtCbA 02:56:51Z (Rentiva-design) was a machine stall: no hook of any session journaled from 02:56:42.8 to 02:56:50.6Z; samples busy 1.0, kernel 0.44. Its own cost: hook-time 24 h p50 27 ms wall, 33 ms CPU (n 32168). Blind spot hook-cut-call-stall.",
+      "handoff": null
+    },
+    {
+      "id": "hook_cut:pages-hint.sh",
+      "title": "pages-hint cut at once with the other hooks of one tool call",
+      "match": {
+        "rule": "hook_cut",
+        "ident": "pages-hint\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "hook_cut:launchagent-name-gate.sh",
+        "hook_cut:statusline-workdir-hook.sh",
+        "hook_cut:worker-launch-gate.sh",
+        "hook_cut:chat-switch-link.sh",
+        "hook_cut:dia-not-chrome.sh"
+      ],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-hooks-20261029T053122Z-64d6",
+      "note": "Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): a stall outside the hook. The call's hooks were cut at once (12 on tool_use TW7cdfmsqy 05:15:51Z and NLSfWoden4 02:17:56Z, 11 on D85Hv9y6jT 2026-10-28 13:18:27Z), all in pid 84129, the 8-day `claude --resume 2ddedf36` chat in ~ (326 MB transcript): its client spawned them 3.6, 4.9 and 18.5 s after the tool_use and cancelled them 2.4, 0.7 and 1.4 s past their 5 s timeout, so its event loop was blocked; that chat's 1960 Bash calls of 10-25..29 spawn hooks p50 0.07 s after the tool_use, 22 over 3 s, max 35 s (a 63 MB chat: 2 of 393 over 3 s, max 9.9 s). A8X8xDtCbA 02:56:51Z (Rentiva-design) was a machine stall: no hook of any session journaled from 02:56:42.8 to 02:56:50.6Z; samples busy 1.0, kernel 0.44. On the TW7cdfmsqy payload the hint exits at its .htm screen: 13.9 ms a run at load 103. Blind spot hook-cut-call-stall.",
+      "handoff": null
+    },
+    {
+      "id": "hook_cut:worker-launch-gate.sh",
+      "title": "worker-launch-gate cut at once with the other hooks of one tool call",
+      "match": {
+        "rule": "hook_cut",
+        "ident": "worker-launch-gate\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "hook_cut:launchagent-name-gate.sh",
+        "hook_cut:statusline-workdir-hook.sh",
+        "hook_cut:pages-hint.sh",
+        "hook_cut:chat-switch-link.sh",
+        "hook_cut:dia-not-chrome.sh"
+      ],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-hooks-20261029T053122Z-64d6",
+      "note": "Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): a stall outside the hook. The call's hooks were cut at once (12 on tool_use TW7cdfmsqy 05:15:51Z and NLSfWoden4 02:17:56Z, 11 on D85Hv9y6jT 2026-10-28 13:18:27Z), all in pid 84129, the 8-day `claude --resume 2ddedf36` chat in ~ (326 MB transcript): its client spawned them 3.6, 4.9 and 18.5 s after the tool_use and cancelled them 2.4, 0.7 and 1.4 s past their 5 s timeout, so its event loop was blocked; that chat's 1960 Bash calls of 10-25..29 spawn hooks p50 0.07 s after the tool_use, 22 over 3 s, max 35 s (a 63 MB chat: 2 of 393 over 3 s, max 9.9 s). A8X8xDtCbA 02:56:51Z (Rentiva-design) was a machine stall: no hook of any session journaled from 02:56:42.8 to 02:56:50.6Z; samples busy 1.0, kernel 0.44. Its own cost: hook-time 24 h p50 15 ms wall, 20 ms CPU (n 14826). The row's fact read the hook_grows_repos line (dismissed by hook-grows-repos-worker-launch-gate) until the hook_cut verdict carried its own fact. Blind spot hook-cut-call-stall.",
+      "handoff": null
+    },
+    {
+      "id": "hook_cut:chat-switch-link.sh",
+      "title": "chat-switch-link cut at once with the other hooks of one tool call",
+      "match": {
+        "rule": "hook_cut",
+        "ident": "chat-switch-link\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "hook_cut:launchagent-name-gate.sh",
+        "hook_cut:statusline-workdir-hook.sh",
+        "hook_cut:pages-hint.sh",
+        "hook_cut:worker-launch-gate.sh",
+        "hook_cut:dia-not-chrome.sh"
+      ],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-hooks-20261029T053122Z-64d6",
+      "note": "Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): a stall outside the hook. The call's hooks were cut at once (12 on tool_use TW7cdfmsqy 05:15:51Z and NLSfWoden4 02:17:56Z, 11 on D85Hv9y6jT 2026-10-28 13:18:27Z), all in pid 84129, the 8-day `claude --resume 2ddedf36` chat in ~ (326 MB transcript): its client spawned them 3.6, 4.9 and 18.5 s after the tool_use and cancelled them 2.4, 0.7 and 1.4 s past their 5 s timeout, so its event loop was blocked; that chat's 1960 Bash calls of 10-25..29 spawn hooks p50 0.07 s after the tool_use, 22 over 3 s, max 35 s (a 63 MB chat: 2 of 393 over 3 s, max 9.9 s). A8X8xDtCbA 02:56:51Z (Rentiva-design) was a machine stall: no hook of any session journaled from 02:56:42.8 to 02:56:50.6Z; samples busy 1.0, kernel 0.44. On the TW7cdfmsqy payload the hook exits at its claude-chat-switch screen: 28.5 ms a run at load 103. Blind spot hook-cut-call-stall.",
+      "handoff": null
+    },
+    {
+      "id": "hook_cut:dia-not-chrome.sh",
+      "title": "dia-not-chrome cut at once with the other hooks of one tool call",
+      "match": {
+        "rule": "hook_cut",
+        "ident": "dia-not-chrome\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "hook_cut:launchagent-name-gate.sh",
+        "hook_cut:statusline-workdir-hook.sh",
+        "hook_cut:pages-hint.sh",
+        "hook_cut:worker-launch-gate.sh",
+        "hook_cut:chat-switch-link.sh"
+      ],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-hooks-20261029T053122Z-64d6",
+      "note": "Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): a stall outside the hook. The call's hooks were cut at once (12 on tool_use TW7cdfmsqy 05:15:51Z and NLSfWoden4 02:17:56Z, 11 on D85Hv9y6jT 2026-10-28 13:18:27Z), all in pid 84129, the 8-day `claude --resume 2ddedf36` chat in ~ (326 MB transcript): its client spawned them 3.6, 4.9 and 18.5 s after the tool_use and cancelled them 2.4, 0.7 and 1.4 s past their 5 s timeout, so its event loop was blocked; that chat's 1960 Bash calls of 10-25..29 spawn hooks p50 0.07 s after the tool_use, 22 over 3 s, max 35 s (a 63 MB chat: 2 of 393 over 3 s, max 9.9 s). A8X8xDtCbA 02:56:51Z (Rentiva-design) was a machine stall: no hook of any session journaled from 02:56:42.8 to 02:56:50.6Z; samples busy 1.0, kernel 0.44. On the TW7cdfmsqy payload the guard exits at its chrom screen: 19.2 ms a run at load 103. Blind spot hook-cut-call-stall.",
+      "handoff": null
+    },
+    {
+      "id": "hook_grows_repos:instruction-write-gate.sh",
+      "title": "instruction-write-gate slower in chats with 5+ repositories",
+      "match": {
+        "rule": "hook_grows_repos",
+        "ident": "instruction-write-gate\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-hooks-20261029T053122Z-64d6",
+      "note": "Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): load, not repositories. bin/instruction-write-gate.sh reads no .repos registry. 24 h of hook-time rows of the live sessions, split by their .repos count: up to 2 n 263 wall p50 123 ms, CPU 77; 3-4 n 608 wall 80, CPU 71; 5+ n 474 wall 169, CPU 75. CPU is flat, so the 5+ chats (orchestrators, night runs) wait off-CPU on a busy machine (samples busy 1.0). Class: blind spot grows-split-under-load.",
+      "handoff": null
+    },
+    {
+      "id": "hook_grows_repos:edit-conflict-notice.sh",
+      "title": "edit-conflict-notice slower in chats with 5+ repositories",
+      "match": {
+        "rule": "hook_grows_repos",
+        "ident": "edit-conflict-notice\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-hooks-20261029T053122Z-64d6",
+      "note": "Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): load, not repositories. hooks/edit-conflict-notice.sh reads no .repos registry (its registry is ~/.claude/sessions, its work per edited file), and takes no lock and no sleep. 24 h of hook-time rows of the live sessions, split by their .repos count: up to 2 n 10 wall p50 160 ms, CPU 140; 3-4 n 22 wall 112, CPU 77; 5+ n 38 wall 429, CPU 105. CPU is lower in the 5+ chats, so the wall gap is waiting. Class: blind spot grows-split-under-load.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -11723,6 +11879,13 @@
       "reason": "2026-10-29 ask-deferred-bg-task-hold-cap: a stop that is both busy and active journals its asks as skipped-busy, and the line carries no active flag. Three hours of keepalive-ping stops read as an ordinary busy streak, and their re-entry nature took elimination (held clock kept in hits.jsonl) plus the keepalive journal's ping times",
       "since": "2026-10-29",
       "would_catch_if": "stop-dispatch.sh journalled active:true on re-entry stops and stop_hooks_section named a streak carried by re-entries apart from one carried by real turn ends"
+    },
+    {
+      "id": "hook-cut-call-stall",
+      "what": "a tool call whose hooks were cut at once: the client or the machine stalled, not the hooks",
+      "reason": "2026-10-29: tool_use TW7cdfmsqy cut 12 hooks at 7.4-7.8 s and opened 12 hook_cut rows; its hooks run 14-29 ms on that payload, the client spawned them 3.6 s late and cancelled them 2.4 s past the 5 s timeout, and through the A8X8xDtCbA one (02:56:51Z) no hook of any session journaled for 8 s",
+      "since": "2026-10-29",
+      "would_catch_if": "hook_cut grouped cuts by tool_use and read a call whose hooks were cut at once, spawned late against the tool_use or over a span with no hook-time row from any session, as one client or machine stall row naming its session"
     }
   ]
 }
