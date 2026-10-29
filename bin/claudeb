@@ -136,36 +136,16 @@ similar_account_names() {
   printf '%s' "$out"
 }
 
-file_mtime() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
-}
-
+# The shared pid-owned store lock: a holder stalled past 30 s by a swapping machine keeps its lock
+# (an age break let a second writer race it, 2026-10-28), a dead holder loses it at once.
 lock_acquire() {
-  local lock="$1" tries=0 now mt
-  local max="${2:-${CLAUDEB_LOCK_RETRIES:-10}}" delay="${CLAUDEB_LOCK_DELAY:-0.2}"
+  local max="${2:-${CLAUDEB_LOCK_RETRIES:-10}}"
   [[ "$max" =~ ^[1-9][0-9]*$ ]] || max=10
-  while ! mkdir "$lock" 2>/dev/null; do
-    tries=$((tries + 1))
-    # Stale-break during the wait too — a ~40s waiter must not sit behind a crashed holder.
-    if [ "$tries" -ge "$max" ] || [ "$((tries % 25))" -eq 0 ]; then
-      now=$(date +%s) || return 1
-      mt=$(file_mtime "$lock" 2>/dev/null) || mt="$now"
-      if [[ "$mt" =~ ^[0-9]+$ ]] && [ "$((now - mt))" -gt 30 ]; then
-        limit_hit claudeb.lock-stale 30 s break "claudeb lock ${lock##*/} broken by age: its holder, if alive, now races this writer" \
-          'bin/claudeb:-gt 30 ]; then' "$((now - mt))"
-        rm -rf "$lock" 2>/dev/null && continue
-      fi
-      [ "$tries" -lt "$max" ] || { limit_hit claudeb.lock-retries "$max" count retry-exhausted \
-        "claudeb lock ${lock##*/}: the bookkeeping write it guards" 'bin/claudeb:CLAUDEB_LOCK_RETRIES:-10' "$tries"; return 1; }
-    fi
-    sleep "$delay" 2>/dev/null || return 1
-  done
-  return 0
+  LLM_STORE_LOCK_RETRIES=$max LLM_STORE_LOCK_DELAY="${CLAUDEB_LOCK_DELAY:-0.2}" store_lock_acquire "$1"
 }
 
 lock_release() {
-  [ -n "$1" ] || return 0
-  rmdir "$1" 2>/dev/null || true
+  store_lock_release "$1"
 }
 
 account_data() {
@@ -540,9 +520,7 @@ token_journal() {
 }
 
 oauth_attempt_update() {
-  local name="$1" outcome="$2" retry_until="${3:-0}" credentials_expires_at="${4:-0}" warm_cause="${5:-}" http_status="${6:-0}" transport_rc="${7:-0}" bypass_attempted_at="${8:-0}" lock="$oauth_attempts_file.lock" tmp now tries=0 lock_mtime stale_retake=false jkind jhttp
-  local max_tries="${CLAUDEB_LOCK_RETRIES:-10}" delay="${CLAUDEB_LOCK_DELAY:-0.2}"
-  [[ "$max_tries" =~ ^[1-9][0-9]*$ ]] || max_tries=10
+  local name="$1" outcome="$2" retry_until="${3:-0}" credentials_expires_at="${4:-0}" warm_cause="${5:-}" http_status="${6:-0}" transport_rc="${7:-0}" bypass_attempted_at="${8:-0}" lock="$oauth_attempts_file.lock" tmp now jkind jhttp
   case "$outcome" in
     attempting|warming) ;;
     *)
@@ -563,26 +541,9 @@ oauth_attempt_update() {
       ;;
   esac
   mkdir -p "$base_dir" || return 0
-  while ! mkdir "$lock" 2>/dev/null; do
-    tries=$((tries + 1))
-    if [ "$tries" -ge "$max_tries" ]; then
-      now=$(date +%s) || return 0
-      if ! lock_mtime=$(file_mtime "$lock"); then lock_mtime=$now; fi
-      if [ "$stale_retake" = false ] && [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 30 ]; then
-        stale_retake=true
-        limit_hit claudeb.lock-stale 30 s break "oauth-attempts lock broken by age: its holder, if alive, now races this writer" \
-          'bin/claudeb:lock_mtime))" -gt 30 ]; then' "$((now - lock_mtime))"
-        rm -rf "$lock" || return 0
-        continue
-      fi
-      limit_hit claudeb.lock-retries "$max_tries" count retry-exhausted "the oauth-attempts update of $name ($outcome)" \
-        'bin/claudeb:CLAUDEB_LOCK_RETRIES:-10' "$tries"
-      return 0
-    fi
-    sleep "$delay" || return 0
-  done
+  lock_acquire "$lock" || return 0
   if ! now=$(date +%s); then
-    rmdir "$lock" 2>/dev/null || true
+    lock_release "$lock"
     return 0
   fi
   tmp="$oauth_attempts_file.tmp.$$"
@@ -624,7 +585,7 @@ oauth_attempt_update() {
     mv "$tmp" "$oauth_attempts_file" 2>/dev/null || true
   fi
   rm -f "$tmp" 2>/dev/null || true
-  rmdir "$lock" 2>/dev/null || true
+  lock_release "$lock"
   return 0
 }
 
@@ -813,7 +774,7 @@ keychain_write() {
 # re-read and the previous JSON is restored on any mismatch.
 oauth_refresh() {
   local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0 weather_http=0 http_num=0 refresh_rc=1
-  local prev_rt prev_expires_at current current_rt rlock='' lock_trap glock glock_held glock_tries spacing
+  local prev_rt prev_expires_at current current_rt rlock='' lock_trap glock glock_held spacing
   # A robot skip is weather, not a verdict: journal it, write no auth verdict, no
   # strike, no oauth-attempts change; the distinct rc 76 surfaces as `robot-skip`.
   if ! user_refresh_explicit; then
@@ -868,22 +829,13 @@ oauth_refresh() {
     # must cover the worst-case hold — the default 2s budget times out and the herd returns.
     glock="$oauth_attempts_file.rl-global"
     glock_held=false
-    glock_tries=0
-    # Waited in 25-try slices that re-touch the rlock: one 200-try wait outlives its 30s stale
-    # threshold and a second refresher of this account breaks it and POSTs the same refresh token.
-    while [ "$glock_tries" -lt 8 ]; do
-      touch "$rlock" 2>/dev/null || true
-      if lock_acquire "$glock" 25; then glock_held=true; break; fi
-      glock_tries=$((glock_tries + 1))
-    done
-    if [ "$glock_held" = true ]; then
+    if lock_acquire "$glock" 200; then
+      glock_held=true
       printf -v lock_trap 'lock_release %q; lock_release %q' "$glock" "$rlock"
       trap "$lock_trap" EXIT
     fi
     spacing="${CLAUDEB_OAUTH_TOKEN_SPACING:-1}"
     [[ "$spacing" =~ ^[0-9]+$ ]] || spacing=1
-    # Above 10s the hold (curl 8s + spacing) crosses the 30s stale threshold and waiters break a live glock.
-    [ "$spacing" -le 10 ] || spacing=10
     # Here-strings, not pipes, feed curl's stdin here and in both probes: under pipefail a curl
     # that exits before reading turns the writer's SIGPIPE into rc 141, read as transport weather.
     if response=$(curl -sS -m 8 -D "$headers" -o - -w $'\n%{http_code}' -X POST \
@@ -891,8 +843,8 @@ oauth_refresh() {
     if [ "$glock_held" = true ]; then
       [ "$spacing" -le 0 ] || sleep "$spacing"
       lock_release "$glock"
-      # Re-arm the trap off the glock the instant it is freed — lock_release has no
-      # ownership check, so exiting later would rmdir another account's fresh glock.
+      # Re-arm the trap off the glock the instant it is freed — lock_release checks only the
+      # process, so exiting later would remove a sibling account's fresh glock.
       glock_held=false
       printf -v lock_trap 'lock_release %q' "$rlock"
       trap "$lock_trap" EXIT

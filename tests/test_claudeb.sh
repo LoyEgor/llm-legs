@@ -1455,41 +1455,25 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
     assert test "$(cat "$wi_dir/wi1.display")" = live
   )
 
-  # The full rl-global wait (200 tries, ~40s live) outlives the rlock's 30s stale threshold, so
-  # the waiter must keep its rlock fresh or a second refresher of the account breaks it.
+  # A lock aged past 30 s under a live holder (a swapping machine stalls it) stays the holder's;
+  # breaking it by age let a second writer race the store (2026-10-28). A dead holder's goes at once.
   (
     export CLAUDEB_LOCK_DELAY=0.01
-    curl() {
-      case "$*" in
-        *'/oauth/token'*) cat >/dev/null; printf '{"access_token":"at-new","expires_in":3600,"refresh_token":"rt-wr1b"}\n200' ;;
-        *) return 97 ;;
-      esac
-    }
-    seed_expired wr1 rt-wr1
-    printf '{}' >"$oauth_attempts_file"
-    wr_glock="$oauth_attempts_file.rl-global"
-    wr_rlock="$oauth_attempts_file.rl.wr1"
-    mkdir "$wr_glock"
-    ( for _ in $(seq 40); do [ ! -e "$wr_glock.release" ] || break; touch "$wr_glock"; sleep 0.1; done; rmdir "$wr_glock" ) &
+    wr_lock="$CLAUDEB_DIR/limits/wr1.json.lock"
+    sleep 30 &
     wr_holder=$!
-    oauth_refresh wr1 "$(svc_of wr1)" "$(security find-generic-password -s "$(svc_of wr1)" -w)" >/dev/null 2>&1 &
-    wr_pid=$!
-    wr_tries=0
-    while ! [ -d "$wr_rlock" ] && [ "$wr_tries" -lt 100 ]; do sleep 0.02; wr_tries=$((wr_tries + 1)); done
-    touch -t 202001010000 "$wr_rlock"
-    wr_fresh=false
-    wr_tries=0
-    while [ "$wr_tries" -lt 15 ]; do
-      sleep 0.1
-      wr_tries=$((wr_tries + 1))
-      wr_mt=$(file_mtime "$wr_rlock" 2>/dev/null) || continue
-      [[ "$wr_mt" =~ ^[0-9]+$ ]] || continue
-      if [ "$(($(date +%s) - wr_mt))" -lt 10 ]; then wr_fresh=true; break; fi
-    done
-    : >"$wr_glock.release"
-    wait "$wr_pid" || true
-    wait "$wr_holder" || true
-    assert test "$wr_fresh" = true
+    mkdir "$wr_lock"
+    printf '%s\n' "$wr_holder" >"$wr_lock/pid"
+    touch -t "$(date -r "$(($(date +%s) - 120))" +%Y%m%d%H%M.%S)" "$wr_lock"
+    if lock_acquire "$wr_lock" 3; then wr_rc=0; else wr_rc=$?; fi
+    assert test "$wr_rc" -ne 0
+    assert test "$(cat "$wr_lock/pid")" = "$wr_holder"
+    kill "$wr_holder"
+    wait "$wr_holder" 2>/dev/null || true
+    assert lock_acquire "$wr_lock" 3
+    assert test "$(cat "$wr_lock/pid")" = "$$"
+    lock_release "$wr_lock"
+    assert test ! -e "$wr_lock"
   )
 )
 
