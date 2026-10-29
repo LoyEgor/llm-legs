@@ -10761,6 +10761,57 @@
       "note": "The chat 'Rental project career requirements' (77a2b895, Rentiva) installed impeccable 4.8.0 into a temp project and mv'd the fresh files over claude-setup/skills-on-demand/impeccable (gitignored third-party skill since claude-setup@845a4341, 4.0.4 kept as impeccable.4.0.4.bak); the mv no gate reads, so only the watcher saw it. The skill is reached only through commands/impeccable.md (disable-model-invocation, typed only) and its ⚡ word family (claude-setup@747547d2), so its SKILL.md loads in no chat unasked. Same cause and fix as guards-growth-skills-on-demand-experiment. Ruled out: an Updater doctor run (no doctors run or brief names it since 2026-10-20).",
       "handoff": null,
       "ruled_at": null
+    },
+    {
+      "id": "unjournaled-cache-keepalive",
+      "title": "cache-keepalive.py, the asyncRewake Stop hook, wrote no hook-time line",
+      "match": {
+        "rule": "unjournaled",
+        "ident": "cache-keepalive\\.py"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T07:45:00+02:00",
+          "by": "night fixer harness-hook-health-20261029T053115Z-76a6",
+          "files": [
+            "claude-setup/hooks/cache-keepalive.py",
+            "claude-setup/tests/test_cache_keepalive.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-hook-health-20261029T053115Z-76a6",
+      "note": "Python, so it cannot source hook-time.sh; added in 745c775e without a timing line. Only a headless run (CLAUDE_CODE_ENTRYPOINT != cli) blocks a Stop: asyncRewake runs in the foreground there, and the hook returns at once. That run now writes the bash-5 row da line itself (start stamped before the imports, ~15 ms measured; interpreter start stays the interpreter-start blind spot). A cli run sleeps up to 58 min in the background and writes none on purpose: settings_hooks reads only `async`, so the doctor takes this asyncRewake entry for a synchronous Stop hook and a cli line would trip the p50 rule and the Stop batches. Ruled out: a bash wrapper in settings.json (live ~/.claude file, outside the repos; would also save the headless python start).",
+      "handoff": null
+    },
+    {
+      "id": "unjournaled-pages-session",
+      "title": "pages-session.sh, the SessionStart compact|resume hook, wrote no hook-time line",
+      "match": {
+        "rule": "unjournaled",
+        "ident": "pages-session\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T07:45:00+02:00",
+          "by": "night fixer harness-hook-health-20261029T053115Z-76a6",
+          "files": [
+            "claude-setup/hooks/pages-session.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-hook-health-20261029T053115Z-76a6",
+      "note": "Created in 37b6eb23 without the hook-time source line; claude-setup tests/test_hook_time.sh (every hooks/*.sh sources it) was red on it since. It now sources the lib first; key pages-session.sh = hook_key. Checked under /bin/bash 3.2: one spool row, exit 0.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -11211,6 +11262,13 @@
       "reason": "2026-10-20 skill/worker: the Speed row carries the tool's file only in opportunity.path (claude-setup/commands/worker.md), problem.component.files stays empty, so doctor-fix component_repos opens no ADD-DIR worktree in the repository that holds the file, and a skill row outside llm-legs cannot be fixed or handed off (claude-setup is a sweep repository, so close refuses a handoff)",
       "since": "2026-10-20",
       "would_catch_if": "the packet's component.files held opportunity.path for tool rows, so launch_runs made the sibling worktree"
+    },
+    {
+      "id": "async-rewake-as-sync",
+      "what": "an asyncRewake hook entry's runs, read as synchronous",
+      "reason": "settings_hooks reads only `async`; asyncRewake runs in the background under the cli and in the foreground headless, so the entry is sync in one mode only. cache-keepalive.py, the one such entry, journals only its headless runs, so nothing is misjudged today",
+      "since": "2026-10-29",
+      "would_catch_if": "the hook-time line carried the entrypoint, or the doctor split an asyncRewake key's runs by CLAUDE_CODE_ENTRYPOINT"
     }
   ]
 }
