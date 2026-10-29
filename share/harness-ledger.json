@@ -12684,13 +12684,6 @@
       "would_catch_if": "the hook journal priced each hook's spawn count per call next to its wall, so a CPU audit of instruction-watch and instruction-bloat-gate ranks them"
     },
     {
-      "id": "limit-hit-flood-young-journal",
-      "what": "a limit whose limits.json normal is 0 hits firing thousands of times while ~/.cache/limits/hits.jsonl is younger than LIMIT_QUIET_DAYS",
-      "reason": "store-lock.retries journaled every busy slot of every slot poll from 6f01e217 (2026-10-12): 360k rows, 124 MB in 15 h, no problem row because limits_section judges a fault only past LIMIT_FAULT_X of an observed/usual pair or once the journal covers 7 d; the 360k rows stay in the live journal, and every harness-doctor run reads the whole file (fixed at the writer by harness-speed-suite-audit-llm-legs-test-chat-account-20261012T235242Z-393c)",
-      "since": "2026-10-13",
-      "would_catch_if": "limits_section compared a limit's hit rate with its registry normal from the first day, or the journal had a size bound"
-    },
-    {
       "id": "hook-off-cpu-wait",
       "what": "where a hook's wall goes when it runs far over its CPU (blocked in the kernel, waiting to be scheduled, paging in)",
       "reason": "notice-connections.sh ran 1-5 s on 0.1-0.3 CPU-s through 2026-10-13 15:25-17:05Z while its sibling notices ran 2-7x their CPU, and nothing in the code waits; hook-time rows carry only wall and cpu_us, and a timeout kill's cpu_us lacks the killed hook's children (timeout signals the group, the orphaned python is never reaped by the timed shell), so the killed run read 17 ms",

@@ -6851,6 +6851,7 @@ LIMITS_GROUP = "Limits"
 LIMIT_REPOS = ("llm-legs", "claude-setup", "review-bench", "token-map")
 LIMIT_FAULT_X = HANG_USUAL_X
 LIMIT_QUIET_DAYS = 7
+LIMIT_ZERO = re.compile(r"0 hits\b")
 
 
 def limit_hits_log():
@@ -6876,7 +6877,8 @@ def limit_ratio(hit):
 def limits_section(now):
     """Every threshold hit the four repositories journal (share/limit_hit.py), per limit over 24 h and 7 d,
     with who set it and why. A hit reads as a fault when it ran LIMIT_FAULT_X times its usual amount, or when a
-    limit quiet for the 7 d before today fires, once the journal is older than those 7 d."""
+    limit quiet for the 7 d before today fires, once the journal is older than those 7 d, or when one whose registry
+    normal is 0 hits fires at all, however young the journal."""
     hits = [h for h in read_jsonl(limit_hits_log(), now - (LIMIT_QUIET_DAYS + 1) * 86400) or ()
             if isinstance(h.get("ts"), (int, float)) and isinstance(h.get("limit"), str)]
     try:
@@ -6909,6 +6911,7 @@ def limits_section(now):
         worst = max(ratios, key=lambda pair: pair[0]) if ratios else None
         far = [(r, h) for r, h in ratios if r >= LIMIT_FAULT_X and h["ts"] > now - 86400]
         fresh = bool(day) and not before and covered
+        never = bool(day) and bool(LIMIT_ZERO.match(str((entry or {}).get("normal") or "")))
         last = max(week, key=lambda h: h["ts"])
         where = last.get("where") or (entry or {}).get("where") or ""
         cause = []
@@ -6917,6 +6920,8 @@ def limits_section(now):
             cause.append("ran %.1fx its usual (%s of %s %s)" % (r, num(h.get("observed")), num(h.get("usual")), h.get("unit") or ""))
         if fresh:
             cause.append("fired %d time%s in 24 h after %d quiet days" % (len(day), "" if len(day) == 1 else "s", LIMIT_QUIET_DAYS))
+        elif never:
+            cause.append("fired %d time%s in 24 h against a normal of 0 hits" % (len(day), "" if len(day) == 1 else "s"))
         if entry is None and registries.get(repo, {}) is not None:
             cause.append("not in %s/limits.json" % repo)
         level = "red" if cause else None
@@ -6937,7 +6942,7 @@ def limits_section(now):
                         menu=section("", detail, ["", ""], [False, False]),
                         judge=[verdict("limit_hit", limit, worst[0] if worst else len(day), LIMIT_FAULT_X if worst else None,
                                        "x" if worst else "hits", 24, len(day), level, fact=say, evidence=proof,
-                                       bad=len(far) or int(fresh) or int(bool(cause)))]))
+                                       bad=len(far) or int(fresh) or (len(day) if never else 0) or int(bool(cause)))]))
     rows.sort(key=lambda r: (not r["red"], -int(r["cells"][2]), r["cells"][0]))
     out = section(LIMITS_GROUP, rows, ["limit", "hits 24 h", "hits 7 d", "worst ×usual 7 d", "last lost"],
                   [False, True, True, True, False], lead=lead,

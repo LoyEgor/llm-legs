@@ -109,7 +109,8 @@ mkdir -p "$REPOS/llm-legs" "$REPOS/claude-setup" "$REPOS/token-map"
 cat >"$REPOS/llm-legs/limits.json" <<'EOF'
 {"a.fresh": {"value": 30, "unit": "s", "where": "bin/x:1", "set_by": "chat", "why": "w", "normal": "n"},
  "a.ok": {"value": 30, "unit": "s", "where": "bin/x:2", "set_by": "chat", "why": "w", "normal": "n"},
- "a.ratio": {"value": 30, "unit": "s", "where": "bin/x:3", "set_by": "Egor", "why": "his", "normal": "rarely"}}
+ "a.ratio": {"value": 30, "unit": "s", "where": "bin/x:3", "set_by": "Egor", "why": "his", "normal": "rarely"},
+ "a.zero": {"value": 9, "unit": "count", "where": "bin/x:4", "set_by": "chat", "why": "w", "normal": "0 hits; a hit drops a write."}}
 EOF
 echo '{}' >"$REPOS/claude-setup/limits.json"
 echo 'not json' >"$REPOS/token-map/limits.json"
@@ -121,6 +122,7 @@ journal() { # first-hit-age-s file
     printf '{"ts":%s,"limit":"llm-legs:a.ratio","value":30,"unit":"s","observed":20,"usual":10,"action":"kill","lost":"r1"}\n' "$((now - 2 * 86400))"
     printf '{"ts":%s,"limit":"llm-legs:a.ratio","value":30,"unit":"s","observed":60,"usual":10,"action":"kill","lost":"r2","where":"bin/x:3"}\n' "$((now - 3600))"
     printf '{"ts":%s,"limit":"llm-legs:a.fresh","value":30,"unit":"s","action":"kill","lost":"f"}\n' "$((now - 1800))"
+    printf '{"ts":%s,"limit":"llm-legs:a.zero","value":9,"unit":"count","action":"drop","lost":"z"}\n' "$((now - 3 * 86400))" "$((now - 900))"
     printf '{"ts":%s,"limit":"llm-legs:unknown","value":1,"unit":"count","action":"drop","lost":"u"}\n' "$((now - 3 * 86400))"
     printf '{"ts":%s,"limit":"review-bench:b.x","value":1,"unit":"count","action":"drop","lost":"b"}\n' "$((now - 600))"
     printf '{"ts":%s,"limit":"claude-setup:c.unreg","value":1,"unit":"count","action":"drop","lost":"c"}\n' "$((now - 2 * 86400))"
@@ -149,10 +151,10 @@ for name in ("fixture-9d", "fixture-2d", "fixture-10d"):
     leads = [l["say"].split(" ")[0] for l in out.get("lead") or ()]
     print("red=%s levels=%s leads=%s state=%s rows=%d" % (",".join(red), ",".join(levels), ",".join(leads), out["state"], len(out["rows"])))
 EOF
-assert_eq "red=claude-setup:c.unreg,llm-legs:a.fresh,llm-legs:a.ratio,llm-legs:unknown,review-bench:b.x levels=-,red leads=review-bench,token-map state=problem rows=6" \
-  "$(sed -n 1p "$WORK/limits.out")" "ratio, fresh after 7 quiet days, unregistered in a readable registry"
-assert_eq "red=claude-setup:c.unreg,llm-legs:a.ratio,llm-legs:unknown levels=-,red leads=review-bench,token-map state=problem rows=6" \
-  "$(sed -n 2p "$WORK/limits.out")" "a journal younger than 8 d proves no quiet week"
+assert_eq "red=claude-setup:c.unreg,llm-legs:a.fresh,llm-legs:a.ratio,llm-legs:a.zero,llm-legs:unknown,review-bench:b.x levels=-,red leads=review-bench,token-map state=problem rows=7" \
+  "$(sed -n 1p "$WORK/limits.out")" "ratio, fresh after 7 quiet days, a 0-hits normal firing daily, unregistered in a readable registry"
+assert_eq "red=claude-setup:c.unreg,llm-legs:a.ratio,llm-legs:a.zero,llm-legs:unknown levels=-,red leads=review-bench,token-map state=problem rows=7" \
+  "$(sed -n 2p "$WORK/limits.out")" "a journal younger than 8 d proves no quiet week, yet a 0-hits normal is judged from its first hit"
 assert_eq "red= levels=- leads=review-bench,token-map state=watch rows=2" "$(sed -n 3p "$WORK/limits.out")" "no fault: a missing registry still shows"
 
-echo "PASS: $asserts asserts; both writers' line, anchor resolution, the line cap, whole lines under racing writers, write failures that change nothing, limits.json both ways with units, and the Harness Limits section's ratio, quiet-week, unregistered and missing-registry rules"
+echo "PASS: $asserts asserts; both writers' line, anchor resolution, the line cap, whole lines under racing writers, write failures that change nothing, limits.json both ways with units, and the Harness Limits section's ratio, quiet-week, 0-hits normal, unregistered and missing-registry rules"
