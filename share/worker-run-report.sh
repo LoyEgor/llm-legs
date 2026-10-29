@@ -237,7 +237,9 @@ last_messages() { # directory
 run_result_text() {
   if [ -f "$1/result" ]; then cat "$1/result"; return; fi
   case "$2" in
-    claudeb) jq -r '.result // empty' "$1/out" 2>/dev/null ;;
+    claudeb)
+      if [ "$(head -n1 "$1/killed" 2>/dev/null)" = finished ]; then claudeb_session_answer "$1"
+      else jq -r '.result // empty' "$1/out" 2>/dev/null; fi ;;
     grok) grok_result_text "$1" ;;
     *) cat "$1/out" 2>/dev/null ;;
   esac

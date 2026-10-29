@@ -23,6 +23,26 @@ transcript_answered() { # directory since
     <"$transcript" >/dev/null 2>&1
 }
 
+# claude -p writes cost-state as its session's last line once the answer is in; a resumed transcript
+# holds the previous launch's until this one writes, which transcript_answered tells apart.
+claudeb_session_closed() { # directory
+  local transcript last
+  { IFS= read -r transcript <"$1/session-file"; } 2>/dev/null && [ -f "$transcript" ] || return 1
+  last=$(tail -c 4096 "$transcript" 2>/dev/null) || return 1
+  last=${last%$'\n'}
+  case "${last##*$'\n'}" in '{"type":"cost-state"'*) return 0 ;; esac
+  return 1
+}
+
+# The answer a closed claude -p session gave, for a run the watchdog ended after it (claudeb's out
+# holds its JSON only when the CLI exits by itself).
+claudeb_session_answer() { # directory
+  local transcript
+  { IFS= read -r transcript <"$1/session-file"; } 2>/dev/null && [ -f "$transcript" ] || return 1
+  jq -nr 'last(inputs | select(.type? == "assistant") | [.message.content[]? | select(.type == "text") | .text]
+    | select(length > 0) | join("\n"))' <"$transcript" 2>/dev/null
+}
+
 activity_fingerprint() { # directory vendor workdir
   local directory="$1" vendor="$2" workdir="$3" path stamp observed=y fingerprint='' session_path
   if [ "$vendor" = claudeb ]; then
@@ -167,6 +187,13 @@ run_with_deadline() {
       fi
       # A tool call waiting in a limiter (a suite slot) is no hung worker.
       ! holds_in_tree "$child" || { idle_since=$wd_now silent_since=$wd_now; }
+      # claude -p closes its session and then waits on a background task it left running, a dev server
+      # forever (CLI 2.1.312, 2026-10-29: 30 min to the idle kill, its answer reported as a failure).
+      if [ "$vendor" = claudeb ] && [ $((wd_now - idle_since)) -ge "$WALL_SETTLE" ] &&
+         claudeb_session_closed "$directory" && transcript_answered "$directory" "$WD_STARTED"; then
+        reason=finished
+        break
+      fi
       # A transcript found already holding this launch's first answer (its first tool call long
       # running) never moved under observation, yet its start was not hung.
       [ "$ever_active" -eq 1 ] || ! transcript_answered "$directory" "$WD_STARTED" || ever_active=1
@@ -223,6 +250,7 @@ run_with_deadline() {
   # its zombie stays unreaped until the wait below and answers kill -0 for any grace.
   process_tree_end "$watchdog" 0
   wait "$watchdog" 2>/dev/null
+  [ -z "$RUN_DIRECTORY" ] || [ "$(head -n1 "$RUN_DIRECTORY/killed" 2>/dev/null)" != finished ] || rc=0
   printf -v ended '%(%s)T' -1
   [ -z "$RUN_DIRECTORY" ] || meta_update "$RUN_DIRECTORY" \
     '.attempt_secs = ((.attempt_secs // []) + [$secs]) | .attempt_rcs = ((.attempt_rcs // []) + [$rc])' \

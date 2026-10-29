@@ -97,6 +97,7 @@ killed_line() { # directory
   case "$reason" in
     'silent '*) printf 'KILLED: silent — no output in %ss\n' "${reason#silent }" ;;
     wall) printf 'KILLED: wall — vendor usage limit detected\n' ;;
+    finished) printf 'KILLED: finished — claude -p closed its session but waited on a background task it left running; the answer is the transcript'"'"'s\n' ;;
     term) printf 'KILLED: signal TERM — the supervisor was signalled and stopped the vendor child with it\n' ;;
     'idle '*) printf 'KILLED: idle watchdog — nothing this run writes changed for %ss (WORKER_RUN_IDLE_S)\n' "${reason#idle }" ;;
     'deadline '*) printf 'KILLED: deadline — the %ss ceiling ended a run still being served (WORKER_RUN_DEADLINE)\n' "${reason#deadline }" ;;

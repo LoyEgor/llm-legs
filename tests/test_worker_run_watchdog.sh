@@ -42,6 +42,23 @@ if suite_shard_owns 2 wd-lastwords; then
   assert grep -q "^(no final answer; the worker's last messages:)$" <<<"$lastwords_report"
 fi
 
+if suite_shard_owns 1 wd-closed; then
+  # claude -p that closed its session yet waits on a background task it left running (a dev server)
+  # answered: the run ends done with that answer, not at the idle kill as a failure (live 2026-10-29).
+  clear_stub
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=closed STUB_SLEEP=60 STUB_TRANSCRIPT_SESSION=closed-session STUB_TRANSCRIPT_ACCOUNT=closed \
+    STUB_TRANSCRIPT_SAY='World A is built and committed.' STUB_TRANSCRIPT_CLOSE=1 WORKER_RUN_WALL_SETTLE_S=1 \
+    WORKER_RUN_IDLE_S=20 WORKER_RUN_DEADLINE=600
+  start_ok claudeb
+  unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_SAY STUB_TRANSCRIPT_CLOSE \
+    WORKER_RUN_WALL_SETTLE_S WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+  closed_wait=$("$RUNNER" wait "$RUN_ID" --max 15)
+  assert grep -q '^STATUS: done$' <<<"$closed_wait"
+  assert grep -q '^KILLED: finished' <<<"$closed_wait"
+  assert grep -qx 'World A is built and committed.' <<<"$("$RUNNER" report "$RUN_ID")"
+fi
+
 if suite_shard_owns 1 wd-busy; then
 # A worker that keeps writing is working, however long it takes: the idle watchdog reads the run's
 # own files, and a suite that runs for minutes returns through them.
