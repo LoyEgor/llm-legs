@@ -50,6 +50,7 @@ assert [ "$(slots_from_cores 1 2 4)" = 3 ]
 # 4 x the cores capped at 40 while there is room.
 sysctl() { echo 10; }
 assert [ "$(run_suites_slots)" = 3-4 ]
+assert [ "$(run_suites_direct_slots)" = 3-8 ]
 assert [ "$(worker_slots)" = 5-40 ]
 pool_slots=$(worker_slots)
 sysctl() { echo 2; }
@@ -61,6 +62,7 @@ sysctl() { echo 32; }
 assert [ "$(run_suites_slots)" = 4-4 ]
 assert [ "$(worker_slots)" = 8-40 ]
 assert grep -qF '${RUN_SUITES_SLOTS:-$(run_suites_slots)}' "$ROOT/share/run-suites.sh"
+assert grep -qF '${RUN_SUITES_SLOTS:-$(run_suites_direct_slots)}' "$ROOT/tests/lib/suite-journal.sh"
 assert grep -qF '${WORKER_SLOTS:-$(worker_slots)}' "$ROOT/share/worker-run-lifecycle.sh"
 unset -f sysctl
 

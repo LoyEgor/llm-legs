@@ -14,6 +14,8 @@ slots_from_cores() { # divisor floor [ceiling] -> cores / divisor, clamped
 
 # The floor is each pool's count before room existed, so admission never falls below it.
 run_suites_slots() { printf '%s-4\n' "$(slots_from_cores 3 2 4)"; }
+# A direct run is one suite against a fan-out's -j cores/2: twice the runs, the rest above the floor only with room.
+run_suites_direct_slots() { printf '%s-8\n' "$(slots_from_cores 3 2 4)"; }
 worker_slots() {
   local max
   max=$(($(slots_from_cores 1 2) * 4))

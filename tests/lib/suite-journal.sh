@@ -402,7 +402,7 @@ builtin trap 'suite_journal_die 15' TERM
 if [ -z "$suite_journal_held" ]; then
   suite_journal_queuing=1
   suite_journal_slot=$(. "$suite_journal_slots" && slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
-    "${RUN_SUITES_SLOTS:-$(run_suites_slots)}" $((6 * 3600)) run-suites "suite ${suite_journal_test##*/} of $suite_journal_repo") ||
+    "${RUN_SUITES_SLOTS:-$(run_suites_direct_slots)}" $((6 * 3600)) run-suites "suite ${suite_journal_test##*/} of $suite_journal_repo") ||
     suite_journal_slot=''
   suite_journal_queuing=''
   if [ -n "$suite_journal_slot" ]; then
