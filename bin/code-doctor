@@ -30,6 +30,7 @@ SCOPE = []
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
 import limit_hit  # noqa: E402
+from fix_commit import main_checkout  # noqa: E402
 from spend import read_jsonl  # noqa: E402
 
 DETECTOR_VERSION = 4
@@ -3727,7 +3728,29 @@ def check_run(record, base):
 
 
 
+def rooted_files(files):
+    """Each --files entry as repo/path, the form doctor-fix close takes: one naming a repository of the scope stays,
+    a bare path resolves against the checkout record-fix runs in (a linked worktree by its main checkout's name);
+    one that resolves to no repository of the scope refuses the record."""
+    names = {repo_name(top) for top in repo_paths()}
+    where = os.path.realpath(os.getcwd())
+    top = os.path.realpath((git(where, "rev-parse", "--show-toplevel") or "").strip() or "/")
+    repo = os.path.realpath(main_checkout(top)) if top != "/" else None
+    out = []
+    for name in files:
+        if not os.path.isabs(name) and name.partition("/")[0] in names:
+            out.append(name)
+            continue
+        rel = os.path.relpath(os.path.join(where, name), top) if repo in repo_paths() else ".."
+        if rel.startswith(".."):
+            raise SystemExit("code-doctor: record-fix --files %s is in no repository of %s: give it as repo/path"
+                             % (name, ", ".join(sorted(names)) or "the scope"))
+        out.append("%s/%s" % (repo_name(repo), rel))
+    return out
+
+
 def record_fix(cause, by, files, lines_removed, suite_s, tokens_cut, mechanism, canonical, replaced):
+    files = rooted_files(files)
     ledger = load_ledger()
     rows = ledger.setdefault("rows", [])
     candidates = {c["id"]: c for c in load_candidates()}

@@ -242,6 +242,15 @@ assert jqe '.mechanisms[0] | .mechanism == "curl refresh" and .canonical == "alp
 "$CD" >/dev/null
 assert jqe '(.problems[] | select(.id == "cause:alpha/lib/refresh.sh#robot_curl_refresh") | .state) == "fixed-pending"
   and .yield.lines_removed == 6 and .groups.dead == 2' "$LATEST"
+# A bare --files path resolves against the checkout record-fix runs in (a linked worktree by its main checkout's
+# name) to the repo/path doctor-fix close takes; one in no repository of the scope is refused and records nothing.
+bare="$WORK/bare-ledger.json"
+(cd "$WT/lib" && CODE_DOCTOR_LEDGER="$bare" "$CD" record-fix cause:bare --by code-code-b --files refresh.sh ../bin/x alpha/lib/y) \
+  >/dev/null || fail "record-fix with bare paths"
+assert jqe '.rows[0].fixes[0].files == ["alpha/lib/refresh.sh", "alpha/bin/x", "alpha/lib/y"]' "$bare"
+assert_fails sh -c 'cd "$1" && CODE_DOCTOR_LEDGER="$2" "$3" record-fix cause:stray --by code-code-b --files lib/refresh.sh 2>/dev/null' \
+  _ "$WORK" "$bare" "$CD"
+assert jqe '[.rows[].id] == ["cause:bare"]' "$bare"
 jq '.rows[0].status = "fixed" | .rows += [{id: "loose", title: "a row with no narrowing match", match: {}, status: "not-a-bug"}]' \
   "$CODE_DOCTOR_LEDGER" >"$C/ledger.tmp" && mv "$C/ledger.tmp" "$CODE_DOCTOR_LEDGER"
 "$CD" >/dev/null
