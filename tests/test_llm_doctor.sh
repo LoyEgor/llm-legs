@@ -227,7 +227,10 @@ json.dump({"as_of": now - 60, "total": 9,
            "rows": {"integrity": [{"id": "r", "age_s": 600}], "debt_scope": [{"id": "d", "age_s": 9000}]}},
           open(os.path.join(os.path.dirname(benches), "doctor-snapshot.json"), "w"))
 
-frozen_day = time.strftime("%Y-%m-%d", time.localtime(now - 10 * 86400))
+# Ten calendar days back, as trend_days counts them: now - 10 * 86400 s lands a day late in the last hour before
+# midnight for ten days after a DST fall-back.
+import datetime
+frozen_day = (datetime.date.fromtimestamp(now) - datetime.timedelta(days=10)).isoformat()
 os.makedirs(os.path.join(doctor, "daily"))
 json.dump({"day": frozen_day, "covered": ["image"], "legs": {"image|grok-image": 9},
            "counts": {"image|grok-image|failed|bad output|ours|X4": 5, "image|grok-image|walled|||": 2}},
@@ -503,7 +506,7 @@ assert wait "$unmarked_pid"
 assert jq -e '[.problems[] | select(.rule == "account-stale")] == []' "$WORK/unmarked.json" >/dev/null
 # Days the bench store covers whole are frozen to disk; the older image day stays as it was.
 assert test "$(find "$LLM_DOCTOR_DIR/daily" -name '*.json' | wc -l | tr -d ' ')" -ge 3
-image_day=$(date -r $((NOW - 10 * 86400)) +%Y-%m-%d)
+image_day=$(date -r "$NOW" -v-10d +%Y-%m-%d)
 assert grep -q '"image|grok-image|failed|bad output|ours|X4": 5' "$LLM_DOCTOR_DIR/daily/$image_day.json"
 assert jq -e '.blocks' "$LLM_DOCTOR_DIR/latest.json" >/dev/null
 assert grep -q '"image|grok-image|walled|||": 2' "$LLM_DOCTOR_DIR/daily/$image_day.json"
