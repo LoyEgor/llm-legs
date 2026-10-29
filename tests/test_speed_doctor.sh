@@ -1003,6 +1003,9 @@ ran = subprocess.run([sys.executable, "-c", probe, os.path.join(root, "bin", "ha
                      env=dict(env, SPEED_DOCTOR_DIR=os.path.join(work, "speed-exec")), capture_output=True, text=True)
 check(ran.stdout.strip() == "" and open(os.path.join(work, "exec.out")).read() == "harness --quiet\n",
       "Harness execs Speed after a successful run, tagged harness: %r" % ran.stdout)
+bare, _ = speed("depends", "--spend-audit", "fee:x", "--verdict", "kept", "--by", "r")
+check(bare.returncode == 2 and "--verdict kept needs --depends-on" in bare.stderr,
+      "a kept audit decision names what it depends on, or speed-doctor refuses it: %r" % bare.stderr[-200:])
 print(count[0])
 EOF
 ) || { printf 'FAIL: the Speed block misjudged the calibration fixture\n' >&2; exit 1; }

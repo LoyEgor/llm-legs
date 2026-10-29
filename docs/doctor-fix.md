@@ -144,7 +144,8 @@ prices at audit; it is proven once the share or that price in `harness_index.cel
 
 A `speed-suite-audit-<repo>-<suite>` or `speed-cpu-<component>` run audits the rows its queue ranks first; its brief
 carries the steps, `STRONG: yes` keeps Light and Gemini Flash off it, and `bin/speed-doctor --suite-audit` or
-`--cpu-audit` records the row in `share/spend-ledger.json`, `--zero` pricing its removal.
+`--cpu-audit` records the row in `share/spend-ledger.json`, `--zero` pricing its removal. A `kept` or `trade`
+verdict on any of the three audits needs `--depends-on "<what may change>"` (`--reread-by` defaults to 8 weeks).
 
 ### The judge is not yours to loosen
 
