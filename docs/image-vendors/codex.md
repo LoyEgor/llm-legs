@@ -14,7 +14,7 @@ Verified against `codex-cli 0.163.0` on 2026-10-20, unchanged from 0.159.3 (0.16
 | --- | --- | --- |
 | Tool | `image_gen.imagegen` (built-in, no API key) | binary tool description, `ext/image-generation/src/tool.rs`; skill `SKILL.md` "Default built-in tool mode (preferred)" |
 | Arguments | `prompt`, `transparent_background` (bool, since 0.157–0.159), `referenced_image_paths`, `num_last_images_to_include` — and nothing else | binary 0.159.0: `struct ImagegenArgs with 4 elements` over `prompttransparent_backgroundreferenced_image_pathsnum_last_images_to_include` (0.156.1: 3 elements, no `transparent_background`), `properties`/`additionalProperties` schema strings |
-| Image model | cli: `gpt-image-2`; web: unknown | cli: the literal the binary sends to `images/generations`/`images/edits` (`ext/image-generation/src/tool.rs`, still in 0.165.0); web: no witness — its PNGs carry the same versionless C2PA as the CLI's (below), so `model.image` names the CLI's request only |
+| Image model | web: ChatGPT Images 2.5; cli: sends `gpt-image-2` | web: OpenAI's release (openai.com/index/introducing-chatgpt-images-2-5, 2026-09-08: ChatGPT, ChatGPT Work and Codex, all tiers); cli: the literal the binary sends to `images/generations`/`images/edits` (`ext/image-generation/src/tool.rs`, still in 0.165.0) — whether the backend serves 2.5 for it is unwitnessed. No output names either: both routes' PNGs carry the same versionless C2PA (below), so `model.image` is the CLI's request literal only |
 | Reference images | local paths, at most 5 on the CLI; 20 on `--route web` (`web.refs_max`) | live 2026-10-03 (borodatch, 0.160.0): 16 paths end the turn with `` `referenced_image_paths` must contain at most 5 paths ``, no image; the web route took 16 twice (burkhartor, Plus: 15 of 16 objects drawn once, 16 of 16 in order once) and 20 (notcom, Plus: 20 of 20 in order), so 20 is a verified working cap above the API's documented 16, not a probed ChatGPT ceiling; every ref counts against ChatGPT's own upload quota |
 | Conversation images | `num_last_images_to_include` 1–5, never together with `referenced_image_paths` | binary: `` `num_last_images_to_include` must be between 1 and ``; "Never provide both" |
 | Local-file edits | `view_image` the file first, then pass it in `referenced_image_paths` | binary tool description: "If you have not seen a local image yet, use `view_image` to inspect it before editing"; `SKILL.md` "Built-in edit semantics" |
@@ -46,7 +46,7 @@ Verified against `codex-cli 0.163.0` on 2026-10-20, unchanged from 0.159.3 (0.16
   (`codex-rs/ext/image-generation/src/tool.rs`), which is what `model.image` records. Never feed the
   check the manifest's own value — it would report `fresh` forever while measuring nothing. A ChatGPT web
   download and the codex outputs alike carry `{name: ChatGPT, version: gpt-image}` (2026-10-29), so
-  nothing names the web route's model and `verified=gpt-image-2` on a web run is the CLI's literal. The CLI
+  no file names its model and `verified=gpt-image-2` on a web run is the CLI's literal, not the web's 2.5. The CLI
   version in `caps=` is the guard that fires when the extension changes.
 - **`-i/--image` on `codex exec`** — it exists ("Optional image(s) to attach to the initial prompt") and
   would put a reference in conversation context, but the built-in tool edits local files through
