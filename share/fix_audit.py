@@ -234,7 +234,31 @@ def run_cost(run, vendor):
         return None
 
 
-def fixer_of(rnd, finding, runs, doctors, costs):
+def workdir_runs():
+    """{workdir: [(run, meta)]} of every worker-run run: a doctor fixer's runs are the ones in its record's worktrees."""
+    out = collections.defaultdict(list)
+    for path in glob.glob(os.path.join(RUNS, "*", "meta.json")):
+        meta = read_json(path, None)
+        if isinstance(meta, dict) and meta.get("workdir"):
+            out[meta["workdir"]].append((os.path.basename(os.path.dirname(path)), meta))
+    return out
+
+
+def doctor_cost(record, costs, share):
+    """A doctor fixer's spend per fixed finding: every worker-run run in its worktrees, None when none is found
+    or one's transcript is gone."""
+    if "\0workdirs" not in costs:
+        costs["\0workdirs"] = workdir_runs()
+    found = [hit for wt in record.get("worktrees") or () for hit in costs["\0workdirs"].get(wt, ())]
+    for run, meta in found:
+        if run not in costs:
+            costs[run] = run_cost(run, meta.get("vendor") or "claudeb")
+    if not found or any(costs[run] is None for run, _ in found):
+        return None
+    return round(sum(costs[run] for run, _ in found) / max(share, 1), 1)
+
+
+def fixer_of(rnd, finding, runs, doctors, costs, share=1):
     for run, meta in runs.get(rnd, ()):
         fixed = [r.get("finding") for r in jsonl(os.path.join(RUNS, run, "verdicts.jsonl"))
                  if r.get("kind") == "fixer" and r.get("outcome") == "fixed"]
@@ -245,7 +269,8 @@ def fixer_of(rnd, finding, runs, doctors, costs):
             return meta.get("model") or meta.get("vendor") or "unknown", run, cost
     record = doctors.get(rnd)
     if record:
-        return (record.get("trial") or {}).get("arm") or record.get("model") or "opus", record.get("id"), None
+        return ((record.get("trial") or {}).get("arm") or record.get("model") or "opus", record.get("id"),
+                doctor_cost(record, costs, share))
     return "unknown", None, None
 
 
@@ -322,7 +347,7 @@ def collect(write=True, since=SINCE):
             cited = str(found.get("file") or "")
             path = cited[len(repo) + 1:] if cited.startswith(repo + "/") else cited
             reviewed = meta.get("reviewed") if isinstance(meta.get("reviewed"), dict) else {}
-            model, run, cost = fixers.get(ident) or fixer_of(rnd, pos, runs, doctors, costs)
+            model, run, cost = fixers.get(ident) or fixer_of(rnd, pos, runs, doctors, costs, len(fixed))
             if model != "unknown":
                 fixers[ident] = [model, run, cost]
             row = {"id": ident, "round": rnd, "finding": pos, "lens": "legacy" if lens.startswith("legacy") else lens,
