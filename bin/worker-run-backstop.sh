@@ -27,7 +27,7 @@ if [ "${CLAUDEB_WORKER:-}" = 1 ]; then
     | [.background_tasks[]? | select((has("status") | not) or .status == "running" or .status == "pending")
        | "- " + (.description // .command // .id | tostring | .[0:160])]
     | select(length > 0)
-    | {decision: "block", reason: ("[" + $hook + "] Still running, and a headless run cannot exit while they do; their end wakes you after your answer, and that last message replaces your report:\n" + join("\n") + "\nStop what you no longer need with TaskStop, wait in the foreground for what you still need, then give your whole final answer again.")}' 2>/dev/null
+    | {decision: "block", reason: ("[" + $hook + "] " + "Still running, and a headless run cannot exit while they do; their end wakes you after your answer, and that last message replaces your report:\n" + join("\n") + "\nStop what you no longer need with TaskStop, wait in the foreground for what you still need, then give your whole final answer again.")}' 2>/dev/null
   exit 0
 fi
 . "${self%/*}/../share/run-liveness.sh" 2>/dev/null || exit 0
