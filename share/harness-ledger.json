@@ -12847,13 +12847,6 @@
       "would_catch_if": "Guards journaled enabledPlugins flips in ~/.claude/settings.json and priced the enabled plugin's SKILL.md frontmatter on a user-scope enable"
     },
     {
-      "id": "cpu-process-rows-partial-history",
-      "what": "CPU audit process/* rows read 0.0 CPU-min/day and 0 runs a day for a daemon or a renamed tag",
-      "reason": "System hours kept only the top-N own processes (cpu_top) until cpu_own landed 2026-10-12, so a process outside the top N on most days has a day median of 0 (transcriber/__main__.py really ~9 CPU-s/h idle), a one-off (q852-crops) queues as a component, and a renamed tag (worker-run -> llm-legs/bin/worker-run, 2026-10-07) is a second row; all three audited kept by harness-speed-cpu-process-q852-crops-20261012T235112Z-33ce",
-      "since": "2026-10-13",
-      "would_catch_if": "cpu_audit queued only components with cpu_own rows on at least half the window's days, folded retired tags into their live key, and priced a daemon by hours covered rather than rows listed; self-heals once seven days of cpu_own accumulate (2026-10-19)"
-    },
-    {
       "id": "stop-part-cpu-includes-dispatch",
       "what": "a stop.d hook's CPU row (cpu_audit hook/stop.d/*) prices its own work plus stop-dispatch's per-part subshell and timeout fork",
       "reason": "2026-10-13 CPU audit of notice-reports.sh: 4.2 ms a run isolated against 10.5 ms journalled; part_time stamps inside the subshell that forks timeout, so ~7 parts x ~5 ms a stop belong to the dispatcher and no row names it",
