@@ -171,6 +171,36 @@ class InstructionPerformance(unittest.TestCase):
         self.assertNotIn(str(catalog), context)
         self.assertNotIn(str(catalog), baseline.read_text())
 
+    def test_a_repository_memory_copy_is_not_instruction_content(self):
+        # claude-setup's night-snapshot backs memory up into local-config/home/.claude/projects/:
+        # nothing loads it, and its ~20 rows were reported CHANGED against whoever's call ran.
+        self.repo = self.repo.resolve()
+        self.git('init', '-q')
+        memory = self.put(self.repo / 'x/home/.claude/projects/p/memory/MEMORY.md')
+        self.put(self.repo / 'x/home/.claude/projects/p/memory/tracked.md')
+        self.git('add', 'x/home/.claude/projects/p/memory/tracked.md')
+        skill = self.put(self.repo / '.claude/skills/s/SKILL.md')
+        self.put(self.repo / 'x/home/.claude/agents/a.md')
+        kept = {'.claude/skills/s/SKILL.md', 'x/home/.claude/agents/a.md'}
+        self.assertEqual(kept, self.listing())
+        self.assertEqual(kept, self.walk())
+        visible = subprocess.check_output(['bash', '-c', '. "$1"; instruction_visible_paths "$HOME" "" "$2"', '_',
+                                           str(ROOT / 'share/instruction-files.sh'), str(self.repo)],
+                                          env=self.env, text=True).splitlines()
+        self.assertIn(str(skill), visible)
+        self.assertNotIn(str(memory), visible)
+        self.assertEqual(0, self.hook('baseline').returncode)
+        baseline = self.state / 'session-perf.tsv'
+        row = '\t'.join(['1.5', '5', '1', '1', '0' * 64, '-', str(memory), str(memory)])
+        baseline.write_text(baseline.read_text() + row + '\n')
+        memory.write_text('snapshot taken\n')
+        skill.write_text('changed\n')
+        context = self.context(self.hook('check'))
+        self.assertIn('CHANGED ' + str(skill), context)
+        self.assertNotIn('DELETED', context)
+        self.assertNotIn(str(memory), context)
+        self.assertNotIn(str(memory), baseline.read_text())
+
     def test_a_session_inside_an_unloaded_tree_watches_none_of_it(self):
         self.home = self.home.resolve()
         self.env['HOME'] = str(self.home)

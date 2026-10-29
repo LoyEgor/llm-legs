@@ -110,12 +110,15 @@ instruction_is_md() {
 # (catalog clones its auto-update pulls; an installed plugin loads from plugins/cache),
 # the harness's .trash bins at any depth (plugins/, skills/) and hidden top-level backups. Together
 # over half the watch set, and the harness's own rewrites of them were reported as changes.
+# A `.claude/projects/` tree inside a repository is dropped the same way: claude-setup's night-snapshot
+# backs every project's memory up into local-config/home/.claude/projects/, which nothing loads.
 INSTRUCTION_HOME_UNLOADED_ERE='(file-history|plugins/marketplaces|([^/]+/)+\.trash|\.[^/]*)'
-# awk: unloaded(path) is true under one of those trees of $_INSTRUCTION_HOME/.claude.
+# awk: unloaded(path) is true under one of those trees of $_INSTRUCTION_HOME/.claude or under any
+# `.claude/projects/`.
 _instruction_unloaded_awk='
   function unloaded(p,  h) {
     h = ENVIRON["_INSTRUCTION_HOME"] "/.claude/"
-    return substr(p, 1, length(h)) == h &&
+    return index(p, "/.claude/projects/") || substr(p, 1, length(h)) == h &&
       substr(p, length(h) + 1) ~ ("^" ENVIRON["_INSTRUCTION_UNLOADED_ERE"] "(/|$)")
   }'
 _instruction_class_files() {
@@ -147,7 +150,8 @@ instruction_repo_root() { # cwd
 
 # A `.claude/` segment counts below the repository root alone: a worktree lives under
 # `<repo>/.claude/worktrees/`, and matched on the absolute path every markdown file in it read as
-# instruction content, which instruction_carved_out says it is not.
+# instruction content, which instruction_carved_out says it is not. A `.claude/projects/` tree is
+# never instruction content, as the home walk prunes it: in a repository it is a memory backup.
 _instruction_find_files() { # dir [repo-root] [dirs]
   local e
   local -a md_args=(-name review-debt-ignore)
@@ -159,7 +163,7 @@ _instruction_find_files() { # dir [repo-root] [dirs]
   fi
   find "$1" \( "${_instruction_pruned[@]}" \) -prune -o \
     -type f \( -iname CLAUDE.md -o -iname CLAUDE.local.md -o -iname SKILL.md -o \
-    \( -path '*/.claude/*' ! -path '*/.claude/local/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null |
+    \( -path '*/.claude/*' ! -path '*/.claude/local/*' ! -path '*/.claude/projects/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null |
     perl -0ne 'BEGIN { $n = length shift } print if m{/(?:claude|claude\.local|skill)\.md\0$}i || substr($_, $n) =~ m{/\.claude/}' \
       "${2:-$1}" | _instruction_emit_paths
 }
@@ -168,7 +172,7 @@ _instruction_find_files() { # dir [repo-root] [dirs]
 # below the outer root, $md the extensions joined by `|`. _instruction_find_files' find expression
 # is the same rule for the walk.
 _instruction_candidate_pl='$base =~ /^(?:claude|claude\.local|skill)\.md$/i
-  || ($rel =~ m{/\.claude/} && $rel !~ m{/\.claude/local/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i))'
+  || ($rel =~ m{/\.claude/} && $rel !~ m{/\.claude/(?:local|projects)/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i))'
 
 # git instead of a walk: a walk descends every ignored tree (570k files, 20 s a call). The set is
 # the walk's minus files under an ignored directory, save under `.claude` — a gitignored `.claude/`
@@ -1691,8 +1695,9 @@ instruction_guarded_dirs() {
 
 # The carve-outs from the directory rule, asked of an absolute path the gate already matched.
 # A memory file under ~/.claude/projects is the model's to write (see the MEMORY.md note above), a
-# task file under a `.claude/local/` is loaded by nothing, and an ordinary markdown file inside a
-# worktree is repository work, not instruction content: a worktree's own CLAUDE files and `.claude/`
+# task file under a `.claude/local/` or a memory copy under a repository's `.claude/projects/` is
+# loaded by nothing, and an ordinary markdown file inside a worktree is repository work, not
+# instruction content: a worktree's own CLAUDE files and `.claude/`
 # tree stay guarded like the repository's, and so does a copy whose main-checkout counterpart sits in
 # a guarded directory (claude-setup's global/docs is ~/.claude/docs): its landing delivers bytes no
 # gate saw. The path may be unresolved (a file not yet written), so a `..` or `.` segment would walk
@@ -1701,7 +1706,7 @@ instruction_carved_out() { # abs-path [home]
   local p=$1 home=${2:-$HOME} rest dir g
   case "/$p/" in */../*|*/./*) return 1 ;; esac
   printf '%s' "${p##*/}" | grep -Eqx "$INSTRUCTION_GUARDED_BASENAMES" && return 1
-  case "$p" in "$home"/.claude/projects/*|*/.claude/local/*) return 0 ;; esac
+  case "$p" in */.claude/projects/*|*/.claude/local/*) return 0 ;; esac
   case "$p" in
     */.claude/worktrees/*/*)
       rest=${p##*/.claude/worktrees/}
