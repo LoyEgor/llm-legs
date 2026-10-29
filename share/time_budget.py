@@ -367,7 +367,9 @@ def refusal_rows(lo, hi):
                 min(duplicates, key=lambda r: abs(float(r["at"]) - at))["tool_use_id"] = ident
                 continue
             rows.append({"at": at, "sid": sid, "tool_use_id": ident, "gate": rest[0], "decision": "denied"})
-    night = {run_session(r.get("run")) for r in worker_runs(lo, hi) if NIGHT_WORKDIR.search(str(r.get("workdir") or ""))}
+    night = {run_session(r.get("run")) for r in night_spend.parsed(
+        line for line in night_spend.kept_lines(worker_runs_path()) if "/worktrees/night-" in line)
+        if (num(r.get("ended_at")) or 0) > lo and NIGHT_WORKDIR.search(str(r.get("workdir") or ""))}
     for r in rows:
         if str(r.get("sid") or "")[:8] in night - {None}:
             r["probe"] = True

@@ -188,15 +188,17 @@ lines(probe_gates, [{"at": D0 + 510, "sid": "fixer123-full", "gate": "worker-pin
 os.makedirs(os.path.join(night_spend.RUNS, probe_run))
 with open(os.path.join(night_spend.RUNS, probe_run, "session"), "w") as handle:
     handle.write("fixer123-0000\n")
-real_runs, T.gates_path = T.worker_runs, lambda: probe_gates
-T.worker_runs = lambda lo, hi: [{"run": probe_run, "workdir": "/p/.claude/worktrees/night-20260110T000000Z-aaaa-harness-x"},
-                                {"run": RUN, "workdir": "/p"}]
+real_stats, T.gates_path = os.environ["WORKER_STATS_DIR"], lambda: probe_gates
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "probe-stats")
+lines(os.path.join(work, "probe-stats", "runs.jsonl"), [
+    {"run": probe_run, "ended_at": D0 + 600, "workdir": "/p/.claude/worktrees/night-20260110T000000Z-aaaa-harness-x"},
+    dict(run, workdir="/p")])
 probe_cost = T.refusal_cost(D0 + 490, D0 + 530, {"c": [call(509, "probe1", "fixer123"), call(518, "after1", "fixer123"),
                                                        call(510, "chat1", "chat9999"), call(514, "after2", "chat9999")]})
 check(probe_cost["by_gate_s"] == {"english-gate.sh": 3} and probe_cost["count"] == 1 and probe_cost["probe_s"] == 8
       and probe_cost["probes"] == 1, "a night worker's denial (fixers probe the gates they fix) is no lost time: its "
       "recovery sums apart as probe seconds: %s" % probe_cost)
-T.worker_runs, T.gates_path = real_runs, lambda: fixture
+os.environ["WORKER_STATS_DIR"], T.gates_path = real_stats, lambda: fixture
 resumed = os.path.join(work, "home", ".claude", "projects", "fixture", "resume1-full.jsonl")
 denial = lambda t, tid: {"timestamp": iso(D0 + t), "message": {"content": [
     {"type": "tool_result", "tool_use_id": tid, "is_error": True, "content": "PreToolUse:Bash hook error: [cd-guard.sh] x"}]}}
