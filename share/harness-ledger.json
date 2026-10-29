@@ -11485,8 +11485,8 @@
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-29",
-      "reviewed_by": "fixer harness-hooks-20261029T053122Z-64d6",
-      "note": "Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): load, not repositories. hooks/edit-conflict-notice.sh reads no .repos registry (its registry is ~/.claude/sessions, its work per edited file), and takes no lock and no sleep. 24 h of hook-time rows of the live sessions, split by their .repos count: up to 2 n 10 wall p50 160 ms, CPU 140; 3-4 n 22 wall 112, CPU 77; 5+ n 38 wall 429, CPU 105. CPU is lower in the 5+ chats, so the wall gap is waiting. Class: blind spot grows-split-under-load.",
+      "reviewed_by": "fixer harness-hooks-20261029T112048Z-00f0",
+      "note": "2026-10-29 11:20Z (fixer harness-hooks-20261029T112048Z-00f0): relaunched 5 h after its ruling on the same 24 h split because hook_grows_* verdicts said window_h 1, so a ruling held one hour; bin/harness-doctor now gives them 24. Reading stands: up to 2 n 28 wall 137 ms, CPU 115; 3-4 n 77 wall 164, CPU 86; 5+ n 55 wall 227, CPU 96 (2 sessions a band). Ruled out 2026-10-29 (fixer harness-hooks-20261029T053122Z-64d6): load, not repositories. hooks/edit-conflict-notice.sh reads no .repos registry (its registry is ~/.claude/sessions, its work per edited file), and takes no lock and no sleep. 24 h of hook-time rows of the live sessions, split by their .repos count: up to 2 n 10 wall p50 160 ms, CPU 140; 3-4 n 22 wall 112, CPU 77; 5+ n 38 wall 429, CPU 105. CPU is lower in the 5+ chats, so the wall gap is waiting. Class: blind spot grows-split-under-load.",
       "handoff": null,
       "ruled_at": "2026-10-29T06:18:12Z"
     },
@@ -12295,6 +12295,33 @@
       "note": "2026-10-29 (run 2dc2): ruled out, each part has its row: python/sed in-place edits that corrupted graft.py and layers.py are row speed-adhoc-file-edit (open; the bypass-mode system prompt prefers sed); the split rm -rf retry after a denial is row log_audit:workers-route-around-denials (Egor's deny rule); the pixel-forge docs/DESIGN.md Edits met no refusal: instruction-write-gate guards instruction files (share/instruction-files.sh), the brief's 'any markdown file' (MD-GUARD, 9b400d5c) is wider than the gate.",
       "handoff": null,
       "ruled_at": "2026-10-29T12:25:00Z"
+    },
+    {
+      "id": "hook_grows_size:context-nudge.sh",
+      "title": "context-nudge slower in transcripts over 10 MB",
+      "match": {
+        "rule": "hook_grows_size",
+        "ident": "context-nudge\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T14:20:00+02:00",
+          "by": "fixer harness-hooks-20261029T112048Z-00f0",
+          "files": [
+            "claude-setup/hooks/context-nudge.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-sync-context-nudge"
+      ],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "fixer harness-hooks-20261029T112048Z-00f0",
+      "note": "Its own work, not load: 24 h CPU p50 38 ms under 1 MB, 54 over 10 MB (x1.42) while hooks of the same batches stay x0.9-1.17. Not history: at equal growth a 24 MB and a 0.4 MB transcript cost the same. Bytes a call brings: big transcripts are image-heavy, tool_result p90 400 KB against 15 KB, and the hook paid them twice, bash `read -d ''` takes the payload pipe one byte a syscall (0.4 ms CPU a KiB: 22 ms at 1 KiB, 218 at 500 KiB) and macOS tail -c +N copies the sidecar's new bytes at ~31 MB/s. jq now reads stdin itself and dd seeks to the block, as llm-legs statusline.sh does since 6baaa4e1: 60 sampled real tool responses of today's big transcripts, mean CPU 49 -> 23 ms a run, small ones 23 -> 23; a 500 KiB payload 228 -> 25 ms. Same output: the same four fields reach the same checks; dd starts at most one block before the old start, and earlier boundaries only re-find what the sorted maximum holds. Ruled out: the sweep (daily) and the boundary jq (only on a compact_boundary in the new bytes).",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -12745,6 +12772,13 @@
       "reason": "2026-10-29: refuse_stale_resume's saving was priced (9864be9d: 2.2 % of Claude spend, 199k re-written per cold resume), its cost never was; the log audit quotes ~2h50m and ~2h of re-derivation in the pixel-art chat, and no record links a RESUME_REFUSED to the run started in its place",
       "since": "2026-10-29",
       "would_catch_if": "worker-run recorded the refused session id in the meta of the next run started from the same launcher and workdir, and llm-doctor priced that run's tokens and wall against the refused resume's cache write"
+    },
+    {
+      "id": "hook-cost-by-payload-size",
+      "what": "a hook whose cost grows with the bytes of the call's payload (tool_input or tool_response), not with the transcript",
+      "reason": "2026-10-29 (fixer harness-hooks-20261029T112048Z-00f0): context-nudge's 0.4 ms CPU a payload KiB read as hook_grows_size only because image-heavy transcripts are both big and carry big tool responses; 20 hooks read stdin by bash `read -d ''`, one byte a syscall, and limits-triage-nudge, word-spend, pr-ready-mattermost and memory-prune hook do it on PostToolUse",
+      "since": "2026-10-29",
+      "would_catch_if": "the joined call carried its payload bytes (the tool_result line's length) and hook_view split hook runs by them as it does by transcript size"
     }
   ]
 }

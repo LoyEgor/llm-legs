@@ -623,6 +623,8 @@ check(repo_nav["cells"][0] == "by repositories in the chat: 1 of 4 hooks grow"
 grows = {j["ident"]: j["level"] for r in part["rows"] for j in r.get("judge", []) if j["rule"] == "hook_grows_repos"}
 check(grows.get("gate-b.sh") == "watch" and len(grows) > 1 and not [i for i, lv in grows.items() if lv and i != "gate-b.sh"],
       "F: every hook judged in both repository bands carries a hook_grows_repos verdict, quiet unless it grows: %s" % grows)
+check({j["window_h"] for r in part["rows"] for j in r.get("judge", []) if j["rule"].startswith("hook_grows_")} == {24},
+      "F: a grows verdict's window is its 24 h split, so a ruling holds it past the hour")
 check(by_repos({"sessaaaa": [(T - 9999, 1)], "sessbbbb": [(T - 9999, 8), (T - 4000, 1)]})[1]["cells"][0]
       == "by repositories in the chat: 0 of 4 hooks grow", "J F: the count at the run's time decides")
 registry = os.path.join(home, ".cache", "claude", "review-journal", "sessbbbb-0000-full-id.repos")

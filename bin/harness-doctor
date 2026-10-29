@@ -3500,9 +3500,10 @@ def hooks_section(hooks, calls, cuts, samples_h, hooks_since, timed24, timed1, n
                  lambda: "%s takes %s ms in chats with %d+ repositories, %s ms with up to %d" % (
                      name, num(many_ms), REPOS_MANY, num(few_ms), REPOS_FEW))):
             if applies:
-                judges.append(verdict(rule, key, value, round(limit, 3), "ms", 1 if recent_span == "in the last hour"
-                                      or (rule == "hook_full_work" and span) else 24,
-                                      count1 if recent_span == "in the last hour" else count,
+                hour = (bool(span) if rule == "hook_full_work" else False if rule.startswith("hook_grows_")
+                        else recent_span == "in the last hour")
+                judges.append(verdict(rule, key, value, round(limit, 3), "ms", 1 if hour else 24,
+                                      count1 if hour else count,
                                       "watch" if hit and not red else None, fact=fact()))
         if enough("trivial") or enough("other"):
             trivial_rows.append(row([clip(name, 28)] + [num(median(mine_split.get(p))) for p in (
