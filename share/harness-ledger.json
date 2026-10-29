@@ -12733,13 +12733,6 @@
       "would_catch_if": "the run journal recorded, per run, whether its account's wall was already in worker-walls at the slot grant, so a pool-wide limit burst separates from a run that died on a wall nobody could have known"
     },
     {
-      "id": "refusal-recovery-probe-sessions",
-      "what": "the small gates' share of gate refusal recovery (opportunity:time/refusal, refusal/<gate>) that comes from fixers probing the gate itself",
-      "reason": "2026-10-14, 24 h to 06:00 local: of the 1.3 min/day behind time/refusal, worker-pin-gate 4 of 4 denials, launchagent-name-gate 2 of 2, english-gate 1 of 5, review-flow-gate 1 of 1 and the one resume-timer-guard denial read (3 in two sessions) were speed fixers' probe commands that only quote the blocked text (`# codex_model=gpt-5.6-terra` in a test harness, a plist path under echo); worker-edit-guard's 3 of 3 were the `git apply -R patch; test; git apply patch` mutation check the fixer brief prescribes (revert, fails, restore): the brief says a shell write is recorded, never refused, the guard refuses git apply; the other denials are true (Russian in memory files, bare-interpreter plist). Each fixer pass reads these as lost time and re-rules them out (4ef5 on 2026-10-13, this run)",
-      "since": "2026-10-14",
-      "would_catch_if": "refusal_rows skipped denials whose session is a doctor-fix or night-run worker session (run meta.json session) and journaled them apart as probe time, or worker-edit-guard let a `git apply` through whose patch files the run's Edit/Write record already names (a claude-setup hook change, then the brief's mutation check stops losing a turn)"
-    },
-    {
       "id": "worker-compaction-summaries",
       "what": "growth of the worker compaction summaries the Token tracking menu shows under Hidden calls (est.), a row no doctor rule turns into a problem",
       "reason": "2026-10-20 menus audit (7 days to 10-20 against prev 7): Hidden calls 15.5M limit tokens (+29 %, 1.8 % of Claude spend), of it worker compaction summaries 8.7M against 4.8M (+82 %) while worker units grew 572 -> 665 (+16 %); chat 6.7M flat, review-bench -67 %. A compaction summary is written by the worker's own model, so it is not Fee Egor can switch off, and tokenmap prices it from marks, not from a transcript. The other worse rows (Cold restarts 2.2M, Repeated reads 0.1M, Delegation that retells 7k) sit under 0.3 % of spend and belong to tokenmap's waste detectors.",

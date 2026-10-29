@@ -72,6 +72,7 @@ DEAD_LINE = re.compile(r"(?:(?:Failed to authenticate|Not logged in|You've hit y
 DEAD_LINE_MAX = 300
 RESUME = re.compile(r"(?m)^RESUME ([0-9a-f][0-9a-f-]{7,})")
 BENCH_WORKDIR = re.compile(r"/logo-vectorizer-bench(/|$)")
+NIGHT_WORKDIR = re.compile(r"/\.claude/worktrees/night-")
 GAIN_MIN_DAY = 5
 ROI_DAYS = 3
 IMPROVEMENT_RULES = ("opportunity", "regression", spend_block.RULE, suite_audit.RULE, cpu_audit.RULE)
@@ -366,13 +367,18 @@ def refusal_rows(lo, hi):
                 min(duplicates, key=lambda r: abs(float(r["at"]) - at))["tool_use_id"] = ident
                 continue
             rows.append({"at": at, "sid": sid, "tool_use_id": ident, "gate": rest[0], "decision": "denied"})
+    night = {run_session(r.get("run")) for r in worker_runs(lo, hi) if NIGHT_WORKDIR.search(str(r.get("workdir") or ""))}
+    for r in rows:
+        if str(r.get("sid") or "")[:8] in night - {None}:
+            r["probe"] = True
     return rows
 
 
 def refusal_cost(lo, hi, events, rows=None):
     """Recovery from each refusal (a PreToolUse denial, a Stop or PostToolUse block) to the session's next accepted
     call, else the end of the owner turn it fell in, capped; the next refusal of the session ends it too. Each gate's
-    seconds and the total are unions of these spans, so a window several sessions or gates share counts once."""
+    seconds and the total are unions of these spans, so a window several sessions or gates share counts once. A night
+    worker's refusal (`probe`: fixers probe the gates they fix) is no lost time: its spans sum apart as `probe_s`."""
     rows = refusal_rows(lo - REFUSAL_CAP_S, hi) if rows is None else rows
     calls, turns, refused = collections.defaultdict(list), collections.defaultdict(list), collections.defaultdict(set)
     for c in events.get("c", ()):
@@ -383,7 +389,7 @@ def refusal_cost(lo, hi, events, rows=None):
     for r in rows:
         refused[str(r.get("sid") or "")[:8]].add(num(r.get("at")) or 0)
     by, own, missing, seen = collections.defaultdict(list), collections.defaultdict(list), collections.Counter(), set()
-    measured, accepted = 0, {}
+    measured, accepted, probe = 0, {}, []
     for r in sorted(rows, key=lambda r: (num(r.get("at")) or 0, str(r.get("gate") or ""))):
         gate, at = r.get("gate") or "unknown", num(r.get("at")) or 0
         sid = str(r.get("sid") or "")[:8]
@@ -402,14 +408,18 @@ def refusal_cost(lo, hi, events, rows=None):
         seen.add((sid, at))
         ends += [a for a in refused[sid] if a > at] + [at + REFUSAL_CAP_S]
         span = clip([(at, min(ends))], lo, hi)
+        if r.get("probe"):
+            probe += span
+            continue
         by[gate] += span
         own[sid] += span
         measured += 1
     spans = union(x for v in by.values() for x in v)
     by_gate = sorted(((length(union(v)), gate) for gate, v in by.items()), key=lambda x: (-x[0], x[1]))
     return {"seconds": length(spans), "spans": spans, "by_gate_s": {gate: secs for secs, gate in by_gate},
-            "measured": measured, "count": sum(lo <= r["at"] < hi for r in rows),
-            "unmeasured_by_gate": dict(missing), "by_sid": own}
+            "measured": measured, "count": sum(lo <= r["at"] < hi and not r.get("probe") for r in rows),
+            "unmeasured_by_gate": dict(missing), "by_sid": own, "probe_s": round(length(union(probe)), 1),
+            "probes": sum(lo <= r["at"] < hi and bool(r.get("probe")) for r in rows)}
 
 
 def run_session(run):
@@ -922,6 +932,7 @@ def document(now, hours=24.0, write=True):
            "hooks_by_hook_min_day": {k: scale(v, 2) for k, v in b["hooks_by_hook"].items()},
            "worker_runs": b["runs"], "dead_runs": b["dead_runs"], "refusals": b["refusals"],
            "refusal_cost": dict(b["refusal_cost"], min_day=scale(b["refusal_cost"]["seconds"], 2),
+                                probe_min_day=scale(b["refusal_cost"]["probe_s"], 2),
                                 by_gate_min_day={k: scale(v, 2) for k, v in gates}),
            "problems_by_day": problem_trend(now)}
     doc["lost_min_day_by_day"] = history(now, write, doc["lost_min_day"])
@@ -963,7 +974,9 @@ def write_block(doc):
 
 def print_day(doc):
     print("\n".join(doc["lines"]))
-    print("gates · %d refusals · %.2f min/day measured recovery" % (doc["refusals"], doc["refusal_cost"]["min_day"]))
+    print("gates · %d refusals · %.2f min/day measured recovery · %d night-worker probes, %.2f min/day apart" % (
+        doc["refusals"], doc["refusal_cost"]["min_day"], doc["refusal_cost"].get("probes", 0),
+        doc["refusal_cost"].get("probe_min_day", 0.0)))
     for doctor, days in doc["problems_by_day"].items():
         print("problems · %s · %s" % (doctor, " ".join("%s:%s" % (d[5:], n) for d, n in days.items())))
     print("days · " + " ".join("%s:%s" % (d[5:], v) for d, v in doc["lost_min_day_by_day"].items()))
@@ -1314,7 +1327,8 @@ def volume_days(kind, lo, hi):
     if kind == "refusal":
         rows = refusal_rows(lo - REFUSAL_CAP_S, hi)
         for r in rows:
-            add(num(r.get("at")) or 0, r.get("gate") or "unknown")
+            if not r.get("probe"):
+                add(num(r.get("at")) or 0, r.get("gate") or "unknown")
         for i, day in enumerate(days):
             for gate, seconds in refusal_cost(lo + 86400 * i, lo + 86400 * (i + 1), events, rows)["by_gate_s"].items():
                 day[1][gate][1] += seconds
