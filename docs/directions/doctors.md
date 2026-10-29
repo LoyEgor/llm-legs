@@ -76,7 +76,7 @@ before the launch). Classes 2–5 (*): a hand keyword partition of the 79 and 82
 | 2.* a priced lever measured absent (Speed `opportunity`, `test_hang` lock waits) | 9 / 23 | 0.29 / 0.48 % | 300 / 2,053 | here, Open |
 | 3.* load or noise read as a rise (`regression`, `opportunity`, `floor`) | 4 / 14 | 0.13 / 0.31 % | 57 / 632 | rise-beyond-noise |
 | 4.* a log-audit reading of model or chat conduct sent to a fixer | 23 / 7 | 0.18 / 0.10 % | 98 / 138 | conduct-gate |
-| 5.* a landed fix's pre-fix tail still in a 7-day window | 9 / 12 | 0.11 / 0.10 % | 122 / 227 | heavy-tail |
+| 5.* a landed fix's pre-fix tail still in a 7-day window | 9 / 12 | 0.11 / 0.10 % | 122 / 227 | closed (cf193646, ebf5bde1) |
 | 6. a cause no doctor shows: blind spots added and never built | 27 / 26 added, 5 / 0 closed | | | here |
 | 7. a landed fix that was not needed goes unseen (retro sample, 10-28) | 11 of 40 | | | fix-audit, worth-bar |
 
@@ -98,15 +98,6 @@ Reads need section 7 back (How the block runs at night).
 Deep search 10-23, window 10-09…23 (no fixer run after 10-20): non-audit false-alarm share 33.5 % (150 of 448),
 103 of the 150 from `opportunity` and `log_audit`.
 
-### goal heavy-tail: a test-health row reads only runs on code past its last fix
-
-Class 5. `opportunity`: 59 of 174 rows false (0.49 % of Claude spend); 24 are first-raised `test-health` rows ruled
-"already sharded / cut"; its 16 repeats ruling-holds covers.
-- Change: the `test-health` opportunity reads only runs on code past the row's last fix.
-- First step: the 24 rows' last fixes landed before their raising runs' window ended, else stop.
-- Proof, fixed in advance: a replay of the 24 rows raises at most 5, and every `test-health` row later decided
-  `fixed` is still raised; ≈ −24 rows, ≈ 5 points.
-- Must not get worse: held rows later `fixed` (the guard); a suite that really slowed after its fix is raised.
 
 ### goal conduct-gate: a log-audit finding naming no component file goes to blind_spots, not a fixer
 
@@ -201,6 +192,11 @@ Class 7. Of the retro 40, the judge confirmed 10 that were not needed:
   Ledger git: meter closes / added 3 / 27, 0 / 26; outside-found 36.5 % by 10-23 statuses; open 81 → 83 by 10-23.
   Read weekly once Deep search runs: closes ≥ added, open falls, outside-found < 36.9 %; a meter with no real row in
   14 days reverts; not worse: false-alarm share, CPU a run.
+- heavy-tail, stopped at its First step 10-29 (no change): the class was already closed by cf193646 (a suite's
+  test-health row counts only runs after its own ledger fix's day) and ebf5bde1 (heavy/pole/fan-out left
+  test_health). Replay of the 24 rows on HEAD: 12 raised, so ≤ 5 cannot be reached by any cut; 6 have no fix ever
+  recorded, 6 fire only on post-fix runs (124 runs, every head holds its fix). What is left is load or measurement
+  read as idle, class 3, not a pre-fix tail.
 
 ## Decisions
 
