@@ -112,6 +112,19 @@ case "${WEB_MODE:-unset}" in
     printf '{"ok": true, "account": "webacct", "chat": "0c0c0c0c-1111-4222-8333-944455556661", "count": %s, "takes": [%s], "failed": %s, "failures": [%s]}\n' \
       "$count" "$takes" "$((count - delivered))" "$failures"
     exit 0 ;;
+  each)
+    eaches=$(grep -c -x -- --each "$WEB_CALLS")
+    takes=''
+    for k in $(seq 1 "$eaches"); do
+      [ "$k" != 2 ] || continue
+      path=$dest
+      [ "$k" = 1 ] || path=$dest-$k
+      "$REAL_MAGICK" -size $((70 + k))x64 "xc:#00FF0$k" "PNG24:$path"
+      takes="$takes${takes:+,}{\"path\": \"$path\", \"chat\": \"0c0c0c0c-1111-4222-8333-94445555667$k\", \"bytes\": 9, \"format\": \"png\", \"tab\": $k}"
+    done
+    printf '{"ok": true, "account": "webacct", "chat": "0c0c0c0c-1111-4222-8333-944455556671", "count": %s, "takes": [%s], "failed": 1, "failures": [{"tab": 2, "code": 1, "reason": "no image came back"}]}\n' \
+      "$eaches" "$takes"
+    exit 0 ;;
   ok) "$REAL_MAGICK" -size 64x64 'xc:#00FF00' -fill blue -draw 'circle 32,32 32,22' "PNG24:$dest"
     printf '{"ok": true, "account": "webacct", "chat": "0c0c0c0c-1111-4222-8333-944455556666", "job": "%s", "phases": {"lock": 0.1, "browser": 1.5, "sent": 4}}\n' "$IMAGE_JOB_ID"
     exit 0 ;;
@@ -740,6 +753,35 @@ assert_fails grep -q '^variant=.*some-3' "$IMAGE_OUT"
 assert grep -qx 'failed=1 reason=chatgpt_take_failed' "$IMAGE_OUT"
 assert grep -qx 'codex-image: take 3 failed: ChatGPT image limit on webacct' "$IMAGE_ERR"
 assert jq -se '.[-1] | .requested == 3 and .delivered == 2' "$IMAGE_LEG_LOG" >/dev/null
+# --each: one engine launch, a tab per image to edit; tab k lands at dest (k = 1) or dest-k, so a failed tab
+# leaves its own path absent and moves no other take.
+web_run each --dest "$OUTPUT_DIR/tiles.png" --prompt sharpen --each "$WORK/edit-base.png" \
+  --each "$WORK/style-a.png" --each "$WORK/style-b.png" --ref "$WORK/lineage-ref.png" --no-composite
+assert test "$image_rc" -eq 0
+assert test "$(grep -c -x -- --each "$WEB_CALLS")" -eq 3
+assert test "$(grep -c -x -- --ref "$WEB_CALLS")" -eq 1
+assert_fails grep -qx -- --count "$WEB_CALLS"
+assert test "$(grep -x 'take=[0-9]' "$IMAGE_OUT" | tr '\n' ' ')" = 'take=1 take=3 '
+assert grep -qx "dest=$OUTPUT_DIR/tiles.png" "$IMAGE_OUT"
+assert grep -qx "dest=$OUTPUT_DIR/tiles-3.png" "$IMAGE_OUT"
+assert test "$(sips -g pixelWidth "$OUTPUT_DIR/tiles-3.png" | awk '/pixelWidth:/ {print $2}')" = 73
+assert test ! -e "$OUTPUT_DIR/tiles-2.png"
+assert grep -qx 'failed=1 reason=chatgpt_take_failed' "$IMAGE_OUT"
+assert grep -qx 'codex-image: take 2 failed: no image came back' "$IMAGE_ERR"
+assert jq -se '.[-1] | .requested == 3 and .delivered == 2' "$IMAGE_LEG_LOG" >/dev/null
+# composited by default, each take onto the image its tab edited
+web_run each --dest "$OUTPUT_DIR/tiles-c.png" --prompt sharpen --each "$WORK/edit-base.png" --each "$WORK/style-b.png" \
+  --each "$WORK/style-a.png"
+assert test "$image_rc" -eq 0
+assert test "$(grep -c '^composite=' "$IMAGE_OUT")" -eq 2
+for refused in "--route cli" "--count 2" "--edit $WORK/edit-base.png" "--resume 0c0c0c0c-1111-4222-8333-944455556666"; do
+  read -r -a refused_args <<<"$refused"
+  web_run each --dest "$OUTPUT_DIR/stay.png" --prompt badge --each "$WORK/edit-base.png" --each "$WORK/style-a.png" \
+    "${refused_args[@]}"
+  assert test "$image_rc" -eq 2
+  assert grep -q -- '--each' "$IMAGE_ERR"
+  assert test ! -e "$WEB_CALLS"
+done
 web_run signin --dest "$OUTPUT_DIR/stay.png" --prompt badge --count 2
 assert test "$image_rc" -eq 4
 assert test ! -s "$FAKE_CODEX_CALLS"

@@ -9,32 +9,62 @@ trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/out" "$WORK/err" >&2 2>/dev/null; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
-enhance() { IMAGE_ENHANCE_MEDIA_RUN="$WORK/media-run" "$ENHANCE" "$@" >"$WORK/out" 2>"$WORK/err"; }
+enhance() {
+  IMAGE_ENHANCE_MEDIA_RUN="$WORK/media-run" IMAGE_ENHANCE_CHATGPT_WEB="$WORK/chatgpt-web" \
+    IMAGE_ENHANCE_ROOM_MB=${ROOM_MB:-20000} "$ENHANCE" "$@" >"$WORK/out" 2>"$WORK/err"
+}
 exits() { local want=$1; shift; enhance "$@"; [ $? -eq "$want" ]; }
 size() { magick identify -format '%wx%h' "$1"; }
 # The worst channel difference of two same-size images, 0-255.
 diff_max() { magick compare -metric PAE "$1" "$2" null: 2>&1 | awk '{gsub(/[()]/, "", $2); printf "%d\n", $2 * 255 + 0.5}'; }
 
-# A stand-in for `media-run image --jobs`: every job's edit comes back as ChatGPT returns a square tile
-# (1254 px), its content untouched; FAKE_FAIL names a dest to fail every time, FAKE_EXIT forces an exit code.
+# A stand-in for `media-run image`: a --jobs fan-out (the strong whole frame) or a pinned pack (--edit, or
+# --each per tab at dest, dest-2...); every edit comes back as ChatGPT returns a tile of its aspect (1254x1254,
+# 1672x941), its content untouched. FAKE_FAIL names a tile that fails every time, FAKE_EXIT forces an exit
+# code, FAKE_GONE an account that exits 5 (busy) having sent nothing.
 cat >"$WORK/media-run" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >>"$FAKE_LOG"
 [ -z "${FAKE_EXIT:-}" ] || exit "$FAKE_EXIT"
-jobs='' takes=1
+render() { # edit aspect out
+  [ "$1" != "${FAKE_FAIL:-}" ] || return 0
+  case $2 in
+    1:1) magick "$1" -resize '1254x1254!' "$3" ;;
+    16:9) magick "$1" -resize '1672x941!' "$3" ;;
+    *) cp "$1" "$3" ;;
+  esac
+}
+jobs='' takes=1 dest='' aspect='' account='' edits=()
 while [ $# -gt 0 ]; do
-  case "$1" in --jobs) jobs=$2; shift 2 ;; --takes) takes=$2; shift 2 ;; *) shift ;; esac
+  case "$1" in
+    --jobs) jobs=$2; shift 2 ;; --takes) takes=$2; shift 2 ;; --dest) dest=$2; shift 2 ;;
+    --aspect) aspect=$2; shift 2 ;; --account) account=$2; shift 2 ;;
+    --edit | --each) edits+=("$2"); shift 2 ;;
+    *) shift ;;
+  esac
 done
+[ -z "${FAKE_GONE:-}" ] || [ "$account" != "$FAKE_GONE" ] || exit 5
+if [ -z "$jobs" ]; then
+  for k in "${!edits[@]}"; do
+    out=$dest; [ "$k" -eq 0 ] || out=${dest%.png}-$((k + 1)).png
+    render "${edits[k]}" "$aspect" "$out"
+  done
+  exit 0
+fi
 while IFS= read -r line; do
   edit=$(jq -r .edit <<<"$line") dest=$(jq -r .dest <<<"$line")
-  [ "$dest" != "${FAKE_FAIL:-}" ] || continue
   for k in $(seq 1 "$takes"); do
     out=$dest; [ "$k" -eq 1 ] || out=${dest%.png}-$k.png
-    if [ "$(jq -r .aspect <<<"$line")" = 1:1 ]; then magick "$edit" -resize '1254x1254!' "$out"; else cp "$edit" "$out"; fi
+    render "$edit" "$(jq -r .aspect <<<"$line")" "$out"
   done
 done <"$jobs"
 EOF
-chmod +x "$WORK/media-run"
+# Three signed-in accounts, a1 used longest ago, one walled and one out of the pool.
+cat >"$WORK/chatgpt-web" <<EOF
+#!/bin/bash
+printf '%s\n' '{"ok":true,"accounts":[{"account":"a2","login":true,"last_used":20,"lock":"$WORK/a2.lock"},{"account":"a1","login":true,"last_used":10,"lock":"$WORK/a1.lock"},{"account":"a3","login":true,"last_used":30},{"account":"w","login":true,"walled_until":9999999999},{"account":"off","login":true,"roster":false}]}'
+EOF
+chmod +x "$WORK/media-run" "$WORK/chatgpt-web"
 export FAKE_LOG="$WORK/calls.log"
 
 magick -size 1600x900 gradient:'#203040-#e0c080' \( -seed 7 -size 1600x900 plasma:fractal -blur 0x2 \) \
@@ -58,39 +88,65 @@ assert exits 2 --in "$in" --dest "$dest" --size 12000x8000
 assert test ! -e "$WORK/calls.log"
 
 assert enhance --in "$in" --dest "$dest" --mode strong --scale 2 --takes 2 --change "make it night" --dry-run
-assert grep -qx 'mode=strong size=3200x1800 tiles=12 tile=1024 takes=2' "$WORK/out"
+assert grep -qx 'mode=strong size=3200x1800 tiles=6 tile=1254x1254 aspect=1:1 takes=2' "$WORK/out"
 assert grep -q 'Also make this change: make it night\. Apart from it' "$WORK/out"
+# the render shape needing the fewest tiles: a 2752x1536 wall is 4 wide tiles (one round of the accounts), a
+# square 1400 picture 2 wide tiles scaled to its width
+assert enhance --in "$in" --dest "$dest" --size 2752x1536 --dry-run
+assert grep -qx 'mode=photo size=2752x1536 tiles=4 tile=1672x941 aspect=16:9 takes=1' "$WORK/out"
+assert enhance --in "$in" --dest "$dest" --size 1400x1400 --dry-run
+assert grep -qx 'mode=photo size=1400x1400 tiles=2 tile=1400x788 aspect=16:9 takes=1' "$WORK/out"
+assert exits 2 --in "$in" --dest "$dest" --mode strong --takes 4 --size 7000x4000
 assert test ! -e "$WORK/out.enhance"
 
-# photo at the input's size: 3 tiles of 900 px; the untouched renders merge back onto the input
+# photo at the input's size: one wide tile, a render 4% wider stretched back onto it
 assert enhance --in "$in" --dest "$dest" --focus "the trees"
-assert grep -qx "dest=$dest size=1600x900 mode=photo tiles=3 work=$WORK/out.enhance" "$WORK/out"
+assert grep -qx "dest=$dest size=1600x900 mode=photo tiles=1 work=$WORK/out.enhance" "$WORK/out"
 assert test "$(size "$dest")" = 1600x900
 assert test "$(diff_max "$in" "$dest")" -le 24
 assert grep -q 'Give the strongest treatment to the trees' "$WORK/out.enhance/prompts.txt"
-assert test "$(jq -s length "$WORK/out.enhance/x-jobs.jsonl")" -eq 3
-assert grep -q -- '-- --dest-dir .* --no-composite' "$WORK/calls.log"
+assert test "$(wc -l <"$WORK/calls.log")" -eq 1
+assert grep -q -- '--vendor codex -- --account a1 .*--no-composite .*--edit .*/x-t00.png' "$WORK/calls.log"
 
-# restore as the upscaler: twice the size, the base is the Lanczos enlargement
+# restore as the upscaler: twice the size in 6 square tiles, in parallel as 2 tabs on each of the 3 free accounts
+: >"$FAKE_LOG"
 assert enhance --in "$in" --dest "$WORK/up.png" --mode restore --scale 2
 assert test "$(size "$WORK/up.png")" = 3200x1800
 assert test "$(diff_max "$WORK/up.enhance/x-base.png" "$WORK/up.png")" -le 24
+assert test "$(grep -c -- '--each .* --each' "$WORK/calls.log")" -eq 3
+assert test "$(grep -o -- '--account [a-z0-9]*' "$WORK/calls.log" | sort -u | tr '\n' ' ')" = '--account a1 --account a2 --account a3 '
+assert grep -q '3 account(s) x 2 tab(s) in parallel' "$WORK/err"
+assert test "$(find "$WORK/up.enhance/logs" -name 'pack-*.log' | wc -l)" -eq 3
+# memory for one browser only: the 6 tiles go as 4 tabs, then 2, on the one account
+: >"$FAKE_LOG"
+ROOM_MB=2000 assert enhance --in "$in" --dest "$WORK/up.png" --mode restore --scale 2
+assert test "$(grep -c -- '--account a1 ' "$WORK/calls.log")" -eq 2
+assert test "$(grep -o -- '--each' "$WORK/calls.log" | wc -l)" -eq 6
+# a busy account that sent nothing hands its tile to an unused one, at no attempt's cost
+: >"$FAKE_LOG"
+FAKE_GONE=a1 assert enhance --in "$in" --dest "$WORK/g.png"
+assert test "$(wc -l <"$WORK/calls.log")" -eq 2
+assert grep -q -- '--account a2 ' "$WORK/calls.log"
 
-# strong: one whole-frame fan-out with --takes, then restore tiles per take
+# strong: one whole-frame fan-out with --takes, then every take's restore tiles in one pass
 : >"$FAKE_LOG"
 assert enhance --in "$in" --dest "$WORK/s.png" --mode strong --takes 2
 assert test "$(size "$WORK/s.png")" = 1600x900
 assert test "$(size "$WORK/s-2.png")" = 1600x900
 assert grep -q -- '--takes 2' "$WORK/calls.log"
-assert test "$(grep -c -- '--jobs' "$WORK/calls.log")" -eq 3
+assert test "$(grep -c -- '--jobs' "$WORK/calls.log")" -eq 1
+assert test "$(wc -l <"$WORK/calls.log")" -eq 3
 assert grep -q '"aspect": "16:9"' "$WORK/s.enhance/whole-jobs.jsonl"
 
 # a tile that never comes back is retried once, then named
 : >"$FAKE_LOG"
-FAKE_FAIL="$WORK/f.enhance/out/x-t01.png" assert exits 1 --in "$in" --dest "$WORK/f.png"
+FAKE_FAIL="$WORK/f.enhance/tiles/x-t00.png" assert exits 1 --in "$in" --dest "$WORK/f.png"
 assert test "$(wc -l <"$WORK/calls.log")" -eq 2
-assert grep -q 'x-t01.png' "$WORK/err"
+assert grep -q 'x-t00.png' "$WORK/err"
 assert test ! -e "$WORK/f.png"
+# every account walled mid-run
+: >"$FAKE_LOG"
 FAKE_EXIT=3 assert exits 3 --in "$in" --dest "$WORK/l.png"
+assert test "$(wc -l <"$WORK/calls.log")" -eq 3
 
 printf 'PASS: %s asserts\n' "$asserts"

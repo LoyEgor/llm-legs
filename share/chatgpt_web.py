@@ -854,8 +854,10 @@ def render_takes(context, account: str, args, meta: dict, started: float, home: 
     """--count N: N new chats of one request in N tabs of this one browser, all loading at once, each composed and
     sent in tab order (each tab's Session listens before its first request), then every pending tab read in one
     poll loop. A take that fails while another delivers is reported in `failed`; with
-    none delivered the run fails as one take would, a limit first. Saved in delivery order: the first to --dest."""
+    none delivered the run fails as one take would, a limit first. Saved in delivery order: the first to --dest.
+    --each: tab k edits the k-th image (then the --refs) and is saved by its tab, at --dest-k (tab 1 at --dest)."""
     dest, tabs, failures, delivered, session, opened, sessions = Path(args.dest), [], [], [], None, [], []
+    refs_of = (lambda index: [args.each[index], *args.ref]) if args.each else (lambda index: args.ref)
     for index in range(args.count):
         page = context.pages[0] if not index and context.pages else context.new_page()
         sessions.append(first if not index and first else Session(page))
@@ -871,7 +873,7 @@ def render_takes(context, account: str, args, meta: dict, started: float, home: 
             bind(account, tab_session, meta)
             gw.phase("page")
             gw.close_promos(page, account)
-            begun.append(begin_attach(page, args.ref))
+            begun.append(begin_attach(page, refs_of(index)))
         except Exception as error:  # noqa: BLE001
             if not index:
                 raise
@@ -883,7 +885,7 @@ def render_takes(context, account: str, args, meta: dict, started: float, home: 
         try:
             page.bring_to_front()
             tab_session = sessions[index]
-            attach(page, args.ref, begun=begun[index])
+            attach(page, refs_of(index), begun=begun[index])
             before = probe(page)
             send(page, args.prompt)
         except Exception as error:  # noqa: BLE001
@@ -894,7 +896,7 @@ def render_takes(context, account: str, args, meta: dict, started: float, home: 
             break
         session = session or tab_session
         gw.phase("sent")
-        gw.ledger({"kind": KIND, "event": "sent", "account": account, "chat": None, "refs": len(args.ref),
+        gw.ledger({"kind": KIND, "event": "sent", "account": account, "chat": None, "refs": len(refs_of(index)),
                    "resume": False, "tab": index + 1})
         tabs.append((index + 1, page, Watch(page, account, before, STALL_S)))
     sent = time.time()
@@ -914,7 +916,7 @@ def render_takes(context, account: str, args, meta: dict, started: float, home: 
                                             f"still land in chat {watch.chat or 'unknown'}", chat=watch.chat)
                     continue
                 gw.phase("media")
-                path = gw.variant_path(dest, len(delivered))
+                path = gw.variant_path(dest, tab - 1 if args.each else len(delivered))
                 size, fmt = save_image(context, page, src, path)
                 gw.phase("saved")
             except Exception as error:  # noqa: BLE001
@@ -928,7 +930,7 @@ def render_takes(context, account: str, args, meta: dict, started: float, home: 
             pending.remove((tab, page, watch))
             delivered.append({"path": str(path), "chat": watch.chat, "bytes": size, "format": fmt, "tab": tab})
             gw.ledger({"kind": KIND, "event": "saved", "account": account, "chat": watch.chat, "dest": str(path),
-                       "bytes": size, "format": fmt, "refs": len(args.ref), "resume": False, "tab": tab})
+                       "bytes": size, "format": fmt, "refs": len(refs_of(tab - 1)), "resume": False, "tab": tab})
             straggle_until = time.time() + STRAGGLER_S
             for _, _, other in pending:
                 other.reload_by(time.time() + SIBLING_S)
@@ -1071,9 +1073,15 @@ def check_args(args) -> None:
     dest = Path(args.dest)
     if not dest.is_absolute() or not dest.parent.is_dir():
         raise gw.Failure(2, f"--dest must be an absolute path in an existing directory, not {args.dest}")
-    for ref in args.ref:
+    for flag, ref in [("--ref", ref) for ref in args.ref] + [("--each", ref) for ref in args.each]:
         if not (Path(ref).is_absolute() and Path(ref).is_file()):
-            raise gw.Failure(2, f"--ref {ref} is not an absolute path to a file")
+            raise gw.Failure(2, f"{flag} {ref} is not an absolute path to a file")
+    if args.each:
+        if args.count != 1 or args.resume or args.region:
+            raise gw.Failure(2, "--each sets the take count, one new chat per image: no --count, --resume or --region")
+        args.count = len(args.each)
+        if args.count == 1:
+            args.ref, args.each = [*args.each, *args.ref], []
     if args.resume and not CHAT_ID.fullmatch(args.resume):
         raise gw.Failure(2, f"--resume takes the chat id printed as chat=, not {args.resume}")
     edit = "--region" if args.region else args.tool
@@ -1165,7 +1173,8 @@ def cmd_accounts(args) -> None:
     used = {row.get("account"): row.get("ts") for row in jobs()}
     for name in filter(gw.valid_account, gw.roster()):
         meta = gw.read_meta(name)
-        rows.append({"account": name, "login": gw.has_login(name), "email": mask_email(meta.get("email")),
+        rows.append({"account": name, "login": gw.has_login(name), "roster": gw.in_pool(name),
+                     "email": mask_email(meta.get("email")),
                      "plan": meta.get("plan"), "walled_until": walled.get(name), "last_used": used.get(name),
                      "lock": str(gw.lock_path(name))})
     gw.emit({"ok": True, "accounts": rows})
@@ -1192,6 +1201,8 @@ def main() -> None:
     p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--region", type=region_arg, help="x,y,w,h fractions of the image, outlined with Markup")
     p.add_argument("--count", type=int, default=1, help=f"{min(take_counts())}-{max(take_counts())} takes as new chats in tabs of one browser")
+    p.add_argument("--each", action="append", default=[],
+                   help="an image to edit in a tab of its own, before the --refs; tab k saves at --dest-k")
     p.add_argument("--timeout", type=int, default=600)
     gw.lock_wait_arg(p)
     p.set_defaults(func=cmd_generate, tool="generate", aspect=None, point=[])
@@ -1203,7 +1214,7 @@ def main() -> None:
     p.add_argument("--timeout", type=int, default=600)
     gw.lock_wait_arg(p)
     p.set_defaults(func=cmd_generate, tool="resize", prompt=None, ref=[], region=None, point=[],
-                   count=1)
+                   count=1, each=[])
     p = sub.add_parser("comment", help="point edits: Comment pins on one image, each with its text, sent as one edit")
     p.add_argument("--point", action="append", required=True, type=point_arg, help="x,y=<text>, fractions of the image")
     p.add_argument("--dest", required=True)
@@ -1212,7 +1223,7 @@ def main() -> None:
     p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--timeout", type=int, default=600)
     gw.lock_wait_arg(p)
-    p.set_defaults(func=cmd_generate, tool="comment", prompt=None, region=None, aspect=None, count=1)
+    p.set_defaults(func=cmd_generate, tool="comment", prompt=None, region=None, aspect=None, count=1, each=[])
     p = sub.add_parser("remove-bg", help="the viewer's Remove BG on one image (a generation; it takes no instruction)")
     p.add_argument("--dest", required=True)
     p.add_argument("--ref", action="append", default=[])
@@ -1221,7 +1232,7 @@ def main() -> None:
     p.add_argument("--timeout", type=int, default=600)
     gw.lock_wait_arg(p)
     p.set_defaults(func=cmd_generate, tool="remove-bg", prompt=None, region=None, point=[], aspect=None,
-                   count=1)
+                   count=1, each=[])
     args = parser.parse_args()
     gw.TIMED = hasattr(args, "lock_wait")
     try:

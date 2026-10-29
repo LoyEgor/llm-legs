@@ -393,7 +393,7 @@ def fake_browser(page):
 
 def args(**kw):
     base = dict(prompt="a round blue badge", dest=str(chat_root / "out.png"), ref=[], resume=None, account=None,
-                timeout=30, region=None, aspect=None, tool="generate", point=[], count=1)
+                timeout=30, region=None, aspect=None, tool="generate", point=[], count=1, each=[])
     return types.SimpleNamespace(**{**base, **kw})
 
 
@@ -797,6 +797,16 @@ failure, _ = render_tabs([tab_page(1, LIMITED), tab_page(2, LIMITED)], count=2)
 assert isinstance(failure, gw.Failure) and failure.code == 3 and failure.extra["until"] > time.time(), failure
 failure, _ = render_tabs([tab_page(1, [{"replies": ["I can't make that."]}]) for _ in (1, 2)], count=2, timeout=0)
 assert isinstance(failure, gw.Failure) and failure.code == 1 and "no image after" in failure.reason, failure
+# --each: tab k uploads the k-th image before the refs and is saved by its tab (dest, dest-3), so the walled
+# tab 2 leaves its own path empty and moves no other take.
+pages = [tab_page(1), tab_page(2, LIMITED), tab_page(3)]
+for page in pages:
+    page.multiple = True
+result, _ = render_tabs(pages, count=3, each=refs, ref=refs[:1], dest=str(chat_root / "each.png"))
+assert [page.files for page in pages] == [[image, refs[0]] for image in refs], [page.files for page in pages]
+assert [(take["tab"], take["path"]) for take in result["takes"]] == \
+    [(1, str(chat_root / "each.png")), (3, str(chat_root / "each-3.png"))], result
+assert not (chat_root / "each-2.png").exists() and result["failures"][0]["tab"] == 2, result
 # A later tab that cannot even send fails alone: what was sent is still delivered.
 pages = [tab_page(1), tab_page(2)]
 pages[1].send_ready = False
@@ -1211,7 +1221,8 @@ def run(behaviour, **kw):
         return behaviour(account)
     cw.generate_on = fake
     ns = argparse.Namespace(**{**dict(prompt="x", dest=str(gw.ROOT / "o.png"), ref=[], resume=None, account=None,
-                                      timeout=30, region=None, tool="generate", point=[], lock_wait=900, count=1),
+                                      timeout=30, region=None, tool="generate", point=[], lock_wait=900, count=1,
+                                      each=[]),
                                  **kw})
     try:
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
@@ -1252,6 +1263,22 @@ for kw in (dict(count=5), dict(count=0), dict(count=2, resume=CHAT), dict(count=
     assert code == 2 and "--count" in reason and tried == [], (kw, code, reason)
 code, out = run(ok, count=4)
 assert code == 0 and tried == ["beta"], (code, tried)
+# --each sets the count, one new chat per image; a lone image is a plain edit, first among the refs.
+for kw in (dict(each=[str(gw.ROOT / "o.png")] * 5), dict(each=[str(gw.ROOT / "o.png")] * 2, count=2),
+           dict(each=[str(gw.ROOT / "o.png")] * 2, resume=CHAT), dict(each=[str(gw.ROOT / "missing.png")] * 2)):
+    (gw.ROOT / "o.png").write_bytes(b"png")
+    code, reason = run(ok, **kw)
+    assert code == 2 and tried == [], (kw, code, reason)
+seen = []
+code, out = run(lambda account: seen.append(None) or ok(account), each=[str(gw.ROOT / "o.png")] * 3)
+assert code == 0 and tried == ["beta"], (code, tried)
+ns = argparse.Namespace(dest=str(gw.ROOT / "o.png"), ref=[str(gw.ROOT / "o.png")], each=[str(gw.ROOT / "e.png")],
+                           resume=None, region=None, tool="generate", point=[], count=1, account=None)
+(gw.ROOT / "e.png").write_bytes(b"png")
+cw.check_args(ns)
+assert (ns.count, ns.each, ns.ref) == (1, [], [str(gw.ROOT / "e.png"), str(gw.ROOT / "o.png")]), ns
+for name in ("o.png", "e.png"):
+    (gw.ROOT / name).unlink()
 
 
 def signed_out(account):

@@ -16,7 +16,7 @@ resolve_root() {
 
 usage() {
   image_leg_cause "$@"
-  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--aspect <W:H> | --size <WxH>] [--ref <absolute image path>]... [--transparent] [--edit <absolute image path>] [--resume <session id>] [--account <profile>] [--route web|cli] [--count <1-4>] [--lock-wait <seconds>] [--region <x,y,w,h>] [--composite[=auto|x,y,w,h] | --no-composite]\n' >&2
+  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--aspect <W:H> | --size <WxH>] [--ref <absolute image path>]... [--transparent] [--edit <absolute image path>] [--resume <session id>] [--account <profile>] [--route web|cli] [--count <1-4> | --each <absolute image path>...] [--lock-wait <seconds>] [--region <x,y,w,h>] [--composite[=auto|x,y,w,h] | --no-composite]\n' >&2
   printf '       routes in order: %s; without --route the first runs and a route-level failure (sign-in, busy, limit, unsent) reruns the request on the next\n' \
     "$(image_caps_get "$root" codex '.routes | join(", ")' 2>/dev/null)" >&2
   printf '       codex-image --route web --resume <chat id> --aspect <W:H> --dest <absolute path>   (re-aspect the chat'"'"'s last image)\n' >&2
@@ -113,6 +113,32 @@ deliver_variants() {
   image_leg_variants "$root" "$dest" "$web_result" chat place_variant
   jq -r '(.failures // [])[] | "codex-image: take \(.tab) failed: \(.reason)"' <<<"$web_result" >&2
   jq -r '.failed // 0 | select(. > 0) | "failed=\(.) reason=chatgpt_take_failed"' <<<"$web_result"
+}
+
+# --each: one block per delivered tab, `take=<k>` first, then the lines a lone edit prints, each take
+# composited onto the image it edited; a failed tab leaves its path absent and is named on stderr.
+deliver_each() {
+  local take tab base_dir=${IMAGE_LEG_COMPOSITE_BASE%/*} dest_each=$dest landed=0
+  while IFS= read -r take; do
+    landed=$((landed + 1))
+    tab=$(jq -r '.tab' <<<"$take")
+    generated=$(jq -r '.path' <<<"$take") session=$(jq -r '.chat // empty' <<<"$take")
+    dest=$dest_each
+    [ "$tab" = 1 ] || dest="${dest_each%.*}-$tab.${dest_each##*.}"
+    edit_input=${eaches[tab - 1]}
+    if [ -n "${IMAGE_LEG_COMPOSITE_BASE:-}" ]; then
+      cp "$edit_input" "$base_dir/base-$tab"
+      IMAGE_LEG_COMPOSITE_BASE=$base_dir/base-$tab
+    fi
+    printf 'take=%s\n' "$tab"
+    deliver_generated
+    aspect_check
+    lineage
+  done < <(jq -c '(.takes // []) | sort_by(.tab)[]' <<<"$web_result")
+  IMAGE_LEG_DELIVERED=$landed
+  jq -r '(.failures // [])[] | "codex-image: take \(.tab) failed: \(.reason)"' <<<"$web_result" >&2
+  jq -r '.failed // 0 | select(. > 0) | "failed=\(.) reason=chatgpt_take_failed"' <<<"$web_result"
+  image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
 }
 
 # `%A` alone reports the channel, not its contents: a PNG carrying a fully opaque alpha channel
@@ -216,6 +242,7 @@ count=1
 edit=''
 remove_green=false
 refs=()
+eaches=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -289,6 +316,11 @@ while [ "$#" -gt 0 ]; do
       edit=$2
       shift 2
       ;;
+    --each)
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
+      eaches+=("$2")
+      shift 2
+      ;;
     --lock-wait)
       [ "$#" -ge 2 ] && image_leg_lock_wait_arg "$2" || usage "--lock-wait needs whole seconds"
       shift 2
@@ -329,6 +361,13 @@ if [ -z "$route" ] && [ -n "$resume_id" ] && [[ "$resume_id" =~ ^[0-9a-fA-F-]+$ 
 fi
 route=${route:-$(image_caps_get "$root" codex '.routes[0]' 2>/dev/null)}
 case "$route" in cli|web) IMAGE_LEG_ROUTE=$route ;; *) usage "--route takes cli or web, not $route" ;; esac
+# --each: N images edited alike, one new chat each in the tabs of one browser; the first stands in for --edit
+# in every check below, and tab k lands at dest (k = 1) or dest-k, composited onto its own image.
+if [ "${#eaches[@]}" -gt 0 ]; then
+  [ "$route" = web ] || usage "--each runs on --route web (a chat per image in tabs of one browser)"
+  [ -z "$edit$resume_id" ] && [ "$count" = 1 ] || usage "--each names the images to edit and their count: no --edit, --resume or --count"
+  edit=${eaches[0]} count=${#eaches[@]}
+fi
 [ -z "$edit" ] || { image_leg_edit_arg "$edit" "$resume_id"; refs=("$edit" ${refs[@]+"${refs[@]}"}); }
 # Before the inputs: each one costs a uv run, and a refusal for too many of them needs none.
 ref_count=${#refs[@]}
@@ -341,7 +380,12 @@ if [[ "$ref_cap" =~ ^[0-9]+$ ]] && [ "$ref_count" -gt "$ref_cap" ]; then
   printf 'codex-image: %s references exceed the %s %s\n' "$ref_count" "$ref_cap" "$ref_taker" >&2
   exit 2
 fi
+for ref in ${eaches[@]+"${eaches[@]:1}"}; do refs+=("$ref"); done
 image_leg_inputs "$root"
+if [ "${#eaches[@]}" -gt 1 ]; then
+  eaches=("${refs[0]}" "${refs[@]:ref_count}")
+  refs=("${refs[@]:0:ref_count}")
+fi
 if [ "$count" != 1 ]; then
   [ "$route" = web ] ||
     usage "--count runs on --route web (one browser, a chat per take); the CLI image_gen renders one image"
@@ -519,8 +563,13 @@ if [ "$route" = web ]; then
     web_args=(generate --prompt "$web_prompt" --dest "$tmp_dir/web-image")
   fi
   [ -z "$region" ] || web_args+=(--region "$region")
-  [ "$count" = 1 ] || web_args+=(--count "$count")
-  [ "$ref_count" -eq 0 ] || for ref in "${refs[@]}"; do web_args+=(--ref "$ref"); done
+  if [ "${#eaches[@]}" -gt 1 ]; then
+    for ref in "${eaches[@]}"; do web_args+=(--each "$ref"); done
+    for ref in "${refs[@]:1}"; do web_args+=(--ref "$ref"); done
+  else
+    [ "$count" = 1 ] || web_args+=(--count "$count")
+    [ "$ref_count" -eq 0 ] || for ref in "${refs[@]}"; do web_args+=(--ref "$ref"); done
+  fi
   [ -z "$resume_id" ] || web_args+=(--resume "$resume_id")
   [ -z "$account" ] || web_args+=(--account "$account")
   [ -z "$IMAGE_LEG_LOCK_WAIT" ] || web_args+=(--lock-wait "$IMAGE_LEG_LOCK_WAIT")
@@ -531,6 +580,10 @@ if [ "$route" = web ]; then
   account=$(jq -r '.account // empty' <<<"$web_result" 2>/dev/null) || account=''
   session=$(jq -r '.chat // empty' <<<"$web_result" 2>/dev/null) || session=''
   image_leg_engine_phases "$web_result"
+  if [ "$web_rc" -eq 0 ] && [ "${#eaches[@]}" -gt 1 ]; then
+    deliver_each
+    exit 0
+  fi
   if [ "$web_rc" -eq 0 ]; then
     generated=$tmp_dir/web-image
     [ -s "$generated" ] || { printf 'codex-image: the web route saved no image\n' >&2; exit 1; }

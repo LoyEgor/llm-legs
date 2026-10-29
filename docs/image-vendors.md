@@ -313,11 +313,20 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
 ## Enhance and upscale
 
 `bin/image-enhance` (`share/image_enhance.py`): an existing picture made to look like a real photograph,
-restored, or enlarged, through ChatGPT web edits (free route, via `media-run image --jobs`). ChatGPT returns
-at most ~1672 px, so the work happens at the OUTPUT size: the base is resized (Lanczos) to it, cut into
-overlapping 1024 px squares (a quarter overlap), every tile is one `--no-composite` edit fanned out over the
-accounts, each render is registered back onto its tile (SIFT similarity, plain resize when no fit holds) and
-the tiles cross-fade over the overlap. A tile that does not come back is retried once, then named (exit 1).
+restored, or enlarged, through ChatGPT web edits (free route, via `media-run image`). ChatGPT returns at
+most ~1672 px, so the work happens at the OUTPUT size: the base is resized (Lanczos) to it and cut into tiles
+shaped like ChatGPT's own renders (1254x1254, 1672x941 or 941x1672, whichever needs the fewest; a fifth
+overlap), so a render comes back unresampled. Every tile is one `--no-composite` edit, and no pass waits for
+another: the tiles go out together as packs on every free account (signed in, in the pool, unwalled, its lock
+free), up to 4 tabs of its one browser (codex `--each`), as many browsers as free memory holds (1200 MB a
+Chrome and 400 MB a tab over chat-load's 2 GB floor, measured 2.2 GB for a 4-tab pack); an account takes the
+next pack when its last ends, and a failed tile goes straight to the next account that is done (2 renders at
+most; an account that sent nothing hands its tiles on at no cost). Each render is registered back onto its
+tile (SIFT similarity, plain resize when no fit holds) and the tiles cross-fade over the overlap; a tile
+missing after that is named (exit 1), `logs/` in the work folder holds one log per pack. Times on a
+2752x1536 wall (2026-10-29): photo, 4 tiles, 81 s (1024 squares on one tab per account: 162 s); strong with
+2 takes 146 s (346 s); restore x2 to 5504x3072, 16 tiles, 146 s with memory for 3 browsers x 4 tabs. The
+floor is ChatGPT's own render, 30-75 s a tile.
 
 ```bash
 image-enhance --in /abs/a.png --dest /abs/b.png                              # photo: real texture, same size

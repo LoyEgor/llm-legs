@@ -4,37 +4,53 @@
 # ///
 """Enhance, restore or upscale a picture with ChatGPT web edits (free route), at any output size.
 
-ChatGPT returns at most ~1672 px, so a picture is worked on at its OUTPUT size in overlapping square tiles:
-the base is resized (Lanczos) to the output size, every tile is one edit, each render is registered back onto
-its tile and the tiles are cross-faded over their overlap. Modes (the 2026-10-20 enhancer test, arbostar-logo
-renders/upscale):
+ChatGPT returns at most ~1672 px, so a picture is worked on at its OUTPUT size in overlapping tiles: the base
+is resized (Lanczos) to the output size, every tile is one edit, each render is registered back onto its tile
+and the tiles are cross-faded over their overlap. A tile has the shape of one of ChatGPT's own renders
+(1254x1254, 1672x941, 941x1672), the one that needs the fewest tiles, so a render comes back 1:1. The tiles go out
+at once over every free ChatGPT account, up to 4 per account as tabs of its one browser (chatgpt-web --each), and
+a tile that failed goes straight to the next account that is done: a 2752x1536 picture is 4 tiles, 24 tiles are one
+round of 6 accounts.
+Modes (the 2026-10-20 enhancer test, arbostar-logo renders/upscale):
   restore  redraw nothing, bring back detail lost to blur, compression or a resize: soft video frames, small or
            smeared pictures; with --size/--scale this is the upscaler
   photo    every surface re-created as true-to-life photographic texture, objects, light and colours kept
   strong   the whole picture as the layout for a new photograph (one edit of the whole frame, --takes N of it),
            then brought to the output size by restore tiles; time of day, season and weather kept unless
            --change says otherwise
-Every edit goes through `media-run image` (one fan-out per pass, accounts in parallel). The work folder
-<dest stem>.enhance/ beside the dest keeps the base, tiles, prompts and renders. Final lines:
+Every edit goes through `media-run image`: a pinned pack per account for the tiles, one fan-out for the strong
+whole-frame takes. The work folder <dest stem>.enhance/ beside the dest keeps the base, tiles, prompts, renders and
+logs/ (one per pack). Final lines:
 `dest=<abs> size=<WxH> mode=<mode> tiles=<n> work=<abs dir>`, one per take.
 Exit 0 delivered, 1 failed (missing renders named), 2 usage, 3 every account usage-limited.
 """
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
+import time
+from collections import deque
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-TILE = 1024
+# ChatGPT web's render sizes per aspect (2026-10): a tile of that shape comes back without resampling
+SHAPES = [((1254, 1254), "1:1"), ((1672, 941), "16:9"), ((941, 1672), "9:16")]
+OVERLAP = 0.2  # of the tile, per axis
+SNUG = 1.02  # a side up to 2% longer than the tile is one tile, stretched
 MAX_TILES = 48
+TABS = 4  # tabs one ChatGPT browser takes at once (the codex manifest's web.counts)
+# A pack's Chrome, each tab past its first, and the floor chat-load's memory guard keeps free
+BROWSER_MB, TAB_MB, GUARD_MB = 1200, 400, 2048
+ATTEMPTS = 2  # renders asked per tile; a pack its account never sent (walled, busy, signed out) costs none
 ASPECTS = ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"]
 RESTORE = ("Clean up this photograph without redrawing it: remove compression noise, blur, motion smear and painterly "
            "smudges and restore fine natural detail where it is soft. Keep every object, edge, texture pattern, colour "
@@ -60,15 +76,25 @@ def fail(code: int, message: str) -> None:
     sys.exit(code)
 
 
-def starts(length: int, tile: int, overlap: int) -> list[int]:
-    if length <= tile:
-        return [0]
+def spans(length: int, tile: int, overlap: int) -> list[tuple[int, int]]:
+    if length <= tile * SNUG:
+        return [(0, length)]
     n = -(-(length - tile) // (tile - overlap)) + 1
-    return [round(i * (length - tile) / (n - 1)) for i in range(n)]
+    return [(s, s + tile) for s in (round(i * (length - tile) / (n - 1)) for i in range(n))]
 
 
-def boxes(w: int, h: int, tile: int, overlap: int) -> list[tuple[int, int, int, int]]:
-    return [(x, y, x + tile, y + tile) for y in starts(h, tile, overlap) for x in starts(w, tile, overlap)]
+def layout(w: int, h: int) -> tuple[list[tuple[int, int, int, int]], tuple[int, int], str]:
+    """The tile boxes, the per-axis overlap and the aspect to ask for: the render shape needing the fewest tiles
+    (scaled down to fit a picture smaller than it), the square on a tie."""
+    best = None
+    for (tw, th), aspect in SHAPES:
+        s = min(1.0, w / tw, h / th)
+        tw, th = round(tw * s), round(th * s)
+        ov = (round(tw * OVERLAP), round(th * OVERLAP))
+        b = [(x0, y0, x1, y1) for y0, y1 in spans(h, th, ov[1]) for x0, x1 in spans(w, tw, ov[0])]
+        if best is None or len(b) < len(best[0]):
+            best = (b, ov, aspect)
+    return best
 
 
 def ramp(n: int, overlap: int, first: bool, last: bool) -> np.ndarray:
@@ -84,8 +110,9 @@ def ramp(n: int, overlap: int, first: bool, last: bool) -> np.ndarray:
 def register(tile: np.ndarray, render: np.ndarray) -> np.ndarray:
     """The render laid onto its tile's frame: a similarity fit when the edit shifted or rescaled the content,
     a plain resize when it did not or no fit holds."""
-    side = tile.shape[0]
-    plain = cv2.resize(render, (side, side), interpolation=cv2.INTER_LANCZOS4)
+    th, tw = tile.shape[:2]
+    side = max(tw, th)
+    plain = cv2.resize(render, (tw, th), interpolation=cv2.INTER_LANCZOS4)
     sift = cv2.SIFT_create(3000)
     kt, dt = sift.detectAndCompute(cv2.cvtColor(tile, cv2.COLOR_RGB2GRAY), None)
     kr, dr = sift.detectAndCompute(cv2.cvtColor(plain, cv2.COLOR_RGB2GRAY), None)
@@ -103,14 +130,15 @@ def register(tile: np.ndarray, render: np.ndarray) -> np.ndarray:
     scale = float(np.hypot(*matrix[0, :2]))
     if abs(scale - 1) > 0.15 or np.abs(matrix[:, 2]).max() > side * 0.1:
         return plain
-    return cv2.warpAffine(plain, matrix, (side, side), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
+    return cv2.warpAffine(plain, matrix, (tw, th), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
 
 
-def merge(w: int, h: int, overlap: int, parts: list[tuple[tuple[int, int, int, int], np.ndarray]]) -> Image.Image:
+def merge(w: int, h: int, overlap: tuple[int, int], parts: list[tuple[tuple[int, int, int, int], np.ndarray]]) -> Image.Image:
     acc = np.zeros((h, w, 3), np.float32)
     wsum = np.zeros((h, w, 1), np.float32)
     for (x0, y0, x1, y1), rgb in parts:
-        weight = (ramp(y1 - y0, overlap, y0 == 0, y1 == h)[:, None] * ramp(x1 - x0, overlap, x0 == 0, x1 == w)[None, :])
+        weight = (ramp(y1 - y0, overlap[1], y0 == 0, y1 == h)[:, None]
+                  * ramp(x1 - x0, overlap[0], x0 == 0, x1 == w)[None, :])
         acc[y0:y1, x0:x1] += rgb.astype(np.float32) * weight[..., None]
         wsum[y0:y1, x0:x1] += weight[..., None]
     return Image.fromarray((acc / np.maximum(wsum, 1e-6) + 0.5).clip(0, 255).astype(np.uint8))
@@ -142,26 +170,153 @@ def fanout(media_run: str, jobs: list[dict], work: Path, name: str, takes: int =
     return code
 
 
-def tiled(media_run: str, base: Image.Image, size: tuple[int, int], prompt: str, work: Path, tag: str) -> Image.Image:
+def held(lock: str | None) -> bool:
+    if not lock or not Path(lock).is_file():
+        return False
+    with open(lock, "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    return False
+
+
+def chatgpt_accounts(lister: str) -> tuple[list[str], list[str]]:
+    """(free, busy) ChatGPT accounts, least recently used first: signed in, in the pool, not walled; busy = its lock
+    held by another job. Exits 4 with none signed in, 3 with every one walled."""
+    lines = subprocess.run([lister, "accounts"], capture_output=True, text=True).stdout.strip().splitlines()
+    try:
+        rows = json.loads(lines[-1])["accounts"]
+    except (IndexError, ValueError, KeyError, TypeError):
+        rows = []
+    rows = sorted((r for r in rows if r.get("login") and r.get("roster") is not False),
+                  key=lambda r: r.get("last_used") or 0)
+    if not rows:
+        fail(4, "no ChatGPT account is signed in and in the pool (chatgpt-web accounts)")
+    rows = [r for r in rows if (r.get("walled_until") or 0) <= time.time()]
+    if not rows:
+        fail(3, "every ChatGPT account is walled by its image limit (chatgpt-web accounts)")
+    busy = [r["account"] for r in rows if held(r.get("lock"))]
+    return [r["account"] for r in rows if r["account"] not in busy], busy
+
+
+def room_mb() -> int | None:
+    """Memory a pack may take: bin/memlogd's available reading (free, inactive, speculative pages) over the guard's
+    floor; none under critical pressure."""
+    if os.environ.get("IMAGE_ENHANCE_ROOM_MB"):
+        return int(os.environ["IMAGE_ENHANCE_ROOM_MB"])
+    level = subprocess.run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"], capture_output=True, text=True)
+    if level.stdout.strip().isdigit() and int(level.stdout) >= 4:
+        return 0
+    text = subprocess.run(["vm_stat"], capture_output=True, text=True).stdout
+    page = re.search(r"page size of (\d+)", text)
+    pages = sum(int(m[1]) for m in re.finditer(r"^Pages (?:free|inactive|speculative):\s+(\d+)", text, re.M))
+    return pages * int(page[1]) // 2**20 - GUARD_MB if page and pages else None
+
+
+def plan(n: int, accounts: int) -> tuple[int, int]:
+    """(packs at once, tabs per pack): every tile in one round over the fewest tabs per account, as many browsers as
+    the free memory holds."""
+    room, browsers = room_mb(), max(1, min(accounts, n))
+    while True:
+        tabs = min(TABS, -(-n // browsers))
+        if browsers == 1 or room is None or browsers * (BROWSER_MB + (tabs - 1) * TAB_MB) <= room:
+            return browsers, (1 if room is not None and room < BROWSER_MB else tabs)
+        browsers -= 1
+
+
+def render_tiles(media_run: str, lister: str, tiles: list[tuple[Path, Path]], prompt: str, aspect: str,
+                 work: Path) -> tuple[list[Path], bool]:
+    """Every (tile, out) edited with no queue behind a pass: packs of up to TABS tabs on as many free accounts as
+    plan() allows, each account taking the next pack the moment its last one ends, a failed tile straight to the
+    next account that is done (ATTEMPTS renders at most), an account that sent nothing replaced by an unused one.
+    Returns the outs still missing and whether every account was walled."""
+    free, busy = chatgpt_accounts(lister)
+    wait = None if free else 900  # every account busy: their packs queue behind the other jobs
+    accounts = free or busy
+    browsers, tabs = plan(len(tiles), len(accounts))
+    spare, pending, tries, walled = iter(accounts[browsers:]), deque(tiles), {t: 0 for t, _ in tiles}, set()
+    running, cond = [0], threading.Condition()
+    print(f"image-enhance: {len(tiles)} tile(s): {browsers} account(s) x {tabs} tab(s) in parallel", file=sys.stderr)
+
+    def run_pack(account: str, pack: list[tuple[Path, Path]], seq: int) -> tuple[int, set[Path]]:
+        dest = work / "out" / f"pack-{account}-{seq}.png"
+        cmd = [media_run, "image", "--vendor", "codex", "--", "--account", account, "--prompt", prompt, "--aspect",
+               aspect, "--no-composite", "--dest", str(dest)] + (["--lock-wait", str(wait)] if wait else [])
+        cmd += ["--edit", str(pack[0][0])] if len(pack) == 1 else [a for tile, _ in pack for a in ("--each", str(tile))]
+        started = time.time()
+        with open(work / "logs" / f"{dest.stem}.log", "w") as log:
+            code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT).returncode
+        landed = set()
+        for k, (tile, out) in enumerate(pack, 1):
+            got = dest if k == 1 else dest.with_name(f"{dest.stem}-{k}.png")
+            if got.is_file():
+                got.replace(out)
+                landed.add(tile)
+        print(f"image-enhance: {account}: {len(landed)} of {len(pack)} tile(s) in {time.time() - started:.0f} s "
+              f"(exit {code})", file=sys.stderr)
+        return code, landed
+
+    def worker(account: str) -> None:
+        seq = 0
+        while True:
+            with cond:
+                while not pending and running[0]:
+                    cond.wait()
+                if not pending:
+                    return
+                pack = [pending.popleft() for _ in range(min(tabs, len(pending)))]
+                running[0] += 1
+            seq += 1
+            code, landed = run_pack(account, pack, seq)
+            with cond:
+                running[0] -= 1
+                gone = code in (3, 4, 5) and not landed
+                for item in pack:
+                    if item[0] in landed:
+                        continue
+                    tries[item[0]] += not gone
+                    if tries[item[0]] < ATTEMPTS:
+                        pending.append(item)
+                if gone:
+                    walled.update([account] if code == 3 else [])
+                    account, seq = next(spare, None), 0
+                cond.notify_all()
+                if account is None:
+                    return
+
+    threads = [threading.Thread(target=worker, args=(a,)) for a in accounts[:browsers]]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    missing = [out for _, out in tiles if not out.is_file()]
+    return missing, bool(missing) and walled == set(accounts)
+
+
+def tiled(media_run: str, lister: str, bases: list[tuple[str, Image.Image]], size: tuple[int, int], prompt: str,
+          work: Path) -> list[Image.Image]:
+    """Every base at the output size, all their tiles in ONE pass (no account idles between bases), merged."""
     w, h = size
-    big = np.asarray(base.convert("RGB").resize(size, Image.Resampling.LANCZOS))
-    Image.fromarray(big).save(work / f"{tag}-base.png")
-    side = min(TILE, w, h)
-    overlap = side // 4
-    jobs, parts = [], []
-    for i, (x0, y0, x1, y1) in enumerate(boxes(w, h, side, overlap)):
-        tile = work / "tiles" / f"{tag}-t{i:02d}.png"
-        Image.fromarray(big[y0:y1, x0:x1]).save(tile)
-        jobs.append({"prompt": prompt, "edit": str(tile), "aspect": "1:1", "vendor": "codex",
-                     "dest": str(work / "out" / f"{tag}-t{i:02d}.png")})
-        parts.append((x0, y0, x1, y1))
-    code = fanout(media_run, jobs, work, tag)
-    missing = [j["dest"] for j in jobs if rendered(Path(j["dest"])) is None]
+    boxes, overlap, aspect = layout(w, h)
+    bigs, tiles = [], []
+    for tag, base in bases:
+        big = np.asarray(base.convert("RGB").resize(size, Image.Resampling.LANCZOS))
+        Image.fromarray(big).save(work / f"{tag}-base.png")
+        bigs.append(big)
+        for i, (x0, y0, x1, y1) in enumerate(boxes):
+            tile, out = work / "tiles" / f"{tag}-t{i:02d}.png", work / "out" / f"{tag}-t{i:02d}.png"
+            Image.fromarray(big[y0:y1, x0:x1]).save(tile)
+            out.unlink(missing_ok=True)
+            tiles.append((tile, out))
+    missing, walled = render_tiles(media_run, lister, tiles, prompt, aspect, work)
     if missing:
-        fail(1, f"{len(missing)} of {len(jobs)} tile edits failed (media-run exit {code}): " + " ".join(missing))
-    return merge(w, h, overlap, [(b, register(big[b[1]:b[3], b[0]:b[2]],
-                                              np.asarray(Image.open(rendered(Path(j["dest"]))).convert("RGB"))))
-                                 for b, j in zip(parts, jobs)])
+        fail(3 if walled else 1, f"{len(missing)} of {len(tiles)} tile edits failed (logs in {work / 'logs'}): "
+             + " ".join(map(str, missing)))
+    renders = iter(np.asarray(Image.open(out).convert("RGB")) for _, out in tiles)
+    return [merge(w, h, overlap, [(b, register(big[b[1]:b[3], b[0]:b[2]], next(renders))) for b in boxes])
+            for big in bigs]
 
 
 def nearest_aspect(w: int, h: int) -> str:
@@ -213,42 +368,49 @@ def main() -> None:
         fail(2, "--takes is for --mode strong (restore and photo tiles are not reimagined)")
     if a.change and a.mode != "strong":
         fail(2, "--change is for --mode strong")
-    side = min(TILE, *size)
-    n = len(boxes(size[0], size[1], side, side // 4))
-    if n > MAX_TILES:
-        fail(2, f"{size[0]}x{size[1]} needs {n} tiles, over {MAX_TILES}; ask for a smaller --size")
+    boxes, _, aspect = layout(*size)
+    n = len(boxes)
+    if n * a.takes > MAX_TILES:
+        fail(2, f"{size[0]}x{size[1]} x {a.takes} take(s) needs {n * a.takes} tiles, over {MAX_TILES}; ask for a smaller --size")
 
     focus = FOCUS.format(focus=a.focus) if a.focus else ""
     tile_prompt = (RESTORE if a.mode in ("restore", "strong") else PHOTO) + (focus if a.mode == "photo" else "")
     strong = STRONG.format(keep=CHANGE.format(change=a.change.rstrip(".")) if a.change else KEEP) + focus
     if a.dry_run:
-        print(f"mode={a.mode} size={size[0]}x{size[1]} tiles={n} tile={side} takes={a.takes}")
+        x0, y0, x1, y1 = boxes[0]
+        print(f"mode={a.mode} size={size[0]}x{size[1]} tiles={n} tile={x1 - x0}x{y1 - y0} aspect={aspect} takes={a.takes}")
         if a.mode == "strong":
             print(f"whole-frame prompt: {strong}")
         print(f"tile prompt: {tile_prompt}")
         return
 
-    media_run = os.environ.get("IMAGE_ENHANCE_MEDIA_RUN") or str(Path(__file__).resolve().parent.parent / "bin/media-run")
+    root = Path(__file__).resolve().parent.parent
+    media_run = os.environ.get("IMAGE_ENHANCE_MEDIA_RUN") or str(root / "bin/media-run")
+    lister = os.environ.get("IMAGE_ENHANCE_CHATGPT_WEB") or str(root / "bin/chatgpt-web")
     work = dest.with_name(dest.stem + ".enhance")
-    (work / "tiles").mkdir(parents=True, exist_ok=True)
-    (work / "out").mkdir(exist_ok=True)
+    for sub in ("tiles", "out", "logs"):
+        (work / sub).mkdir(parents=True, exist_ok=True)
     (work / "prompts.txt").write_text(f"mode={a.mode}\n" + (f"whole-frame: {strong}\n" if a.mode == "strong" else "")
                                       + f"tiles: {tile_prompt}\n")
     if a.mode != "strong":
-        tiled(media_run, img, size, tile_prompt, work, "x").save(dest)
+        tiled(media_run, lister, [("x", img)], size, tile_prompt, work)[0].save(dest)
         print(f"dest={dest} size={size[0]}x{size[1]} mode={a.mode} tiles={n} work={work}")
         return
 
     whole = work / "out" / "whole.png"
+    for old in work.glob("out/whole*.png"):
+        old.unlink()
     code = fanout(media_run, [{"prompt": strong, "edit": str(src), "aspect": nearest_aspect(*img.size),
                                "vendor": "codex", "dest": str(whole)}], work, "whole", a.takes)
     takes = [p for p in (whole if k == 1 else whole.with_name(f"whole-{k}.png") for k in range(1, a.takes + 1))
              if rendered(p) is not None]
     if not takes:
         fail(1, f"the whole-frame edit failed (media-run exit {code})")
-    for k, take in enumerate(takes, 1):
+    merged = tiled(media_run, lister, [(f"take{k}", Image.open(rendered(t))) for k, t in enumerate(takes, 1)], size,
+                   tile_prompt, work)
+    for k, picture in enumerate(merged, 1):
         out = dest if k == 1 else dest.with_name(f"{dest.stem}-{k}.png")
-        tiled(media_run, Image.open(rendered(take)), size, tile_prompt, work, f"take{k}").save(out)
+        picture.save(out)
         print(f"dest={out} size={size[0]}x{size[1]} mode=strong tiles={n} work={work}")
     if len(takes) < a.takes:
         print(f"image-enhance: {a.takes - len(takes)} of {a.takes} takes failed", file=sys.stderr)
