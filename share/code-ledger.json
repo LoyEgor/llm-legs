@@ -941,6 +941,82 @@
    "same_cause": [],
    "status": "fixed-pending",
    "title": "the rare literal «model={} model_caps=fresh\\n» (3 of 415 code files) is spelled in llm-legs/bin/gemini-video, llm-legs/share/flow-image.sh, llm-legs/share/imag…"
+  },
+  {
+   "fixes": [
+    {
+     "at": "2026-10-29T13:29:38+02:00",
+     "by": "code-code-20261029T112232Z-2014",
+     "files": [
+      "review-bench/share/rbench/store.py",
+      "review-bench/tests/test_review_bench_lifecycle.sh",
+      "review-bench/tests/test_review_bench_panels.sh"
+     ],
+     "in": null,
+     "regressed_at": null,
+     "yield": {
+      "lines_removed": 45,
+      "suite_s_saved": 0,
+      "tokens_cut": 0
+     }
+    }
+   ],
+   "group": "dead",
+   "handoff": null,
+   "id": "cause:review-bench/share/rbench/store.py#progress_details",
+   "last_reviewed": null,
+   "match": {
+    "cause": "cause:review-bench/share/rbench/store.py#progress_details",
+    "identity": {
+     "sketch": [
+      8112575,
+      8281553,
+      25746474,
+      71442085,
+      74397829,
+      74467555,
+      75593864,
+      76064675,
+      93589249,
+      114341308,
+      142388059,
+      155856143,
+      169932593,
+      203911103,
+      207915705,
+      210842049,
+      230147250,
+      247921307,
+      273202587,
+      273339574,
+      288705528,
+      292314112,
+      309249062,
+      317281832,
+      319331309,
+      352419871,
+      371293024,
+      376059347,
+      399690640,
+      426264940,
+      429810204,
+      436228996
+     ],
+     "touch": [
+      "call:accounts.items",
+      "call:chunk_started.items",
+      "call:chunks.items",
+      "call:document.get",
+      "call:judge.get",
+      "call:verifying.items"
+     ]
+    }
+   },
+   "note": null,
+   "reviewed_by": null,
+   "same_cause": [],
+   "status": "fixed-pending",
+   "title": "review-bench/share/rbench/store.py#progress_details is defined and never called"
   }
  ]
 }
