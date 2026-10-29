@@ -13034,6 +13034,20 @@
       "reason": "2026-10-29: run-suites deletes its log directory on completion and the journal row keeps only rc/secs/cpu, so flaky rows for test_llm_limits (13:53) and test_statusline_hooks (17:38, 18:10) could be traced only by inference",
       "since": "2026-10-29",
       "would_catch_if": "a red suite row in runs.jsonl carried its last failing assert line (the FAIL: line), so flaky evidence names the check and the doctor can tell load, neighbour state and code apart"
+    },
+    {
+      "id": "background-bash-class-backfill",
+      "what": "the class split (script, poll, server, killed) of the attended background Bash wait for the days before the d row carried it",
+      "reason": "2026-10-29: e6a65046 writes row[10:12] only from 17:55 the same day, so all 535 d rows of the 8-day window read 'unclassified' in opportunity:delegation/background Bash for the next 14 days; re-deriving the class from the transcripts' commands gave script 451 calls 2.20 Ms, poll 78 calls 175 ks, server 6 calls 101 ks at once",
+      "since": "2026-10-29",
+      "would_catch_if": "the collector's backfill job refolded the d rows journaled before e6a65046 with bash_class of their tool_use command, so the packet's split reads full at the first rerun"
+    },
+    {
+      "id": "commit-gate-fallback-unmarked",
+      "what": "which commit-push-gate refusals are the door working and which a false catch of its fail-closed fallback to the session cwd",
+      "reason": "2026-10-29: of 5 refusals in 24 h (35.9 s) 14.6 s were the door working, 0.4 s a fixed cd-behind-|| catch, 19.6 s two false catches: `J=$S/x; cd $J && git init -q && git commit` fell back to the wired session cwd because the gate returns at a `$` in the cd target (and /Volumes/Work/tmp is no throwaway root); the refusal row carries neither, so the split took reading 17 refusals' commands from the transcripts",
+      "since": "2026-10-29",
+      "would_catch_if": "commit-push-gate's denial row named why it judged the session cwd (the unresolved cd token, a branch operator, a git outside the segment walk), and refusal_cost listed those apart from word-door denials"
     }
   ]
 }
