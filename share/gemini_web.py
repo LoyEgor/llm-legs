@@ -331,6 +331,19 @@ def write_meta(account: str, **fields) -> dict:
     return meta
 
 
+def note_owner_action(account: str, reason: str | None) -> None:
+    """The menubar's "!" under the account: a code-4 stop (signed out, a one-time Agree, a captcha) on this
+    route stands in the meta's owner_actions until a run on the same route ends clean."""
+    with contextlib.suppress(OSError, Failure):
+        actions = read_meta(account).get("owner_actions")
+        actions = dict(actions) if isinstance(actions, dict) else {}
+        if reason:
+            actions[ROUTE] = {"at": int(time.time()), "reason": " ".join(reason.split())[:200]}
+        elif actions.pop(ROUTE, None) is None:
+            return
+        write_meta(account, owner_actions=actions)
+
+
 def app_version(app: Path) -> str:
     with open(app / "Contents" / "Info.plist", "rb") as f:
         return plistlib.load(f)["CFBundleShortVersionString"]
@@ -643,7 +656,11 @@ def browser(account: str, visible: bool = False):
                 error.route = route_of(pages[-1].url) if pages else ROUTE
                 error.shot = snapshot(context, account, failure_text(error))
             report(account, error)
+            if isinstance(error, Failure) and error.code == 4:
+                note_owner_action(account, failure_text(error))
             raise
+        else:
+            note_owner_action(account, None)
         finally:
             closing = time.monotonic()
             with bounded(account, "closing the browser", pid, driver, TEARDOWN_S):
@@ -2371,6 +2388,8 @@ def cmd_login(args) -> None:
             time.sleep(LOGIN_POLL_S)
         ledger({"event": "hand", "account": args.account, "opened_at": int(opened)})
         trust_hand_done(args.account)  # TEMP-FLOW-TRUST(gemini-web)
+        if read_meta(args.account).get("owner_actions"):
+            write_meta(args.account, owner_actions={})  # the owner just attended; a run still stopped marks it again
         emit({"ok": True, "account": args.account, "login": has_login(args.account)})
         return
     emit({"ok": True, "account": args.account, "profile": str(profile),

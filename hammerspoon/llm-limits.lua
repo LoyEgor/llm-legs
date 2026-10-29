@@ -1087,6 +1087,78 @@ local function geminiWebAccounts(dir)
   return ok and names or {}
 end
 
+-- Owner actions: what only Egor can do. A web route stopped on a code 4 (signed out, a one-time Agree, a
+-- captcha) leaves owner_actions in its account file (share/gemini_web.py note_owner_action), and a profile
+-- without cookies was never signed in. Each is a red row under its account plus the account's "!", and
+-- M.ownerActionCount() puts "!" on the menubar from these same reads.
+-- One table, not file locals: the chunk sits at Lua's 200-local limit.
+local owner = { routeLabels = { ["chatgpt-web"] = "im", flow = "fv", ["flow-music"] = "fm",
+  ["gemini-app"] = "gm", aistudio = "as", suno = "su" } }
+
+function owner.fileExists(path)
+  local handle = io.open(path, "r")
+  if handle then handle:close() end
+  return handle ~= nil
+end
+
+function owner.needRows(needs)
+  local rows = {}
+  for _, need in ipairs(needs or {}) do
+    rows[#rows + 1] = { disabled = true,
+      title = infoTitle(string.format("%-6s  %-2s  %s", "", need.label, need.text), false, false, true) }
+  end
+  return rows
+end
+
+-- `only` keeps one route (Suno's own section), `skip` leaves one out (drawn in that section instead).
+function owner.webNeeds(meta, signedIn, loginLabel, only, skip)
+  local needs, seen = {}, {}
+  if not signedIn then
+    needs[1], seen[loginLabel] = { label = loginLabel, text = "login needed" }, true
+  end
+  local actions = type(meta.owner_actions) == "table" and meta.owner_actions or {}
+  local routes = {}
+  for route in pairs(actions) do
+    if route ~= skip and (not only or route == only) then routes[#routes + 1] = route end
+  end
+  table.sort(routes)
+  for _, route in ipairs(routes) do
+    local label = owner.routeLabels[route] or route:sub(1, 2)
+    local reason = type(actions[route]) == "table" and tostring(actions[route].reason or "") or ""
+    if not seen[label] then
+      seen[label] = true
+      needs[#needs + 1] = { label = label,
+        text = (reason:find("signed[^;]*out") or reason:find("no browser login")) and "login needed" or "needs you" }
+    end
+  end
+  return needs
+end
+
+function owner.chatgptWebDir()
+  local override = os.getenv("CHATGPT_WEB_DIR")
+  if override and override ~= "" then return override end
+  return home .. "/.chatgpt-web"
+end
+
+-- The browse registry worker-run keeps (share/worker-run-browse.sh): a Claude account whose Chrome
+-- profile lost its claude.ai login, or has none, waits for Egor's sign-in and `worker-run browse --enroll`.
+function owner.browseNeeds(acct)
+  local runs = os.getenv("WORKER_RUN_DIR")
+  runs = runs and runs ~= "" and runs or home .. "/.cache/claude-worker-runs"
+  local entry = (readJsonTable(runs .. "/browse/accounts.json") or {})[acct]
+  local status = type(entry) == "table" and entry.status or nil
+  if status == "needs-login" or status == "no-profile" then return {{ label = "br", text = "login needed" }} end
+  return {}
+end
+
+-- Only once tg-read is set up (its api.txt): a lost session or the marker its refused run leaves.
+function owner.telegramLoginNeeded()
+  local dir = os.getenv("TG_READ_CONFIG")
+  dir = dir and dir ~= "" and dir or home .. "/.config/telegram"
+  return owner.fileExists(dir .. "/api.txt")
+    and (not owner.fileExists(dir .. "/session.session") or owner.fileExists(dir .. "/login-needed"))
+end
+
 local function geminiMediaState(roster, now)
   local dir, state = geminiWebDir(), {}
   local names = geminiWebAccounts(dir)
@@ -1122,14 +1194,28 @@ local function geminiMediaState(roster, now)
         musicCreditsRenewsAt = tonumber(meta.music_credits_renews_at),
         videoWall = standing(videoWalls, name), musicWall = standing(musicWalls, name),
         flowMusicWall = standing(flowMusicWalls, name),
+        needs = owner.webNeeds(meta, cookies and true or false, "fv", nil, "suno"),
       }
     end
   end
   return state
 end
 
+-- Only an account with a file in the web store: none means Egor declined the web route at `add`.
+function owner.accountNeeds(vendorKey, acct, geminiMedia)
+  if vendorKey == "claude" then return owner.browseNeeds(acct) end
+  if vendorKey == "codex" then
+    local dir = owner.chatgptWebDir()
+    local meta = readJsonTable(dir .. "/accounts/" .. acct .. ".json")
+    return meta and owner.webNeeds(meta, owner.fileExists(dir .. "/profiles/" .. acct .. "/Default/Cookies"), "im")
+      or {}
+  end
+  local media = vendorKey == "gemini" and geminiMedia[acct]
+  return media and media.needs or {}
+end
+
 -- Suno, after ElevenLabs: one 1d row per account suno-music has seen signed in, read from the same
--- gemini-web account files. Free credits renew daily on a UTC clock the files do not carry, so the reset
+-- gemini-web account files; one it has seen signed out keeps its row, with "!" and "su  login needed". Free credits renew daily on a UTC clock the files do not carry, so the reset
 -- column holds the credits left. Download unlocks are not shown: with none left a song is recorded as it
 -- plays (2026-10-23), so they no longer decide whether a file comes. Red when the account cannot make a song:
 -- a standing wall or credits under one generation.
@@ -1139,7 +1225,7 @@ local function appendSuno(menu, now)
   local dir, accounts = geminiWebDir(), {}
   for _, name in ipairs(geminiWebAccounts(dir)) do
     local meta = readJsonTable(dir .. "/accounts/" .. name .. ".json") or {}
-    if meta.suno_signed_in == true then accounts[#accounts + 1] = { name = name, meta = meta } end
+    if meta.suno_signed_in ~= nil then accounts[#accounts + 1] = { name = name, meta = meta } end
   end
   if #accounts == 0 then return end
   local walls = readJsonTable(dir .. "/suno-walls.json") or {}
@@ -1160,10 +1246,57 @@ local function appendSuno(menu, now)
     else
       title = rowTitle("", "1d", nil, false, atLimit, false, { pct = "", reset = left and tostring(left) or "" })
     end
-    table.insert(menu, { title = accountTitle(account.name, formatAccountAge(meta.suno_at), atLimit) })
-    table.insert(menu, { title = title, disabled = true })
+    local needs = owner.webNeeds(meta, meta.suno_signed_in ~= false, "su", "suno")
+    local name = account.name
+    table.insert(menu, { title = accountTitle(name, formatAccountAge(meta.suno_at), atLimit, #needs > 0),
+      menu = #needs > 0 and {{ title = "Log in to Suno…", fn = function() M.loginSuno(name) end }} or nil })
+    if meta.suno_signed_in ~= false then table.insert(menu, { title = title, disabled = true }) end
+    for _, row in ipairs(owner.needRows(needs)) do table.insert(menu, row) end
   end
   table.insert(menu, { title = "-" })
+end
+
+-- How many rows carry "!": the same reads the menu draws them from, for the menubar title's own "!".
+-- Cached a minute, since the title updates far more often than any login changes.
+function M.ownerActionCount()
+  local now = os.time()
+  if owner.countCache and now - owner.countCache.at < 60 then return owner.countCache.count end
+  local count, limits = 0, readLlmLimits()
+  local paused = select(3, readWorkerModel()) or {}
+  local vendors = type(limits) == "table" and type(limits.vendors) == "table" and limits.vendors or {}
+  for _, entry in ipairs(MENU_VENDORS) do
+    local vendor = vendors[entry.key]
+    if type(vendor) == "table" and not paused[entry.key] then
+      local blocks, roster = {}, {}
+      for _, block in ipairs(type(vendor.accounts) == "table" and vendor.accounts or {}) do
+        if type(block) == "table" and type(block.account) == "string" and block.removed ~= true
+            and not removalPending(entry.key, block.account) then
+          blocks[#blocks + 1], roster[block.account] = block, true
+        end
+      end
+      if #blocks == 0 then
+        if vendor.auth_needed == true then count = count + 1 end
+      else
+        local media = entry.key == "gemini" and geminiMediaState(roster, now) or {}
+        for _, block in ipairs(blocks) do
+          if blockAuthNeeded(entry.key, block) or block.needs_user_entry == true
+              or #owner.accountNeeds(entry.key, block.account, media) > 0 then
+            count = count + 1
+          end
+        end
+      end
+    end
+  end
+  local dir = geminiWebDir()
+  for _, name in ipairs(geminiWebAccounts(dir)) do
+    local meta = readJsonTable(dir .. "/accounts/" .. name .. ".json") or {}
+    if meta.suno_signed_in ~= nil and #owner.webNeeds(meta, meta.suno_signed_in ~= false, "su", "suno") > 0 then
+      count = count + 1
+    end
+  end
+  if owner.telegramLoginNeeded() then count = count + 1 end
+  owner.countCache = { at = now, count = count }
+  return count
 end
 
 local DOCTOR_REPO_WIDTH, DOCTOR_CHAT_WIDTH = 20, 24
@@ -2650,6 +2783,18 @@ end
 function M.loginFlow(name)
   openLoginTerminal((M.geminibCmd or "geminib") .. " web " .. shellQuote(name))
 end
+function M.loginChatgptWeb(name)
+  openLoginTerminal((M.codexbCmd or "codexb") .. " web " .. shellQuote(name))
+end
+function M.loginSuno(name)
+  openLoginTerminal("suno-music login --account " .. shellQuote(name))
+end
+function M.enrollBrowser(name)
+  openLoginTerminal("worker-run browse --enroll " .. shellQuote(name))
+end
+function M.loginTelegram()
+  openLoginTerminal("tg-read login")
+end
 function M.loginGrok(name)
   openLoginTerminal((M.grokbCmd or "grokb") .. " profile " .. shellQuote(name)
     .. " login --device-auth")
@@ -3196,6 +3341,8 @@ local function buildMenuItems()
           local enabled = poolStateFor(entry.key, acct, block.enabled ~= false)
           local authStatus = type(block.auth) == "table" and block.auth.status or nil
           local authNeeded = blockAuthNeeded(entry.key, block)
+          local ownerNeeds = isAccountRows and owner.accountNeeds(entry.key, acct, geminiMedia) or {}
+          local userEntry = block.needs_user_entry == true or #ownerNeeds > 0
           local accountAge, accountAgeAlarm, untrusted = accountAgeText(block.as_of,
             isAccountRows and late[acct], not authNeeded and staleAfter or nil,
             block.age_alarm == true and not (entry.key == "grok" and authStatus == "expired"))
@@ -3236,7 +3383,7 @@ local function buildMenuItems()
                 removeFn = function() M.removeCodex(acct) end
               elseif entry.key == "gemini" then
                 accountRow = geminiLoginNeededRow(acct, acct, pinExists,
-                  accountAge, block.needs_user_entry == true, roleOff, accountAgeAlarm)
+                  accountAge, userEntry, roleOff, accountAgeAlarm)
               else
                 loginFn = function() M.loginGrok(acct) end
                 hardRefreshFn = function() M.hardRefreshGrok(acct) end
@@ -3247,11 +3394,11 @@ local function buildMenuItems()
                 local clearPinFn
                 if pinExists then clearPinFn = function() pinFn(true) end end
                 accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn, clearPinFn,
-                  accountAge, block.needs_user_entry == true, roleOff, accountAgeAlarm)
+                  accountAge, userEntry, roleOff, accountAgeAlarm)
               end
             else
               local title = accountTitle(acct, accountAge, generalAtLimit,
-                block.needs_user_entry == true, pinExists, resetSuffix, roleOff, accountAgeAlarm)
+                userEntry, pinExists, resetSuffix, roleOff, accountAgeAlarm)
               accountRow = {
                 title = title,
                 disabled = true,
@@ -3295,7 +3442,7 @@ local function buildMenuItems()
                     fn = function() M.hardRefreshGemini(acct) end },
                 }
                 local media = geminiMedia[acct]
-                if not (media and media.bound and media.musicSignedIn) then
+                if not (media and media.bound and media.musicSignedIn) or #ownerNeeds > 0 then
                   table.insert(accountRow.menu, { title = "Log in to Flow…", fn = function() M.loginFlow(acct) end })
                 end
               elseif isGrokAccounts then
@@ -3315,6 +3462,11 @@ local function buildMenuItems()
                   fn = function() pinFn(pinExists) end,
                 })
               end
+              -- First, as the step the "!" asks for; Gemini's Log in to Flow… already stands in its menu.
+              local ownerLogin = #ownerNeeds > 0 and accountRow.menu
+                and ({ codex = { title = "Log in to ChatGPT web…", fn = function() M.loginChatgptWeb(acct) end },
+                  claude = { title = "Enroll browser…", fn = function() M.enrollBrowser(acct) end } })[entry.key]
+              if ownerLogin then table.insert(accountRow.menu, 1, ownerLogin) end
               if accountRow.menu then
                 local redeem = redeemResetItem(entry.key, acct, block)
                 if redeem then table.insert(accountRow.menu, redeem) end
@@ -3404,6 +3556,7 @@ local function buildMenuItems()
               table.insert(menu, mediaRow)
             end
           end
+          for _, needRow in ipairs(owner.needRows(ownerNeeds)) do table.insert(menu, needRow) end
           if isAccountRows then
             appendRefreshErrorRows(menu, vendorErrs, entry.key, acct)
           end
@@ -3439,6 +3592,12 @@ local function buildMenuItems()
 
     appendElevenLabs(menu, limits)
     appendSuno(menu, os.time())
+    if owner.telegramLoginNeeded() then
+      table.insert(menu, { title = accountTitle("Telegram", nil, false, true),
+        menu = {{ title = "Log in…", fn = function() M.loginTelegram() end }} })
+      for _, row in ipairs(owner.needRows({{ label = "tg", text = "login needed" }})) do table.insert(menu, row) end
+      table.insert(menu, { title = "-" })
+    end
     appendOpenCode(menu, limits, paused)
     table.insert(menu, { title = "-" })
     refreshItems(menu)

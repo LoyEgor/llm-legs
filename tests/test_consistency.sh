@@ -3164,10 +3164,14 @@ assert doc_has '`${GEMINI_WEB_DIR:-~/.gemini-web}`'
 flow_budget=$(sed -n 's/^FLOW_DAY_TAKES = \([0-9]*\)$/\1/p; s/^FLOW_DAY_S = \(.*\)$/\1/p' "$ROOT/share/gemini_web.py" | paste -sd, -)
 assert grep -Fqx "local FLOW_DAY_TAKES, FLOW_DAY_S = ${flow_budget/,/, }" "$ROOT/hammerspoon/llm-limits.lua"
 
-# Row df: the chatgpt-web store default is spelled once and read nowhere else; the clone stays in row de's store.
+# Row df: the chatgpt-web store default is spelled once per language and read nowhere else; the clone stays in
+# row de's store.
 assert eq "$(grep -o 'environ.get("CHATGPT_WEB_DIR", "[^"]*")' "$ROOT/share/chatgpt_web.py")" 'environ.get("CHATGPT_WEB_DIR", "~/.chatgpt-web")'
+chatgpt_dir_lua=$(awk '/^function owner\.chatgptWebDir\(\)/,/^end/' "$ROOT/hammerspoon/llm-limits.lua")
+assert grep -Fq 'os.getenv("CHATGPT_WEB_DIR")' <<<"$chatgpt_dir_lua"
+assert grep -Fq 'return home .. "/.chatgpt-web"' <<<"$chatgpt_dir_lua"
 assert eq "$(cd "$ROOT" && grep -rlIF --exclude='*.json' '.chatgpt-web' bin share hammerspoon llm-limits.sh | sort | tr '\n' ' ')" \
-  "share/chatgpt_web.py "
+  "hammerspoon/llm-limits.lua share/chatgpt_web.py "
 assert grep -Fq 'CLONE_APP = CLONE_ROOT / "Gemini Web Automation.app"' "$ROOT/share/gemini_web.py"
 assert doc_has '`${CHATGPT_WEB_DIR:-~/.chatgpt-web}`'
 

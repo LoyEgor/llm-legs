@@ -30,6 +30,9 @@ local harnessClock = nil
 -- The gemini-web store the fake io.open and hs.fs.dir serve under GEMINI_WEB_DIR: path -> document;
 -- nil is no store at all. Nothing under a real ~/.gemini-web is ever served.
 local geminiWebFake = { root = "/fixture/gemini-web", files = nil }
+-- The other stores an owner action is read from (chatgpt-web, the browse registry, tg-read's config):
+-- path -> document, a table for JSON and "" for a bare file; anything else there is absent, real or not.
+local ownerFake = { files = nil }
 -- The automation Chromes Show Chrome reads: `real` the fake com.google.Chrome (nil: not running), `clones`
 -- the running gemini-web clone apps, `removed` every path the module hands os.remove, `screen` the one display.
 -- worker-run no longer writes browse/chrome-live (2026-10-19), so the fake io serves it absent.
@@ -179,6 +182,8 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if text == DOCTOR_CONTENTS then return doctorSnapshot end
       if text == LLM_DOCTOR_CONTENTS then return llmDoctor end
       if text == "CHATS_SNAPSHOT" then return chatsFake.snapshot end
+      local ownerPath = type(text) == "string" and text:match("^OWNER:(.+)$")
+      if ownerPath then return ownerFake.files and ownerFake.files[ownerPath] end
       local geminiWebPath = type(text) == "string" and text:match("^GEMINI_WEB:(.+)$")
       if geminiWebPath then return geminiWebFake.files and geminiWebFake.files[geminiWebPath] end
       local holdName = type(text) == "string" and text:match("^HOLD:(.+)$")
@@ -226,6 +231,10 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if holdName then
         if not (holdFake.files and holdFake.files[holdName]) then return nil end
         contents = "HOLD:" .. holdName
+      end
+      if path:match("chatgpt%-web/") or path:match("/browse/accounts%.json$") or path:match("telegram/") then
+        if not (ownerFake.files and ownerFake.files[path] ~= nil) then return nil end
+        contents = "OWNER:" .. path
       end
       if path:match("gemini%-web/") then
         if path:sub(1, #geminiWebFake.root + 1) ~= geminiWebFake.root .. "/"
@@ -4649,7 +4658,9 @@ end
     for index = accountIndex(menu, account) + 1, #menu do
       local text = titleText(menu[index])
       if not text:match("^%s") then break end
-      if media[text:match("^        (%a%a)  ") or ""] then rows[#rows + 1] = menu[index] end
+      if media[text:match("^        (%a%a)  ") or ""] and not text:find("  login needed$") then
+        rows[#rows + 1] = menu[index]
+      end
     end
     return rows
   end
@@ -4692,6 +4703,20 @@ end
     "a profile signed in to Flow but never to Flow Music lacks its unmeasured fv row or drew an fm row: "
       .. texts(fresh))
   assert(#mediaRows(menu, "quiet") == 0, "an account without a gemini-web reading grew a media row")
+  local function needs(account)
+    local found = {}
+    for index = accountIndex(menu, account) + 1, #menu do
+      local text = titleText(menu[index])
+      if not text:match("^%s") then break end
+      if text:find("  login needed$") and isRed(menu[index]) then found[#found + 1] = text end
+    end
+    return table.concat(found, " | ")
+  end
+  assert(needs("tune") == "        fv  login needed" and needs("mish") == "        fv  login needed"
+      and needs("fresh") == "" and needs("quiet") == ""
+      and titleText(accountItem(menu, "tune")):find("  !$") and not titleText(accountItem(menu, "fresh")):find("!"),
+    "a gemini-web profile without a Flow login is not a red fv login needed under an \"!\" account, or an account "
+      .. "never set up for Flow got one: tune " .. needs("tune") .. ", quiet " .. needs("quiet"))
   assert(submenuItem(accountItem(menu, "fresh"), "Log in to Flow…") and submenuItem(accountItem(menu, "tune"), "Log in to Flow…"),
     "an account Flow or Flow Music never bound offers no Flow login")
   local flowScript
@@ -4748,6 +4773,84 @@ end
   end
 end)()
 
+-- Owner actions: a step only Egor can take is a red row under its account and an "!" on the account row,
+-- read from the web stores, the browse registry and tg-read's config; the menubar's count is the same rows.
+;(function()
+  local now = 1790000000
+  local web, runs, tg = "/fixture/chatgpt-web", "/fixture/runs", "/fixture/telegram"
+  local fixture = { schema = 1, vendors = {
+    claude = { available = true, source = "claudeb-store", accounts = {
+      { account = "cl1", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "cl2", five_hour = bucket(10), weekly = bucket(20) },
+    } },
+    codex = { available = true, accounts = {
+      { account = "alfa", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "bravo", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "charlie", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "delta", five_hour = bucket(10), weekly = bucket(20) },
+    } },
+    gemini = { available = false },
+  } }
+  ownerFake.files = {
+    [web .. "/accounts/alfa.json"] = { owner_actions = { ["chatgpt-web"] = { at = now,
+      reason = "ChatGPT shows alfa signed out; run: codexb web alfa" } } },
+    [web .. "/profiles/alfa/Default/Cookies"] = "",
+    [web .. "/accounts/bravo.json"] = { email = "br@example.com" },
+    [web .. "/accounts/delta.json"] = { owner_actions = { ["chatgpt-web"] = { at = now,
+      reason = "delta shows a one-time notice; it needs the owner's Agree" } } },
+    [web .. "/profiles/delta/Default/Cookies"] = "",
+    [runs .. "/browse/accounts.json"] = { cl1 = { status = "needs-login" }, cl2 = { status = "proof-failed" } },
+    [tg .. "/api.txt"] = "", [tg .. "/session.session"] = "", [tg .. "/login-needed"] = "",
+  }
+  local paths = { CHATGPT_WEB_DIR = web, WORKER_RUN_DIR = runs, TG_READ_CONFIG = tg }
+  local script
+  holdFake.getenv = function(name) return paths[name] or os.getenv(name) end
+  local module = loadModule(fixture, nil, now, nil, function(text) script = text; return true, true, {} end)
+  holdFake.getenv = nil
+  local menu = module.menuItems()
+  local function needs(account)
+    local found = {}
+    for index = accountIndex(menu, account) + 1, #menu do
+      local text = titleText(menu[index])
+      if not text:match("^%s") then break end
+      if text:find("  login needed$") or text:find("  needs you$") then
+        assert(redRuns(menu[index].title)[1] == text and menu[index].disabled == true, "a need row is not red: " .. text)
+        found[#found + 1] = text
+      end
+    end
+    return table.concat(found, " | ")
+  end
+  local function bang(account) return titleText(accountItem(menu, account)):find("  !") ~= nil end
+  assert(needs("alfa") == "        im  login needed" and needs("bravo") == "        im  login needed"
+      and needs("delta") == "        im  needs you" and needs("charlie") == ""
+      and bang("alfa") and bang("bravo") and bang("delta") and not bang("charlie"),
+    "a ChatGPT web stop (signed out, no cookies, a one-time step) is not a red im row under an \"!\", or an account "
+      .. "never set up for the web route got one: alfa " .. needs("alfa") .. ", bravo " .. needs("bravo")
+      .. ", delta " .. needs("delta") .. ", charlie " .. needs("charlie"))
+  local bravoMenu = accountItem(menu, "bravo").menu
+  assert(bravoMenu and titleText(bravoMenu[1]) == "Log in to ChatGPT web…" and not submenuItem(accountItem(menu, "charlie"),
+      "Log in to ChatGPT web…"), "the ChatGPT web login is not the first item of an account that needs it")
+  bravoMenu[1].fn()
+  assert(script and script:find("codexb web 'bravo'", 1, true), "Log in to ChatGPT web… is not codexb web: " .. tostring(script))
+  assert(needs("cl1") == "        br  login needed" and bang("cl1") and needs("cl2") == "" and not bang("cl2")
+      and submenuItem(accountItem(menu, "cl1"), "Enroll browser…"),
+    "a Claude account whose Chrome profile lost its login is not a br row with Enroll browser…, or a failed proof is: "
+      .. needs("cl1") .. " | " .. needs("cl2"))
+  local telegram = accountIndex(menu, "Telegram")
+  assert(telegram and titleText(menu[telegram]) == "Telegram  !" and titleText(menu[telegram + 1]) == "        tg  login needed"
+      and submenuItem(menu[telegram], "Log in…"), "a refused tg-read session drew no Telegram login row")
+  assert(module.ownerActionCount() == 5, "the menubar count is not the rows with \"!\": " .. tostring(module.ownerActionCount()))
+  ownerFake.files[tg .. "/login-needed"] = nil
+  ownerFake.files[web .. "/accounts/bravo.json"] = nil
+  holdFake.getenv = function(name) return paths[name] or os.getenv(name) end
+  module = loadModule(fixture, nil, now)
+  holdFake.getenv = nil
+  menu = module.menuItems()
+  assert(not pcall(accountIndex, menu, "Telegram") and module.ownerActionCount() == 3,
+    "a good tg-read session or a store without the account still counts: " .. tostring(module.ownerActionCount()))
+  ownerFake.files = nil
+end)()
+
 -- ElevenLabs: one monthly row per key, in the weekly rows' columns; a reserve is the key owner's floor,
 -- so the bar fills over limit - reserve and an account under its floor reads 100% red.
 ;(function()
@@ -4779,7 +4882,7 @@ end)()
 end)()
 
 -- Suno: right after ElevenLabs, one 1d row per account suno-music saw signed in, read from the gemini-web
--- account files; the reset column holds the credits left and no unlock count shows (a song with no unlock is
+-- account files, and one seen signed out keeps its row with "!" and a red "su  login needed"; the reset column holds the credits left and no unlock count shows (a song with no unlock is
 -- recorded); red when the account cannot make a song (credits under one generation, a standing wall).
 ;(function()
   local now = 1790000000
@@ -4812,13 +4915,17 @@ end)()
   end
   local voices, aria = accountIndex(menu, "voices"), accountIndex(menu, "aria")
   local bolt, cove = accountIndex(menu, "bolt"), accountIndex(menu, "cove")
+  local dusk = accountIndex(menu, "dusk")
   assert(titleText(menu[voices + 2]) == "-" and titleText(menu[aria - 1]) == "Suno" and aria == voices + 4
-      and bolt == aria + 2 and cove == bolt + 2 and titleText(menu[cove + 2]) == "-",
-    "the Suno section is not a header after ElevenLabs, one row per signed-in account and a separator")
+      and bolt == aria + 2 and cove == bolt + 2 and dusk == cove + 2 and titleText(menu[dusk + 2]) == "-",
+    "the Suno section is not a header after ElevenLabs, one row per account Suno saw and a separator")
   for _, item in ipairs(menu) do
-    local text = titleText(item)
-    assert(text:sub(1, 4) ~= "dusk" and text:sub(1, 4) ~= "echo", "an account not signed in to Suno drew a row")
+    assert(titleText(item):sub(1, 4) ~= "echo", "an account Suno never saw drew a row")
   end
+  assert(titleText(menu[dusk]):find("^dusk.*  !$") and titleText(menu[dusk + 1]) == "        su  login needed"
+      and redRuns(menu[dusk + 1].title)[1] == titleText(menu[dusk + 1]) and submenuItem(menu[dusk], "Log in to Suno…"),
+    "an account Suno shows signed out vanished or reads as usable: " .. titleText(menu[dusk]) .. " | "
+      .. titleText(menu[dusk + 1]))
   assert(titleText(menu[aria]) == "aria  17m ago" and titleText(menu[aria + 1]) == row("▓▓░░░", "40%", "60")
       and #redRuns(menu[aria + 1].title) == 0 and #redRuns(menu[aria].title) == 0 and menu[aria + 1].disabled == true,
     "a usable account's Suno row is wrong (a lapsed wall must not count): " .. titleText(menu[aria + 1]))

@@ -44,6 +44,7 @@ from pathlib import Path
 CONFIG_DIR = Path(os.environ.get("TG_READ_CONFIG", Path.home() / ".config/telegram"))
 API_FILE = CONFIG_DIR / "api.txt"
 SESSION = CONFIG_DIR / "session"
+LOGIN_NEEDED = CONFIG_DIR / "login-needed"  # the menubar's Telegram "login needed" row, until a login or a good run
 GROQ_KEYS = Path("/Volumes/Work/Projects/transcriptions-gpt/settings/groq_keys.txt")
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 MAX_SEND = 4000
@@ -77,7 +78,9 @@ def client():
 async def ensure_authorized(tg) -> None:
     await tg.connect()
     if not await tg.is_user_authorized():
+        LOGIN_NEEDED.touch()
         sys.exit("tg-read: not logged in; run `tg-read login` in your own terminal")
+    LOGIN_NEEDED.unlink(missing_ok=True)
 
 
 async def resolve(tg, chat: str):
@@ -505,7 +508,10 @@ def main(argv=None) -> int:
         send_text(args)  # refuse an empty or oversized text before connecting
     handler = {"login": cmd_login, "chats": cmd_chats, "read": cmd_read, "voice": cmd_voice, "photo": cmd_photo,
                "transcribe": cmd_transcribe, "send": cmd_send}[args.command]
-    return asyncio.run(handler(args))
+    code = asyncio.run(handler(args))
+    if args.command == "login" and code == 0:
+        LOGIN_NEEDED.unlink(missing_ok=True)
+    return code
 
 
 if __name__ == "__main__":
