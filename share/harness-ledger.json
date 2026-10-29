@@ -10717,8 +10717,8 @@
           "at": "2026-10-29T06:00:00+02:00",
           "by": "harness-guards-20261029T053107Z-055d",
           "files": [
-            "bin/harness-doctor",
-            "tests/test_harness_doctor.sh"
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -10746,8 +10746,8 @@
           "at": "2026-10-29T06:00:00+02:00",
           "by": "harness-guards-20261029T053107Z-055d",
           "files": [
-            "bin/harness-doctor",
-            "tests/test_harness_doctor.sh"
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
           ],
           "in": null,
           "regressed_at": null
