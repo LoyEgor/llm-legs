@@ -56,17 +56,17 @@ _RUNS = {}
 def runs(path, lo):
     """One sample per suite run ended after lo, copies of the journal's samples built once per its content: a Speed
     read asks for some forty windows of the same 11 MB journal."""
-    lines = night_spend.kept_lines(path)
-    if _RUNS.get(path, (None,))[0] is not lines:
-        found = journal_runs(lines)
-        _RUNS[path] = (lines, found, [r["end"] for r in found])
+    rows = night_spend.kept_rows(path)
+    if _RUNS.get(path, (None,))[0] is not rows:
+        found = journal_runs(rows)
+        _RUNS[path] = (rows, found, [r["end"] for r in found])
     _, found, ends = _RUNS[path]
     return [dict(r) for r in found[bisect.bisect_left(ends, lo):]]
 
 
-def journal_runs(lines):
+def journal_runs(rows):
     out = []
-    for r in night_spend.parsed(lines):
+    for r in rows:
         end = r.get("ended_at")
         if not isinstance(end, (int, float)) or not isinstance(r.get("suites"), dict):
             continue

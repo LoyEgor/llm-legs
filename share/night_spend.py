@@ -120,10 +120,21 @@ def kept_lines(path):
     return KEPT[key][1]
 
 
+PARSED = {}
+
+
+def kept_rows(path):
+    """A journal's rows, parsed once per content like kept_lines: its readers share them and never change one."""
+    lines = kept_lines(path)
+    if PARSED.get(path, (None,))[0] is not lines:
+        PARSED[path] = (lines, list(parsed(lines)))
+    return PARSED[path][1]
+
+
 def rows(path, keep=False):
     try:
         if keep:
-            yield from parsed(kept_lines(path))
+            yield from kept_rows(path)
             return
         with open(path, errors="ignore") as handle:
             yield from parsed(handle)
