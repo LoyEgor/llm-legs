@@ -189,8 +189,10 @@ try {
   await page.click('.votes button[data-v="tie"]');
   await page.waitForTimeout(400);
   if ((await strong(page)).startsWith("3")) { await page.click("text=←"); await ready(page); }
+  const hits0 = srv.pages.get("vote3").stateHits;
   srv.set("vote3", "p02", { choice: "A" });
-  await page.waitForTimeout(4500);
+  check("a freshness poll fetched the newer value", await until(() => srv.pages.get("vote3").stateHits > hits0, 6000));
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
   check("pending edit wins over a newer server value", await page.$eval('.votes button[data-v="tie"]', (b) => b.classList.contains("on")));
   srv.pages.get("vote3").fail = false;
   await until(() => srv.pages.get("vote3").items.p02?.choice?.v === "tie", 6000);

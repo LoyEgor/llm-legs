@@ -56,7 +56,7 @@ export function fixtures(dir) {
 // /p/<pid>/m/<n>?v=…, `_` keys go, blind variants lose id/label (in a fixed swap per item).
 export function serve(pages) {
   const P = new Map();
-  for (const [pid, spec] of Object.entries(pages)) P.set(pid, { spec, specRev: 1, rev: 0, items: {}, ops: new Set(), posts: [], fail: false });
+  for (const [pid, spec] of Object.entries(pages)) P.set(pid, { spec, specRev: 1, rev: 0, items: {}, ops: new Set(), posts: [], fail: false, stateHits: 0 });
   const served = (pid) => {
     const p = P.get(pid), media = [];
     const walk = (v) => {
@@ -95,7 +95,7 @@ export function serve(pages) {
     const [, pid, rest] = m;
     if (rest === "") return send(res, 200, fs.readFileSync(path.join(KIT, "loader.html")), TYPES[".html"]);
     if (rest === "spec") return send(res, 200, served(pid).spec);
-    if (rest === "state") return send(res, 200, { rev: p.rev, spec_rev: p.specRev, items: p.items });
+    if (rest === "state") { p.stateHits += 1; return send(res, 200, { rev: p.rev, spec_rev: p.specRev, items: p.items }); }
     const mm = rest.match(/^m\/(\d+)$/);
     if (mm) {
       const f = served(pid).media[+mm[1]];
