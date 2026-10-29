@@ -97,7 +97,7 @@ LIMITS = {
     "worker_orphans": 3,
     "night_walled_pct": 5,
 }
-WAIT_RED_S = {"lock": 60, "poll": 30, "night-suites": 1200, "blender": 3600}
+WAIT_RED_S = {"lock": 60, "poll": 30, "blender": 3600}
 WAIT_DAYS = 15
 
 SYNC_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop", "SessionStart",
