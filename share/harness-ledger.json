@@ -5781,7 +5781,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night fixer harness-speed-regression-test-health-pole-busy-machine-20261014T021712Z-3242",
-      "note": "The first fix (d68a1c3d, slack only on a free machine) left with 9e64bac4e, which moved free-machine deductions out of Lost time; the 2026-10-14 regression was volume, the cause the wait/idle rows share: raw pole+serial minutes judged against the median day (main rows regression-test-health-*-volume). llm-legs@6d890e40 judges them per suite run of the class at today's runs: 24 h to 2026-10-14 05:30, 9348 runs, pole 210.9 against a raw usual 101.3 (red, this branch's base) reads 216.1 against 271.2 on main, inside the band. Per-suite poles stay priced by the opportunity:test-health/pole rows (test_statusline_hooks).",
+      "note": "The first fix (d68a1c3d, slack only on a free machine) left with 9e64bac4e, which moved free-machine deductions out of Lost time; the 2026-10-14 regression was volume, the cause the wait/idle rows share: raw pole+serial minutes judged against the median day (main rows regression-test-health-*-volume). llm-legs@6d890e40 judges them per suite run of the class at today's runs: 24 h to 2026-10-14 05:30, 9348 runs, pole 210.9 against a raw usual 101.3 (red, this branch's base) reads 216.1 against 271.2 on main, inside the band. Per-suite poles stay priced by the opportunity:test-health/pole rows (test_statusline_hooks). 2026-10-29: 97 against 40.6; pole slack a suite-minute 0.059 against 0.020-0.080 on the 7 days before, the rise its suites' wall: all suites wall 99977 s against 60202 s at CPU 55716 s against 52500 s (contention 36087 s); replayed at the usual wall 58, inside the band (60.8). Open: blind spot test-health-minutes-carry-load.",
       "handoff": null
     },
     {
@@ -9486,7 +9486,7 @@
       ],
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night fixer harness-speed-regression-test-health-wait-night-20261014T021715Z-3040",
-      "note": "Test health judged its minutes lines as raw totals against the median day, so the night's volume read as a regression; it now judges minutes a suite run of the line's class against the usual at today's runs (speed-doctor-design §2: a regression is a unit metric). 24 h to 2026-10-14 05:20: 3514 w-min/day over 537. Night 3131 (2026-10-13) ran 192 night callers and 7167 suite runs (31-96 callers, 1112-4621 runs on 10-06..10-12) at 29.8 s wait a run against 24-48 s (median 27): 3344 at today's runs, inside the band. Queue share 27 % against 24 %. Ruled out: a slot or lock slowdown (wait a run flat).",
+      "note": "Test health judged its minutes lines as raw totals against the median day, so the night's volume read as a regression; it now judges minutes a suite run of the line's class against the usual at today's runs (speed-doctor-design §2: a regression is a unit metric). 24 h to 2026-10-14 05:20: 3514 w-min/day over 537. Night 3131 (2026-10-13) ran 192 night callers and 7167 suite runs (31-96 callers, 1112-4621 runs on 10-06..10-12) at 29.8 s wait a run against 24-48 s (median 27): 3344 at today's runs, inside the band. Queue share 27 % against 24 %. Ruled out: a slot or lock slowdown (wait a run flat). 2026-10-29 (24 h to 13:40): 506 against 280, the night's per-run wait 0.37 min against 0.20 from one 21-row night; the same suites ran at CPU x1.07 (38754 s against 36258 s) but wall 65015 s against 41549 s, 20605 s of the 23466 s rise wall/CPU contention (1.68 against 1.14) under the night's own fanout, the rest a heavier mix (31.1 s a suite run at old medians against 25.1); replayed at the usual wall 323, inside the band (420). Ruled out: a suite or slot slowdown (queue 26 of 575 wall-min). Open: blind spot test-health-minutes-carry-load.",
       "handoff": null
     },
     {
@@ -9515,7 +9515,7 @@
       ],
       "last_reviewed": "2026-10-14",
       "reviewed_by": "night fixer harness-speed-regression-test-health-wait-night-20261014T021715Z-3040",
-      "note": "Test health judged its minutes lines as raw totals against the median day, so the night's volume read as a regression; it now judges minutes a suite run of the line's class against the usual at today's runs (speed-doctor-design §2: a regression is a unit metric). 24 h to 2026-10-14 05:20: 223 min/day over 92. 2026-10-14's morning chats ran 637 suite runs by 06:00 (470-1485 a whole day before) at 8.6 s wait a run against 7.9-13 s: 237 at today's runs, inside the band.",
+      "note": "Test health judged its minutes lines as raw totals against the median day, so the night's volume read as a regression; it now judges minutes a suite run of the line's class against the usual at today's runs (speed-doctor-design §2: a regression is a unit metric). 24 h to 2026-10-14 05:20: 223 min/day over 92. 2026-10-14's morning chats ran 637 suite runs by 06:00 (470-1485 a whole day before) at 8.6 s wait a run against 7.9-13 s: 237 at today's runs, inside the band. 2026-10-29 (24 h to 13:40): 199 against 105 at the same suites' CPU x1.05 (13851 s against 13182 s) and wall 29482 s against 14761 s, 13972 s of the rise contention (wall/CPU 2.13 against 1.12): chats ran inside the night's saturation; replayed at the usual wall 100, inside the band. Open: blind spot test-health-minutes-carry-load.",
       "handoff": null
     },
     {
@@ -12369,6 +12369,13 @@
       "reason": "2026-10-29: wait_note keeps only reason 'room' (waits/*.jsonl), the hold file with the why is deleted at hold_clear, and memlogd logs available MB and load1 but neither the pressure level nor load15, so the level-2 share of 16718 s workers, 7676 s review-cells and 1263 s run-suites room holds was estimated, not read (rough load1 against a 15-minute mean of load1 samples)",
       "since": "2026-10-29",
       "would_catch_if": "hold_clear passed the hold's why into the wait row's reason (level, available, load) and the Wait classes split room holds by it"
+    },
+    {
+      "id": "test-health-minutes-carry-load",
+      "what": "test-health's minutes lines (wait, pole, idle, retests) over their usual on a saturated machine, against a suite or harness slowdown",
+      "reason": "2026-10-29: the lines judge wall minutes a suite run against the usual days' (volume normalized since 2026-10-14) with no load control, so the night's own fanout (samples busy 0.92-1.0, load1 57 on 10 cores) read as three P1 regressions: the same suites ran at CPU x1.05-1.07 and wall/CPU 1.68 vs 1.14 (night), 2.13 vs 1.12 (chats); speed-doctor-design §1 tags self-load shown, never a regression, and suite_audit.slowdown/time_budget.load_factor already divide suite rises by it",
+      "since": "2026-10-29",
+      "would_catch_if": "test_health.usual scaled each minutes line by the window's median per-suite wall/CPU rise over the usual days (robust to one suite's own sleeps), and test_test_health pinned a saturated window inside the band and a single-suite slowdown still red"
     }
   ]
 }
