@@ -796,10 +796,10 @@ start_gap() { # -> seconds between the first two STARTs
 grok_roster 'fasta: Logged in\nfastb: Logged in\n'
 : >"$CALLS"
 rc=0
-env "${FANOUT_ENV[@]}" IMAGE_FANOUT_LAUNCH_GAP_MS=1500 FANOUT_SLEEP=2 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' \
+env "${FANOUT_ENV[@]}" IMAGE_FANOUT_LAUNCH_GAP_MS=1000 FANOUT_SLEEP=1.2 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' \
   --vendors grok >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 0
-assert awk -v g="$(start_gap)" 'BEGIN { exit !(g >= 1.2) }'
+assert awk -v g="$(start_gap)" 'BEGIN { exit !(g >= 0.8) }'
 # A gap the Chrome shortcut ended is well under the configured one, however loaded the machine.
 CHROME_GAP_S=8
 grok_roster 'chromey: Logged in\nfasta: Logged in\n'
@@ -832,7 +832,7 @@ assert wait_for 5 eval "! kill -0 $orphan 2>/dev/null"
 
 # --- a cancelled unit's kill grace never stalls the schedule; its account stays held until reaped ---
 # lingers holds request 1's take and ignores TERM; fasta's spare delivers first. busyonce retries
-# 1 s after its busy exit, inside the 8 s grace; request 2, pinned to lingers, waits out the grace.
+# 1 s after its busy exit, inside the 4 s grace; request 2, pinned to lingers, waits out the grace.
 grok_roster 'lingers: Logged in\nfasta: Logged in\nbusyonce: Logged in\n'
 rm -f "$CHILDREN/lingers.seen" "$CHILDREN/busyonce.seen"
 jq -cn --arg d "$DEST" '
@@ -841,14 +841,14 @@ jq -cn --arg d "$DEST" '
   {prompt: "c", dest: ($d + "/linger-c.png"), vendor: "grok", account: "busyonce"}' >"$WORK/linger.jsonl"
 : >"$CALLS"
 rc=0
-env "${FANOUT_ENV[@]}" FANOUT_LIVE= FANOUT_SLEEP=0.3 IMAGE_FANOUT_KILL_WAIT_MS=8000 IMAGE_FANOUT_BUSY_RETRY_MS=1000 \
+env "${FANOUT_ENV[@]}" FANOUT_LIVE= FANOUT_SLEEP=0.3 IMAGE_FANOUT_KILL_WAIT_MS=4000 IMAGE_FANOUT_BUSY_RETRY_MS=1000 \
   bash "$SCRIPT" --dest-dir "$DEST" --jobs "$WORK/linger.jsonl" --spare 1 >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 0
 start_at() { # account nth -> its nth START time
   awk -v a="$1" -v n="$2" '$1 == "START" && $2 == a && ++k == n { print $3; exit }' "$CALLS"
 }
-assert awk -v a="$(start_at busyonce 1)" -v b="$(start_at busyonce 2)" 'BEGIN { exit !(b != "" && b - a < 5) }'
-assert awk -v f="$(start_at fasta 1)" -v l="$(start_at lingers 2)" 'BEGIN { exit !(l != "" && l - f >= 7) }'
+assert awk -v a="$(start_at busyonce 1)" -v b="$(start_at busyonce 2)" 'BEGIN { exit !(b != "" && b - a < 3) }'
+assert awk -v f="$(start_at fasta 1)" -v l="$(start_at lingers 2)" 'BEGIN { exit !(l != "" && l - f >= 3) }'
 assert grep -Fq $'grok\tlingers\tspare-cancelled\t' "$DEST_WORK/fanout.tsv"
 assert test "$(dest_col "$DEST_WORK/fanout.tsv" "$DEST/linger-b.png" 3)" = ok
 assert test "$(dest_col "$DEST_WORK/fanout.tsv" "$DEST/linger-c.png" 3)" = ok
