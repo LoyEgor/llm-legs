@@ -553,9 +553,8 @@ the rework:
   faulty row and reports it as problem `ledger:<row id>`, rule `ledger_fault`, its fact naming the
   faults; the file keeps the row. A row is faulty without `{rule, ident}` or a known status, with a
   duplicate id, or with an `ident` that has fewer than 3 literal characters, fullmatches the empty
-  ident or fullmatches any of 240 seeded random idents in the real shapes (`bash:<w>`, `<w>.sh`,
-  `inline-<w>`, `~/<w>/<w>.md` …); a `not-a-bug` or `weather` row's `ident` must also be one exact
-  literal ident, with no regex metacharacter left unescaped.
+  ident or fullmatches any of 240 seeded random idents in the real shapes; a `not-a-bug` or `weather` row's `ident` must also be one exact
+  literal ident, with no regex metacharacter left unescaped. So is a row breaking the tracked bytes' shape contract, `share/ledger_contract.py`, which the suite's guard shares and `doctor-fix close` refuses on.
 - **Blind and error.** An area whose input is empty reads `blind`, never `ok`: Hook waits with no
   batch joined, Load with no sample in the hour, Hooks with no journal line in 24 h. An exception in
   the collector writes `status: error` with the exception and its line, and a red `menu.txt`.
