@@ -33,6 +33,7 @@ EXEMPT = {
     ("llm-limits.lua", "M.refreshRouting"): "a sub-second worker-pick read rerun on every store rewrite",
     ("llm-limits.lua", "copyChatCommand"): "a click action",
     ("llm-limits.lua", "focusChat"): "a click action",
+    ("llm-limits.lua", "stopChatRow"): "a click action",
     ("llm-limits.lua", "M.switchChatTo"): "a click action",
     ("doctors.lua", "launch"): "opens a fixer or night chat, a job rather than a refresh",
     ("doctors.lua", "M.refreshNight"): "a 70 ms night-run status read on build",
