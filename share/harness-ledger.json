@@ -602,12 +602,12 @@
     },
     {
       "id": "hook-error-notice-word-journal-timeout",
-      "title": "notice-word-journal.sh timed out (exit 124) at the stops of a chat with a 47 MB transcript",
+      "title": "notice-word-journal.sh timed out (exit 124) on the stop that journals a new row: transcript reads and a chat-name wait under load",
       "match": {
         "rule": "hook-error",
         "ident": "notice-word-journal\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-02T14:11:40+03:00",
@@ -617,12 +617,29 @@
           ],
           "in": "claude-setup@89ddec5",
           "regressed_at": "2026-10-20T15:03:07+03:00"
+        },
+        {
+          "at": "2026-10-29T19:35:00+02:00",
+          "by": "night fixer harness-stop-hooks-20261029T165034Z-4f39",
+          "files": [
+            "claude-setup/hooks/lib/words_journal.py",
+            "claude-setup/bin/words-log",
+            "claude-setup/tests/test_stop_dispatch.sh",
+            "claude-setup/tests/test_words_log.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "the journal row of the new-row path, base vs fix, ts and chat left out",
+            "data": "read-only replay of 2026-10-29 11:29Z/6d7a9b58 (its words store copied, turn 3's row dropped) at load 100-176",
+            "result": "identical row (md5 c6b77196 both ways); CPU 0.44-0.66 -> 0.20-0.24 s, wall 2.7-4.6 -> 1.4-2.3 s, one 5.4 s outlier at load 176"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-stop-hooks-20261002T093037Z-0eb0",
-      "note": "All 16 exit-124 lines since 2026-10-01 are session 233cceb1 (Updater doctor), a 47 MB transcript whose turns are mostly silent rows: main() then ran readings() twice over the whole file (reading lines and the GUESS pattern), about 1 s each when idle and past the 5 s cap under night load. readings() without a tail now reads back from words.TAIL_BYTES x4 until his last message is in it (649 KB there): 0.97 s -> 0.008 s, identical results on the 40 largest transcripts. Ruled out: chat-name (0.13 s, own 2 s cap), the words journal (212 KB). The two older 'not executable' lines (2026-09-17) were the hook's creation.",
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-stop-hooks-20261029T165034Z-4f39",
+      "note": "2026-10-29: the regression is one kill, 11:29:32Z/6d7a9b58 (5.5 MB transcript), at the stop where Egor's turn 3 landed (last.json and turn rewritten that minute), so the hook took the new-row path; the row was written only at the next stop (12:27Z). Sibling notices of that stop ran 0.14-0.89 s; busy 0.998, kernel 0.436. Replayed at load ~100 that path took 5.1-6.7 s: import 0.32 s, readings 2.05 s wall on 0.09 s CPU, `chat-name <sid>` 2.05 s (its 2 s timeout hit, the row's chat fell back to the bare id; 0.13 s idle on 10-02, 0.39 s CPU and 2.3 s wall at load 110 now), the silent row's GUESS readings 0.49 s. chat-name only labelled the field words-log prints, on ~29 new rows a day: the stop writes no chat now and words-log names every unlabelled session with one chat-name call when it lists. Not cut: the GUESS pass re-reads the windows the first pass read, and a turn whose last message of his sits megabytes back grows the window to the whole file; both are off-CPU reads under load. 2026-10-02: all 16 exit-124 lines since 10-01 were session 233cceb1 (47 MB transcript); readings() without a tail now grows its window from words.TAIL_BYTES x4 until his last message is in it (0.97 -> 0.008 s there). Ruled out then: the words journal (212 KB; 574 KB, 1213 rows, 20 ms now).",
       "handoff": null
     },
     {
@@ -652,12 +669,12 @@
     },
     {
       "id": "hook-error-worker-run-backstop-timeout",
-      "title": "worker-run-backstop.sh outran the stop's 5 s hook cap (exit 124) in orchestrator chats with large tag caches",
+      "title": "worker-run-backstop.sh outran the stop's 5 s hook cap (exit 124): its process starts stretched by machine-wide stalls",
       "match": {
         "rule": "hook-error",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-03T09:35:00+03:00",
@@ -697,12 +714,29 @@
             "data": "100 live runs of one chat, 90 held by a live starter and 10 with a dead one, at load ~50, 2026-10-14",
             "result": "identical: the same 10 unheld runs named, in the same order; wall 3.10 -> 0.61 s (bash 3.2), 2.01 -> 0.39 s (bash 5)"
           }
+        },
+        {
+          "at": "2026-10-29T19:35:00+02:00",
+          "by": "night fixer harness-stop-hooks-20261029T165034Z-4f39",
+          "files": [
+            "llm-legs/bin/worker-run-backstop.sh",
+            "llm-legs/tests/test_worker_run_backstop.sh",
+            "claude-setup/hooks/stop-dispatch.sh",
+            "claude-setup/tests/test_stop_dispatch.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "whole hook output, base vs fix, per chat with live runs, its own chat pid and none",
+            "data": "the live run root 2026-10-29 19:10 (2280 dirs; 9176d051 with 11 starter-held runs, 2ddedf36 with one run its separate wait owns, ac22ec9e), HOME and the stats dir in temp dirs",
+            "result": "identical in all 5 cases; on 9176d051's 11 runs execs 10 -> 5 (4 awk 3 ps -> 1 awk 1 ps), CPU 0.17-0.19 -> 0.12-0.13 s at load 87-140"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-14",
-      "reviewed_by": "night fixer harness-stop-hooks-20261014T021757Z-6b9c",
-      "note": "2026-10-29 relaunched on the same one event and ruled out again (night fixer harness-stop-hooks-20261029T112136Z-7c71): doctor-fix held a ruling only on a row not regressed, and the overlay rules out only open rows, so a ruling on a fixed row's regression never held. Now a regressed row holds on a ruling closed after its ledger row's last fix (bin/doctor-fix snapshot, test_doctor_fix df-ruling-holds H13/H14); the doctor still shows the event for its 24 h window. Not changed: merge_settled turning a fixed row ruled-out would drop the regressed state of its next event. 1375fd54's headless-worker block costs one jq on worker stops only, none on the interactive path that timed out. 2026-10-29 ruled out (night fixer harness-stop-hooks-20261029T053345Z-3c5c): the one exit 124, 2026-10-28 20:43:16Z/77a2b895 (Rentiva), was a machine-wide stall, not backstop work. No run of that chat was live, so the path was realpath + one payload jq + a stat glob of 2061 run dirs (~40 ms; a read-only replay on the live run root takes 0.37-0.64 s wall and 0.15 s CPU at load 42). Harness samples 26 s later: CPU busy 0.998, kernel 0.484, 1267 forks, tests running. The dispatcher spent 9.0 s and 0.70 s CPU in total. In the same stop the notices took 0.4-3.1 s wall each for 14-57 ms CPU, beside notice-word-journal at 330 ms, so the backstop got at most ~0.26 s CPU in its 5 s. Nothing was lost: no unowned run existed, and the next stop checked again. Same cause as hook-error-notice-connections-kill. Not cut: ~14 process starts when a run is live (claude_ancestor ps, ps command listing, process_tree awk, meta jq, pids_alive_since ps). One fewer saves ~1 of 5 s in a stall, so the class stays. 2026-10-14: the two exits 124 of 2026-10-13 (02:19Z, 03:01Z) were night 3131's orchestrator (a99daa57), its only two stops that night, with 101 and 93 live runs no wait owned, each held by a live starter (the night launcher). The cache cuts of 24571d6/f04d86de hold; what was left was a fork per run: starter_alive's ps -p for every run, and jq + ps for every run its starter did not hold, ~100-200 forks a stop on a machine at load 100-220. Now one ps -Ao pid=,etime= listing (share/run-liveness.sh pids_alive_since, the same etime vs start rule within PID_START_SLACK and the same per-pid probe when ps cannot list pid 1, invariant ar) and one jq over the candidates' meta.json answer every run; test_worker_run_backstop counts 2 ps and 1 meta jq for 12 starter-held runs (13 ps on the old code). Accepted: a truncated meta.json would stop that one jq and hide the runs after it, unreachable since worker-run writes the first meta.json whole before state.json and every later one by temp + mv. Not cut: a run the backstop names still pays one jq in resume_of; crashed run dirs are never pruned (1984 run dirs, a glob and a few builtin tests each).",
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-stop-hooks-20261029T165034Z-4f39",
+      "note": "2026-10-29 (night fixer harness-stop-hooks-20261029T165034Z-4f39): the new kill, 15:24:13Z/233cceb1 (Updater doctor, chat pid 1333), was a stall again: the whole dispatcher spent 378 ms CPU in 7.3 s, its notices ~157 ms of it, so the backstop got <= ~0.22 s CPU in its 5 s; in the same seconds other chats' trivial gates ran 1-4.4 s on 7-70 ms CPU (review-flow-gate 4.40 s/70 ms, resume-timer-guard 1.19 s/10 ms), busy 0.999 kernel 0.507. Its one live run (claudeb-1793286577-75902-5e6e) was held by its live starter, the `worker-run run` Bash, yet owned() read the chat's process tree first (claude_ancestor ps+awk, a ps command listing, process_tree's awks and subshells), ~10 of the path's ~20 process starts, each stretched by the stall. Now a builtin kill -0 on each run's starter pids orders the reads: while every starter pid exists the liveness listing goes first and the tree is read only for a run it finds unheld (a recycled starter pid); a run whose starter is gone reads the tree first as before, so a dozen wait-owned runs still cost one table read. 11 of 12 live runs at 19:10 were starter-held. Not cut: a stop with no live run (77a2b895, 10-28) still timed out on realpath + one jq in a stall; that floor is hook-error-notice-connections-kill's. The backstop had no hook-time line, so all five backstop-kill limit hits (10-20..29) read usual null and its CPU was inferred by subtraction; stop-dispatch now times it as the part stop.d/worker-run-backstop.sh (its own row with exit and CPU, and the kill's usual). Slow gaps (dispatcher start to first notice >= 2.5 s, 10-27..29): 14 of ~1560 stops, 5 of them chat pid 1333. 2026-10-29 (fixers 3c5c, 7c71): 2026-10-28 20:43:16Z/77a2b895 (Rentiva) ruled out as a stall; a regressed row now holds on a ruling closed after its last fix (bin/doctor-fix snapshot, test_doctor_fix H13/H14). Not changed: merge_settled turning a fixed row ruled-out would drop the regressed state of its next event. No run of that chat was live (realpath + one jq + a stat glob, 0.15 s CPU replayed); busy 0.998, kernel 0.484; the dispatcher spent 9.0 s on 0.70 s CPU and the backstop at most ~0.26 s. 2026-10-14: the two exits 124 of 2026-10-13 (02:19Z, 03:01Z) were night 3131's orchestrator (a99daa57), its only two stops that night, with 101 and 93 live runs no wait owned, each held by a live starter (the night launcher). The cache cuts of 24571d6/f04d86de hold; what was left was a fork per run: starter_alive's ps -p for every run, and jq + ps for every run its starter did not hold, ~100-200 forks a stop on a machine at load 100-220. Now one ps -Ao pid=,etime= listing (share/run-liveness.sh pids_alive_since, the same etime vs start rule within PID_START_SLACK and the same per-pid probe when ps cannot list pid 1, invariant ar) and one jq over the candidates' meta.json answer every run; (13 ps on the old code; 1 ps since 4f39). Accepted: a truncated meta.json would stop that one jq and hide the runs after it, unreachable since worker-run writes the first meta.json whole before state.json and every later one by temp + mv. Not cut: a run the backstop names still pays one jq in resume_of; run dirs live ~9 days (2280 on 10-29, a glob and a few builtin tests each).",
       "handoff": null
     },
     {
@@ -3404,7 +3438,7 @@
       ],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "night fixer harness-stop-hooks-20261020T114218Z-20c9",
-      "note": "2026-10-29 (night fixers harness-stop-hooks-20261029T053345Z-3c5c, -112136Z-7c71: no change to the hook or the parallel notice dispatch since): quiet in the window, and the cause stands. The 2026-10-28 20:43:16Z/77a2b895 stop at CPU busy 0.998 ran this hook 2.01 s wall for 57 ms CPU and killed the backstop (hook-error-worker-run-backstop-timeout). No hook-side cut. 2026-10-20: the regression (10-19 22:48Z/233cceb1, 10-20 10:06Z/4037a0e4, 10:32Z) is not report-bus: no notice emit in history.log near any kill and the killed parts spent 12-16 ms CPU. Same stall as hook-error-notice-connections-kill: killed parts spent 12-28 ms CPU in 5 s (folded hook-time), and every parallel notice of the stop ran 3.5-5 s on <=0.2 CPU-s (10-20 10:06Z/4037a0e4: chat-names, connections, word-attested killed, word-journal 4.25 s on 154 ms). Reopened as open on that cause; report-bus's one-grep fix (816bb553) stands. The shared cause was report-bus, not the load: resolve_session forked one grep per run directory (1381 under ~/.cache/claude-worker-runs) to fold a worker session to its launcher, so every rb_emit cost 7-8 s idle; the hook only emits when the last message names a chat id, which is why it went slow on some stops only (folded hook-time: 1584 runs, 100 over 1 s, 12 over 3 s, max 6.4 s). 10896605 2026-10-06T22:36:23Z, an interactive chat whose message named its own uuid, at busy 0.98: chat_names.py and chat-name took under 1 s, the hook 5.01 s (cap). Now one grep -l over all worker-session files per hop: emit 0.3-0.5 s (test_report_bus counts the greps). Earlier: 1f9d738e (claudeb worker) and 4b013ca5 (usage-ai-report gate, open usage-gate handoff) 2026-10-05; workers now exit at the top of the hook (claude-setup@71697c4).",
+      "note": "2026-10-29 (night fixers harness-stop-hooks-20261029T053345Z-3c5c, -112136Z-7c71, -165034Z-4f39: no change to the hook or the parallel notice dispatch since, 7bf0fc0e touched only the busy-hold and 44ced7f6 only report-bus's duplicate line; no kill of it since 10-22): quiet in the window, and the cause stands (in the 15:24:13Z/233cceb1 stall other chats' gates ran 1-4.4 s on 7-70 ms CPU while this stop's notices ran 0.3-0.9 s). The 2026-10-28 20:43:16Z/77a2b895 stop at CPU busy 0.998 ran this hook 2.01 s wall for 57 ms CPU and killed the backstop (hook-error-worker-run-backstop-timeout). No hook-side cut. 2026-10-20: the regression (10-19 22:48Z/233cceb1, 10-20 10:06Z/4037a0e4, 10:32Z) is not report-bus: no notice emit in history.log near any kill and the killed parts spent 12-16 ms CPU. Same stall as hook-error-notice-connections-kill: killed parts spent 12-28 ms CPU in 5 s (folded hook-time), and every parallel notice of the stop ran 3.5-5 s on <=0.2 CPU-s (10-20 10:06Z/4037a0e4: chat-names, connections, word-attested killed, word-journal 4.25 s on 154 ms). Reopened as open on that cause; report-bus's one-grep fix (816bb553) stands. The shared cause was report-bus, not the load: resolve_session forked one grep per run directory (1381 under ~/.cache/claude-worker-runs) to fold a worker session to its launcher, so every rb_emit cost 7-8 s idle; the hook only emits when the last message names a chat id, which is why it went slow on some stops only (folded hook-time: 1584 runs, 100 over 1 s, 12 over 3 s, max 6.4 s). 10896605 2026-10-06T22:36:23Z, an interactive chat whose message named its own uuid, at busy 0.98: chat_names.py and chat-name took under 1 s, the hook 5.01 s (cap). Now one grep -l over all worker-session files per hop: emit 0.3-0.5 s (test_report_bus counts the greps). Earlier: 1f9d738e (claudeb worker) and 4b013ca5 (usage-ai-report gate, open usage-gate handoff) 2026-10-05; workers now exit at the top of the hook (claude-setup@71697c4).",
       "handoff": "docs/handoffs/2026-10-05-usage-gate-hooks.md"
     },
     {
@@ -10054,7 +10088,7 @@
       ],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "night fixer harness-stop-hooks-20261020T114218Z-20c9",
-      "note": "2026-10-29 (night fixers harness-stop-hooks-20261029T053345Z-3c5c, -112136Z-7c71: no change to the hook or the parallel notice dispatch since): quiet in the window, and the cause stands. In the stall of 2026-10-28 20:43:16Z/77a2b895 (busy 0.998, kernel 0.484) this hook ran 1.43 s for 16 ms CPU, and the stall killed worker-run-backstop.sh instead. Same machine-wide stall, nothing of the hook to cut. 2026-10-20: 8 kills since 2026-10-19 11:06Z (5 chats), all one cause, not a hang of ours: each killed part spent 12-28 ms CPU in its 5 s (hooks/folded 20745-20746.tsv), and at 10-20 10:06Z/4037a0e4 all five parallel notices stalled together (chat-names, connections, word-attested killed; word-journal 4.25 s on 154 ms; busy 0.30-0.58). Completed connections runs read 3.6-4.8 s on 94-195 ms CPU. 5 of 8 kills sit in a fork storm (system-doctor ticks births_s 736-2070 against a p90 of 474; 487 geminib births in the 10:06 tick); 11:06Z and 22:48Z had none (births_s 300, 147, busy 0.3), cause unseen at minute grain. Ruled out: the check's own CPU (0.10-0.13 s a run; 1000 project keys, 917 of them deleted review-bench temp dirs, cost 24 ms), a lazy concurrent.futures import (17 fewer modules, no CPU change, not landed), a lock (check takes it non-blocking), report-bus (no notice emit near any kill). Blind spot hook-off-cpu-wait stands. 2026-10-14 ruled out as a hang of ours: the same one kill (2026-10-13 15:36:44Z, chat c0f23f02) that row limit_hit:claude-setup:stop-dispatch.hook-kill measured (llm-legs@d9c59236): 1 of 577 runs, busy 0.99 and kernel 0.48, the read-only path of `connections check` waits on nothing, lock contention, dead $TMPDIR keys and its imports measured out; blind spot hook-off-cpu-wait. No kill since in 801 stops.",
+      "note": "2026-10-29 (night fixers harness-stop-hooks-20261029T053345Z-3c5c, -112136Z-7c71, -165034Z-4f39: no change to the hook or the parallel notice dispatch since, 7bf0fc0e touched only the busy-hold and 44ced7f6 only report-bus's duplicate line; no kill of it since 10-22): quiet in the window, and the cause stands (in the 15:24:13Z/233cceb1 stall other chats' gates ran 1-4.4 s on 7-70 ms CPU while this stop's notices ran 0.3-0.9 s). In the stall of 2026-10-28 20:43:16Z/77a2b895 (busy 0.998, kernel 0.484) this hook ran 1.43 s for 16 ms CPU, and the stall killed worker-run-backstop.sh instead. Same machine-wide stall, nothing of the hook to cut. 2026-10-20: 8 kills since 2026-10-19 11:06Z (5 chats), all one cause, not a hang of ours: each killed part spent 12-28 ms CPU in its 5 s (hooks/folded 20745-20746.tsv), and at 10-20 10:06Z/4037a0e4 all five parallel notices stalled together (chat-names, connections, word-attested killed; word-journal 4.25 s on 154 ms; busy 0.30-0.58). Completed connections runs read 3.6-4.8 s on 94-195 ms CPU. 5 of 8 kills sit in a fork storm (system-doctor ticks births_s 736-2070 against a p90 of 474; 487 geminib births in the 10:06 tick); 11:06Z and 22:48Z had none (births_s 300, 147, busy 0.3), cause unseen at minute grain. Ruled out: the check's own CPU (0.10-0.13 s a run; 1000 project keys, 917 of them deleted review-bench temp dirs, cost 24 ms), a lazy concurrent.futures import (17 fewer modules, no CPU change, not landed), a lock (check takes it non-blocking), report-bus (no notice emit near any kill). Blind spot hook-off-cpu-wait stands. 2026-10-14 ruled out as a hang of ours: the same one kill (2026-10-13 15:36:44Z, chat c0f23f02) that row limit_hit:claude-setup:stop-dispatch.hook-kill measured (llm-legs@d9c59236): 1 of 577 runs, busy 0.99 and kernel 0.48, the read-only path of `connections check` waits on nothing, lock contention, dead $TMPDIR keys and its imports measured out; blind spot hook-off-cpu-wait. No kill since in 801 stops.",
       "handoff": null
     },
     {
@@ -10816,7 +10850,7 @@
       ],
       "last_reviewed": "2026-10-20",
       "reviewed_by": "night fixer harness-stop-hooks-20261020T114218Z-20c9",
-      "note": "2026-10-29 (night fixers harness-stop-hooks-20261029T053345Z-3c5c, -112136Z-7c71: no change to the hook or the parallel notice dispatch since): quiet in the window, and the cause stands (the stall of 2026-10-28 20:43:16Z/77a2b895, where this hook ran 0.38 s for 24 ms CPU). Nothing of the hook to cut. One kill, 2026-10-20 10:06:08Z/4037a0e4, the hook's first: 17 ms CPU in 5.04 s, beside chat-names and connections killed in the same stop. Same stall as hook-error-notice-connections-kill: killed parts spent 12-28 ms CPU in 5 s (folded hook-time), and every parallel notice of the stop ran 3.5-5 s on <=0.2 CPU-s (10-20 10:06Z/4037a0e4: chat-names, connections, word-attested killed, word-journal 4.25 s on 154 ms). Its usual run is 30 ms (jq over the attest records only).",
+      "note": "2026-10-29 (night fixers harness-stop-hooks-20261029T053345Z-3c5c, -112136Z-7c71, -165034Z-4f39: no change to the hook or the parallel notice dispatch since, 7bf0fc0e touched only the busy-hold and 44ced7f6 only report-bus's duplicate line; no kill of it since 10-22): quiet in the window, and the cause stands (in the 15:24:13Z/233cceb1 stall other chats' gates ran 1-4.4 s on 7-70 ms CPU while this stop's notices ran 0.3-0.9 s) (the stall of 2026-10-28 20:43:16Z/77a2b895, where this hook ran 0.38 s for 24 ms CPU). Nothing of the hook to cut. One kill, 2026-10-20 10:06:08Z/4037a0e4, the hook's first: 17 ms CPU in 5.04 s, beside chat-names and connections killed in the same stop. Same stall as hook-error-notice-connections-kill: killed parts spent 12-28 ms CPU in 5 s (folded hook-time), and every parallel notice of the stop ran 3.5-5 s on <=0.2 CPU-s (10-20 10:06Z/4037a0e4: chat-names, connections, word-attested killed, word-journal 4.25 s on 154 ms). Its usual run is 30 ms (jq over the attest records only).",
       "handoff": null
     },
     {
