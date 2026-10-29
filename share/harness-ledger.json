@@ -12611,7 +12611,8 @@
       "same_cause": [],
       "last_reviewed": "2026-10-29",
       "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-suite-audit-review-bench-test-panel-preparation-20261012t235429z-346b-20261029T165028Z-1a88",
-      "note": "Cause: the job's `kept` rows (test_experiments_registry, test_agy_bare) name a unit whose code the fix never changed, but runtime_change counted the job's fixture helpers (integrity-probe.py, panel-preparation-probe.py) as runtime of every named suite, so unit_proof timed test_experiments_registry (0.1 s CPU-light, 0.03 s user; wall 0.2-0.56 s on rerun = load, 145 files tree, EXPERIMENTS.json empty since 97e8c17) as the fix's. Ruled out: the suite itself (untouched since the audit; whole-tree grep costs ~0.03 s), a real slowdown of the three cut suites (not named by the row). Now a helper is runtime only for a suite whose source names it."
+      "note": "Cause: the job's `kept` rows (test_experiments_registry, test_agy_bare) name a unit whose code the fix never changed, but runtime_change counted the job's fixture helpers (integrity-probe.py, panel-preparation-probe.py) as runtime of every named suite, so unit_proof timed test_experiments_registry (0.1 s CPU-light, 0.03 s user; wall 0.2-0.56 s on rerun = load, 145 files tree, EXPERIMENTS.json empty since 97e8c17) as the fix's. Ruled out: the suite itself (untouched since the audit; whole-tree grep costs ~0.03 s), a real slowdown of the three cut suites (not named by the row). Now a helper is runtime only for a suite whose source names it.",
+      "handoff": null
     }
   ],
   "blind_spots": [
