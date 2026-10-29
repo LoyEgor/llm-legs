@@ -49,6 +49,16 @@
     "llm-legs/llm-limits.sh",
     "llm-legs/bin/claude-resume-timer"
    ]
+  },
+  {
+   "at": "2026-10-29T08:01:51+02:00",
+   "canonical": "llm-legs/share/image-caps.sh#image_caps_wire_check",
+   "cause": "cause:llm-legs/share/flow-image.sh#flow_image_engine",
+   "mechanism": "manifest wire-pattern model check",
+   "replaced": [
+    "llm-legs/share/flow-image.sh#flow_image_footer",
+    "llm-legs/bin/gemini-video"
+   ]
   }
  ]
 }
