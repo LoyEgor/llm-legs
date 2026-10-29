@@ -657,9 +657,10 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   are unix epochs, `until` null when unbounded, `session` the `CLAUDE_CODE_SESSION_ID` if known.
   Written to `<file>.tmp` and renamed; removed when the hold ends, on every exit path.
 - **Stale.** A hold is live only while its pid runs a process that started no later than `since`
-  (+2 s for `etime` rounding; `ps -o pid=,etime=`): a dead pid, or one reused by a later
+  (+2 s, `ps -o pid=,etime=`): a dead pid, or one reused by a later
   process, is a leak. The doctor reports it once (`limiter_hold_leak:<limiter>`, a watch) and a
-  persisting run then deletes the file; a SIGKILLed or SIGTERMed holder cannot clean up. The
+  persisting run then deletes the file; a SIGKILLed or SIGTERMed holder cannot clean up. A limiter holding past 60 s whose class journaled no wait in 8 days is
+  `hold_unjournaled:<limiter>`, a watch. The
   writers install no signal handler: Python allows one only on the main thread, where
   `throttle.py`'s pool threads never wait, and a host's own handler must stay.
 - **Writers.** `share/limiter-hold.sh` (`hold_raise <limiter> <what> <why> [until] [key]`,

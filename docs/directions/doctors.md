@@ -83,7 +83,7 @@ before the launch). Classes 2–5 (*): a hand keyword partition of the 79 and 82
 Why they come back:
 1. Only the Harness doctor remembered a ruling; other rows came back and were ruled out again (LLM M2, M4, `I48`,
    `machine/contention`, 10-06…14).
-2. Speed ranks an opportunity by its estimated saving (blind spot `delegation-model-time`); a ruling holds it (Open).
+2. Speed ranks an opportunity by its estimated saving (reviews priced on their non-model rest); a ruling holds it (Open).
 4. Every log-audit finding becomes a Harness row; none of the 105 packets of 10-06…19 names a component file, and
    conduct (re-asked decisions, a chat's brief) has no fixer.
 5. The contract's after-fix rule (§2: an event regresses a fix only if it ran on code holding it) covers matching,
