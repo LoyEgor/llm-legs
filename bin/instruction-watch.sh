@@ -70,6 +70,8 @@ visible_paths() {
   printf '%s\n' "$visible_set"
 }
 
+_watch_empty_sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
 # The harness rewrites settings.json whenever the model or the permission mode changes, and
 # those are Egor's own switches, not an edit to the file's meaning: five alerts in seventeen
 # minutes about `opus` becoming `sonnet` is how an alarm teaches everyone to ignore it. Both
@@ -85,7 +87,7 @@ hash_of() {
       h=$(jq -S 'del(.model) | del(.permissions.defaultMode)' "$f" 2>/dev/null |
           shasum -a 256 | cut -d' ' -f1)
       # An unparseable settings.json falls back to the raw bytes rather than to a constant.
-      [ -n "$h" ] && [ "$h" != "$(printf '' | shasum -a 256 | cut -d' ' -f1)" ] &&
+      [ -n "$h" ] && [ "$h" != "$_watch_empty_sha" ] &&
         { printf '%s\n' "$h"; return 0; }
       ;;
   esac
@@ -529,13 +531,16 @@ cmd_baseline() {
   # version a file has sat at for a month is exactly the one worth being able to restore; only a
   # version no baseline has vouched for since is abandoned. Every write refreshes the mtime of
   # the version still in use, so what this reaches is superseded copies alone.
-  find "$STATE_DIR" -mindepth 1 -maxdepth 1 \( -name 'session-*' ! -path "${ref:-/}" -mtime +7 \
-    -o -name 'visible-*' -mtime +1 -o -name 'pending-*' -mtime +1 \) -delete 2>/dev/null
-  find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +90 -delete 2>/dev/null
-  find "$RECEIPT_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
-  find "$ALERT_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.last' -mtime +30 -delete 2>/dev/null
-  # A read-only call that exits non-zero gets no PostToolUse, so its note is never taken.
-  find "$STATE_DIR/readonly" -mindepth 1 -maxdepth 1 -type f -mmin +1440 -delete 2>/dev/null
+  # Every age here is a day or more, so the sweep runs once an hour.
+  if [ -z "$(find "$STATE_DIR/baseline.swept" -mmin -60 2>/dev/null)" ] && : >"$STATE_DIR/baseline.swept" 2>/dev/null; then
+    find "$STATE_DIR" -mindepth 1 -maxdepth 1 \( -name 'session-*' ! -path "${ref:-/}" -mtime +7 \
+      -o -name 'visible-*' -mtime +1 -o -name 'pending-*' -mtime +1 \) -delete 2>/dev/null
+    find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +90 -delete 2>/dev/null
+    find "$RECEIPT_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
+    find "$ALERT_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.last' -mtime +30 -delete 2>/dev/null
+    # A read-only call that exits non-zero gets no PostToolUse, so its note is never taken.
+    find "$STATE_DIR/readonly" -mindepth 1 -maxdepth 1 -type f -mmin +1440 -delete 2>/dev/null
+  fi
   instruction_ranked_refresh "$HOME" "$RANKED_CACHE" || true
   load_visible
   [ -z "$ref" ] || cmd_check "$out" "$event" "$sid" between "$ref"
@@ -661,7 +666,7 @@ load_inflight() {
     for k in ${own_stale[@]+"${!own_stale[@]}"}; do
       [ "${own_stale_starts[$k]}" -lt $((own_start - 60000000000)) ] && rm -f "${own_stale[$k]}" 2>/dev/null
     done
-    mkdir -p "$CLOSED_DIR" 2>/dev/null &&
+    { [ -d "$CLOSED_DIR" ] || mkdir -p "$CLOSED_DIR" 2>/dev/null; } &&
       printf '%s %s\n' "$own_start" "$now_ns" >"$CLOSED_DIR/${own_file##*/}" 2>/dev/null
     rm -f "$own_file" 2>/dev/null
   fi

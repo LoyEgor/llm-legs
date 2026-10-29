@@ -279,6 +279,7 @@ span_base sid-gone >/dev/null
 touch -t 202001010000 "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" \
   "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv"
 assert_eq "" "$(raw_check sid-alive Bash command "$ANY_CALL" "$NOSPAN_T")"
+rm -f "$INSTRUCTION_WATCH_STATE/baseline.swept"
 span_base sid-sweeper >/dev/null
 assert [ -e "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" ]
 assert [ ! -e "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv" ]

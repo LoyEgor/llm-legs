@@ -131,6 +131,7 @@ printf 'tier doc\n' > "$DOC"
 # A note nobody took (the call exited non-zero, so no PostToolUse) goes after a day, at session start.
 touch -t 202601010000 "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-elsewhere"
 : > "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-fresh"
+rm -f "$INSTRUCTION_WATCH_STATE/baseline.swept"
 span_base sid-note-sweep >/dev/null
 assert_fails [ -e "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-elsewhere" ]
 assert [ -e "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-fresh" ]
