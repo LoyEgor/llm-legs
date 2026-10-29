@@ -40,10 +40,10 @@ WEAK_RE='(^|[-_.])(haiku|mini|nano|lite|flash|small|tiny)([-_.0-9]|$)'
 # COST CEILING (owner decision 2026-06-11): Opus is the most expensive tier this leg may use.
 # Mythos-class models (fable/mythos) cost far more per call — block them outright, no override.
 BLOCKED_RE='(^|[-_.])(fable|mythos)([-_.0-9]|$)'
-LIMIT_RE='hit your (session|weekly|Opus|usage) limit|usage_limit|rate.?limit|quota'
+LIMIT_RE='hit your (session|5-hour|weekly|Opus|usage) limit|usage_limit|rate.?limit|quota'
 # A worker_wall walls the whole account for every model; an Opus bucket or a transient rate limit
 # only drops this leg.
-ACCOUNT_WALL_RE='hit your (session|weekly|usage) limit'
+ACCOUNT_WALL_RE='hit your (session|5-hour|weekly|usage) limit'
 # NOTE: only CURRENT tool names — the CLI rejects unknown names in permission rules
 # (MultiEdit no longer exists; listing it broke review calls on 2026-06-12).
 DISALLOWED_TOOLS='Write,Edit,NotebookEdit,Bash,KillShell'

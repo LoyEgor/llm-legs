@@ -67,7 +67,7 @@ BUDGET_VERSION = 7
 STRATA = (("chat", "min per order · chat"), ("workers", "min per task · workers"), ("night", "min per job · night"))
 WORKER_OVERHEAD = ("slot", "retries", "walled", "wrapup", "dead", "hung", "suite_run", "suite_wait")
 INDEX_DAYS, INDEX_MIN_UNITS = 7, 20
-DEAD_LINE = re.compile(r"(?:(?:Failed to authenticate|Not logged in|You've hit your \w+ limit|API Error|Execution error|"
+DEAD_LINE = re.compile(r"(?:(?:Failed to authenticate|Not logged in|You've hit your [\w-]+ limit|API Error|Execution error|"
                        r"Request timed out|[A-Z]+_(?:FAILED|USAGE_LIMIT|UNAVAILABLE))\b|Error:)")
 DEAD_LINE_MAX = 300
 RESUME = re.compile(r"(?m)^RESUME ([0-9a-f][0-9a-f-]{7,})")

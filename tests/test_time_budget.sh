@@ -328,6 +328,10 @@ check(T.dead_runs([dead_row]) == {DEAD}
       and L(T.run_split(dict(dead_row, dead=True), 0, 1e12, [], [])) == {"slot": 10, "dead": 600},
       "a failed run nobody resumed, with no file, commit or report, is dead: its last attempt's wall, the slot queue "
       "before it kept apart")
+run_dir(DEAD, dict(dead_files, result="You've hit your 5-hour limit · resets 6:20am\n"))
+check(T.dead_runs([dead_row]) == {DEAD},
+      "Claude Code 2.1.312's wall line, \"5-hour limit\" where it said \"session limit\", is a dead run's line")
+run_dir(DEAD, dead_files)
 alive = {"files names a path": dict(dead_files, files="WORKDIR: /w/feat\nsrc/a.py\n"),
          "files partial": dict(dead_files, files="WORKDIR: /w/feat\nPARTIAL: the run also ran shell commands\n"),
          "files unknown": dict(dead_files, files="UNKNOWN: the workdir after snapshot could not be established\n"),

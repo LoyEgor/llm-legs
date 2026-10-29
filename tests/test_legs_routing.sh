@@ -391,6 +391,13 @@ for spec in "codex:codex-worker:$ROOT/ask_codex.sh" "claude:claude-worker:$ROOT/
   assert jq -e --arg v "$leg" --arg a "$account" \
     '.vendors[$v].accounts[] | select(.account == $a) | .worker_wall.resets_at > now' "$WORK/limits.json" >/dev/null
 done
+# Claude Code 2.1.312 names the five-hour window "5-hour limit" where it said "session limit".
+printf '{"schema":1,"vendors":{"claude":{"available":true,"accounts":[{"account":"claude-worker"}]}}}\n' >"$WORK/limits.json"
+LEG_ENV=(STUB_WALL=1 "STUB_WALL_TEXT=You've hit your 5-hour limit · resets 6:20am" "LLM_LIMITS_FILE=$WORK/limits.json")
+rc=0
+run_leg "$ROUTED_PATH" "$WORK/wall-5h" "$ROOT/ask_claude.sh" "wall 5-hour" >/dev/null 2>"$WORK/wall-5h.err" || rc=$?
+assert test "$rc" -eq 5
+assert jq -e '.vendors.claude.accounts[0].worker_wall.resets_at > now' "$WORK/limits.json" >/dev/null
 # An Opus bucket or a transient rate limit drops the leg but walls no account for every model.
 for text in "You've hit your Opus limit" 'API Error: rate limit, retry shortly'; do
   printf '{"schema":1,"vendors":{"claude":{"available":true,"accounts":[{"account":"claude-worker"}]}}}\n' >"$WORK/limits.json"

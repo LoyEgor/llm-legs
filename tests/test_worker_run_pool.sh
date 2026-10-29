@@ -540,13 +540,16 @@ start_ok codex
 assert await_done
 assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
 
-clear_stub
-set_config 'claudeb_model=opus' 'claudeb_effort=high'
-export PICK_RC=0 PICK_ACCOUNT=limitacct STUB_CODE=9
-export STUB_STDOUT="{\"result\":\"You've hit your session limit · resets 10:40pm (Europe/Kiev)\",\"is_error\":true}"
-start_ok claudeb
-assert await_done
-assert grep -qx 'OUTCOME: CLAUDEB_USAGE_LIMIT' "$WORK/wait.out"
+# Claude Code 2.1.312 names the five-hour window "5-hour limit" where it said "session limit".
+for wall in session 5-hour; do
+  clear_stub
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=limitacct STUB_CODE=9
+  export STUB_STDOUT="{\"result\":\"You've hit your $wall limit · resets 10:40pm (Europe/Kiev)\",\"is_error\":true}"
+  start_ok claudeb
+  assert await_done
+  assert grep -qx 'OUTCOME: CLAUDEB_USAGE_LIMIT' "$WORK/wait.out"
+done
 
 clear_stub
 export PICK_RC=0 PICK_ACCOUNT=ordinary STUB_CODE=9

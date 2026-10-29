@@ -61,7 +61,7 @@ has_limit_signature() {
       # In-run a quiet tail is also a file just read followed by a long silent command, and that kill
       # takes a healthy run; the CLI states every wall as its own `ERROR: ` line (all live ones).
       [ -z "$bytes" ] || pattern="^ERROR: .*($pattern)" ;;
-    claudeb) pattern='hit your session limit|hit your usage limit|usage limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/out" "$directory/err") ;;
+    claudeb) pattern='hit your (session|5-hour) limit|hit your usage limit|usage limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/out" "$directory/err") ;;
     gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|credits balance is too low|usage limit|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/err") ;;
     # grok states a failure in two places — stderr and the stream's own error events — so its text
     # is assembled rather than read from a file list.

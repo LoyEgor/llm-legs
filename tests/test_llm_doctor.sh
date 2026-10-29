@@ -593,6 +593,8 @@ assert doctor.failure_reason("Your AI credits balance is too low to continue.") 
 assert text_reading('"usage":{"input_tokens":2 … 429,"result":"You\'ve hit your session limit · resets 6:20am"')[:2] \
     == ("walled", "walled")
 assert doctor.failure_reason("You've hit your weekly limit · resets Oct 12") == "walled"
+# Claude Code 2.1.312 names the five-hour window "5-hour limit" where it said "session limit".
+assert doctor.failure_reason("You've hit your 5-hour limit · resets 6:20am") == "walled"
 assert doctor.failure_reason("crash; tail read pattern='hit your session limit|usage_limit'") == "unclassified"
 assert doctor.failure_reason('{"is_error":true,"api_error_status":429}') == "bare 429"
 # The provider's own clock is theirs.
