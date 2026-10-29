@@ -75,7 +75,7 @@ before the launch). Classes 2–5 (*): a hand keyword partition of the 79 and 82
 | 1. a ruled-out row raised and ruled out again, nothing new | 16 / 12 | 0.34 / 0.11 % | 309 / 690 | here |
 | 2.* a priced lever measured absent (Speed `opportunity`, `test_hang` lock waits) | 9 / 23 | 0.29 / 0.48 % | 300 / 2,053 | here, Open |
 | 3.* load or noise read as a rise (`regression`, `opportunity`, `floor`) | 4 / 14 | 0.13 / 0.31 % | 57 / 632 | rise-beyond-noise |
-| 4.* a log-audit reading of model or chat conduct sent to a fixer | 23 / 7 | 0.18 / 0.10 % | 98 / 138 | conduct-gate |
+| 4.* a log-audit reading of model or chat conduct sent to a fixer | 23 / 7 | 0.18 / 0.10 % | 98 / 138 | open (conduct-gate stopped) |
 | 5.* a landed fix's pre-fix tail still in a 7-day window | 9 / 12 | 0.11 / 0.10 % | 122 / 227 | closed (cf193646, ebf5bde1) |
 | 6. a cause no doctor shows: blind spots added and never built | 27 / 26 added, 5 / 0 closed | | | here |
 | 7. a landed fix that was not needed goes unseen (retro sample, 10-28) | 11 of 40 | | | fix-audit, worth-bar |
@@ -97,16 +97,6 @@ Why they come back:
 Reads need section 7 back (How the block runs at night).
 Deep search 10-23, window 10-09…23 (no fixer run after 10-20): non-audit false-alarm share 33.5 % (150 of 448),
 103 of the 150 from `opportunity` and `log_audit`.
-
-
-### goal conduct-gate: a log-audit finding naming no component file goes to blind_spots, not a fixer
-
-Class 4. `log_audit`: 44 of 75 rows false (59 %, 0.29 % of spend, no repeats), 20 conduct readings by keyword
-(split unconfirmed); the ledger gives 36 of 105 false all-time (34 %), not reconciled with the 59 %.
-- Change: a log-audit finding naming no component file goes to `blind_spots`, not to a fixer.
-- First step: reconcile 59 % with 34 % on the 75 rows; the false ones mostly name no component file, else stop.
-- Proof, fixed in advance: a replay of the 75 rows keeps all 31 real ones on a fixer; up to −44 rows.
-- Must not get worse: outside-found share (a `blind_spots` row stays outside); real log-audit rows reach a fixer.
 
 ### goal rise-beyond-noise: a fix reads slower only past the noise band
 
@@ -197,6 +187,11 @@ Class 7. Of the retro 40, the judge confirmed 10 that were not needed:
   test_health). Replay of the 24 rows on HEAD: 12 raised, so ≤ 5 cannot be reached by any cut; 6 have no fix ever
   recorded, 6 fire only on post-fix runs (124 runs, every head holds its fix). What is left is load or measurement
   read as idle, class 3, not a pre-fix tail.
+- conduct-gate, stopped at its First step 10-29 (no change): 59 % and 34 % are one set read two ways (run verdicts
+  of 10-09…14: 44 of 75 false; ledger status today: 36 of 105, 13 of the 44 still `open`). No packet names a
+  component file (`audit_verdicts` drops the finding's `fix`), so the gate would take all 31 real rows off a fixer;
+  by the merge input's `fix`, 19 of the 44 false name no file (not mostly) and 3 real ones none either; `kind` does
+  not split them either.
 
 ## Decisions
 
