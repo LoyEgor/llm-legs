@@ -12544,13 +12544,6 @@
       "would_catch_if": "the menu journal carried the caller (click, pick, hs -c) beside the name"
     },
     {
-      "id": "audit-fix-inside-window",
-      "what": "a log_audit fix that landed inside the audited window, before the read",
-      "reason": "audit_verdicts stamps every quote with the read's time, so a fix landed between the quoted events and the read reads regressed (runall-foreground-timeout-cap 04:39, chrome-extension-reconnect-window 04:20, log-audit-full-read-repeated 00:25; read 05:42)",
-      "since": "2026-10-08",
-      "would_catch_if": "bin/log-audit recorded each finding's latest quoted event time and audit_verdicts stamped the evidence with it"
-    },
-    {
       "id": "unattributed-cpu",
       "what": "which unattended load fills the >4/core band that prices machine/contention",
       "reason": "speed-doctor machine.label_cpu_s reads 95.3 % of 7 days' CPU as unattributed (2026-10-08); only launchd labels resolve, so worker trees, night runs and the owner's benchmark share one bucket and the next QoS lever cannot be picked",
@@ -12689,13 +12682,6 @@
       "reason": "night 3131 05:44-06:34: two workers' Bash had a login-only PATH without /opt/homebrew/bin, so python3 was the system 3.9 and suites failed for an environment reason; each diagnosed it itself (2-15 min) and no doctor saw it",
       "since": "2026-10-14",
       "would_catch_if": "worker-run recorded the PATH and python3 version the worker's first Bash call ran with in the run record"
-    },
-    {
-      "id": "log-audit-evidence-read-time",
-      "what": "a log_audit problem fixed inside the audit's window, before the audit read it",
-      "reason": "audit_verdicts stamps every quote with findings.json's own `at`, so a fix that held before that read (review-bench@4288f13 at 22:46 for quotes up to 22:43, audit read 04:12) reads regressed, and one passes only when a later unrelated commit touches its files, which would then be credited as its `in` (night 20261014T013750Z-8004)",
-      "since": "2026-10-14",
-      "would_catch_if": "log-audit carried each quote's own transcript time in findings.json and audit_verdicts used it as the evidence time"
     },
     {
       "id": "review-anchors-flock-wait",

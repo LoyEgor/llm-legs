@@ -62,7 +62,7 @@ case "$1" in
     printf 'STATUS: %s\nRESULT:\n' "${FAKE_STATUS:-done}"
     if grep -q '^# Log audit: merge' "$CALLS.brief.$n"; then
       echo '{"id": "small-first", "title": "A one-minute thing the merge listed first", "where": [], "quotes": [], "minutes": 1}'
-      echo '{"id": "hook-awk-multibyte", "title": "A Bash hook prints an awk multibyte error", "kind": "gate", "where": ["Fixture chat"], "quotes": ["H×3: PreToolUse:Bash stderr awk"], "why": "noise on every call", "minutes": 4, "fix": "hooks"}'
+      echo '{"id": "hook-awk-multibyte", "title": "A Bash hook prints an awk multibyte error", "kind": "gate", "where": ["Fixture chat"], "quotes": ["H×3: PreToolUse:Bash stderr awk", "E: FAIL: assert 3"], "why": "noise on every call", "minutes": 4, "fix": "hooks"}'
     else
       echo 'Reasoning first.'
       echo '{"title": "awk multibyte error from a hook", "kind": "gate", "where": ["Fixture chat"], "quote": "H×3: PreToolUse:Bash stderr awk", "why": "noise", "minutes": 4, "fix": "hooks"}'
@@ -123,6 +123,20 @@ assert jqe '.night == "N1" and .stop == "done" and .read == 1 and (.findings | l
   and .findings[1].id == "small-first" and .findings[0].id == "hook-awk-multibyte" and .findings[0].minutes == 4 and (.findings[0].at | type) == "number"' \
   "$LOG_AUDIT_DIR/findings.json"
 first_until=$(jq -r '.until' "$LOG_AUDIT_DIR/findings.json")
+# Each quote carries its own transcript time, which the Harness doctor stamps its evidence with: the failure five
+# minutes before the read reads at its own minute, the tail repeat at the transcript's last one.
+assert jqe '.findings[0].quote_at[1] <= .findings[0].at - 240 and .findings[0].quote_at[0] >= .findings[0].at - 60' \
+  "$LOG_AUDIT_DIR/findings.json"
+mkdir -p "$WORK/n1" && cp "$LOG_AUDIT_DIR/findings.json" "$WORK/n1/findings.json"
+n1=$(LOG_AUDIT_DIR="$WORK/n1" python3 - "$ROOT/bin/harness-doctor" "$WORK/n1/findings.json" <<'PY'
+import importlib.machinery, importlib.util, json, sys
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(module)
+print(json.dumps(module.audit_verdicts(float(json.load(open(sys.argv[2]))["at"]))[0]))
+PY
+)
+assert jqe '.[0].evidence[1].at < .[0].evidence[0].at and .[0].evidence[1].excerpt == "E: FAIL: assert 3"' <<<"$n1"
 
 # The next read starts where the last full one ended; a launch the account refuses stops the read, keeps the
 # findings and leaves the start where it was, so the next night rereads those logs.

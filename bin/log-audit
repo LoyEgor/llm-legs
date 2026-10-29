@@ -31,6 +31,8 @@ LOOKBACK_S, LOOKBACK_MAX_S = 86400, 36 * 3600
 TOP = 15
 OWN_MARK = "# Log audit"
 STARTED = {}
+STAMP = re.compile(r"(\d\d):(\d\d) ")
+GAP_LINE = re.compile(r"D: (\d+) min gap$")
 
 LEGEND = """You read skeletons of Claude Code transcripts from Egor's machine: his interactive chats and the headless
 workers they launch. The machine runs llm-legs (multi-account LLM orchestration: hooks, gates, worker runs,
@@ -110,6 +112,39 @@ def transcripts(since):
                     if lines and not any(OWN_MARK in line for line in lines[:3]):
                         out.append((os.path.getmtime(path), header, lines))
     return [(header, lines) for _, header, lines in sorted(out)]
+
+
+def line_times(since, lines):
+    """Each skeleton line's latest possible epoch: an HH:MM stamp is the local minute nearest the line before it and
+    not before `since` (a gap line moves the clock by its minutes; a transcript's times can step back), and an
+    unstamped line (a tail repeat) takes the transcript's latest minute; each ends at its minute's last second."""
+    floor = cursor = int(since) // 60 * 60
+    out = []
+    for line in lines:
+        gap = GAP_LINE.match(line)
+        if gap:
+            cursor += int(gap.group(1)) * 60
+        stamp = STAMP.match(line)
+        if stamp:
+            clock = datetime.datetime.fromtimestamp(cursor).replace(hour=int(stamp.group(1)), minute=int(stamp.group(2)))
+            near = [int((clock + datetime.timedelta(days=days)).timestamp()) for days in (-1, 0, 1)]
+            cursor = min((at for at in near if at >= floor), key=lambda at: abs(at - cursor))
+        out.append(cursor + 59 if stamp else None)
+    last = max((at for at in out if at is not None), default=cursor + 59)
+    return [last if at is None else at for at in out]
+
+
+def quote_times(timed, quotes):
+    """Each quote's latest transcript time (None when no skeleton line holds it): the evidence time the Harness
+    doctor judges a fix by, so a fix landed between the quoted events and the read is not read regressed."""
+    out = []
+    for quote in quotes:
+        quote = str(quote).strip()
+        stamp = STAMP.match(quote)
+        body = quote[stamp.end():] if stamp else quote
+        times = [at for line, at in timed if body in line and (not stamp or line.startswith(stamp.group(0)))] if body else []
+        out.append(max(times) if times else None)
+    return out
 
 
 def chunks(found):
@@ -281,8 +316,10 @@ def run(args):
         stop = "wall"
     findings, merge_error = merged(raw, folder, deadline) if raw else ([], None)
     at = int(time.time())
+    timed = [(line, when) for _, lines in found for line, when in zip(lines, line_times(since, lines))] if findings else []
     for item in findings:
         item["at"] = at
+        item["quote_at"] = quote_times(timed, item.get("quotes") or ())
     if read:
         write_json(os.path.join(state_dir(), "findings.json"),
                    {"at": at, "night": args.night, "since": int(since), "until": int(now), "transcripts": len(found),

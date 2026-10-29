@@ -6705,9 +6705,11 @@ def audit_verdicts(now):
         minutes = item["minutes"] if isinstance(item.get("minutes"), (int, float)) else None
         where = ", ".join(str(name) for name in item.get("where") or ())[:120] or "log-audit"
         quotes = [str(quote) for quote in item.get("quotes") or ()] or [str(item.get("why") or "")]
+        times = item.get("quote_at") if isinstance(item.get("quote_at"), list) else []
+        times = [t if isinstance(t, (int, float)) and t <= at else at for t in times] + [at] * (len(quotes) - len(times))
         out.append(dict(verdict("log_audit", item["id"], minutes, 0, "min", window_h, len(item.get("where") or ()),
                                 "red", fact="%s%s" % (item["title"], " · ~%d min" % minutes if minutes else ""),
-                                evidence=[evidence(at, where, quote) for quote in quotes],
+                                evidence=[evidence(when, where, quote) for when, quote in zip(times, quotes)],
                                 bad=len(item.get("where") or ()) or 1), group=AUDIT_GROUP))
     return out, at, until
 
