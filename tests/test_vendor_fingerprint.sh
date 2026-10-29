@@ -820,4 +820,23 @@ held_check gemini
 assert [ "$(events)" = $((count + 1)) ]
 assert jqe '.facets.tools == ["read_file", "read_file.Path", "view_file", "view_file.AbsolutePath", "view_file.toolAction"]' "$FP_GEMINI"
 
+# claude 2.1.309 dropped claude-platform-on-aws-06w, a string a run had ruled not-applicable when it came: a
+# line undoing such a row opens nothing and names the ruling; a mixed change keeps every line, a `*` row rules none.
+grok_ids grok-imagine-image-9.0
+held_check grok
+taken
+count=$(events)
+printf '{"id":"grok-20260101T000000Z","vendor":"grok","status":"closed","closed_at":"2026-01-01T01:00:00Z","decisions":[%s]}\n' \
+  '{"facet":"ids","line":"+grok-imagine-image-9.0","decision":"not-applicable"},{"facet":"ids","line":"-grok-imagine-image-9.1","decision":"not-applicable"},{"facet":"ids","line":"-*","decision":"not-applicable"}' \
+  >"$EVENTS/grok-20260101T000000Z.json"
+touch -t 202601010100 "$EVENTS/grok-20260101T000000Z.json"
+grok_ids
+held_check grok
+assert [ "$(events)" = $((count + 2)) ]
+assert [ "$(field '"\(.status) \(.reason)"')" = "auto-closed every changed line undoes a not-applicable row of grok-20260101T000000Z" ]
+grok_ids grok-imagine-image-9.1 grok-imagine-image-9.2
+held_check grok
+assert [ "$(field '"\(.status) \(.substantive | join(","))"')" = "open ids" ]
+assert [ "$(grep '^[+-]grok' "$(field .diff)" | xargs)" = "+grok-imagine-image-9.1 +grok-imagine-image-9.2" ]
+
 suite_shard_pass "$asserts"

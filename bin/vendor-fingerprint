@@ -420,8 +420,24 @@ ids_unserved() { # previous current -> true when every added or removed id is on
       | all(($c - $p)[], ($p - $c)[]; . as $id | (any($s[]; . == $id or . == ($id | sub("-(minimal|low|medium|high|xhigh)$"; ""))) | not) and any($st[]; . == ($id | stem))))' "$1" "$2" >/dev/null
 }
 
-changes() { # vendor previous current -> changed-json<TAB>substantive-json
-  local changed substantive
+# A not-applicable ruling holds for its line's undoing too: the `+` line it ruled dropping out again, its `-`
+# line coming back (claude-platform-on-aws-06w, 10-22). Only an exact row counts, never a `*` one, and only
+# while it is the line's latest ruling.
+rulings_reversed() { # vendor previous current substantive-json -> the closed events whose rows every changed line undoes
+  write_diff "$2" "$3" "$4" | jq -e -R -s -r --slurpfile events <(cat "$events_dir/$1"-*.json 2>/dev/null) '
+    ([$events[] | select(.status == "closed") | .id as $id | .closed_at as $t | .decisions[]?
+      | select(.line // "*" | endswith("*") | not) | . + {id: $id, t: $t}]
+     | group_by([.facet, .line]) | map(max_by(.t) | select(.decision == "not-applicable"))) as $r
+    | reduce (split("\n")[] | select(. != "--- before" and . != "+++ after")) as $l ({ids: []};
+        if $l | startswith("### ") then .facet = $l[4:]
+        elif $l | test("^[+-]") then .facet as $f | (if $l[:1] == "+" then "-" else "+" end) as $u
+          | .ids += [first($r[] | select(.facet == $f and .line == $u + $l[1:]) | .id) // null]
+        else . end)
+    | .ids | select(length > 0 and all(. != null)) | unique | join(" ")'
+}
+
+changes() { # vendor previous current -> changed-json<TAB>substantive-json<TAB>the events it undoes, when that is all
+  local changed substantive reversed=''
   # A facet the stored fingerprint never had is a probe this code added, not a release.
   changed=$(jq -s -c '.[0].facets as $p | .[1].facets as $c | [$p | keys[] | select($p[.] != ($c[.] // null))]' "$2" "$3")
   substantive=$(jq -c --arg info "$info_facets" '($info | split(" ")) as $i | map(select(. as $f | $i | index($f) | not))' <<<"$changed")
@@ -446,7 +462,9 @@ changes() { # vendor previous current -> changed-json<TAB>substantive-json
     jq -e -s '(.[1].facets.auth // []) - (.[0].facets.auth // []) == []' "$2" "$3" >/dev/null; then
     substantive=$(jq -c 'map(select(. != "auth"))' <<<"$substantive")
   fi
-  printf '%s\t%s\n' "$changed" "$substantive"
+  # A mixed event keeps every line: a run decides them all.
+  if [ "$substantive" != '[]' ] && reversed=$(rulings_reversed "$1" "$2" "$3" "$substantive"); then substantive='[]'; fi
+  printf '%s\t%s\t%s\n' "$changed" "$substantive" "$reversed"
 }
 
 pending_event() { # vendor -> its open event still waiting for a chat, which keeps the fingerprint it started from
@@ -459,7 +477,7 @@ pending_event() { # vendor -> its open event still waiting for a chat, which kee
 }
 
 check_vendor() { # vendor
-  local vendor=$1 previous="$fp_dir/$1.json" current changed substantive status id
+  local vendor=$1 previous="$fp_dir/$1.json" current changed substantive reversed status id
   current=$(mktemp "$fp_dir/current.XXXXXX") || return 0
   if ! snapshot "$vendor" >"$current.raw"; then
     rm -f "$current" "$current.raw"
@@ -485,7 +503,7 @@ check_vendor() { # vendor
     log "$vendor baseline $(jq -r .version "$previous")"
     return 0
   fi
-  IFS=$'\t' read -r changed substantive < <(changes "$vendor" "$previous" "$current")
+  IFS=$'\t' read -r changed substantive reversed < <(changes "$vendor" "$previous" "$current")
   if [ "$changed" = '[]' ]; then
     mv -f "$current" "$previous"
     return 0
@@ -493,7 +511,7 @@ check_vendor() { # vendor
   # An event waits for Egor's request; a change meanwhile joins it and is re-judged against the
   # fingerprint from before the event, so a flap that has reverted by then closes it unseen.
   if [ -n "$id" ]; then
-    IFS=$'\t' read -r changed substantive < <(changes "$vendor" "$events_dir/$id.base" "$current")
+    IFS=$'\t' read -r changed substantive reversed < <(changes "$vendor" "$events_dir/$id.base" "$current")
     write_diff "$events_dir/$id.base" "$current" "$changed" >"$events_dir/$id.diff"
     if [ "$substantive" = '[]' ]; then
       status=auto-closed
@@ -502,15 +520,17 @@ check_vendor() { # vendor
       status=open
     fi
     event_set "$id" '.status = $s | .to = $to | .changed = $c | .substantive = $sub
-      | if $s == "open" then . else .note = "only informational changes were left before its chat" end' \
-      --arg s "$status" --arg to "$(jq -r .version "$current")" --argjson c "$changed" --argjson sub "$substantive"
+      | if $s == "open" then . elif $r != "" then .note = "every changed line undoes a not-applicable row of \($r)"
+        else .note = "only informational changes were left before its chat" end' \
+      --arg s "$status" --arg to "$(jq -r .version "$current")" --argjson c "$changed" --argjson sub "$substantive" --arg r "$reversed"
     mv -f "$current" "$previous"
     log "$vendor event $id $status, joined: $(jq -r 'join(", ")' <<<"$changed")"
     return 0
   fi
   if [ "$substantive" = '[]' ]; then status=auto-closed; else status=open; fi
   id=$(new_event "$vendor" "$(jq -r .version "$previous")" "$(jq -r .version "$current")" "$status" \
-    "$([ "$status" = open ] && printf 'fingerprint changed' || printf 'only informational facets changed')" \
+    "$([ "$status" = open ] && printf 'fingerprint changed' || { [ -n "$reversed" ] &&
+      printf 'every changed line undoes a not-applicable row of %s' "$reversed"; } || printf 'only informational facets changed')" \
     "$changed" "$substantive")
   write_diff "$previous" "$current" "$changed" >"$events_dir/$id.diff"
   [ "$status" != open ] || cp "$previous" "$events_dir/$id.base"
