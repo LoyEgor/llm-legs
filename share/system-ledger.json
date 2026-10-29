@@ -195,7 +195,7 @@
         "key": "memlogd",
         "cause": "memlogd"
       },
-      "note": "B 1.9 by C, all reaped (own CPU 40-96 s a day): every 15 s tick ran chat-load sample (~185 ms CPU, python) and ps -axo rss=,comm= (~43 ms). Half of chat-load was registered_roots: glob of ~2,400 run folders' meta.json plus a listing of ~540 bench folders (~35k files). Cut: ended runs skipped on exit_code before meta.json, bench folders relisted only when their mtime moves (chat-load.benches.json, written only on change); same roots on a fixture (run-name sort, hidden names, dangling meta, pid files added and removed), 186 -> 145 ms CPU a sample. Left: chat-load's ps (~45 ms) and memlogd's node_stats ps (~43 ms) read the same table twice a tick; merging them moves the node counts into chat-load's output, a memory-guard interface change.",
+      "note": "B 1.9 by C, all reaped (own CPU 40-96 s a day): every 15 s tick ran chat-load sample (~185 ms CPU, python) and ps -axo rss=,comm= (~43 ms). Half of chat-load was registered_roots: glob of ~2,400 run folders' meta.json plus a listing of ~540 bench folders (~35k files). Cut: ended runs skipped on exit_code before meta.json, bench folders relisted only when their mtime moves (chat-load.benches.json, written only on change); same roots on a fixture (run-name sort, hidden names, dangling meta, pid files added and removed), 186 -> 145 ms CPU a sample. Left: chat-load's ps (~45 ms) and memlogd's node_stats ps (~43 ms) read the same table twice a tick; merging them moves the node counts into chat-load's output, a memory-guard interface change. 10-29 (system-system-20261029T053432Z-424a), by its launchd coalition: 45 tasks and ~0.3 cpu-s a quiet tick; each ps -axo costs ~110 ms CPU on ~900 processes (-c saves only 25 ms), python start ~90 ms, chat-load's own work ~90 ms, the bash forks ~30 ms. The proof's rise since 10-28 22:02 is that day's orphans() (llm-legs@1278e2a0): a launchctl list (~10 ms) and tree_of per candidate each tick while any orphan exists. Next lever: one ps a tick (memlogd runs the full-field ps, takes node stats from it and pipes the text to chat-load sample), then a persistent sampler instead of a python start per tick; tests/test_memlogd.sh's fake ps serves the two field lists separately and needs merging with it.",
       "fixes": [
         {
           "at": "2026-10-20T15:20:00+03:00",
@@ -250,7 +250,7 @@
         "key": "llm-legs/bin/worker-run",
         "cause": "llm-legs/bin/worker-run"
       },
-      "note": "Undecided, run system-system-20261020T113826Z-7b45 stopped by Egor mid-problem. C is steady watchdog cost outside suite ticks (10-18 1.9k, 10-19 1.9k cpu-s; 1-20 s a tick over 674 ticks). Each hop (<= 30 s) on a moved transcript runs activity_fingerprint -> compute_transcript_files: transcript_files' two full jq passes (78 ms on a 2.4 MB transcript), transcript_wrote_through_shell's jq pass plus a python3 classifier, though the watchdog reads only RUN_FILES_LIST; estimated ~4.6k cpu-s a day over 154 claudeb runs (76 h) in 2 days. Ready levers: skip transcript_wrote_through_shell in the watchdog (its outputs are unread there); one jq (reduce inputs into bad ids and [id, path] hits, non-string ids tojson) gives byte-identical lists on 138 real transcripts with subagents and a since cut; next, parse only bytes appended since the last hop. Fixed 2026-10-20: levers 1 and 2 applied. The watchdog hop (activity_fingerprint) and last_edit_age call compute_transcript_files <dir> list, which skips transcript_wrote_through_shell (no jq pass, no python3 start); transcript_files reads failed ids and hits in one jq reduce. Proof: byte-identical lists, old vs new, on 165 real transcripts (the 30 largest up to 195 MB, 20 with subagents, a since cut); dropping the failed-id filter diverges on 4, so the filter is exercised; transcript_files 284 -> 151 s over the set, and the shell pass (about half a hop on a typical 2 MB transcript) is gone from the hop. Lever 3 (append-only parse) not taken: one jq start per moved hop remains, reopen with it if the check does not settle.",
+      "note": "Undecided, run system-system-20261020T113826Z-7b45 stopped by Egor mid-problem. C is steady watchdog cost outside suite ticks (10-18 1.9k, 10-19 1.9k cpu-s; 1-20 s a tick over 674 ticks). Each hop (<= 30 s) on a moved transcript runs activity_fingerprint -> compute_transcript_files: transcript_files' two full jq passes (78 ms on a 2.4 MB transcript), transcript_wrote_through_shell's jq pass plus a python3 classifier, though the watchdog reads only RUN_FILES_LIST; estimated ~4.6k cpu-s a day over 154 claudeb runs (76 h) in 2 days. Ready levers: skip transcript_wrote_through_shell in the watchdog (its outputs are unread there); one jq (reduce inputs into bad ids and [id, path] hits, non-string ids tojson) gives byte-identical lists on 138 real transcripts with subagents and a since cut; next, parse only bytes appended since the last hop. Fixed 2026-10-20: levers 1 and 2 applied. The watchdog hop (activity_fingerprint) and last_edit_age call compute_transcript_files <dir> list, which skips transcript_wrote_through_shell (no jq pass, no python3 start); transcript_files reads failed ids and hits in one jq reduce. Proof: byte-identical lists, old vs new, on 165 real transcripts (the 30 largest up to 195 MB, 20 with subagents, a since cut); dropping the failed-id filter diverges on 4, so the filter is exercised; transcript_files 284 -> 151 s over the set, and the shell pass (about half a hop on a typical 2 MB transcript) is gone from the hop. Lever 3 (append-only parse) not taken: one jq start per moved hop remains, reopen with it if the check does not settle. 10-29 (system-system-20261029T053432Z-424a): the proof restarted at llm-legs@e5d5a655 (10-28 23:18, the split into 15 sourced share/worker-run-*.sh modules, the same code parsed per start), so its 8.6 h after-window is only the night's worker load against a 7-day day-and-night baseline (births 6.6 -> 10.6/s with it); undecided until a window holding days, then lever 3.",
       "fixes": [
         {
           "at": "2026-10-20T17:22:50+03:00",
@@ -285,6 +285,61 @@
           "regressed_at": null
         }
       ]
+    },
+    {
+      "id": "job-cost:com.egor.memlogd",
+      "title": "memlogd job: two ps and a python start per 15 s tick",
+      "status": "open",
+      "match": {
+        "rule": "job-cost",
+        "key": "com.egor.memlogd",
+        "cause": "memlogd"
+      },
+      "note": "The same cost as cohort:memlogd (its note has the per-tick split and the next lever: one ps a tick, then no python start per tick). Coalition 10-29 07:5x-08:0x over 600 s: 13.0 cpu-s, 2,061 tasks, 5.8 MB (1,878 cpu-s, 297k tasks, 0.8 GB a day); 1.9 GB/day on the 24 h fact is mostly 1 Hz incident ticks (949 on 10-28) and the jump/incident frames (a 200-250 KB ps dump each, frames/ held at 954 MB of its 1 GiB cap) plus chat-load.state.json (95 KB) and chats.json rewritten each tick."
+    },
+    {
+      "id": "job-cost:com.llm-refresh",
+      "title": "llm-refresh: ~2,500 processes per 5-min heartbeat",
+      "status": "open",
+      "match": {
+        "rule": "job-cost",
+        "key": "com.llm-refresh",
+        "cause": "llm-legs/bin/llm-refresh"
+      },
+      "note": "Coalition over 600 s (2 heartbeats): 20.0 cpu-s, 5,127 tasks, 6.6 MB. Not run here: a tick probes the real accounts and store (CLAUDE.md cardinal rule), so no per-step split. Reading only: run_tick threads its state through jq per field and per account (`jq ... < <(printf ...)`, ~2-3 tasks each, several per vendor and account) and runs the passive collector (llm-limits) and vendor probes inside the same coalition. Next fixer: time one tick against a CLAUDEB_DIR fixture copy with stub vendor CLIs to split jq plumbing from probes; the plumbing is the output-equivalent lever (one jq per vendor reading the whole state). The heartbeat runs the main checkout's bin/llm-refresh off /Volumes/Work; ~/Library/Logs/llm-refresh.log shows 'Interrupted system call' starts and a mid-edit syntax error, not a cost."
+    },
+    {
+      "id": "job-cost:com.egor.harness-doctor",
+      "title": "harness-doctor: whole-state rewrite and re-fold every 5 min",
+      "status": "open",
+      "match": {
+        "rule": "job-cost",
+        "key": "com.egor.harness-doctor",
+        "cause": "llm-legs/bin/harness-doctor"
+      },
+      "note": "Coalition over 600 s (2 runs): 18.1 cpu-s, 201 tasks, 7.8 MB. Its own timing (latest.json timing): 13.6 cpu-s, 114 s wall; phases hook_view 32 s, sections 31 s, journals 20 s, transcripts 10 s, judge 10 s, summaries 9 s. Written each run: state.json 5.3 MB whole (files 2.1 MB and seen 1.8 MB of incremental-scan offsets, journal 1.1 MB), hook-runs pickles 4.4 MB, latest.json 1.1 MB, refusal-scan.json 0.8 MB, samples.jsonl 0.7 MB rewritten to trim. Levers for the next fixer: state parts written only when changed (split files/seen out of state.json), samples.jsonl appended and trimmed daily, then profile hook_view and sections."
+    },
+    {
+      "id": "job-cost:com.llm-legs.system-doctor",
+      "title": "system-doctor agent: 60 s ticks, harvest and logstores",
+      "status": "open",
+      "match": {
+        "rule": "job-cost",
+        "key": "com.llm-legs.system-doctor",
+        "cause": "llm-legs/bin/system-doctor"
+      },
+      "note": "Coalition over 600 s: 7.8 cpu-s, 286 tasks, 5.6 MB (1,124 cpu-s/day). costs in latest.json: a tick 0.39 cpu-s own (ps 0.17, ps_children 0.16: two ps a minute) plus a python start, 1,440 a day; harvest 180 cpu-s/day (4 runs), logstores 128 (its sweep's 34 cpu-s cut by this run's log-sweep fix), dumpstate 7; the judge pass is ~59 s wall a run. The two ps (ps_snapshot 2 s apart) are the tick's measurement, CPU deltas and births between them, not a duplicate. Next lever: read the second snapshot in-process (machine_probe already reads proc_pid_rusage and coalitions by ctypes) instead of a full ps -A args listing, then price the judge pass."
+    },
+    {
+      "id": "job-cost:com.tokenmap-scand",
+      "title": "tokenmap-scand nightly writes",
+      "status": "open",
+      "match": {
+        "rule": "job-cost",
+        "key": "com.tokenmap-scand",
+        "cause": "tokenmap-scand"
+      },
+      "note": "1.1 GB/day written, 510 cpu-s, 40 processes: the writes are token-map's scan and kinds runs (token-map repository, report-only from this run, no ADD-DIR worktree); 10-29 it was still running at 08:05 after its 05:00 start (13.8 cpu-s per 10 min, no new tasks). The incremental scan's write cut is ssd-writes row token-map/tokenmap/__main__.py (fixed-pending); next fixer: which of scan, rates or kinds writes the GB (the token-map owner)."
     }
   ],
   "blind_spots": [
