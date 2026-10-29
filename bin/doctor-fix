@@ -169,7 +169,9 @@ SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",),
                                      "llm-legs/hammerspoon/instruction-watch.lua", "hammerspoon/automation_menu.lua"),
                "time/slot": ("llm-legs/share/slots.sh", "llm-legs/bin/worker-run"),
                "time/suite_wait": ("llm-legs/share/run-suites.sh", "llm-legs/share/slots.sh"),
-               "time/retries": ("llm-legs/bin/worker-run",), "time/locks": ("llm-legs/share/store-lock.sh",)}
+               "time/retries": ("llm-legs/bin/worker-run",), "time/locks": ("llm-legs/share/store-lock.sh",),
+               "time/hung": ("llm-legs/bin/worker-run-backstop.sh",),
+               "adhoc/file-edit": ("claude-setup/hooks/worker-edit-guard.sh",)}
 UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
 UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
