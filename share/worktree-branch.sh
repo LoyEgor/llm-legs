@@ -31,3 +31,11 @@ same_branch_worktree() { # repo branch
   done < <(git -C "$1" worktree list --porcelain 2>/dev/null)
   return 1
 }
+
+# Whether a checkout holds work of its own: a commit past its repository's main and every night's base, or an
+# uncommitted change. A night opens each job's branch in every sweep repository at its base, so one the job never
+# touched is that press-time snapshot, older than all main has landed since.
+worktree_carries_work() { # dir
+  [ -n "$(git -C "$1" rev-list -n 1 HEAD --not --branches=main --glob='refs/night/*/base' 2>/dev/null)" ] ||
+    [ -n "$(git -C "$1" status --porcelain 2>/dev/null)" ]
+}

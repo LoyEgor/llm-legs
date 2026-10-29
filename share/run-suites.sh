@@ -119,14 +119,17 @@ repo=$(cd "$repo" && pwd -P) || fail "unreadable repo: $repo"
 journal_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/tests/lib/suite-journal.sh"
 
 # A linked worktree has no sibling checkout beside it. Another repo's worktree on this same
-# branch is the set under test; otherwise the main checkout. An exported variable wins either way.
+# branch is the set under test when it carries work of its own; otherwise the main checkout, since a night job's
+# untouched sibling is its stale base (2026-10-29: claude-setup at the base lacked words.py launch, and every
+# landing of an llm-legs-only job failed test_night_run assert 27). An exported variable wins either way.
 if common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
   projects=$(dirname "$(dirname "$common")")
   own_branch=$(linked_worktree_branch "$repo")
   for sibling in CLAUDE_SETUP_ROOT=claude-setup REVIEW_BENCH_ROOT=review-bench REVIEW_ROOT=review-bench LLM_LEGS_ROOT=llm-legs; do
     var=${sibling%%=*} name=${sibling#*=}
     [ -n "${!var:-}" ] && continue
-    if [ -n "$own_branch" ] && sibling_wt=$(same_branch_worktree "$projects/$name" "$own_branch"); then
+    if [ -n "$own_branch" ] && sibling_wt=$(same_branch_worktree "$projects/$name" "$own_branch") &&
+      worktree_carries_work "$sibling_wt"; then
       export "$var=$sibling_wt"
       continue
     fi

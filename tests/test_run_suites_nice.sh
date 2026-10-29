@@ -87,6 +87,15 @@ setup_wt="$WORK/projects/claude-setup/.claude/worktrees/night-n-job"
 legs_wt="$WORK/projects/llm-legs/.claude/worktrees/night-n-job"
 bench="$WORK/projects/review-bench"
 printf '#!/usr/bin/env bash\n[ "$CLAUDE_SETUP_ROOT|$REVIEW_BENCH_ROOT|$REVIEW_ROOT|$LLM_LEGS_ROOT|$LLM_LEGS_SHARE" = "$WANT" ] && echo PASS: same-branch || echo "FAIL: $CLAUDE_SETUP_ROOT|$REVIEW_BENCH_ROOT|$REVIEW_ROOT|$LLM_LEGS_ROOT|$LLM_LEGS_SHARE"\n' >"$tree2/tests/test_b.sh"
+# A sibling the job left at the night's base (press-time snapshot, main moved on since) is no set under test.
+git -C "$setup_wt" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m 'night n base'
+git -C "$setup_wt" update-ref refs/night/n/base HEAD
+: >"$legs_wt/edited"
+out=$(env -u CLAUDE_SETUP_ROOT -u REVIEW_BENCH_ROOT -u REVIEW_ROOT -u LLM_LEGS_ROOT -u LLM_LEGS_SHARE \
+  WANT="$WORK/projects/claude-setup|$bench|$bench|$legs_wt|$legs_wt/share" bash "$ROOT/share/run-suites.sh" --repo "$tree2" 2>&1)
+assert grep -q 'PASS: same-branch' <<<"$out"
+# A commit of its own past main and the base makes it the set, as an uncommitted change does (llm-legs above).
+git -C "$setup_wt" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m 'the job'
 want="$setup_wt|$bench|$bench|$legs_wt|$legs_wt/share"
 out=$(env -u CLAUDE_SETUP_ROOT -u REVIEW_BENCH_ROOT -u REVIEW_ROOT -u LLM_LEGS_ROOT -u LLM_LEGS_SHARE WANT="$want" \
   bash "$ROOT/share/run-suites.sh" --repo "$tree2" 2>&1)
@@ -167,4 +176,4 @@ fi
 out=$(PATH="$WORK/fakepy:$WORK/tools" "$BASH" "$ROOT/share/run-suites.sh" --repo "$WORK/pyrepo" 2>&1)
 assert grep -q 'PASS: python=' <<<"$out"
 
-printf 'PASS: %s asserts; run-suites runs a worker'\''s or session-less wave at nice 10 and a chat'\''s own run and wall-clock suites at the caller'\''s nice, in parallel, longest first, a worktree on branch B uses a sibling worktree on B else the main checkout, a python suite runs under a python that imports pytest, a python3 older than 3.10 on PATH gets Homebrew'\''s in front, and a run leaves its progress pointer only while it lasts\n' "$asserts"
+printf 'PASS: %s asserts; run-suites runs a worker'\''s or session-less wave at nice 10 and a chat'\''s own run and wall-clock suites at the caller'\''s nice, in parallel, longest first, a worktree on branch B uses a sibling worktree on B carrying work of its own else the main checkout, a python suite runs under a python that imports pytest, a python3 older than 3.10 on PATH gets Homebrew'\''s in front, and a run leaves its progress pointer only while it lasts\n' "$asserts"
