@@ -12322,6 +12322,63 @@
       "reviewed_by": "fixer harness-hooks-20261029T112048Z-00f0",
       "note": "Its own work, not load: 24 h CPU p50 38 ms under 1 MB, 54 over 10 MB (x1.42) while hooks of the same batches stay x0.9-1.17. Not history: at equal growth a 24 MB and a 0.4 MB transcript cost the same. Bytes a call brings: big transcripts are image-heavy, tool_result p90 400 KB against 15 KB, and the hook paid them twice, bash `read -d ''` takes the payload pipe one byte a syscall (0.4 ms CPU a KiB: 22 ms at 1 KiB, 218 at 500 KiB) and macOS tail -c +N copies the sidecar's new bytes at ~31 MB/s. jq now reads stdin itself and dd seeks to the block, as llm-legs statusline.sh does since 6baaa4e1: 60 sampled real tool responses of today's big transcripts, mean CPU 49 -> 23 ms a run, small ones 23 -> 23; a 500 KiB payload 228 -> 25 ms. Same output: the same four fields reach the same checks; dd starts at most one block before the old start, and earlier boundaries only re-find what the sorted maximum holds. Ruled out: the sweep (daily) and the boundary jq (only on a compact_boundary in the new bytes). Found on the way and fixed (claude-setup@ecc8c7d): a transcript smaller than the sidecar's scanned offset (a rewrite) was skipped until it outgrew it, keeping the old file's boundary; it now resets and rescans, statusline.sh's rule; test_context_nudge red on 204640e. Still unseen by all three readers: a rewrite already grown to the old offset or past it.",
       "handoff": null
+    },
+    {
+      "id": "wait-night-admission-model-blind-cost",
+      "title": "night-admission waits of 14-26 min: a Sonnet run reserved the Opus-priced 11.05 % of 5h room",
+      "match": {
+        "rule": "wait_class",
+        "ident": "^night\\-admission$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T14:10:00+02:00",
+          "by": "night fixer harness-wait-classes-20261029T112143Z-5586",
+          "files": [
+            "llm-legs/share/night_priority.py",
+            "llm-legs/bin/night-run",
+            "llm-legs/share/worker-run-pool.sh",
+            "llm-legs/tests/test_night_admission.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-wait-classes-20261029T112143Z-5586",
+      "note": "Night 20261029T012849Z-5e69 launched 19 fixers at 05:37Z; 13 admitted held 143.7 of 149.0 % 5h room (the logged hold why), 6 waited: delegation-media 1546 s, english-gate 984, commit-report 864, refusal-write 861, chat-start 754, pages-kit 137, all Sonnet runs priced at the direction's 11.05 % (7-day median raw tokens x 10 %/1M, model-blind). delegation-media then ran 3 min on 97K tokens. Wall 1546 s, cpu ~0 s (a 60 s bash poll), all of it pacing. Fix: a waiter's cost x token-map's input price over Opus (Sonnet 0.5, Fable 2.5, unknown 1); replay of the logged hold: 132.6 % held, 16.4 room, commit-report and delegation-media admitted at once. Walls that night 0 %; night_walled (red > 5 %) guards the looser pacing. Not fixed, not measured: the admission reserves a running run's full cost while the live 5h reading already holds what it spent (five fell 149 -> ~133 during the wait), see blind spot admission-readings-unjournaled.",
+      "handoff": null,
+      "ruled_at": null
+    },
+    {
+      "id": "wait-night-suites-report-blocked",
+      "title": "night-run report sat its 20 min cap on a live suites run and posted no verdict",
+      "match": {
+        "rule": "wait_class",
+        "ident": "^night\\-suites$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T14:10:00+02:00",
+          "by": "night fixer harness-wait-classes-20261029T112143Z-5586",
+          "files": [
+            "llm-legs/bin/night-run",
+            "llm-legs/limits.json",
+            "llm-legs/tests/test_night_carry.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-wait-classes-20261029T112143Z-5586",
+      "note": "Night 20261029T012849Z-5e69: suites 09:59:39-10:45:14Z (46 min; 10-24's took 23), report --post (orchestrator, backgrounded) and a plain report (the supervising chat, auto-backgrounded after 120 s) both started 10:09:39/47 and gave up at 1200 s with suites still live. llm-legs run-all 2381 s wall / 7564 s serial vs 1104 / 3247 on 10-24, every suite ~2.5x (grok_outcomes 73 -> 346 s); load1 82-213 on 10 cores (memlogd machine log) from 33 worker runs and the next night's prep, the wave at nice 10 with Egor at the keyboard: weather, not the suites. Wall 1200 s, cpu ~0 s (a 2 s sleep poll), rest: the suites run itself 2735 s. Fix: report never waits (prints suites running since), a suites run ending after the night finished posts a night-suites verdict block (report-bus); class night-suites no longer journals. Leftover for the owner: WAIT_RED_S still lists night-suites (judge; docs pin it).",
+      "handoff": null,
+      "ruled_at": null
     }
   ],
   "blind_spots": [
@@ -12779,6 +12836,13 @@
       "reason": "2026-10-29 (fixer harness-hooks-20261029T112048Z-00f0): context-nudge's 0.4 ms CPU a payload KiB read as hook_grows_size only because image-heavy transcripts are both big and carry big tool responses; 20 hooks read stdin by bash `read -d ''`, one byte a syscall, and limits-triage-nudge, word-spend, pr-ready-mattermost and memory-prune hook do it on PostToolUse",
       "since": "2026-10-29",
       "would_catch_if": "the joined call carried its payload bytes (the tool_result line's length) and hook_view split hook runs by them as it does by transcript size"
+    },
+    {
+      "id": "admission-readings-unjournaled",
+      "what": "how much of a night-admission wait came from reserving running runs' full cost while the 5h reading already holds what they spent",
+      "reason": "2026-10-29: night_priority.decide keeps only the admitted run's room; a wait verdict's pool room, held cost and spare live in the hold's why, deleted at hold_clear, and no 5h reading history exists, so night 5e69's double count (room 149 -> ~133 during a 26 min wait while 13 runs stayed reserved in full) was estimated from two harness snapshots",
+      "since": "2026-10-29",
+      "would_catch_if": "each admit verdict appended {at, ref, five, used, spare, running} to the night file's admission store, and Wait classes split night-admission waits into room the readings lacked and room held twice"
     }
   ]
 }
