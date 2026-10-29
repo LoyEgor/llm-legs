@@ -28,7 +28,7 @@ mkdir -p "$FAKE_BIN" "$FAKE_LIST" "$FAKE_SYS" "$DEST" "$WORK/refs" "$CHILDREN" "
 : >"$CALLS"
 DEST_WORK=$(fanout_work "$DEST")
 
-magick -size 64x64 gradient:red-blue "$WORK/refs/r1.png"
+cp "$ROOT/tests/fixtures/image-fanout/ref.png" "$WORK/refs/r1.png"
 for i in 2 3 4 5; do cp "$WORK/refs/r1.png" "$WORK/refs/r$i.png"; done
 
 # The memory reader's inputs: vm_stat pages (16 KB each, so MB * 64) and the pressure level.
@@ -80,7 +80,8 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-printf 'START %s %s %s\n' "${account:-routed}" "$(perl -MTime::HiRes=time -e 'printf "%.3f", time')" "${IMAGE_JOB_ID:-}" >>"$FANOUT_CALLS"
+now=${EPOCHREALTIME/,/.}
+printf 'START %s %s %s\n' "${account:-routed}" "${now%???}" "${IMAGE_JOB_ID:-}" >>"$FANOUT_CALLS"
 if [ -n "${FANOUT_LIVE:-}" ] && [ -n "$account" ]; then
   mkdir "$FANOUT_LIVE/$account" 2>/dev/null || printf 'OVERLAP %s\n' "$account" >>"$FANOUT_CALLS"
   trap 'rmdir "$FANOUT_LIVE/$account" 2>/dev/null || true' EXIT
@@ -229,14 +230,13 @@ GEMINI_FLOW_MAX=$(jq -r '.flow_image.refs_max' "$ROOT/share/image-caps/gemini.js
 FLOW_REFS=()
 for ((i = 0; i < GEMINI_FLOW_MAX; i++)); do FLOW_REFS+=(--ref "$WORK/refs/r$((i % 5 + 1)).png"); done
 
-magick -size 180x120 gradient:green-white "$WORK/edit-shape.png"
-assert fanout --dest-dir "$DEST" --prompt badge --dry-run --edit "$WORK/edit-shape.png"
+assert fanout --dest-dir "$DEST" --prompt badge --dry-run --edit "$ROOT/tests/fixtures/image-fanout/edit-shape.png"
 assert grep -Fq -- '--aspect 3:2' <<<"$(plan_cmd grok delta)"
 assert grep -Fq -- '--aspect 4:3' <<<"$(plan_cmd gemini take1)"
-assert fanout --dest-dir "$DEST" --prompt badge --dry-run --edit "$WORK/edit-shape.png" --aspect 1:1
+assert fanout --dest-dir "$DEST" --prompt badge --dry-run --edit "$ROOT/tests/fixtures/image-fanout/edit-shape.png" --aspect 1:1
 assert grep -Fq -- '--aspect 1:1' <<<"$(plan_cmd grok delta)"
 rc=0
-fanout --dest-dir "$DEST" --prompt badge --region 0,0,0.2,0.2 --edit "$WORK/edit-shape.png" || rc=$?
+fanout --dest-dir "$DEST" --prompt badge --region 0,0,0.2,0.2 --edit "$ROOT/tests/fixtures/image-fanout/edit-shape.png" || rc=$?
 assert test "$rc" -eq 2
 assert grep -Fq 'plain composited edit: --edit <img> --ref <vector>' "$FANOUT_ERR"
 
@@ -597,7 +597,7 @@ for straggler in hang stubborn; do
   rm -f "$CHILDREN/$straggler.pid"
   : >"$CALLS"
   rc=0
-  env "${FANOUT_ENV[@]}" IMAGE_FANOUT_KILL_WAIT_MS=500 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' --vendors grok \
+  env "${FANOUT_ENV[@]}" IMAGE_FANOUT_KILL_WAIT_MS=100 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' --vendors grok \
     --takes 2 >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
   assert test "$rc" -eq 0
   assert test "$(grep -c "^START $straggler " "$CALLS")" -eq 1
@@ -822,7 +822,7 @@ grok_roster 'chromeorphan: Logged in\nfasta: Logged in\n'
 rm -f "$CHILDREN/chromeorphan.pid"
 : >"$CALLS"
 rc=0
-env "${FANOUT_ENV[@]}" IMAGE_FANOUT_KILL_WAIT_MS=500 FANOUT_SLEEP=1 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' \
+env "${FANOUT_ENV[@]}" IMAGE_FANOUT_KILL_WAIT_MS=100 FANOUT_SLEEP=1 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' \
   --vendors grok --takes 1 --spare 1 >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 0
 assert grep -Fq $'grok\tchromeorphan\tspare-cancelled\t' "$DEST_WORK/fanout.tsv"
