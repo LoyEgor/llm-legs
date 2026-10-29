@@ -668,26 +668,42 @@ def iso_epoch(text):
     return H.at_epoch(text) if isinstance(text, str) else (float(text) if isinstance(text, (int, float)) else None)
 
 
-def night_view(now):
+def night_row(path):
+    night = H.read_json(path, {})
+    events = [e for e in night.get("events") or () if isinstance(e, dict)]
+    start = iso_epoch(night.get("started_at"))
+    finish = next((iso_epoch(e.get("at")) for e in reversed(events) if e.get("phase") == "finish"), None) \
+        or iso_epoch(night.get("finished_at"))
+    if not start or not finish:
+        return None
+    landing = min([iso_epoch(e.get("at")) for e in events if e.get("phase") == "landing"
+                   and iso_epoch(e.get("at"))] or [None], key=lambda x: x or 0)
+    done = sum(1 for j in night.get("jobs") or () if isinstance(j, dict) and j.get("state") in ("merged", "nothing-to-do"))
+    return {"id": night.get("id"), "started": start, "wall_h": round((finish - start) / 3600.0, 2),
+            "first_landing_h": round((landing - start) / 3600.0, 2) if landing else None, "jobs_done": done}
+
+
+def night_view(now, state):
     """Every night of the stored-day window and the newest one whatever its age: a night file is never touched after
-    its night ends, so an older mtime holds no night any stored day can name."""
-    nights = []
+    its night ends, so an older mtime holds no night any stored day can name; a file read once stays in the state
+    under its mtime and size."""
+    nights, memo, seen = [], state.setdefault("nights", {}), set()
     oldest = now - (LIMITS["baseline_days"] + LIMITS["regression_days"] + 2) * 86400
     for path in sorted(glob.glob(os.path.join(doctors_dir(), "nights", "*.json")), reverse=True):
         if nights and mtime(path) < oldest:
             continue
-        night = H.read_json(path, {})
-        events = [e for e in night.get("events") or () if isinstance(e, dict)]
-        start = iso_epoch(night.get("started_at"))
-        finish = next((iso_epoch(e.get("at")) for e in reversed(events) if e.get("phase") == "finish"), None) \
-            or iso_epoch(night.get("finished_at"))
-        if not start or not finish:
+        try:
+            info = os.stat(path)
+        except OSError:
             continue
-        landing = min([iso_epoch(e.get("at")) for e in events if e.get("phase") == "landing"
-                       and iso_epoch(e.get("at"))] or [None], key=lambda x: x or 0)
-        done = sum(1 for j in night.get("jobs") or () if isinstance(j, dict) and j.get("state") in ("merged", "nothing-to-do"))
-        nights.append({"id": night.get("id"), "started": start, "wall_h": round((finish - start) / 3600.0, 2),
-                       "first_landing_h": round((landing - start) / 3600.0, 2) if landing else None, "jobs_done": done})
+        stamp = [info.st_mtime, info.st_size]
+        seen.add(path)
+        if memo.get(path, {}).get("stamp") != stamp:
+            memo[path] = {"stamp": stamp, "row": night_row(path)}
+        if memo[path]["row"]:
+            nights.append(dict(memo[path]["row"]))
+    for path in set(memo) - seen:
+        del memo[path]
     nights.sort(key=lambda n: n["started"])
     return {"last": nights[-1] if nights else None, "nights": len(nights),
             "by_day": {H.local_day(n["started"]): n for n in nights}}
@@ -729,7 +745,7 @@ def media_view(rows, lo, covered):
 
 
 def day_values(day, credit, prompts, statusline_day, kicks_day, runs, night, media=()):
-    """Unit metrics of one closed day, keyed metric|ident|band, with their exposure."""
+    """Unit metrics of one closed day, keyed metric|ident|band, with their exposure; a caller may pass only the day's rows."""
     out = {}
     chat_min = sum(v for (d, area, _), v in credit.items() if d == day and area == "chat") / 60.0
     if prompts.get(day):
@@ -1316,7 +1332,7 @@ def collect(write, now):
     areas = {area: round(sum(v.values()), 2) for area, v in tree.items()}
     local = sum(tree.get("chat", {}).get(leaf, 0.0) for leaf in LOCAL_LEAVES)
     machine = machine_view(days, local)
-    night = night_view(now)
+    night = night_view(now, state)
     delegation = delegation_view(runs, lo)
     media_post = media_view(media_runs, lo, covered)
 
@@ -1344,6 +1360,11 @@ def collect(write, now):
     for f in tsv_days(os.path.join(state_dir(), "merge-kick"), lo):
         if len(f) >= 3 and f[0].isdigit() and f[2].replace(".", "", 1).isdigit():
             kicks.setdefault(H.local_day(int(f[0]) / 1e6), []).append(float(f[2]))
+    runs_by_day, media_by_day = {}, {}
+    for run in runs:
+        runs_by_day.setdefault(H.local_day(run.get("ended_at") or 0), []).append(run)
+    for r in media_runs:
+        media_by_day.setdefault(H.local_day(r.get("ts") or 0), []).append(r)
     stored, computed = stored_days(now), set()
     old_days = {d for d, _, _ in old_credit}
     for day in sorted({d for d, _, _ in credit} | set(days) | old_days):
@@ -1352,7 +1373,7 @@ def collect(write, now):
             computed.add(day)
             stored[day] = {"day": day, "values": day_values(day, old_credit if day in old_days else credit, prompts,
                                                             (days.get(day) or {}).get("statusline"), kicks.get(day),
-                                                            runs, last, media_runs)}
+                                                            runs_by_day.get(day, ()), last, media_by_day.get(day, ()))}
     regressions, baselines = judge_regressions(stored, today, component_om)
 
     problems = []
