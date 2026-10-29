@@ -125,15 +125,20 @@ journal_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/tests/lib/suite
 if common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
   projects=$(dirname "$(dirname "$common")")
   own_branch=$(linked_worktree_branch "$repo")
+  declare -A sibling_root=()
   for sibling in CLAUDE_SETUP_ROOT=claude-setup REVIEW_BENCH_ROOT=review-bench REVIEW_ROOT=review-bench LLM_LEGS_ROOT=llm-legs; do
     var=${sibling%%=*} name=${sibling#*=}
     [ -n "${!var:-}" ] && continue
-    if [ -n "$own_branch" ] && sibling_wt=$(same_branch_worktree "$projects/$name" "$own_branch") &&
-      worktree_carries_work "$sibling_wt"; then
-      export "$var=$sibling_wt"
-      continue
+    if [ -z "${sibling_root[$name]+set}" ]; then
+      sibling_root[$name]=''
+      if [ -n "$own_branch" ] && sibling_wt=$(same_branch_worktree "$projects/$name" "$own_branch") &&
+        worktree_carries_work "$sibling_wt"; then
+        sibling_root[$name]=$sibling_wt
+      elif [ ! -d "$repo/../$name" ] && [ -d "$projects/$name" ]; then
+        sibling_root[$name]=$projects/$name
+      fi
     fi
-    if [ ! -d "$repo/../$name" ] && [ -d "$projects/$name" ]; then export "$var=$projects/$name"; fi
+    [ -z "${sibling_root[$name]}" ] || export "$var=${sibling_root[$name]}"
   done
   # review-bench's rbench_paths finds llm-legs/share beside ITS root, which a worktree has not.
   [ -n "${LLM_LEGS_SHARE:-}" ] || [ -z "${LLM_LEGS_ROOT:-}" ] || export LLM_LEGS_SHARE="$LLM_LEGS_ROOT/share"
