@@ -67,7 +67,7 @@ COLLECT = {"storm_s": 2000, "storm_min": 2, "storm_kernel": 0.50, "census_s": 60
            "freespace_every_s": 3600, "windows_row": 300, "windows_limit": 1000, "windows_heavy": 5000,
            "job_cpu_day": 864, "job_writes_day": 1 << 30, "job_heavy": 5, "job_covered_s": 12 * 3600}
 LOGS = {"sweep_timeout_s": 1800, "compare_min_s": 20 * 3600, "keep_scan_days": 14, "growth_min_days": 5,
-        "stale_s": 36 * 3600}
+        "stale_s": 36 * 3600, "retry_s": 3 * 3600}
 HARVEST = (("launchd", 'processID == 1 AND eventMessage CONTAINS "ran for"', 300, 100000),
            ("das", 'subsystem == "com.apple.duetactivityscheduler" AND category IN {"scoring", "lifecycle", "BGSTHelper"}',
             150, 1200000),
@@ -1260,7 +1260,7 @@ def launch_due(now, start=detach, say=notify):
     for name, every in (("dumpstate", COLLECT["dumpstate_every_s"]), ("harvest", COLLECT["harvest_every_s"])):
         if now - (launched.get(name) or 0) >= every - 30:
             due.append(name)
-    if logstores_due(launched.get("logstores"), now):
+    if logstores_due(launched.get("logstores"), now) or logstores_retry(launched.get("logstores"), now):
         due.append("logstores")
     latest = recent[-1] if recent else {}
     free = (latest.get("free_gib") or {}) if now - (latest.get("t") or 0) <= TICK_STALE_S else {}
@@ -2210,6 +2210,16 @@ def logstores_due(last, now):
     if not isinstance(last, (int, float)):
         return True
     return local_day(last) != local_day(now) and time.localtime(now).tm_hour >= NIGHTLY_HOUR or now - last > NIGHTLY_STALE_S
+
+
+def logstores_retry(last, now):
+    """The day's only run, its scan cut by the budget or its sweep failed, runs once more retry_s after it began: under
+    the night's disk load the throttled walks overran (10-23 and 10-29), leaving the collector blind for a day."""
+    if not isinstance(last, (int, float)) or now - last < LOGS["retry_s"] or local_day(last) != local_day(now):
+        return False
+    rows = day_file_rows(os.path.join(state_dir(), "logstores", local_day(now) + ".jsonl"))
+    return len(rows) == 1 and bool(rows[0].get("error") or (rows[0].get("scan") or {}).get("cut")
+                                   or (rows[0].get("sweep") or {}).get("error"))
 
 
 # ---------------------------------------------------------------- cohort score

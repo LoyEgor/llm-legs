@@ -195,12 +195,14 @@ def sweep(registry, now, dry_run, only=None, say=print):
         swept = entry["cleaner"] == "sweep" and chosen
         if not swept and entry.get("split") != "session":
             continue
-        rows = log_stores.measure(entry)
+        key, value = log_stores.criterion(entry)
+        # A unit holding anything newer than its shortest keep is kept whatever its class: its walk stops there.
+        rows = log_stores.measure(entry, now - min([value, *(entry.get("group_days") or {}).values()])
+                                  * log_stores.DAY_S if key == "days" else None)
         if entry.get("split"):
             log_stores.split(entry, rows, sessions)
         if not swept:
             continue
-        _key, value = log_stores.criterion(entry)
         bases = [glob_base(p) for p in entry["globs"]]
         done = []
         for row, action in log_stores.doomed(entry, rows, now):

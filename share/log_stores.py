@@ -140,11 +140,12 @@ def units(entry):
     return outermost(kept)
 
 
-def unit_stats(path):
+def unit_stats(path, settled=None):
     """{path, bytes (allocated, as du), size (a file's length), files, newest (the newest mtime of the unit and
     everything inside it), denied (a directory macOS will not list, an app's data its privacy guard keeps, or one
     holding a non-empty directory of another owner we may not write, a tool once run as root: never swept)};
-    symlinks are counted, never followed."""
+    symlinks are counted, never followed. With settled, the walk stops at the first mtime at or after it: newest is
+    then only known to be that late, bytes, files and denied cover what was walked (a keep test needs no more)."""
     try:
         info = os.lstat(path)
     except OSError:
@@ -153,6 +154,8 @@ def unit_stats(path):
            "dir": stat.S_ISDIR(info.st_mode), "reg": stat.S_ISREG(info.st_mode)}
     if not row["dir"]:
         row["files"] = 1
+        return row
+    if settled is not None and row["newest"] >= settled:
         return row
     stack, uid = [(path, info.st_uid)], os.getuid()
     while stack:
@@ -168,6 +171,8 @@ def unit_stats(path):
                         continue
                     row["bytes"] += info.st_blocks * 512
                     row["newest"] = max(row["newest"], info.st_mtime)
+                    if settled is not None and row["newest"] >= settled:
+                        return row
                     if stat.S_ISDIR(info.st_mode):
                         stack.append((item.path, info.st_uid))
                     else:
@@ -179,14 +184,14 @@ def unit_stats(path):
     return row
 
 
-def measure(entry):
+def measure(entry, settled=None):
     """unit_stats of every unit; a store's `also` paths (each relative to its unit: the blob directory beside a Chromium
     IndexedDB leveldb) count, age, deny and go with their unit, listed in its `also`, removed after it."""
-    rows = [row for row in (unit_stats(path) for path in units(entry)) if row]
+    rows = [row for row in (unit_stats(path, settled) for path in units(entry)) if row]
     for row in rows if entry.get("also") else ():
         row["also"] = []
         for rel in entry["also"]:
-            found = unit_stats(os.path.normpath(os.path.join(row["path"], rel)))
+            found = unit_stats(os.path.normpath(os.path.join(row["path"], rel)), settled)
             if found:
                 row["also"].append(found["path"])
                 row["bytes"] += found["bytes"]

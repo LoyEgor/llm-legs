@@ -262,6 +262,29 @@
           "regressed_at": null
         }
       ]
+    },
+    {
+      "id": "log-store:log-sweep",
+      "title": "log-sweep walks every kept unit whole",
+      "status": "fixed-pending",
+      "match": {
+        "rule": "log-store",
+        "key": "log-sweep",
+        "cause": "log-sweep"
+      },
+      "note": "10-29 04:00 the daily sweep hit system-doctor's 1800 s timeout (33 cpu-s): wall is throttled disk I/O (low_priority, IOPOL_THROTTLE) under the night's disk load, sweep 10-15 s until 10-20, 100-650 s since 10-21. Its walk stat()s all ~547k files of the swept stores (pnpm-store 186k, tmp-sandboxes 118k, work-tmp 90k, library and chromium caches 65k each) though a days-criterion unit only needs one mtime newer than its keep. Cut: measure(entry, settled) stops a unit's walk at the first mtime at or after now minus the store's shortest days/group_days; doomed units are still walked whole. Same sweep at one fixed now, old vs new: identical 232 dry-run lines and summary; 547k -> 54k stats, 58.6 -> 14.8 s wall unthrottled. Ruled out: the lsof/ps open-file pass (one call, only once a unit is doomed). Same day: system-doctor reruns a logstores run whose scan was cut or sweep failed once, LOGS retry_s after it began (logstores_retry), so collector logstores is not blind for a day when du's 600 s budget runs out under the night's load (10-23, 10-29: `~` cut).",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:05:00+02:00",
+          "by": "system-system-20261029T053432Z-424a",
+          "files": [
+            "llm-legs/bin/log-sweep",
+            "llm-legs/share/log_stores.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ]
     }
   ],
   "blind_spots": [
