@@ -11190,6 +11190,21 @@
       "reviewed_by": "harness-doctor-20261029T053038Z-387d",
       "note": "2026-10-29 (run 387d): ruled out, chat conduct in logo-vectorizer-bench's lane; no hook, gate or launcher: the lane's acceptance loop reruns its 39-file batch per rule change by its own choice.",
       "handoff": null
+    },
+    {
+      "id": "regression-test-health-contention-swap",
+      "title": "Suite wall per CPU second over its usual: the machine swapped under the owner's benchmark and an fseventsd blow-up",
+      "match": {
+        "rule": "regression",
+        "ident": "test-health/contention"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-speed-regression-test-health-contention-20261029T053334Z-62e0",
+      "note": "2026-10-29 weather. 24 h to 10-29 07:30 local: 661 timed suite execs, wall 54171 s, cpu 23137 s (2.34 against a 7-day usual 1.33); every group slowed alike (chat 2.16, night 3.12, worker 2.00) and every heavy suite at 1.6-3 (test_doctor_fix 2.56, test_night_run 1.58, test_worker_run_* 2.3-3.1), no sleeps in the window (sleep_s 0). Matched to the System doctor's ticks by the exec's span: at swap-in under 20/s the window reads 1.40 against the usual days' 1.38 at the same band (213 vs 2188 execs); 20-100/s 2.02, 100-300/s 3.71, over 300/s 2.99; this window ran 448 of 661 execs at 20/s or more, the usual days 513 of 2701. The hourly peaks (10-28 18, 20-21 h, 10-29 03-04, 07 h local, 2.4-5.0) are the swap-in peaks (128-446/s) at kernel share 0.30-0.45 against 0.12-0.18 before 10-28. Who: the owner's benchmark (logo-vectorizer-bench lanes, pixel-forge bench/runset.py new 10-28, nice 5-20) and claude sessions hold the 10 cores at busy 0.88-1.0 since 10-26 (load 45-64); fseventsd (Apple) went from 0 to one whole core between 10-28 01:00 and 14:00 and holds 2.9 GB RSS (its 2026-10-04 research baseline: 1463 cpu-s/day, 44 MB) while the FSEvents event-id rate on /Volumes/Work stayed at its usual 1-7 M/h, so a client not draining its stream, not more churn; it is unidentifiable without root (fs_usage/lsof on pid 109), no harness file watcher changed (Hammerspoon pathwatchers, worker-run-wait kqueue). A 3M-iteration CPU probe at load 45-50: wall 1.46-2.56 s, cpu 0.23 s. Ruled out as levers: nice/taskpolicy (row speed-contention-attended-suites: nice 10 3.5 -> 5.35 s, utility 17.35 s); fewer suite slots (slot_room already refuses past the floor at pressure level 2 and under GUARD_AVAIL_MB; a queue only moves the wait). Load is weather.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -11654,6 +11669,13 @@
       "reason": "hold_raise keeps SLOT_WHY only in the hold file, hold_clear drops it, and neither memlogd nor the wait row logs the pressure level or load15",
       "since": "2026-10-29",
       "would_catch_if": "slot_wait_end passed the last SLOT_WHY clause (level, mb or load) into the wait row beside reason room"
+    },
+    {
+      "id": "contention-swap-matched",
+      "what": "test-health's contention line (suite wall per CPU second) against machine memory thrash and Apple daemon step changes",
+      "reason": "2026-10-29 regression:test-health/contention: 2.34 against 1.33 read as a harness regression, yet at matched swap-in (under 20/s) the window equals its usual (1.40 vs 1.38); the line divides wall by CPU with no machine state beside it, so every swap storm under the owner's benchmark launches a fixer. The same window hid fseventsd at one core and 2.9 GB since 10-28 01:00: the System doctor averages a cohort over 7 days, so an Apple daemon's 30x step shows no row for days",
+      "since": "2026-10-29",
+      "would_catch_if": "test_health judged contention per swap-in band of the System doctor's ticks (each exec's span) against the usual days' same band, and the System doctor opened a watch when a process's day CPU or RSS stepped 10x over its own 7-day median, naming the hour it began"
     }
   ]
 }
