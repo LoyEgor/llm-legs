@@ -693,7 +693,7 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   clamped 2–8 always, up to 4 × the cores capped at 40 while `slot_room` finds room; a nested run inherits
   `WORKER_SLOT`; `run_suites_slots` and `worker_slots` in `share/slots.sh`) and `blender` (every Blender
   `bin/blender-render` launches: 1 always, up to RAM ÷ one run's footprint while `slot_room` finds room; its
-  `slot_room_mb` names the footprint plus what running Blenders have yet to allocate, `bin/blender-render` `slot_need`). Room only adds slots above the old defaults. Room = memory pressure normal, available
+  `slot_room_mb` names the footprint plus what running Blenders have yet to allocate, `bin/blender-render` `slot_need`). Room = memory pressure under critical (4), available
   memory above `bin/chat-load` `GUARD_AVAIL_MB` + `SLOTS_ROOM_MB` (1500; a pool's `slot_room_mb` when defined), and load1 within the cores of
   load15 (the benchmark's base). A worker run's `started_at` stays its launch; its deadline clock is
   `slot_at`. A queued suite run is
