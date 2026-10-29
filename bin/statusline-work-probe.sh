@@ -411,7 +411,6 @@ if [ "$n" -gt 0 ]; then
     | (if (.expected | type) == "object" then .expected else {} end) as $expected
     | (if (.chunks | type) == "object" then .chunks else {} end) as $chunks
     | (if (.chunk_started | type) == "object" then .chunk_started else {} end) as $chunk_started
-    | (if (.verifying | type) == "object" then .verifying else {} end) as $verifying
     | (if (.judge | type) == "object" then .judge else {} end) as $j
     | (.state // "running") as $state | ((.phase // "") | IN("judge", "report")) as $judging
     | [$cells[] | . as $cell | (($failed | index([$cell])) != null) as $failed_cell
@@ -429,16 +428,13 @@ if [ "$n" -gt 0 ]; then
              | sub("-.*$"; "") | gsub("[^A-Za-z0-9_.]"; "")),
            fin: $fin, failed: $failed_cell, total: $total,
            read: (if $fin then $total elif $chunked then $pass[0] | floor else 0 end),
-           verify: ($verifying[$cell] == "running"),
            late: (($fin | not) and $late_from != null and ($expected_ms | type) == "number" and $expected_ms >= 0
              and (($now - $late_from) * 1000 > ([3 * $expected_ms, 120000] | max)))}] as $rows
     | ($rows | reduce .[].label as $l ([]; if index([$l]) then . else . + [$l] end)
        | map(. as $l | [$rows[] | select(.label == $l)]
          | (length) as $n | (map(select(.fin)) | length) as $d | (map(select(.failed)) | length) as $f
-         | any(.verify) as $v
-         | (if ($v | not) and $f == 0 and $d == $n then "✓" elif ($v | not) and $f == $n then "✗\($f)"
-            else "\(map(.read) | add)/\(map(.total) | add)" + (if $f > 0 then " ✗\($f)" else "" end)
-              + (if $v then " verify" else "" end) end) as $detail
+         | (if $f == 0 and $d == $n then "✓" elif $f == $n then "✗\($f)"
+            else "\(map(.read) | add)/\(map(.total) | add)" + (if $f > 0 then " ✗\($f)" else "" end) end) as $detail
          | if any(.late) then " {\($l) \($detail)}" else " \($l) \($detail)" end) | join("")) as $groups
     | "all \($rows | map(select(.fin)) | length)/\($cells | length)" as $all
     | (if $state | IN("failed", "dead") then ["✗ dead", "✗ dead"]
