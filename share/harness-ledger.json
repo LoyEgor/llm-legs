@@ -11681,13 +11681,6 @@
       "would_catch_if": "each floor sample carried the sampler's load average at its call time and the floor drill split its median by load band"
     },
     {
-      "id": "floor-setter-last-ending",
-      "what": "which hook a floor actually waits on, when the hook named as its setter is merely the last to end",
-      "reason": "hook_batches names a batch's setter by the run that ends last; on 2026-10-04 under 1465 forks/s pr-ready-mattermost (1 ms own) was the trivial Bash after-side setter only because it was spawned last, while batch_parts' 'without' figures, computed beside it, name the hook whose removal shortens the floor",
-      "since": "2026-10-04",
-      "would_catch_if": "the floor say and drill named the hook with the largest batch_parts saving rather than the last-ending run"
-    },
-    {
       "id": "loose-object-writer",
       "what": "which hook or worker wrote a repository's loose objects, and whether anything ever packs them",
       "reason": "growth samples carry the count and size only; the 2026-10-02 fixer attributed the writer by blob mtimes and content against review-journal .repos mtimes and worker-run workdirs",

@@ -2694,6 +2694,10 @@ check(day["hook_cpu_us"] == {"stop-dispatch.sh": [1, 5000], "stop.d/a": [1, 3000
 batch = {"t0": 0.0, "ms": 3000.0, "runs": {"a": (1.0, "a", 1000.0, False, 0.0, "9"), "b": (3.0, "b", 3000.0, False, 0.0, "9")}}
 check(m.batch_parts([batch]) == {"a": [1000.0, 3000.0], "b": [3000.0, 1000.0]},
       "C2 the counterfactual floor without a hook ends at the batch's other runs")
+spawned = m.hook_batches([(10.5, "long.sh", 500.0, False, 10.0, "7"), (10.501, "late.sh", 11.0, False, 10.49, "7")],
+                         {"long.sh": {("PreToolUse", "Bash")}, "late.sh": {("PreToolUse", "Bash")}}, 11.0)
+check([(b["by"], round(b["ms"])) for b in spawned] == [("long.sh", 501)],
+      "C2 a batch is set by the hook whose removal shortens it most, not a trivial one spawned last: %s" % spawned)
 
 ticks = [[T - 10, 2.5]]
 floor = {"t": T, "cls": "bash:other", "ms": 3000.0, "kb": 2048, "batches": [batch]}

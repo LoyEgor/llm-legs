@@ -2655,10 +2655,20 @@ def hook_batches(runs, slots, now):
                 batch = {"t0": run[4], "ppid": ppid, "runs": {run[1]: run}, "slots": set(slots[run[1]])}
                 live.append(batch)
                 batches.append(batch)
+    # Its setter is the run whose removal shortens it most, the first to start or the last to end: a trivial hook
+    # spawned last ends last without holding the batch.
     for batch in batches:
-        last = max(batch["runs"].values(), key=lambda r: r[0])
-        batch.update(end=last[0], by=last[1], ms=(last[0] - batch["t0"]) * 1000.0)
+        runs = batch["runs"]
+        last = max(runs.values(), key=lambda r: r[0])
+        first = min(runs.values(), key=lambda r: r[4])
+        by = first[1] if span_without(runs, first[1]) < span_without(runs, last[1]) else last[1]
+        batch.update(end=last[0], by=by, ms=(last[0] - batch["t0"]) * 1000.0)
     return batches
+
+
+def span_without(runs, key):
+    others = [r for k, r in runs.items() if k != key]
+    return (max(r[0] for r in others) - min(r[4] for r in others)) * 1000.0 if others else 0.0
 
 
 def join_calls(batches, calls):
@@ -2721,10 +2731,9 @@ def batch_parts(batches):
     for key in keys:
         own = cf = 0.0
         for batch in batches:
-            others = [r for k, r in batch["runs"].items() if k != key]
             if key in batch["runs"]:
                 own += batch["runs"][key][2]
-                cf += (max(r[0] for r in others) - min(r[4] for r in others)) * 1000.0 if others else 0.0
+                cf += span_without(batch["runs"], key)
             else:
                 cf += batch["ms"]
         parts[key] = [round(own, 1), round(cf, 1)]
