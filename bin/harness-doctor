@@ -1903,19 +1903,25 @@ def take_sample(state, now, phase=lambda name: None, burst=None):
 
 
 def load_samples(now):
-    rows = []
+    """(rows inside EVENT_DAYS, trim): trim once the file holds a row a day past that window, a line that is no
+    row or an unended last line, so a run appends its sample and rewrites the file about once a day."""
+    rows, trim = [], False
     try:
         with open(os.path.join(state_dir(), "samples.jsonl")) as handle:
             for line in handle:
                 try:
                     row = json.loads(line)
                 except ValueError:
-                    continue
-                if isinstance(row, dict) and now - row.get("t", 0) <= EVENT_DAYS * 86400:
+                    row = None
+                if not isinstance(row, dict) or not line.endswith("\n"):
+                    trim = True
+                elif now - row.get("t", 0) <= EVENT_DAYS * 86400:
                     rows.append(row)
+                elif now - row.get("t", 0) > (EVENT_DAYS + 1) * 86400:
+                    trim = True
     except OSError:
         pass
-    return rows
+    return rows, trim
 
 
 # ---------------------------------------------------------------- hook and statusline journals
@@ -7019,7 +7025,8 @@ def collect(write, now):
     phase("changes")
     burst = []
     sample = take_sample(state, now, phase, burst)
-    samples = load_samples(now) + ([sample] if sample else [])
+    samples, trim_samples = load_samples(now)
+    samples += [sample] if sample else []
     phase("sample")
     timed24, timed1, fresh_spool = read_journals(state, now, write)
     phase("journals")
@@ -7187,7 +7194,10 @@ def collect(write, now):
     speed_flush(state, now, write)
     if write:
         write_json(os.path.join(folder, "state.json"), state)
-        if sample:
+        if sample and not trim_samples:
+            with open(os.path.join(folder, "samples.jsonl"), "a") as handle:
+                handle.write(json.dumps(sample, separators=(",", ":")) + "\n")
+        elif sample:
             kept = [s for s in samples if now - s.get("t", 0) <= EVENT_DAYS * 86400]
             with open(os.path.join(folder, "samples.jsonl.tmp"), "w") as handle:
                 handle.write("".join(json.dumps(s, separators=(",", ":")) + "\n" for s in kept))
