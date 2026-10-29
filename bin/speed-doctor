@@ -94,6 +94,7 @@ LEVERS = [
 SLICE_LEVER = {"effort": "M", "confidence": "unmeasured", "saving": 0.3, "night_cost_h": 0.0, "proof": "tail",
                "quality": "equivalent"}
 NO_SLICE_LEVER = ("chat/residual", "delegation/workers")
+REVIEW_HOLDS = ("review-cells", "workers")
 CHAT_LEAVES = (("hook", "hooks"), ("stop", "hooks"), ("queue", "queue"), ("test", "tests"), ("media", "media"),
                ("tool", "tools"), ("compact", "compaction"), ("gen", "model"), ("resid", "residual"))
 HOLE_LAYERS = ("dark", "ask")
@@ -555,6 +556,70 @@ def bash_split(extra, lo, hi):
             entry = out.setdefault(key, [0.0, 0])
             entry[0] += min(b, hi) - max(a, lo)
             entry[1] += 1
+    return out
+
+
+def review_intervals(extra):
+    """{session[:8]: [(start, end, kind)]} for the attended review delegations' sessions: the review-cells and workers
+    holds the wait journal names that session the caller of (holds), and the rater runs and judge (its duration up to
+    raw-judge.json's write, the judge running past finished_at) of each bench of that session alive during a
+    delegation, started before its notification and written after its launch (model)."""
+    rows = [row for _, _, row in extra if delegation_leaf(row[4]) == "reviews"]
+    if not rows:
+        return {}
+    sessions, out = {row[2] for row in rows}, {}
+    for r in time_budget.wait_rows(min(row[1] for row in rows), max(row[7] for row in rows)):
+        if r.get("class") in REVIEW_HOLDS and str(r.get("caller"))[:8] in sessions:
+            out.setdefault(r["caller"][:8], []).append((r["started"], r["started"] + r["seconds"], "holds"))
+    root = os.path.join(H.worker_stats_dir(), "benches")
+    try:
+        names = os.listdir(root)
+    except OSError:
+        names = []
+    for name in names:
+        t = H.iso_epoch("%s-%s-%sT%s:%s:%s" % (name[:4], name[4:6], name[6:8], name[9:11], name[11:13], name[13:15]))
+        path = os.path.join(root, name, "meta.json")
+        if t is None or not any(t <= row[7] for row in rows):
+            continue
+        try:
+            written = os.stat(path).st_mtime
+        except OSError:
+            continue
+        if not any(t <= row[7] and written >= row[1] for row in rows):
+            continue
+        meta = H.read_json(path, None)
+        if not isinstance(meta, dict) or str(meta.get("session"))[:8] not in sessions:
+            continue
+        runs = [(H.iso_epoch(r.get("started_at")), H.iso_epoch(r.get("finished_at")))
+                for r in meta.get("rater_runs") or () if isinstance(r, dict)]
+        judge = meta.get("judge")
+        try:
+            end = os.stat(os.path.join(root, name, "raw-judge.json")).st_mtime
+        except OSError:
+            end = None
+        if end and isinstance(judge, dict) and isinstance(judge.get("duration_ms"), (int, float)):
+            runs.append((end - judge["duration_ms"] / 1000.0, end))
+        out.setdefault(meta["session"][:8], []).extend((a, b, "model") for a, b in runs if a and b and b > a)
+    return out
+
+
+def review_split(extra, lo, hi, intervals):
+    """{model|holds|rest: [seconds, delegations]} of the attended review delegations inside [lo, hi): the delegate's
+    own model seconds, the caller's slot holds outside them, and the rest (queue, relay, poll) a cut can shorten."""
+    out = {}
+    for a, b, row in extra:
+        a, b = max(a, lo), min(b, hi)
+        if delegation_leaf(row[4]) != "reviews" or b <= a:
+            continue
+        inside = lambda kinds: [(max(x, a), min(y, b)) for x, y, kind in intervals.get(row[2], ())
+                                if kind in kinds and min(y, b) > max(x, a)]
+        model = H.union_secs(inside(("model",)))
+        held = H.union_secs(inside(("model", "holds")))
+        for key, secs in (("model", model), ("holds", held - model), ("rest", b - a - held)):
+            if secs > 0:
+                entry = out.setdefault(key, [0.0, 0])
+                entry[0] += secs
+                entry[1] += 1
     return out
 
 
@@ -1451,18 +1516,21 @@ def collect(write, now):
         whole = om
         if component == "chat/start":
             om = sum(s for day, s in start_hooks.items() if not since or day > since) / 60.0 / (span if since else covered)
+        split = bash_split(extra, lo, now) if component == "delegation/background Bash" else review_split(
+            extra, lo, now, review_intervals(extra)) if component == "delegation/reviews" else {}
+        if component == "delegation/reviews" and split:
+            om *= split.get("rest", [0.0])[0] / sum(v[0] for v in split.values())
         if om < LIMITS["worth_om_day"] or (seen < seen_need("seen_days", covered)
                                            and users < seen_need("seen_sessions", covered)):
             continue
         ranked = sorted((opportunity_fields(om, l) for l in levers), key=lambda f: (f["needs_egor"], -f["score"]))
         best = seen_fields(dict(ranked[0], levers=[f["levers"][0] for f in ranked]), seen)
-        split = bash_split(extra, lo, now) if component == "delegation/background Bash" else {}
         opportunities.append({"id": "opportunity:%s" % component, "rule": "opportunity", "state": "watch",
                               "fact": "%s · %s min/day → saves %s · %s" % (component, fmt(om), fmt(best["saving"]), best["levers"][0]),
                               "value": best["om_day"], "limit": LIMITS["worth_om_day"], "unit": "OM/d", "window_h": WINDOW_D * 24,
                               "exposure": seen, "count": None, "first_seen": None, "last_seen": None, "evidence": [
                                   H.evidence(now, "events d rows · " + key, "%s of %s min/day · %d calls" % (
-                                      fmt(om * secs / sum(v[0] for v in split.values())), fmt(om), n))
+                                      fmt(whole * secs / sum(v[0] for v in split.values())), fmt(whole), n))
                                   for key, (secs, n) in sorted(split.items(), key=lambda kv: -kv[1][0])] + ([
                                   H.evidence(now, "events s rows", "SessionStart hooks %s of %s min/day, boot before them %s"
                                              % (fmt(om), fmt(whole), fmt(max(0.0, whole - om))))]

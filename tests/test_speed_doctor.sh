@@ -273,6 +273,33 @@ split = module.bash_split([(0, 100, d_row("poll", "completed")), (50, 80, d_row(
 check(split == {"poll": [100.0, 1], "killed": [30.0, 1], "unclassified": [10.0, 1], "script": [100.0, 1]},
       "background Bash splits by the d row's class, a kill at the cap apart, rows journaled before the class "
       "unclassified, clipped to the window, worker waits out: %s" % split)
+review_dirs = {"HARNESS_WAITS_DIR": os.path.join(work, "review-waits"), "WORKER_STATS_DIR": os.path.join(work, "review-stats")}
+bench = os.path.join(review_dirs["WORKER_STATS_DIR"], "benches", "20261001T000100Z-abc")
+os.makedirs(bench)
+os.makedirs(review_dirs["HARNESS_WAITS_DIR"])
+iso = lambda t: module.time.strftime("%Y-%m-%dT%H:%M:%S+00:00", module.time.gmtime(t))
+t0 = 1790812800  # 2026-10-01T00:00:00Z, the bench name's start
+with open(os.path.join(bench, "meta.json"), "w") as handle:
+    json.dump({"session": "rev12345-full", "finished_at": iso(t0 + 300), "judge": {"duration_ms": 50000},
+               "rater_runs": [{"started_at": iso(t0 + 100), "finished_at": iso(t0 + 300)},
+                              {"started_at": iso(t0 + 150), "finished_at": iso(t0 + 250)}]}, handle)
+open(os.path.join(bench, "raw-judge.json"), "w").close()
+os.utime(os.path.join(bench, "raw-judge.json"), (t0 + 400, t0 + 400))
+with open(os.path.join(review_dirs["HARNESS_WAITS_DIR"], module.time.strftime("%Y-%m-%d", module.time.localtime(t0)) + ".jsonl"), "w") as handle:
+    for row in ({"class": "review-cells", "started": t0 + 60, "seconds": 60, "caller": "rev12345-full"},
+                {"class": "review-cells", "started": t0 + 60, "seconds": 900, "caller": "other999-full"},
+                {"class": "poll", "started": t0 + 300, "seconds": 50, "caller": "rev12345-full"}):
+        handle.write(json.dumps(row) + "\n")
+saved_env = {k: os.environ.get(k) for k in review_dirs}
+os.environ.update(review_dirs)
+review_row = ["d", t0 + 30, "rev12345", t0 + 500, "Bash:review", None, 0, t0 + 500, "x", 1]
+review_extra = [(t0 + 50, t0 + 500, review_row), (0, 10, d_row())]
+review = module.review_split(review_extra, 0, t0 + 1000, module.review_intervals(review_extra))
+for k, v in saved_env.items():
+    os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
+check({k: [round(s), n] for k, (s, n) in review.items()} == {"model": [250, 1], "holds": [40, 1], "rest": [160, 1]},
+      "a review delegation splits into its bench's rater runs and judge (model), its caller's review-cells holds "
+      "outside them and the rest, which alone the slice lever prices: %s" % review)
 hist = lambda total: [1, total, total, total, 0, 0, []]
 floor_days = {"d1": {"floor_hooks": {"bash:other|1-2|1-10|slow.sh": [hist(400), hist(600), hist(1000)],
                                      "bash:trivial|1-2|1-10|fast.sh": [hist(10), hist(990), hist(1000)],

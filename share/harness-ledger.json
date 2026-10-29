@@ -12658,13 +12658,6 @@
       "would_catch_if": "hang_line split a red over-long run whose cpu_s is within its usual cpu and whose window's ticks read busy >= 0.95 into a starved verdict naming the red's own FAIL line"
     },
     {
-      "id": "delegation-model-time",
-      "what": "how much of a delegation slice (reviews, workers) is the delegate's model time versus queue, relay and poll",
-      "reason": "speed-doctor credits a delegation span whole to its leaf and prices it with the generic SLICE_LEVER 30 %, so delegation/reviews read 2.0 min/day cuttable while the attended review waits were reviewer model time plus a 2 s poll (2026-10-09, measured by hand from transcripts and the waits store)",
-      "since": "2026-10-09",
-      "would_catch_if": "a delegation slice subtracted the review-cells and workers holds its caller made and the delegate's own model seconds, and priced only the rest"
-    },
-    {
       "id": "collector-run-starved",
       "what": "a doctor collector run that is starved or killed before it ends",
       "reason": "collector_runs.record writes a run's C10 row only at the end, so the 50-min Speed run killed on 2026-10-04 left no row and no doctor saw it",
