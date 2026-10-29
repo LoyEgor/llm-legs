@@ -1019,6 +1019,7 @@ ahead=""
 head_known=0
 git_status_rc=1
 branch_oid=""; branch_upstream=""; branch_ab=""; branch=""; has_untracked=0; status_dirty=0
+status_untracked=(); status_untracked_quoted=0
 if [ -n "$active_top" ]; then
   status_v2=$(git -C "$active_top" -c core.quotePath=false status --porcelain=v2 --branch --untracked-files=all --ahead-behind 2>/dev/null)
   git_status_rc=$?
@@ -1031,7 +1032,8 @@ if [ -n "$active_top" ]; then
         branch_ab=${status_line#\# branch.ab }
         status_rest=${branch_ab#+}
         ahead=${status_rest%% *}; behind=${status_rest#* -} ;;
-      '? '*) has_untracked=1; status_dirty=1 ;;
+      '? '*) has_untracked=1; status_dirty=1; status_untracked+=("${status_line#\? }")
+             [[ "$status_line" = '? "'* ]] && status_untracked_quoted=1 ;;
       '1 '* | '2 '* | 'u '*) status_dirty=1 ;;
     esac
   done <<< "$status_v2"
@@ -1113,7 +1115,12 @@ if [ -n "$active_top" ]; then
         # ls-files paths are repo-relative; grep must resolve them, and the
         # count must be repo-wide even when git_dir is a subdirectory.
         if [ "$has_untracked" = 1 ]; then
-          mapfile -d '' untracked_names < <(git -C "$active_top" ls-files --others --exclude-standard -z 2>/dev/null)
+          # The status above already listed them; a quoted path or a failed status takes the NUL-separated listing.
+          if [ "$git_status_rc" -eq 0 ] && [ "$status_untracked_quoted" = 0 ]; then
+            untracked_names=("${status_untracked[@]}")
+          else
+            mapfile -d '' untracked_names < <(git -C "$active_top" ls-files --others --exclude-standard -z 2>/dev/null)
+          fi
           # python's start costs three greps: a short listing is cheaper counted afresh.
           if [ "${#untracked_names[@]}" -gt 32 ]; then
             printf '%s\0' "${untracked_names[@]}" |
@@ -1303,10 +1310,13 @@ if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" 
     # The margin re-covers a boundary line the previous scan cut at its own EOF; grep is
     # only a prefilter, so chat content naming compact_boundary falls out at the select.
     if [ "$bnd_scanned" -gt 4096 ]; then bnd_from=$((bnd_scanned - 4096)); else bnd_from=0; fi
-    # dd seeks to the MiB block holding bnd_from; the bytes before it only re-find boundaries the
+    # dd seeks to the block holding bnd_from; the bytes before it only re-find boundaries the
     # maximum already holds. macOS tail -c +N copies about 35 MB/s: a cold sidecar on a 356 MB
     # transcript took 16 s, past the harness's render timeout, so no render ever wrote it.
-    bnd_hits=$(dd if="$transcript_path" bs=1048576 skip=$((bnd_from / 1048576)) 2>/dev/null |
+    # A few KiB of growth reads 4 KiB blocks, not the MiB holding them; a long gap keeps the MiB blocks.
+    bnd_bs=1048576
+    [ $((bnd_size - bnd_from)) -gt 1048576 ] || bnd_bs=4096
+    bnd_hits=$(dd if="$transcript_path" bs=$bnd_bs skip=$((bnd_from / bnd_bs)) 2>/dev/null |
       grep -aF compact_boundary 2>/dev/null)
     if [ -n "$bnd_hits" ]; then
       bnd_seen=$(
@@ -1348,11 +1358,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
     while :; do
       cache_scan=$(
         tail -c "$scan_bytes" "$transcript_path" 2>/dev/null |
-          {
-            [ "$scan_bytes" -ge "$transcript_size" ] || IFS= read -r _ || :
-            cat
-          } |
-          jq -Rrn --arg model "$model_id" --arg seedb "$boundary_seed" '
+          jq -Rrn --arg model "$model_id" --arg seedb "$boundary_seed" --argjson skip "$([ "$scan_bytes" -ge "$transcript_size" ] && echo 0 || echo 1)" '
             def ep: try (sub("\\.[0-9]+Z$"; "Z") | fromdate) catch null;
             def num: if type == "number" then . else 0 end;
             def buckets:
@@ -1362,7 +1368,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                 | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end)))] as $v
               | {ttl: ($v | if length == 0 then 0 else min end)};
             # The plain context-size core is claude-setup hooks/lib/context-size.jq; a fix there has to be re-checked against this superset.
-            reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
+            reduce ((if $skip == 1 then try (input | empty) catch empty else empty end), inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
               {lb:($seedb | ep // 0), ats:0, am:"-", au:"-", afk:"", bk:0,
                pbk:0, ots:0, own:0,
                sawf:0, fas:"", fau:"", fot:0, lts:0, lm:"-", lbk:0, lu:"-", lfk:"",
@@ -1612,12 +1618,8 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
       [ "$parent_bytes" -gt "$scan_max" ] 2>/dev/null && parent_bytes="$scan_max"
       parent_tail=$(
         tail -c "$parent_bytes" "$parent_file" 2>/dev/null |
-          {
-            [ "$parent_bytes" -ge "$parent_size" ] || IFS= read -r _ || :
-            cat
-          } |
           jq -Rrn --arg anchor "$fork_anchor_uuid" --arg model "$model_id" \
-            --argjson cutoff "$fork_own_ts" '
+            --argjson cutoff "$fork_own_ts" --argjson skip "$([ "$parent_bytes" -ge "$parent_size" ] && echo 0 || echo 1)" '
             def ep: try (sub("\\.[0-9]+Z$"; "Z") | fromdate) catch null;
             def num: if type == "number" then . else 0 end;
             def buckets:
@@ -1626,7 +1628,7 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
                 | .key | capture("ephemeral_(?<n>[0-9]+)(?<u>[mh])_")?
                 | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end)))] as $v
               | ($v | if length == 0 then 0 else min end);
-            reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
+            reduce ((if $skip == 1 then try (input | empty) catch empty else empty end), inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
               {seen:0,last:"",boundary:0,ats:0,au:"-",ttl:0,anchor_ts:0};
               ((($x.timestamp? // "") | if type == "string" then ep else null end)) as $ts
               | (($x.uuid? // "") | tostring) as $uuid
