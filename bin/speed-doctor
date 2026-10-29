@@ -102,8 +102,7 @@ LOCAL_LEAVES = ("hooks", "tests", "media", "tools", "residual", "start")
 METRICS = {"chat.om_per_100_prompts": ("chat", 30), "delegation.pre_cli_s": ("delegation/workers", 10),
            "media.fix_ms_per_frame": ("delegation/media", 3), "media.door_s_per_image": ("delegation/media", 5),
            "background.statusline_cpu_ms_per_sh": ("background/statusline", 200),
-           "background.merge_kick_cpu_ms": ("background/statusline", 20), "machine.probe_ms": ("machine/contention", 30),
-           "night.wall_h_per_job": ("night", 5)}
+           "background.merge_kick_cpu_ms": ("background/statusline", 20), "night.wall_h_per_job": ("night", 5)}
 QUALITY = ("equivalent", "risk")
 EVIDENCE_KEYS = H.EVIDENCE_KEYS
 FORBIDDEN_LEVER = re.compile(r"(?i)\b(models?|opus|sonnet|haiku|fable|flash|gpt[\w.-]*|cheaper|downgrades?|effort|"
@@ -729,7 +728,7 @@ def media_view(rows, lo, covered):
     return out
 
 
-def day_values(day, credit, prompts, machine_day, statusline_day, kicks_day, runs, night, media=()):
+def day_values(day, credit, prompts, statusline_day, kicks_day, runs, night, media=()):
     """Unit metrics of one closed day, keyed metric|ident|band, with their exposure."""
     out = {}
     chat_min = sum(v for (d, area, _), v in credit.items() if d == day and area == "chat") / 60.0
@@ -749,9 +748,6 @@ def day_values(day, credit, prompts, machine_day, statusline_day, kicks_day, run
         out["background.statusline_cpu_ms_per_sh|all|-"] = [round(cpu / len(line["session_hours"]), 1), line["renders"]]
     if kicks_day:
         out["background.merge_kick_cpu_ms|all|-"] = [round(sum(kicks_day), 1), len(kicks_day)]
-    for band, hist in ((machine_day or {}).get("probe_ms") or {}).items():
-        if band != "?" and hist_mean(hist) is not None:
-            out["machine.probe_ms|probe|%s" % band] = [round(hist_mean(hist), 1), hist[0]]
     if night and night.get("jobs_done") and H.local_day(night["started"]) == day:
         out["night.wall_h_per_job|all|-"] = [round(night["wall_h"] / night["jobs_done"], 3), night["jobs_done"]]
     for command, unit, scale, metric in MEDIA_POST:
@@ -791,7 +787,9 @@ def judge_regressions(days, today, component_om):
     keys = {k for d in closed for k in (days[d].get("values") or {})}
     for key in sorted(keys):
         metric = key.split("|")[0]
-        component, exposure_min = METRICS.get(metric, (None, 0))
+        if metric not in METRICS:
+            continue
+        component, exposure_min = METRICS[metric]
         past = [days[d]["values"][key][0] for d in history if key in (days[d].get("values") or {})]
         if not past:
             continue
@@ -1353,7 +1351,6 @@ def collect(write, now):
             last = night["by_day"].get(day)
             computed.add(day)
             stored[day] = {"day": day, "values": day_values(day, old_credit if day in old_days else credit, prompts,
-                                                            (days.get(day) or {}).get("machine"),
                                                             (days.get(day) or {}).get("statusline"), kicks.get(day),
                                                             runs, last, media_runs)}
     regressions, baselines = judge_regressions(stored, today, component_om)

@@ -1383,7 +1383,54 @@ def volume_proof(item, started, ended, now, memo=None):
             "text": "%s · %s" % (span, "proven · %.1f %s" % (gain, daily) if proven else "not proven")}
 
 
-def unit_proof(item, started, ended, now, memo=None):
+def night_suites(row):
+    """The suites a night's fixes name or change, so none of them is another fix's load control."""
+    out = set()
+    for item in row.get("improvements") or ():
+        out |= unit_names(item) if item["class"] == "suite_run" else set()
+        for repo, path in item.get("files") or ():
+            stem, ext = os.path.splitext(os.path.basename(path))
+            if os.path.dirname(path) == "tests" and stem.startswith("test_") and ext in (".sh", ".py"):
+                out.add("%s/%s" % (repo, stem))
+    return out
+
+
+def suite_cpu(key, lo, hi, first=None):
+    found = [r for r in suite_audit.runs(suites_path(), lo) if r["end"] < hi and r["ok"]
+             and "%s/%s" % (r["repo"], os.path.splitext(r["name"])[0]) == key]
+    found = [r for r in found if r["sharded"]] or found
+    return suite_audit.cpu_run(found[:first] if first else found)
+
+
+def suite_rises(keys, before, after, when, skip, started, ended, scale):
+    """{suite: (loss, span)} of the named suites whose fastest of the first PROOF_RUNS runs after the night is
+    >= WALL_RISE x the median of the RECENT_RUNS before it, the after side divided by suite_audit.slowdown: the load on
+    the suites the night never names (suite_audit.load, never under 1), else the wall's rise beyond CPU a run's. On
+    unchanged code that ratio stays under 2 in 95 % of windows (runs.jsonl 2026-10-02..09); a median of 5 rises 3.2x."""
+    out, controls = {}, None
+    for k in keys:
+        was, now_ = statistics.median(before[k][-suite_audit.RECENT_RUNS:]), min(after[k][:suite_audit.PROOF_RUNS])
+        if now_ < suite_audit.WALL_RISE * was:
+            continue
+        if controls is None:
+            controls = {}
+            for other in (set(when[0]) | set(when[1])) - skip:
+                found = sorted((when[0].get(other) or []) + (when[1].get(other) or []))
+                controls[other] = ([t for t, _ in found], [w for _, w in found], ())
+        sides = [[{"end": t} for t, _ in when[0][k][-suite_audit.RECENT_RUNS:]],
+                 [{"end": t} for t, _ in when[1][k][:suite_audit.PROOF_RUNS]]]
+        factor = suite_audit.load(controls, k, *sides)
+        factor = suite_audit.slowdown(factor, (was, now_), (suite_cpu(k, started - UNIT_BEFORE_DAYS * 86400, started),
+                                                            suite_cpu(k, ended, sides[1][-1]["end"] + 1,
+                                                                      suite_audit.PROOF_RUNS))) \
+            if factor is None else factor
+        if factor and now_ / factor >= suite_audit.WALL_RISE * was:
+            out[k] = ((now_ / factor - was) * len(before[k]) / UNIT_BEFORE_DAYS / scale, "%s → %s wall-s/run%s" % (
+                suite_audit.fmt(was), suite_audit.fmt(now_), " · slowdown ×%.2f" % factor if factor != 1.0 else ""))
+    return out
+
+
+def unit_proof(item, started, ended, now, memo=None, night=()):
     """A landed improvement whose class has a natural unit, proven from the journals once N samples follow the night:
     per key (the keys its ids name, else the suites it alone changed (`own_suites`), else every suite or hook script)
     the median of the first M samples after the night against the newest M before it, M the
@@ -1394,7 +1441,8 @@ def unit_proof(item, started, ended, now, memo=None):
     zero median before the night keeps the day totals; a named unit that no longer exists is `gone`. A load-matched class with no named unit has no control, a gain over
     the measure's whole day before the night is no gain, and so is a verdict without a load factor from LOAD_CONTROLS
     controls inside LOAD_BAND (the suite proof ratio either way), which machine load alone could give: all read
-    `unmeasured`, save a key measured slower, so a regression never hides."""
+    `unmeasured`, save a key measured slower, so a regression never hides; a suite reads slower only past the noise
+    band (`suite_rises`), a hook over SLOWER_RATIO of its median."""
     if counted(item) or item["class"] in VOLUME:
         return volume_proof(item, started, ended, now, memo)
     unit = UNITS.get(item["class"])
@@ -1433,8 +1481,13 @@ def unit_proof(item, started, ended, now, memo=None):
     gains ={k: (pair[k][0] - pair[k][1] / load) * len(before[k]) / UNIT_BEFORE_DAYS / scale for k in keys
              if pair[k][1] <= ratio * pair[k][0] * load} if proven else {}
     gain = round(sum(gains.values()), 1)
-    slower = {k: (pair[k][1] / load - pair[k][0]) * len(before[k]) / UNIT_BEFORE_DAYS / scale for k in keys
-              if pair[k][1] > SLOWER_RATIO * pair[k][0] * load}
+    rises = {}
+    if when:
+        rises = suite_rises(keys, before, after, when, set(night) | named, started, ended, scale)
+        slower = {k: loss for k, (loss, _) in rises.items()}
+    else:
+        slower = {k: (pair[k][1] / load - pair[k][0]) * len(before[k]) / UNIT_BEFORE_DAYS / scale for k in keys
+                  if pair[k][1] > SLOWER_RATIO * pair[k][0] * load}
     span = "%s → %s %s%s" % (suite_audit.fmt(was), suite_audit.fmt(now_), label,
                              " · load ×%.2f" % load if load != 1.0 else "")
     if gain > whole:
@@ -1447,6 +1500,7 @@ def unit_proof(item, started, ended, now, memo=None):
         proven, gains, gain = False, {}, 0.0
     return {"proven": proven, "before": round(was, 2), "after": round(now_, 2), "samples": int(total), "span": span,
             "gain": gain, "daily": daily, "gains": gains, "load": round(load, 2), "slower": slower,
+            **({"rises": {k: text for k, (_, text) in rises.items()}} if rises else {}),
             "text": "%s · %s" % (span, "proven · %.1f %s" % (gain, daily) if proven else "not proven")}
 
 
@@ -1494,6 +1548,7 @@ def roi_lines(rows, now, gains=None, verdicts=None):
         pending = unmeasured = proven = fixes = 0
         other = collections.Counter()
         seen = {} if verdicts is None else verdicts.setdefault(row.get("id") or row["started"], {})
+        suites = night_suites(row)
         for index, item in enumerate(row.get("improvements") or ()):
             if (item["class"] or "").startswith("spend:"):
                 if row is rows[-1]:
@@ -1514,7 +1569,7 @@ def roi_lines(rows, now, gains=None, verdicts=None):
             ended = row.get("ended") or row["started"] + row["hours"] * 3600
             what = ", ".join(sorted(unit_names(item))) or LABEL.get(item["class"], "harness total")
             change = runtime_change(item) if item["merged"] else None
-            shown = unit_proof(item, row["started"], ended, now, memo) if item["merged"] else None
+            shown = unit_proof(item, row["started"], ended, now, memo, suites) if item["merged"] else None
             if change is False or shown and shown.get("gone") and not change:
                 spend, fixes = spend + item["spend_m"], fixes + 1
                 if row is rows[-1]:
@@ -1634,18 +1689,19 @@ def speed_row(worker_run, path):
 
 
 def slower_fixes(nights, now):
-    """Each landed fix of the (path, cached row) nights whose own unit, load-matched, ran over SLOWER_RATIO of its
-    before after it: its job, the commits, files and ids, the span and the loss in the unit's daily measure."""
+    """Each landed fix of the (path, cached row) nights whose own unit measured slower after it (`unit_proof`): its
+    job, the commits, files and ids, the span and the loss in the unit's daily measure."""
     out, memo = {}, {}
     for path, row in nights:
         if not row:
             continue
         jobs = {j.get("ref"): j for j in read_json(path, {}).get("jobs") or () if isinstance(j, dict)}
         ended = row.get("ended") or row["started"] + row["hours"] * 3600
+        suites = night_suites(row)
         for item in row.get("improvements") or ():
             if not item["merged"] or runtime_change(item) is not True:
                 continue
-            shown = unit_proof(item, row["started"], ended, now, memo)
+            shown = unit_proof(item, row["started"], ended, now, memo, suites)
             if not shown or shown.get("proven") is not False or not shown.get("slower"):
                 continue
             found = out.setdefault(item["ref"], {
@@ -1653,7 +1709,8 @@ def slower_fixes(nights, now):
                 "files": item.get("files") or [], "commits": ["%s@%s" % (c.get("repo"), str(c.get("hash"))[:12])
                                                           for c in (jobs.get(item["ref"]) or {}).get("commits") or ()]})
             found["ids"] += item["ids"]
-            found["spans"].append("%s %s" % (", ".join(sorted(shown["slower"])), shown["span"]))
+            found["spans"] += ["%s %s" % (k, shown["rises"][k]) for k in sorted(shown["rises"])] if shown.get("rises") \
+                else ["%s %s" % (", ".join(sorted(shown["slower"])), shown["span"])]
             found["loss"] = round(found["loss"] + sum(shown["slower"].values()), 1)
     return list(out.values())
 

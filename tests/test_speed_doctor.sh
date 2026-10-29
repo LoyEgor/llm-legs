@@ -824,7 +824,7 @@ line_view = module.background_view({"2026-10-01": {"statusline": {"renders": 150
 check(line_view["statusline"]["renders_day"] == 100.0 and line_view["statusline"]["cpu_min_day"] == 0.1,
       "a window starting mid-day reads that whole day file, so its statusline rates divide by the files' span: %s"
       % line_view["statusline"])
-pre = module.day_values("2026-10-01", {}, {}, None, None, None, [
+pre = module.day_values("2026-10-01", {}, {}, None, None, [
     {"ended_at": mid, "vendor": "codex", "pid_started_at": mid - 100, "cli_starts": [mid - 95]},
     {"ended_at": mid, "vendor": "codex", "pid_started_at": mid - 100, "cli_starts": [mid - 130]}], None)
 check(pre == {"delegation.pre_cli_s|codex|-": [5.0, 1]},
@@ -833,7 +833,7 @@ media_rows = [{"ts": mid, "command": "fix", "secs": 96.0, "load": 0.5, "frames":
               {"ts": mid, "command": "fix", "secs": 300.0, "load": 2.5, "frames": 240},
               {"ts": mid, "command": "door", "secs": 6.0, "load": 0.5, "images": 2},
               {"ts": mid - 40 * 86400, "command": "fix", "secs": 50.0, "load": 0.5, "frames": 100}]
-media_values = module.day_values("2026-10-01", {}, {}, None, None, None, [], None, media_rows)
+media_values = module.day_values("2026-10-01", {}, {}, None, None, [], None, media_rows)
 check(media_values == {"media.fix_ms_per_frame|fix|<1": [500.0, 1], "media.fix_ms_per_frame|fix|2-4": [1250.0, 1],
                        "media.door_s_per_image|door|<1": [3.0, 1]},
       "a Flow 1080p fix is judged per frame and a door per image, each in its load band: %s" % media_values)

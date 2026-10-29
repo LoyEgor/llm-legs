@@ -317,8 +317,8 @@ check(time_budget.roi_lines([night], NOW + 600)
       "with 5 runs after it the night's roi line reads its per-unit before → after, and its gain in the unit's own "
       "daily measure: 12 wall-s a run × its 10 runs in the 7 days before: %s" % time_budget.roi_lines([night], NOW + 600))
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(w)}, split) for i, w in enumerate((8, 30, 30, 30, 30))])
-check(time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)["text"] == "20 → 30 wall-s/run · not proven",
-      "one lucky fast run after the night proves nothing: a suite compares medians, never the fastest run")
+check(time_budget.unit_proof(item, NOW - 30, NOW, NOW + 600)["text"] == "20 → 30 wall-s/run · no load control: unmeasured",
+      "one lucky fast run after the night proves nothing: a suite's gain compares medians, never the fastest run")
 controls = ("test_a", "test_b", "test_c")
 busy = [row(NOW + 60 + i, {n: cpu(4) for n in controls}, cheap) for i in range(5)]
 busy += [row(NOW - 5 * 86400 + 150000 + i * 30000, {n: cpu(2) for n in controls}, cheap) for i in range(5)]
@@ -342,6 +342,8 @@ with open(night_file, "w") as handle:
 code = dict(item, files=[["alpha", "tests/test_mid.sh"]])
 slow_night = [(night_file, dict(night, id="n-slow", improvements=[code, dict(code, ref="night-m", files=[["alpha", "a.md"]])]))]
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)])
+noise = time_budget.slower_fixes(slow_night, NOW + 600)
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(45)}, split) for i in range(5)])
 slow = time_budget.slower_fixes(slow_night, NOW + 600)
 slow_wins, won = {}, {}
 time_budget.roi_lines([slow_night[0][1]], NOW + 600, verdicts=slow_wins)
@@ -354,20 +356,20 @@ check(slow_wins == {"n-slow": {0: {"pending": False, "gain": 0.0, "proven": Fals
       "by side, no wait) neither adds minutes nor a ✓ beside them; a fix measured slower as such, a measurement fix "
       "never: %s %s"
       % (slow_wins, won))
-save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)])
-save(journal + [row(NOW + 60 + i, {"test_mid": cpu(30)}, split) for i in range(5)] + busy)
-check(slow == [{"ref": "night-x", "night": "n-slow", "ids": ["test_slow:alpha:test_mid"], "loss": 0.2,
-                "spans": ["alpha/test_mid 20 → 30 wall-s/run"], "daily": "suite-min/day",
+save(journal + [row(NOW + 60 + i, {"test_mid": cpu(45)}, split) for i in range(5)] + busy)
+check(slow == [{"ref": "night-x", "night": "n-slow", "ids": ["test_slow:alpha:test_mid"], "loss": 0.6,
+                "spans": ["alpha/test_mid 20 → 45 wall-s/run"], "daily": "suite-min/day",
                 "files": [["alpha", "tests/test_mid.sh"]], "commits": ["alpha@0123456789ab"]}]
-      and time_budget.slower_fixes(slow_night, NOW + 600) == [],
-      "a landed fix whose own suite ran over 1.3x its wall after it is measured slower, naming its job's commits; a "
-      "measurement fix never is, nor a suite as slow as the untouched ones beside it: %s" % slow)
-save(journal + [row(NOW + 3600 + i, {"test_mid": cpu(30)}, split) for i in range(5)] + busy[5:]
+      and noise == [] and time_budget.slower_fixes(slow_night, NOW + 600) == [],
+      "a landed fix is measured slower once the fastest of its suite's 5 runs after it doubles the median before, "
+      "naming its job's commits; 20 → 30 s is inside a median's noise, a measurement fix never is slower, nor a suite "
+      "as slow as the untouched ones beside it: %s %s" % (slow, noise))
+save(journal + [row(NOW + 3600 + i, {"test_mid": cpu(45)}, split) for i in range(5)] + busy[5:]
      + [row(NOW + 60 + i, {n: cpu(2) for n in controls}, cheap) for i in range(10)]
      + [row(NOW + 3600 + i, {n: cpu(4) for n in controls}, cheap) for i in range(5)])
 check(time_budget.slower_fixes(slow_night, NOW + 4000) == [],
       "a suite is load-matched against the untouched suites' runs between its own compared runs, not their first runs "
-      "after the night: 20 → 30 s an hour later, while they ran 2 → 4 s, is no slowdown")
+      "after the night: 20 → 45 s an hour later, while they ran 2 → 4 s, is no slowdown")
 whole = dict(code, ids=["time_floor:suite_run"])
 save(journal + [row(NOW + 60 + i, {"test_mid": cpu(20), "test_a": cpu(10)}, split) for i in range(5)])
 check(not time_budget.unit_proof(whole, NOW - 30, NOW, NOW + 600).get("slower")
