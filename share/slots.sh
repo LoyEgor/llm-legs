@@ -25,13 +25,17 @@ worker_slots() {
 # holds that base at 130-340 on 10 cores, and only a burst above it is ours.
 # A pool whose holder is big and measured (blender-render) defines slot_room_mb, printing the MB one more
 # holder needs, in place of SLOTS_ROOM_MB.
+# Run as $(slot_room), a definition made there dies with the subshell: a waiter defines it once in its own shell.
+slot_room_define() {
+  declare -F available_mb >/dev/null ||
+    eval "$(sed -n '/^available_mb() {/,/^}/p' "${BASH_SOURCE[0]%/*}/../bin/memlogd" 2>/dev/null)" || :
+}
 slot_room() { # -> fails, printing why, while one more holder would crowd the machine
   local level cores load1 load15 avail guard need=${SLOTS_ROOM_MB:-1500}
   { read -r level; read -r cores; read -r _ load1 _ load15 _; } < <(sysctl -n kern.memorystatus_vm_pressure_level hw.ncpu vm.loadavg 2>/dev/null)
   # Warn (2) is this machine's resting state: on 2026-10-26 it held a worker 23 min at 4.8-7.3 GB available.
   if [[ "${level:-}" =~ ^[0-9]+$ ]] && [ "$level" -ge 4 ]; then printf 'memory pressure level %s\n' "$level"; return 1; fi
-  declare -F available_mb >/dev/null ||
-    eval "$(sed -n '/^available_mb() {/,/^}/p' "${BASH_SOURCE[0]%/*}/../bin/memlogd" 2>/dev/null)"
+  slot_room_define
   # chat-load's constant sits near its top: a read loop finds it with no fork.
   while IFS= read -r guard; do
     [[ "$guard" =~ ^GUARD_AVAIL_MB\ =\ ([0-9]+) ]] && { guard=${BASH_REMATCH[1]}; break; }
@@ -72,7 +76,7 @@ slot_take() { # dir count ceiling-seconds -> the slot taken; fails while all are
       continue
     fi
     LLM_STORE_LOCK_RETRIES=1 LLM_STORE_LOCK_CEILING_SECONDS=$ceiling store_lock_acquire "$1/$i" || continue
-    if { [ "$i" -gt "$floor" ] || [ "${SLOTS_CHECK_FLOOR:-0}" = 1 ]; } && ! SLOT_WHY=$(slot_room); then
+    if { [ "$i" -gt "$floor" ] || [ "${SLOTS_CHECK_FLOOR:-0}" = 1 ]; } && slot_room_define && ! SLOT_WHY=$(slot_room); then
       store_lock_release "$1/$i"
       return 1
     fi

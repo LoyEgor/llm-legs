@@ -77,6 +77,10 @@ assert [ "$(slot_room)" = 'memory pressure level 4' ]
 room 1 150 140 $((guard - 1)); assert [ "$(slot_room)" = "available $((guard - 1)) MB < $guard MB" ]
 room 1 160.5 150 $((guard + 1)); assert [ "$(slot_room)" = 'load 160.5 over its 15-minute base 150 + 10 cores' ]
 room 1 160 150 $((guard + 1)); assert slot_room
+# A waiter reads memlogd's available_mb once in its own shell, never again in each $(slot_room).
+unset -f available_mb; mkdir -p "$WORK/m"
+SLOTS_CHECK_FLOOR=1 slot_take "$WORK/m" 1 3600 >/dev/null && slot_release "$WORK/m/1"
+assert declare -F available_mb
 # A range takes its floor whatever the room, the rest only with room.
 mkdir -p "$WORK/r"
 room 4 150 140 $((guard + 1))
