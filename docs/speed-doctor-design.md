@@ -82,7 +82,7 @@ background journals, C11 chat start. Media "interactive" is derived at read time
 
 ## 3. Judging, proof, selection
 
-**Regression** (red, counted): a unit metric over 1.3 × baseline on two consecutive band-matched days with its class's exposure minimum (hooks 200 calls per band-day, tests 3 complete runs, delegation and media as above, nights ≥ 5), **and** the component is worth ≥ 0.5 OM/d; one no `LEVERS` row names gets `levers: []` and a find-the-cause brief. Moved Harness absolute limits are pinned ceilings shown as `watch`, red only at ≥ 0.5 OM/d; collector ceilings are per doctor; the statusline contract's warm p95 ≤ 150 ms (lowest band) joins as a ceiling.
+**Regression** (red, counted): a unit metric over 1.3 × baseline (machine probe ms is load itself, never one) on two consecutive band-matched days with its class's exposure minimum (hooks 200 calls per band-day, tests 3 complete runs, delegation and media as above, nights ≥ 5), **and** the component is worth ≥ 0.5 OM/d; one no `LEVERS` row names gets `levers: []` and a find-the-cause brief. Moved Harness absolute limits are pinned ceilings shown as `watch`, red only at ≥ 0.5 OM/d; collector ceilings are per doctor; the statusline contract's warm p95 ≤ 150 ms (lowest band) joins as a ceiling.
 
 **Opportunity** (`watch`, never counted): a component ≥ 0.5 OM/d, seen on ≥ 3 days or ≥ 3 sessions (both scaled to the covered share of the 7 days, at least 1), with a `LEVERS` row. Id `opportunity:<area>/<component>`; field `opportunity {om_day, saving, confidence, effort_h, night_cost_h, score, levers[], seen_days, data_confidence}`, every field stored and the score recomputed from them; the backlog ranks by `recoverable_min_day`, then score × `data_confidence` (seen days of 7).
 
@@ -184,10 +184,12 @@ even share of the job's spend, proven per unit against the 7 days before, never 
 untouched units at load 0.65-1.54×; waits, refusals, run cuts per unit of work (`VOLUME`); else (no named unit, day
 totals, gain over the whole day) `unmeasured`. A key is claimed once, by the earliest proof; later ones read `shared with <ref>`. Commits
 touching only measurers and their suites, ledgers, docs or other suites: `measurement fix`. No gain: `spend without
-result`, never a revert or a gate; a fix > 1.3× slower, load-matched or not: `regression:fix/<job>`.
+result`, never a revert or a gate; a fix slower past the noise band (a suite's fastest of its first 5 runs after
+≥ 2 × the median of the 20 before, beyond the load on suites the night never names, else beyond CPU; a hook > 1.3 ×
+load-matched): `regression:fix/<job>`.
 
 **Selection.**
-- One rank over every admitted row (`time_budget.speed_rank`): priced by expected gain, unpriced by measured loss in min/day, spend audits by share of spend. A landed fix measured slower (`fix_commits`) ranks first. Parallelism: `share/slots.sh` `slot_room`; cut-off: a 6 h window from the night's `started_at` (`bin/night-run` `SPEED_WINDOW_H`). Nothing carries over: each night recomputes the pick. A partition slice no `LEVERS` row names ranks on the generic slice lever (`slice_levers`).
+- One rank over every admitted row (`time_budget.speed_rank`): priced by expected gain, unpriced by measured loss in min/day, spend audits by share of spend. A landed fix measured slower (`fix_commits`) ranks first. Parallelism: `share/slots.sh` `slot_room`; cut-off: a 6 h window from the night's `started_at` (`bin/night-run` `SPEED_WINDOW_H`). A partition slice no `LEVERS` row names ranks on the generic slice lever (`slice_levers`).
 - Ranked rows of a context fill fixers of `batch_sizes`: least cost per closed row, own curve at 2+ sizes else pooled, no 1-run minimum, ×2 at the largest.
 - One owner per cause file per night across doctors; the other doctor's row links as `same_cause`.
 - Skipped: active work (the Code doctor's rule), levers not output-equivalent, measurement fixes without an admitted blind row.
