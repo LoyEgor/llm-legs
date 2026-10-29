@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gemini_web as gw  # noqa: E402
 
-gw.ROOT = Path(os.environ.get("CHATGPT_WEB_DIR", "~/.chatgpt-web")).expanduser()
+gw.ROOT = ROOT = Path(os.environ.get("CHATGPT_WEB_DIR", "~/.chatgpt-web")).expanduser()
 gw.ROUTE = gw.TOOL = "chatgpt-web"
 gw.POOL_VENDOR = "codex"
 

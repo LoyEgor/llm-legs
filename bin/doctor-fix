@@ -514,6 +514,7 @@ def snapshot(doctor, doc_file, night=None):
                                           "confirm the cause before any fix; a reading that does not hold is ruled-out; a confirmed class gets "
                                           "a doctor meter (a Harness rule) in the same fix")
             entry["quotes"] = ["%s: %s" % (e.get("ref"), e.get("excerpt")) for e in dicts(problem.get("evidence"))]
+            entry["kind"] = problem.get("kind")
         if strings((problem.get("opportunity") or {}).get("examples")):
             entry["quotes"] = strings(problem["opportunity"]["examples"])
         if doctor == "code":
@@ -689,8 +690,11 @@ def named(terms, text):
 
 
 def blind_queue():
-    """The Deep search queue: each open blind spot of the ledgers, costliest first by the minutes of the outside finds
-    naming it (the log-audit ~N min and the fixer wall-min of each decision whose evidence names its id)."""
+    """The Deep search queue: each open blind spot of the ledgers and the meter of each unmeasured Speed opportunity
+    (`speed.meters` in the Harness latest.json), costliest first by the minutes of the outside finds naming it (the
+    log-audit ~N min and the fixer wall-min of each decision whose evidence names its id)."""
+    import night_priority
+
     spots, marked = [], 0
     for doctor in DOCTORS:
         for spot in dicts(read_json(ledger_path(doctor), {}).get("blind_spots")):
@@ -698,6 +702,8 @@ def blind_queue():
                 marked += 1
             elif spot.get("id"):
                 spots.append(dict(spot, doctor=doctor, found={}))
+    spots += [dict(spot, doctor="harness", found={})
+              for spot in dicts((night_priority.doctor_doc("harness").get("speed") or {}).get("meters"))]
     for run in (read_json(p, {}) for p in glob.glob(os.path.join(RUNS, "*.json"))):
         problems = dicts(run.get("problems")) + dicts(run.get("quiet"))
         start, end = epoch(run.get("launched_at")), epoch(run.get("closed_at"))

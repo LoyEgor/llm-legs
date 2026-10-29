@@ -1043,8 +1043,9 @@ env "${speed_env[@]}" CODE_LEDGER="$S/none.json" STATUSLINE_CACHE_DIR="$S/sl" SP
   fail "speed-doctor did not merge its section"
 night1='["opportunity:chat/tools", "opportunity:delegation/background Bash", "opportunity:chat/hooks", "opportunity:machine/contention",
   "opportunity:tests/llm-legs/test_llm_limits", "opportunity:chat/tests", "opportunity:delegation/reviews"]'
-assert jqe --argjson n "$night1" '.speed.selection == $n' "$S/harness/latest.json"
-jq --argjson n "$night1" '.speed.selection = $n | (.problems[] | select(.rule == "opportunity") | .opportunity.recoverable_min_day) = 5' \
+assert jqe '.speed.selection == []' "$S/harness/latest.json"
+jq --argjson n "$night1" '.speed.selection = $n | (.problems[] | select(.rule == "opportunity") | .opportunity.recoverable_min_day) = 5
+  | (.problems[] | select(.rule == "opportunity") | .opportunity) += {measure: "measured", gate: {threshold_min_day: 0}}' \
   "$S/harness/latest.json" >"$S/priced.json" && mv "$S/priced.json" "$S/harness/latest.json"
 mkdir -p "$L/share/rbench" "$L/share/briefs" "$L/agents"
 printf '# the per-model call\nclaudeb opus high high,xhigh low,medium,max no\n' >"$L/share/worker-model.sh"
@@ -1428,7 +1429,8 @@ mv "$S/admission-before.json" "$S/harness/latest.json"
 # distinct files of one repository ride in two runs (5 + 2), another repository's lever in a third; seven levers
 # sharing one file stay one run.
 jq --argjson s "$(now)" '.as_of_s = $s | .speed.spend.selection = [] | .speed.suites.selection = []
-  | ({rule: "opportunity", state: "watch", speed: true, group: "Speed", opportunity: {quality: "equivalent", recoverable_min_day: 5}}
+  | ({rule: "opportunity", state: "watch", speed: true, group: "Speed", opportunity: {quality: "equivalent", recoverable_min_day: 5,
+      measure: "measured", gate: {threshold_min_day: 0}}}
      as $p | .problems += ([range(1; 8) as $n | $p + {id: "opportunity:batch/\($n)", fact: "lever \($n)"}
        | .opportunity.files = ["llm-legs/share/batch-\($n).sh"]]
        + [$p + {id: "opportunity:batch/other", fact: "lever other"} | .opportunity.files = ["claude-setup/hooks/other.sh"]]))
@@ -1495,6 +1497,12 @@ DOCTORS_DIR="$B" HARNESS_LEDGER="$B/harness.json" SYSTEM_DOCTOR_LEDGER="$B/syste
   fail "blind-spots: $(cat "$WORK/err")"
 assert diff "$WORK/out" <(printf 'harness\tspot-b\t130\t1\tc-spot-b\nsystem\tspot-s\t0\t0\tc-spot-s\nharness\tspot-a\t0\t0\tc-spot-a\n')
 assert grep -qxF 'open 3 · unmeasurable 1' "$WORK/err"
+mkdir -p "$B/hd" && jq -n --argjson m "$(spot meter:chat/tools 2026-10-29)" '{speed: {meters: [$m]}}' >"$B/hd/latest.json"
+DOCTORS_DIR="$B" HARNESS_DOCTOR_DIR="$B/hd" HARNESS_LEDGER="$B/none.json" SYSTEM_DOCTOR_LEDGER="$B/none.json" \
+  LLM_DOCTOR_LEDGER="$B/none.json" CODE_DOCTOR_LEDGER="$B/none.json" UPDATER_DOCTOR_LEDGER="$B/none.json" \
+  bash "$FIX" blind-spots >"$WORK/out" 2>"$WORK/err" || fail "blind-spots with a meter: $(cat "$WORK/err")"
+# An unmeasured Speed opportunity is a Deep search row for its meter, never a fix.
+assert diff "$WORK/out" <(printf 'harness\tmeter:chat/tools\t0\t0\tc-meter:chat/tools\n')
 fi
 
 if suite_shard_owns 4 df-log-audit; then

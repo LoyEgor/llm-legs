@@ -117,14 +117,28 @@ PHASES: dict[str, float] = {}
 LOADS: dict[str, float] = {}
 TIMED = False
 LOCK_WAIT_S = 900.0
+phase_at = 0.0
 lock_waited = 0.0
 spaced = 0.0
 SETTLE_MS = 100
 
 
 def phase(name: str) -> None:
-    PHASES[name] = round(time.monotonic() - STARTED, 2)
+    """A phase reached: kept for the result's timing, and on a timed command one line of ROOT/phases.jsonl with the
+    seconds since the previous phase, so the Speed doctor sees a repeated phase (a browser reopened mid-job) and a
+    job's runs one after another."""
+    global phase_at
+    at = time.monotonic() - STARTED
+    PHASES[name] = round(at, 2)
     LOADS[name] = round(os.getloadavg()[0], 1)
+    if TIMED:
+        with contextlib.suppress(OSError):
+            ROOT.mkdir(parents=True, exist_ok=True)
+            with open(ROOT / "phases.jsonl", "a") as f:
+                f.write(json.dumps({"t": round(time.time(), 1), "job": os.environ.get("IMAGE_JOB_ID") or None,
+                                    "pid": os.getpid(), "route": ROUTE, "phase": name,
+                                    "s": round(at - phase_at, 2)}) + "\n")
+    phase_at = at
 
 
 def timing(failed: bool = False) -> dict:

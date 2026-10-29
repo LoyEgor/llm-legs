@@ -93,10 +93,11 @@ check(all(p["state"] == "watch" and set(p["opportunity"]) >= {"om_day", "saving"
           and p["opportunity"]["score"] == round(p["opportunity"]["recoverable_min_day"] * p["opportunity"]["confidence"]
                                                  / (p["opportunity"]["effort_h"] + p["opportunity"]["night_cost_h"]), 3)
           for p in backlog), "every opportunity stores its score fields and the score recomputes from them")
-check(doc["selection"][:2] == ["opportunity:chat/tools", "opportunity:delegation/background Bash"]
-      and doc["selection"] == [p["id"] for p in backlog if not p["opportunity"]["needs_egor"]
-                               and p["opportunity"]["quality"] == "equivalent" and p["opportunity"]["score"] > 0],
-      "the night takes the biggest recoverable gap first, and every other equivalent lever after it: %s" % doc["selection"])
+check(doc["selection"] == [] and {p["opportunity"]["gate"]["why"] for p in backlog} == {
+          "unmeasured: a blind spot for its meter, never a fix", "estimated, not measured: watch",
+          "under 7 settled day totals of its class: watch"},
+      "no fixer without measured waited minutes over its class's day-total noise: the fixture keeps no day totals: %s"
+      % sorted({p["opportunity"]["gate"]["why"] for p in backlog}))
 check({"cost", "yield"} <= set(doc) and set(doc["cost"]) == {"collector_cpu_min_day"}
       and set(doc["yield"]) == {"proven_om_day", "pending_om_day"}, "own keys cost and yield")
 check([b["id"] for b in doc["blind_spots"]] == ["presence", "speed-days"],
@@ -112,7 +113,7 @@ check([module.delegation_leaf(w) for w in ("Bash:worker", "Bash:review", "Agent:
       == ["workers", "reviews", "workers", "reviews", "background Bash"],
       "a chat's own background worker-run / review-bench wait is a worker / review delegation, as the relays were")
 check(doc["coverage"] == {"days": 3.91, "window_days": 7, "backfill_files_done": 0, "backfill_files": 0}
-      and doc["why_none"] is None and all(0 < p["opportunity"]["data_confidence"] <= round(4 / 7.0, 2) for p in backlog)
+      and all(0 < p["opportunity"]["data_confidence"] <= round(4 / 7.0, 2) for p in backlog)
       and [module.seen_need("seen_days", d) for d in (7, 3.91, 1)] == [3, 2, 1],
       "3.9 covered days still select, with a lower data confidence and the seen filters scaled to them: %s"
       % [p["opportunity"].get("data_confidence") for p in backlog])
@@ -207,8 +208,9 @@ spike, pattern = ({"id": i, "opportunity": {"needs_egor": False, "score": 0.5, "
                   for i, c in (("a-spike", round(1 / 7.0, 2)), ("b-pattern", round(4 / 7.0, 2))))
 check([o["id"] for o in sorted([spike, pattern], key=module.rank_key)] == ["b-pattern", "a-spike"],
       "a pattern seen on several days ranks above a one-day spike of the same score")
+module.time_budget.noise_floor = lambda cls, now: (0.0, 0.0, module.time_budget.NOISE_DAYS)
 low = {"id": "low", "rule": "opportunity", "opportunity": {"needs_egor": False, "quality": "equivalent", "score": 0.1, "effort_h": 1.0,
-                                    "night_cost_h": 0.0, "hooks": False, "recoverable_min_day": 5.0}}
+                                    "night_cost_h": 0.0, "hooks": False, "recoverable_min_day": 5.0, "measure": "measured"}}
 zero = {}
 check(module.select([low]) == ["low"] and module.select([dict(low, opportunity=dict(low["opportunity"], score=0.0))], zero) == []
       and module.why_skipped(zero) == "1 score 0", "the night pick has no score floor: any positive score enters it")
@@ -218,10 +220,11 @@ repair = dict(low, id="repair", **{"class": "measurement fix"})
 needed = dict(repair, id="needed", blind_for=["low"])
 small = dict(repair, id="small", blind_for=["below"])
 why = {}
-check(module.select([below, low, unpriced, repair, needed, small], why) == ["below", "low", "unpriced", "needed", "small"],
-      "no minimum gain: smaller and unpriced levers enter; a pure measurement fix enters only beside the opportunity it is blind for")
-check(module.why_skipped(why) == "1 measurement fixes without an admissible blind opportunity",
-      "all skipped opportunities have visible reasons even when another is selected")
+check(module.select([below, low, unpriced, repair, needed, small], why) == ["below", "low", "needed", "small"],
+      "no minimum gain past the noise: smaller levers enter, an unpriced one has no waited minutes to clear it; a pure "
+      "measurement fix enters only beside the opportunity it is blind for")
+check(module.why_skipped(why) == "1 measurement fixes without an admissible blind opportunity, 1 under its class's "
+      "day-total noise: watch", "all skipped opportunities have visible reasons even when another is selected")
 
 scored = [{"id": "opportunity:%s" % i, "opportunity": dict(low["opportunity"], score=s, effort_h=e, hooks=i.startswith("hook"))}
           for i, s, e in (("time/workers-active", 236.0, 3.0), ("chat/tests", 72.0, 1.0), ("hook", 36.0, 1.0),
@@ -229,6 +232,36 @@ scored = [{"id": "opportunity:%s" % i, "opportunity": dict(low["opportunity"], s
 check(module.select(scored) == [o["id"] for o in scored],
       "every hook lever enters the pick, in rank order: bin/doctor-fix sizes the night's hook share from free worker "
       "slots, never a fixed one a night")
+phase_dir, saved_env = os.path.join(work, "gemini-web"), dict(os.environ)
+os.environ.update(GEMINI_WEB_DIR=phase_dir, CHATGPT_WEB_DIR=os.path.join(work, "no-chatgpt-web"))
+sys.path.insert(0, os.path.join(root, "share"))
+import gemini_web
+saved_root = (gemini_web.ROOT, gemini_web.TIMED)
+gemini_web.ROOT, gemini_web.TIMED = gemini_web.Path(phase_dir), True
+for name in ("lock", "browser", "page", "browser", "saved"):
+    gemini_web.phase(name)
+with open(os.path.join(phase_dir, "phases.jsonl"), "a") as handle:
+    for pid, t, s in ((11, HI - 4000, 600.0), (12, HI - 3000, 600.0), (13, HI - 2950, 300.0)):
+        handle.write(json.dumps({"t": t, "job": "fanout-x-%d-1" % pid, "pid": pid, "route": "flow", "phase": "saved",
+                                 "s": s}) + "\n")
+import time
+phase_hi = time.time() + 60
+phases = module.media_phases(HI - 7 * 86400, phase_hi)
+gemini_web.ROOT, gemini_web.TIMED = saved_root
+os.environ.clear()
+os.environ.update(saved_env)
+check(phases["reopened_runs"] == 1 and phases["runs"] == 4 and phases["serial_jobs"] == 1
+      and phases["serial_min_day"] == round(650 / 60.0 / ((phase_hi - HI) / 86400.0 + 7), 2)
+      and phases["by_phase_min_day"]["flow/saved"] > 0
+      and [o["id"] for o in module.phase_opportunities(dict(phases, reopen_min_day=2.0, serial_min_day=2.0))]
+      == ["opportunity:media/reopen", "opportunity:media/serial"],
+      "each timed phase is journaled with its waited seconds: a run's second browser phase (a browser reopened "
+      "mid-run) and a job's runs one after another (union less the longest) are their own causes: %s" % phases)
+check([s["id"] for s in module.meter_spots([dict(low, id="opportunity:chat/tools", opportunity=dict(
+    low["opportunity"], om_day=8.1, measure="unmeasured")), dict(low, id="opportunity:chat/hooks", opportunity=dict(
+    low["opportunity"], om_day=3.0, measure="measured"))])] == ["meter:chat/tools"]
+      and module.opportunity_fields(1.0, module.LEVERS[0])["measure"] == "measured",
+      "an unmeasured opportunity becomes the Deep search blind spot for its meter, never a fix")
 six = [{"id": "opportunity:six%d" % i, "opportunity": dict(low["opportunity"], score=6.0 - i, effort_h=3.0)} for i in range(6)]
 check(module.select(six) == [o["id"] for o in six],
       "six qualifying 3-hour levers are all selected, in score order: the worker slots' admission decides how many run "
@@ -240,7 +273,7 @@ check([(o["id"], o["opportunity"]["recoverable_min_day"]) for o in timed]
       == [("opportunity:time/slot", 50.0), ("opportunity:time/suite_wait", 40.0), ("opportunity:chat/tools", 9.01),
           ("opportunity:chat/hooks", 8.4), ("opportunity:delegation/background Bash", 5.07),
           ("opportunity:chat/tests", 0.91), ("opportunity:delegation/reviews", 0.65)]
-      and module.select(timed) == [o["id"] for o in timed]
+      and module.select(timed) == [o["id"] for o in timed if o["opportunity"]["measure"] == "measured"]
       and all(o["opportunity"]["score"] == module.score_of(o["opportunity"]["recoverable_min_day"], o["opportunity"]["confidence"],
                                                            o["opportunity"]["effort_h"], 0.0) for o in timed),
       "a time class ranks by its union min/day: its own time opportunity, or added to the opportunity already pricing "
@@ -359,7 +392,7 @@ check(gated.get("status") != "error" and rows["opportunity:refusal/review-flow-g
       and rows["opportunity:stop/stop-dispatch.sh"]["opportunity"]["target"] == "stop/stop-dispatch.sh"
       and "opportunity:refusal/write" not in rows and "opportunity:hooks/quick.sh" not in rows
       and module.time_budget.improvement_class("opportunity", "opportunity:stop/stop-dispatch.sh") == "stop"
-      and "opportunity:refusal/review-flow-gate.sh" in gated["selection"],
+      and rows["opportunity:refusal/review-flow-gate.sh"]["opportunity"]["gate"]["why"] == "estimated, not measured: watch",
       "a refusal gap over the worth line ranks through the collector; each gate and hook over it is its own row at "
       "its own minutes, and only the rest of its class stays a time row: %s" % sorted(
           (k, v["opportunity"]["recoverable_min_day"]) for k, v in rows.items() if "time/" in k or "/" in k[12:]))
@@ -484,8 +517,8 @@ for back in (1, 2, 3):
     with open(os.path.join(work, "speed-hs", "hs", h.local_day(HI - back * 86400) + ".tsv"), "w") as handle:
         handle.write("%d\t%d\ths-lag\n" % ((HI - back * 86400) * 1e6, (HI - back * 86400 + 900) * 1e6))
 lagged, _ = speed("speed-hs")
-check("opportunity:background/hs lag" in lagged["selection"],
-      "Hammerspoon main-thread lag is a Speed slice the night can select: %s" % lagged["selection"])
+check([p["opportunity"]["measure"] for p in lagged["problems"] if p["id"] == "opportunity:background/hs lag"] == ["measured"],
+      "Hammerspoon main-thread lag is a measured Speed slice the night can select over its noise: %s" % lagged["selection"])
 
 presence = os.path.join(work, "speed-present", "presence")
 os.makedirs(presence)
@@ -524,7 +557,8 @@ os.makedirs(blank_dir)
 cold, _ = speed("speed-cold", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
 check(headline(cold) * cold["window"]["days"] >= headline(doc) * doc["window"]["days"] > 0
       and cold["selection"] == [p["id"] for p in cold["problems"] if p["rule"] == "opportunity" and not p["opportunity"]["needs_egor"]
-                                and p["opportunity"]["quality"] == "equivalent" and p["opportunity"]["score"] > 0]
+                                and p["opportunity"]["quality"] == "equivalent" and p["opportunity"]["score"] > 0
+                                and not p["opportunity"]["gate"]["why"]]
       and all(p["opportunity"]["score"] < 0.2 for p in cold["problems"] if p["id"] == "opportunity:chat/tests")
       and "backfill" not in [b["id"] for b in cold["blind_spots"]],
       "a fresh state with no Harness turn rows backfills every calibration minute from the transcripts: %s %s"
@@ -570,7 +604,7 @@ while len(job["todo"]) * 2 > job["files"]:
 half, _ = speed("speed-half", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_S="0", **transcripts)
 same_days = sum(cold["om_by_day"][d] for d in half["om_by_day"]) / max(half["window"]["days"], 0.01)
 check(half["coverage"] == {"days": 2.91, "window_days": 7, "backfill_files_done": 21, "backfill_files": 40}
-      and set(cold["selection"]) <= set(half["selection"]) and half["why_none"] is None
+      and set(cold["selection"]) <= set(half["selection"]) and "min/day recoverable, but" in half["why_none"]
       and abs(headline(half) - same_days) <= 0.1 * same_days and min(half["om_by_day"]) == "2026-09-30"
       and "backfill" in [b["id"] for b in half["blind_spots"]] and half["head"].endswith(" · 2.9 of 7 days covered"),
       "a half-done backfill counts only the days it read in full: %s OM/d vs %s over the same days, %s"

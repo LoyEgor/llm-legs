@@ -17,6 +17,7 @@ import collections
 import datetime
 import glob
 import json
+import math
 import os
 import re
 import statistics
@@ -100,6 +101,10 @@ SETTLE_S = 24 * 3600
 KEEP_DAYS = 35
 UNMEASURED = "unmeasured"
 MEASURED = "measured"
+AUDIT_WAITS = ("wait", "repeat", "rework")
+NOISE_DAYS = 14
+NOISE_MIN_DAYS = 7
+NOISE_Z = 2.0
 SPEED_ROW_S = 3600
 
 
@@ -1050,6 +1055,47 @@ def is_test(path):
     return "/tests/" in "/" + path or os.path.basename(path).startswith("test_")
 
 
+_NOISE = {}
+
+
+def noise_floor(cls, now):
+    """(threshold, sigma, days) of a class's day totals (None: the harness total), the measure a wait fix's roi line
+    reads: sigma the sample deviation of its settled, measured day totals in min/day over the NOISE_DAYS before today,
+    the threshold two standard errors of the difference of two ROI_DAYS means; threshold None under NOISE_MIN_DAYS such
+    days. Reads the cached day files only (`index_history` stores the 20 days before today), never recomputes one."""
+    today = day_bounds(local_day(now))[0]
+    key = (cls, today, harness_dir())
+    if key not in _NOISE:
+        found = [(b["seconds"].get(cls, 0) if cls else b["overhead_s"]) / 60.0
+                 for b in (cached_day(local_day(today - back * 86400 + 3600)) for back in range(1, NOISE_DAYS + 1))
+                 if b and measured(b)]
+        sigma = statistics.stdev(found) if len(found) >= 2 else None
+        _NOISE[key] = (round(NOISE_Z * sigma * math.sqrt(2.0 / ROI_DAYS), 1) if len(found) >= NOISE_MIN_DAYS else None,
+                       None if sigma is None else round(sigma, 1), len(found))
+    return _NOISE[key]
+
+
+def admission(problem, now=None):
+    """(reason, threshold) for a speed or time opportunity (Egor 2026-10-29: speed is waited minutes): it becomes a
+    fixer, reason None, only when its waited minutes are `measured` (never `estimated` or `unmeasured`) and its gain
+    is at or above its class's day-total noise (`noise_floor`); else it stays watch, an unmeasured one a blind spot
+    for its meter."""
+    fields = problem.get("opportunity") or {}
+    measure = fields.get("measure")
+    if measure == UNMEASURED:
+        return "unmeasured: a blind spot for its meter, never a fix", None
+    if measure != MEASURED:
+        return "estimated, not measured: watch", None
+    threshold = (fields.get("gate") or {}).get("threshold_min_day")
+    if threshold is None:
+        threshold = noise_floor(improvement_class("opportunity", str(problem.get("id") or "")),
+                                now_s() if now is None else now)[0]
+    if threshold is None:
+        return "under %d settled day totals of its class: watch" % NOISE_MIN_DAYS, None
+    gain = expected_gain(problem)
+    return (None if gain is not None and gain >= threshold else "under its class's day-total noise: watch"), threshold
+
+
 def speed_skip(problem, problems=()):
     fields = problem.get("opportunity") or {}
     if problem.get("class", fields.get("class")) == "measurement fix":
@@ -1058,6 +1104,8 @@ def speed_skip(problem, problems=()):
                and not speed_skip(p) for p in problems):
             return None
         return "measurement fix without an admissible blind opportunity"
+    if problem.get("rule") == "opportunity":
+        return admission(problem)[0]
     if problem.get("rule") in IMPROVEMENT_RULES:
         return None
     gain = expected_gain(problem)
@@ -1111,7 +1159,8 @@ def improvements(night, path, worker_run):
     out = []
     for job in jobs:
         rows = [p for p in (records.get(job["ref"]) or {}).get("problems") or () if isinstance(p, dict)
-                and (p.get("rule") in IMPROVEMENT_RULES or str(p.get("rule") or "").startswith("test_"))]
+                and (p.get("rule") in IMPROVEMENT_RULES or str(p.get("rule") or "").startswith("test_")
+                     or p.get("rule") == "log_audit" and p.get("kind") in AUDIT_WAITS)]
         if not rows:
             continue
         lines, files = job_changes(job)
@@ -1238,10 +1287,9 @@ def class_day(day, key, now):
     return (b["seconds"].get(key, 0) if key else b["overhead_s"]), b["active_s"]
 
 
-def day_totals_state(item, landed, now):
-    """Whether the class's day totals can judge a change: None while pending (no full settled day after it),
-    UNMEASURED once settled days exist but no measured one on a side, MEASURED otherwise. The totals carry no load
-    control, so the roi lines never print a gain from them."""
+def day_sides(item, landed, now):
+    """The class's measured (seconds, active seconds) day totals on the ROI_DAYS before the landing day and the
+    settled ones after it; None while no full settled day follows it."""
     day = local_day(landed)
     before = [class_day(local_day(day_bounds(day)[0] - back * 86400 + 3600), item["class"], now)
               for back in range(1, ROI_DAYS + 1)]
@@ -1251,10 +1299,34 @@ def day_totals_state(item, landed, now):
         start += 86400
     if not after:
         return None
-    before, after = [v for v in before if v is not None], [v for v in after if v is not None]
-    if not after or not before:
-        return UNMEASURED
-    return MEASURED
+    return [v for v in before if v is not None], [v for v in after if v is not None]
+
+
+def day_totals_state(item, landed, now):
+    """Whether the class's day totals can judge a change: None while pending (no full settled day after it),
+    UNMEASURED once settled days exist but no measured one on a side, MEASURED otherwise. The totals carry no load
+    control, so the roi lines never print a gain from them."""
+    sides = day_sides(item, landed, now)
+    if sides is None:
+        return None
+    return MEASURED if all(sides) else UNMEASURED
+
+
+def day_totals_text(item, landed, now):
+    """A wait fix's waited minutes before and after it by the day-total method: its class's mean min/day on the
+    measured days each side against the class's noise (`noise_floor` on the landing day), lower or higher only beyond
+    it, else `unverified` with the reason; None while pending. Never a gain in the roi totals: no load control."""
+    sides = day_sides(item, landed, now)
+    if sides is None:
+        return None
+    if not all(sides):
+        return "unverified: no day total %s" % ("before" if not sides[0] else "after")
+    was, now_ = (sum(v[0] for v in side) / 60.0 / len(side) for side in sides)
+    threshold = noise_floor(item["class"], landed)[0]
+    if threshold is None:
+        return "unverified: <%d days of its noise" % NOISE_MIN_DAYS
+    return "%s%.1f → %.1f min/day%s ±%.1f" % ("unverified " if abs(was - now_) < threshold else "", was, now_,
+                                              "" if abs(was - now_) < threshold else " past noise", threshold)
 
 
 def unit_samples(item, lo, hi, memo=None):
@@ -1642,7 +1714,7 @@ def roi_lines(rows, now, gains=None, verdicts=None):
                     out.append("roi · %s · %s · %.1fM · %+d/-%d · %s" % (
                         item["ref"][:40], what, item["spend_m"], item["lines"][0], item["lines"][1], shown["text"]))
                 continue
-            gain = day_totals_state(item, ended, now) if item["merged"] else None
+            gain = day_totals_text(item, ended, now) if item["merged"] else None
             if gain is None:
                 spend, pending = spend + item["spend_m"], pending + item["merged"]
             else:
@@ -1650,11 +1722,10 @@ def roi_lines(rows, now, gains=None, verdicts=None):
             if item["merged"]:
                 seen[index] = {"pending": gain is None, "gain": 0.0, "proven": False, "slower": False}
             if row is rows[-1]:
-                out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %s" % (
-                    item["ref"][:40], what, item["spend_m"], item["lines"][0],
-                    item["lines"][1], "not landed" if not item["merged"] else "pending a full day" if gain is None
-                    else "unmeasured before or after it" if gain == UNMEASURED
-                    else "day totals: unmeasured"))
+                out.append("roi · %s · %s · %.1fM · %+d/-%d%s · %s" % (
+                    item["ref"][:40], what, item["spend_m"], item["lines"][0], item["lines"][1],
+                    " lines" if gain is None else "", "not landed" if not item["merged"]
+                    else "pending a full day" if gain is None else gain))
         if row is rows[-1] and timed(row):
             out.append("roi · night: improvements %.1fM · %s%s%s%s%s" % (
                 spend, gained(saved, other), plural(proven, "proven per unit", "proven per unit"),

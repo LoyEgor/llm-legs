@@ -189,8 +189,13 @@ ADHOC_WHAT = {"tool": "model-written scripts · build one command for the job: %
 UNUSED_LEVER = {"component": "tool", "lever": "delete the tool and its hint; a tool other code or Egor runs keeps its "
                 "file, only the hint goes", "effort": "S", "confidence": "measured", "saving": 1.0, "night_cost_h": 0.0,
                 "proof": "elimination", "quality": "equivalent"}
+PHASE_JOB = re.compile(r"-\d+-\d+$")
+PHASE_LEVERS = {k: {"component": "media/" + k, "lever": v, "effort": "M", "confidence": "measured", "saving": 1.0,
+                    "night_cost_h": 0.0, "proof": "media", "quality": "equivalent"} for k, v in {
+    "reopen": "one browser for the whole run: the run's repeated browser phase is the relaunch it waits on",
+    "serial": "a job's runs at once within the memory room, never one after another"}.items()}
 validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER, UNUSED_LEVER] + list(TIME_LEVERS.values())
-                + list(TEST_HEALTH_LEVERS.values()) + list(ADHOC_LEVERS.values()))
+                + list(TEST_HEALTH_LEVERS.values()) + list(ADHOC_LEVERS.values()) + list(PHASE_LEVERS.values()))
 
 
 def state_dir():
@@ -923,7 +928,8 @@ def opportunity_fields(om_day, lever):
     saving = round(om_day * lever["saving"], 2)
     effort = EFFORT_H[lever["effort"]]
     confidence = CONFIDENCE[lever["confidence"]]
-    return {"om_day": round(om_day, 2), "saving": saving, "confidence": confidence, "effort_h": effort,
+    return {"om_day": round(om_day, 2), "saving": saving, "confidence": confidence, "measure": lever["confidence"],
+            "effort_h": effort,
             "night_cost_h": lever["night_cost_h"], "score": score_of(saving, confidence, effort, lever["night_cost_h"]),
             "levers": [lever["lever"]], "needs_egor": bool(lever.get("needs_egor")),
             "proof": [PROOF[lever["proof"]], OUTPUT_PROOF],
@@ -951,12 +957,16 @@ def rank_key(o):
 
 
 def select(opportunities, why=None):
-    """Equivalent positive-score opportunities, in rank order."""
+    """Equivalent positive-score opportunities its admission lets through (`time_budget.admission`: measured waited
+    minutes at or above their class's day-total noise), in rank order; each opportunity keeps its `gate`."""
     chosen, skipped = [], {}
     for o in opportunities:
         fields = o["opportunity"]
         reason = "egor" if fields["needs_egor"] else "risk" if fields["quality"] != "equivalent" \
             else "score" if fields["score"] <= 0 else time_budget.speed_skip(o, opportunities)
+        if o.get("rule") == "opportunity" and o.get("class", fields.get("class")) != "measurement fix":
+            gate, threshold = time_budget.admission(o)
+            fields["gate"] = {"state": "watch" if gate else "fix", "why": gate, "threshold_min_day": threshold}
         if reason:
             skipped[reason] = skipped.get(reason, 0) + 1
         else:
@@ -966,13 +976,94 @@ def select(opportunities, why=None):
     return chosen
 
 
+WHY_KNOWN = ("egor", "risk", "score", "measurement fix without an admissible blind opportunity")
+
+
 def why_skipped(why):
     skipped = why.get("skipped") or {}
-    return ", ".join(text for key, text in (
+    known = ", ".join(text for key, text in (
         ("egor", "%d need Egor" % skipped.get("egor", 0)),
         ("risk", "%d are not output-equivalent" % skipped.get("risk", 0)),
         ("score", "%d score 0" % skipped.get("score", 0)),
         ("measurement fix without an admissible blind opportunity", "%d measurement fixes without an admissible blind opportunity" % skipped.get("measurement fix without an admissible blind opportunity", 0))) if key in skipped)
+    return ", ".join(filter(None, [known] + ["%d %s" % (n, key) for key, n in sorted(skipped.items()) if key not in WHY_KNOWN]))
+
+
+def phase_roots():
+    """The web engines' stores as the engines spell them (each default once per language, docs/shared-invariants.md);
+    chatgpt_web's import lays its own store over gemini_web.ROOT, so gemini's is read first and put back."""
+    import gemini_web
+
+    gemini = gemini_web.ROOT
+    import chatgpt_web
+
+    gemini_web.ROOT = gemini
+    return gemini, chatgpt_web.ROOT
+
+
+def media_phases(lo, now):
+    """Waited minutes a day inside the web media engines, from the phases.jsonl each timed run writes
+    (share/gemini_web.py `phase`): per route and phase, and two causes of their own: `reopen`, the seconds of every
+    browser phase after a run's first (a browser closed and reopened mid-run), and `serial`, per job (a fan-out's
+    units share it without their -<request>-<tile> tail) the union of its runs' spans less the longest run, the wait
+    runs taken one after another add over running them at once."""
+    by, runs, days = collections.Counter(), {}, max((now - lo) / 86400.0, 1e-9)
+    for name in phase_roots():
+        try:
+            with open(os.path.join(name, "phases.jsonl"), errors="replace") as handle:
+                lines = handle.readlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                row = json.loads(line)
+                t, secs = float(row["t"]), float(row["s"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if not lo <= t < now:
+                continue
+            by["%s/%s" % (row.get("route"), row.get("phase"))] += secs
+            run = runs.setdefault((name, row.get("pid"), row.get("job")), {
+                "job": row.get("job"), "start": t - secs, "end": t, "browsers": 0, "reopen_s": 0.0})
+            run["start"], run["end"] = min(run["start"], t - secs), max(run["end"], t)
+            if row.get("phase") == "browser":
+                run["browsers"] += 1
+                run["reopen_s"] += secs if run["browsers"] > 1 else 0.0
+    jobs = collections.defaultdict(list)
+    for run in runs.values():
+        if run["job"]:
+            jobs[PHASE_JOB.sub("", str(run["job"]))].append((run["start"], run["end"]))
+    serial = sum(time_budget.length(time_budget.union(spans)) - max(b - a for a, b in spans)
+                 for spans in jobs.values() if len(spans) > 1)
+    return {"by_phase_min_day": {k: round(v / 60.0 / days, 2) for k, v in sorted(by.items(), key=lambda kv: -kv[1])},
+            "reopen_min_day": round(sum(r["reopen_s"] for r in runs.values()) / 60.0 / days, 2),
+            "reopened_runs": sum(r["browsers"] > 1 for r in runs.values()), "runs": len(runs),
+            "serial_min_day": round(serial / 60.0 / days, 2), "serial_jobs": sum(len(v) > 1 for v in jobs.values())}
+
+
+def phase_opportunities(phases):
+    """Each media cause over the worth line as its own opportunity, its waited minutes measured by the journal."""
+    out = []
+    for key in ("reopen", "serial"):
+        om = phases.get(key + "_min_day") or 0.0
+        if om < LIMITS["worth_om_day"]:
+            continue
+        o = target_opportunity("media/" + key, om, PHASE_LEVERS[key],
+                               phases["reopened_runs" if key == "reopen" else "serial_jobs"])
+        o["group"] = "media"
+        out.append(o)
+    return out
+
+
+def meter_spots(opportunities):
+    """An unmeasured opportunity is never a fix (`time_budget.admission`): it is a Deep search blind spot
+    `meter:<target>` (the document's `meters`, bin/doctor-fix blind-spots), its meter the work."""
+    return [{"id": "meter:" + o["id"].split(":", 1)[1], "what": "the waited minutes of %s" % o["id"].split(":", 1)[1],
+             "reason": "its %s min/day and the lever's saving are unmeasured, so no day total can prove a fix"
+                       % fmt(o["opportunity"]["om_day"]),
+             "since": None, "would_catch_if": "a journal times each %s wait where it happens, read by the Speed doctor"
+                                              % o["id"].split(":", 1)[1]}
+            for o in opportunities if o["opportunity"].get("measure") == time_budget.UNMEASURED]
 
 
 def test_requirement(repo, rel):
@@ -1552,6 +1643,8 @@ def collect(write, now):
     except Exception as exc:
         adhoc = {"status": "error", "head": H.error_line(exc), "findings": [], "net": {}}
     opportunities += adhoc_opportunities(adhoc) + unused_opportunities(adhoc)
+    phases = media_phases(lo, now)
+    opportunities += phase_opportunities(phases)
     problems += adhoc_regressions(adhoc, ledger, now)
     budget = time_budget.section(now, write)
     opportunities = with_time(opportunities, budget)
@@ -1633,6 +1726,8 @@ def collect(write, now):
         "budget": budget,
         "tests": tests,
         "adhoc": adhoc,
+        "media_phases": phases,
+        "meters": meter_spots(opportunities),
     }
     try:
         document["spend"] = spend.collect(now, state, write, H.base_home(), H.repos_dir(), ROOT_DIR, H.local_day)
@@ -1742,8 +1837,12 @@ def menu_lines(document):
     opportunities = [p for p in document["problems"] if p["rule"] == "opportunity"]
     ranked = [p for p in opportunities if not p["opportunity"]["needs_egor"]]
     skipped = [(p["id"], time_budget.speed_skip(p, document["problems"])) for p in document["problems"]
-               if p["rule"] in SPEED_RULES + ("suite_audit", cpu_audit.RULE) or p.get("class") == "measurement fix"]
-    emit(0, "Night skipped: " + ("; ".join("%s (%s)" % (pid, reason) for pid, reason in skipped if reason) or "none"), "d")
+               if (p["rule"] in SPEED_RULES + ("suite_audit", cpu_audit.RULE) or p.get("class") == "measurement fix")
+               and not ((p.get("opportunity") or {}).get("gate") or {}).get("why")]
+    gated = collections.Counter(p["opportunity"]["gate"]["why"].split(":")[0] for p in opportunities
+                                if (p["opportunity"].get("gate") or {}).get("why"))
+    emit(0, "Night skipped: " + ("; ".join(["%s (%s)" % (pid, reason) for pid, reason in skipped if reason]
+                                          + ["%d %s" % (n, why) for why, n in sorted(gated.items())]) or "none"), "d")
     emit(0, "Opportunities · top %d of %d" % (min(len(ranked), 10), len(ranked)))
     for rank, p in enumerate(ranked[:10], 1):
         o = p["opportunity"]
