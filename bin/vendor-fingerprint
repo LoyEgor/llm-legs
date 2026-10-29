@@ -24,6 +24,9 @@ grokb_cache="${GROKB_CACHE_DIR:-$HOME/.cache/grokb}/models.json"
 geminib="${VENDOR_FINGERPRINT_GEMINIB:-$repo_root/bin/geminib}"
 limits_store="${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}"
 gemini_quota_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$HOME/.llm-limits-gemini}"
+gemini_base_home=$HOME
+gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
+gemini_accounts_cache_dir=$gemini_quota_dir
 vendors="codex grok gemini claude"
 # vendor-watch rows of a web-only vendor: no CLI, so no fingerprint and no check.
 watch_only="elevenlabs"
@@ -35,6 +38,7 @@ id_re="($id_prefixes)(-[a-z]+)*-[0-9]+[a-z]?(\\.[0-9]+)*(-[a-z0-9]+){0,3}"
 doctor_fix="${VENDOR_FINGERPRINT_DOCTOR_FIX:-$repo_root/bin/doctor-fix}"
 . "$repo_root/share/worktree.sh"
 . "$repo_root/share/limit-hit.sh"
+. "$repo_root/share/account-roster.sh"
 # npm puts codex and grok under nvm, which neither a LaunchAgent's PATH nor a plain shell's carries.
 # Appended, so a native install earlier on PATH (~/.local/bin/claude) stays the one that runs.
 while IFS= read -r nvm_bin; do PATH="$PATH:$nvm_bin"; done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -rV)
@@ -288,6 +292,29 @@ gemini_facets() {
   put_divergence gemini
   LC_ALL=C grep $'^auth\t' "$work/divergence" | cut -f2- | put_lines auth
   put_plans gemini
+  put_tools
+}
+
+# agy 1.4.3 renamed view_file {AbsolutePath} to read_file {Path} with no changelog line, its strings
+# still holding the old name: only what live sessions call shows a tool or argument. Each check adds
+# what was called since the last one (an hour back, for a session that wrote while a check ran); a
+# line never leaves, so a tool no session happened to call is no change. grep ends every line: jq -R
+# alone glues a session's unfinished last line onto the next file's first.
+put_tools() {
+  local stored="$fp_dir/gemini.json" since='' account file all=true
+  [ ! -s "$stored" ] ||
+    since=$(jq -r 'select(.facets.tools) | .checked_at // empty | fromdateiso8601 - 3600 | strflocaltime("%Y%m%d%H%M.%S")' "$stored" 2>/dev/null)
+  [ -n "$since" ] && touch -t "$since" "$work/tools-since" && all=false
+  account_roster gemini | while IFS= read -r account; do
+    for file in "$(gemini_account_home "$account")"/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl; do
+      [ -f "$file" ] && { $all || [ "$file" -nt "$work/tools-since" ]; } && printf '%s\0' "$file"
+    done
+  done >"$work/tools-files"
+  { [ -z "$since" ] || jq -r '.facets.tools[]' "$stored" 2>/dev/null
+    [ ! -s "$work/tools-files" ] || xargs -0 env LC_ALL=C grep -h -a -F '"tool_calls"' <"$work/tools-files" |
+      jq -R -r 'fromjson? | .tool_calls[]? | objects | .name as $n | select($n | type == "string")
+        | $n, (.args | objects | keys[] | "\($n).\(.)")' 2>/dev/null
+  } | LC_ALL=C sort -u | put_lines tools
 }
 
 claude_facets() {

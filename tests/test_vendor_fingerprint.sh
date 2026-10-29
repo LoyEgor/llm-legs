@@ -21,7 +21,7 @@ FAKE_BIN="$WORK/bin"
 DATA="$WORK/data"
 OPENED="$WORK/opened"
 export HOME DATA OPENED
-unset CODEXB_PROFILES_DIR VENDOR_CLI_UPDATE_STATE_DIR VENDOR_FINGERPRINT_LOCKED GROK_HOME GROKB_CACHE_DIR CLAUDEB_DIR
+unset CODEXB_PROFILES_DIR VENDOR_CLI_UPDATE_STATE_DIR VENDOR_FINGERPRINT_LOCKED GROK_HOME GROKB_CACHE_DIR CLAUDEB_DIR GEMINIB_PROFILES_DIR
 unset VENDOR_FINGERPRINT_NATIVE_codex VENDOR_FINGERPRINT_NATIVE_grok VENDOR_FINGERPRINT_NATIVE_gemini VENDOR_FINGERPRINT_NATIVE_claude
 export VENDOR_FINGERPRINT_OPENER="$FAKE_BIN/opener"
 export VENDOR_FINGERPRINT_WORKER_PICK="$FAKE_BIN/worker-pick"
@@ -121,7 +121,7 @@ codex_cache "$HOME/.codex" 0.154.0 '[{"slug":"gpt-5.6-sol"}]'
 fixture_repo() { # dir
   mkdir -p "$1/bin" "$1/share" "$1/docs"
   cp "$ROOT/bin/vendor-fingerprint" "$ROOT/bin/doctor-fix" "$1/bin/"
-  cp "$ROOT"/share/{chat-open.sh,worker-pool.sh,worktree.sh,limit-hit.sh,store-lock.sh,test-scope.sh,report_frame.py,limit_hit.py,doctor-areas.json,fix_commit.py,spend.py,keepalive.py,knobs.py} "$1/share/"
+  cp "$ROOT"/share/{account-roster.sh,chat-open.sh,codex-accounts.sh,gemini-accounts.sh,worker-pool.sh,worktree.sh,limit-hit.sh,store-lock.sh,test-scope.sh,report_frame.py,limit_hit.py,doctor-areas.json,fix_commit.py,spend.py,keepalive.py,knobs.py} "$1/share/"
   cp "$ROOT/docs/vendor-release.md" "$1/docs/"
   git -C "$1" init -q -b main
   git -C "$1" add -A
@@ -797,5 +797,27 @@ assert [ "$(ls "$EVENTS"/codex-*.base)" = "$bases" ]
 bash "$SCRIPT" request codex >/dev/null
 for e in $two; do assert jqe '.launched_at != null and .run != null' "$EVENTS/$e.json"; done
 assert [ "$(ls "$EVENTS"/codex-*.base 2>/dev/null)" = "" ]
+
+# agy 1.4.3 renamed view_file {AbsolutePath} to read_file {Path} with no string or changelog line saying
+# so: a tool or argument agy sessions start calling opens an event, and a pruned session's tools stay.
+agy_session() { # account session tool args-json
+  local logs="$HOME/.gemini-profiles/$1/.gemini/antigravity-cli/brain/$2/.system_generated/logs"
+  mkdir -p "$logs"
+  printf '{"type":"PLANNER_RESPONSE","tool_calls":[{"name":"%s","args":%s}]}\n{"type":"PLANN' "$3" "$4" >>"$logs/transcript_full.jsonl"
+}
+agy_session abel s1 view_file '{"AbsolutePath":"/a.wav","toolAction":"listen"}'
+held_check gemini
+taken
+count=$(events)
+agy_session notcom s2 read_file '{"Path":"/b.wav"}'
+held_check gemini
+assert [ "$(events)" = $((count + 1)) ]
+assert [ "$(field '"\(.vendor) \(.status) \(.substantive | join(","))"')" = "gemini open tools" ]
+assert [ "$(grep '^[+-][a-z]' "$(field .diff)" | xargs)" = "+read_file +read_file.Path" ]
+taken
+rm -r "$HOME/.gemini-profiles/abel"
+held_check gemini
+assert [ "$(events)" = $((count + 1)) ]
+assert jqe '.facets.tools == ["read_file", "read_file.Path", "view_file", "view_file.AbsolutePath", "view_file.toolAction"]' "$FP_GEMINI"
 
 suite_shard_pass "$asserts"
