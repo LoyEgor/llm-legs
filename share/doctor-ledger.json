@@ -1228,7 +1228,7 @@
     "detail": "^wrote [^/]+$"
    },
    "title": "a run wrote another repository's main checkout or a non-repository directory that its brief authorized only in prose, or escaped through a tracked symlink, so worker-run granted it nothing and the write read as escaped",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-04T16:52:41+03:00",
@@ -1272,7 +1272,7 @@
       "llm-legs/share/worker-run-snapshot.sh",
       "llm-legs/tests/test_worker_run_attribution.sh"
      ],
-     "in": null,
+     "in": "llm-legs@d4352d29",
      "regressed_at": null
     }
    ],
@@ -1560,7 +1560,7 @@
     "detail": "\\d+ of \\d+ images came back within \\d+s"
    },
    "title": "Flow image route waited out its timeout on takes Flow had failed or delivered unread",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-03T01:28:50+03:00",
@@ -1578,7 +1578,7 @@
       "llm-legs/share/flow_image.py",
       "llm-legs/share/gemini_web.py"
      ],
-     "in": null,
+     "in": "llm-legs@d782ffa4",
      "regressed_at": null
     }
    ],
@@ -2553,7 +2553,7 @@
     "detail": "the send click left the prompt in the composer"
    },
    "title": "ChatGPT failed the posted turn and send() re-posted it as a swallowed click",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-29T18:59:51+02:00",
@@ -2561,7 +2561,7 @@
      "files": [
       "llm-legs/share/chatgpt_web.py"
      ],
-     "in": null,
+     "in": "llm-legs@d782ffa4",
      "regressed_at": null
     }
    ],

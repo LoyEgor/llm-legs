@@ -607,7 +607,7 @@
         "rule": "hook-error",
         "ident": "notice-word-journal\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T14:11:40+03:00",
@@ -627,8 +627,8 @@
             "claude-setup/tests/test_stop_dispatch.sh",
             "claude-setup/tests/test_words_log.sh"
           ],
-          "in": null,
-          "regressed_at": null,
+          "in": "claude-setup@2cfc854b",
+          "regressed_at": "2026-10-29T21:13:05+02:00",
           "equivalence": {
             "compared": "the journal row of the new-row path, base vs fix, ts and chat left out",
             "data": "read-only replay of 2026-10-29 11:29Z/6d7a9b58 (its words store copied, turn 3's row dropped) at load 100-176",
@@ -674,7 +674,7 @@
         "rule": "hook-error",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T09:35:00+03:00",
@@ -724,7 +724,7 @@
             "claude-setup/hooks/stop-dispatch.sh",
             "claude-setup/tests/test_stop_dispatch.sh"
           ],
-          "in": null,
+          "in": "llm-legs@4bb0bff7",
           "regressed_at": null,
           "equivalence": {
             "compared": "whole hook output, base vs fix, per chat with live runs, its own chat pid and none",
@@ -2745,7 +2745,7 @@
         "rule": "opportunity",
         "ident": "time/locks"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:03:55+03:00",
@@ -2786,7 +2786,7 @@
             "llm-legs/share/night_spend.py",
             "llm-legs/tests/test_time_budget.sh"
           ],
-          "in": null,
+          "in": "llm-legs@15f95fcf",
           "regressed_at": null,
           "equivalence": {
             "compared": "night_spend.codex_usage's last total_token_usage, the forward whole-file read (refs/night/20261029T163046Z-74c1/base) vs rows_backward",
@@ -3667,7 +3667,7 @@
         "rule": "worker_orphans",
         "ident": "worker-run"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T04:07:58+03:00",
@@ -3736,7 +3736,7 @@
           "files": [
             "llm-legs/share/worker-run-texts.sh"
           ],
-          "in": null,
+          "in": "llm-legs@b10a6855",
           "regressed_at": null
         }
       ],
@@ -6297,7 +6297,7 @@
         "rule": "opportunity",
         "ident": "hooks/commit-report\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-10T08:20:00+03:00",
@@ -6384,7 +6384,7 @@
             "claude-setup/hooks/commit-report.sh",
             "claude-setup/hooks/lib/review-journal.sh"
           ],
-          "in": null,
+          "in": "claude-setup@4a5c369",
           "regressed_at": null,
           "equivalence": {
             "compared": "hooks/commit-report.sh and lib/review-journal.sh at the night base vs the fix: stdout per landing call, the commit sha normalized",
@@ -9141,7 +9141,7 @@
         "rule": "opportunity",
         "ident": "test-health/idle/llm-legs/test_image_fanout"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-13T13:55:00+03:00",
@@ -9167,7 +9167,7 @@
             "llm-legs/tests/fixtures/image-fanout/ref.png",
             "llm-legs/tests/fixtures/image-fanout/edit-shape.png"
           ],
-          "in": null,
+          "in": "llm-legs@b9e1d356",
           "regressed_at": null,
           "equivalence": {
             "compared": "bin/image-fanout --dry-run stdout, stderr and exit over 66 invocations (vendors grok, gemini, codex, elevenlabs, suno; video, edit, upscale, takes/pack, size, aspect, 16 refs, account pin/pick), HEAD script vs the batched-manifest script; the suite's kill grace 500 -> 100 ms, committed PNG fixtures for two magick launches, EPOCHREALTIME for a perl per START",
@@ -9580,7 +9580,7 @@
       "reviewed_by": "harness-limits-20261029T165019Z-1899",
       "note": "2026-10-29 regression read: not notice-connections (its last kill 2026-10-20 13:02Z, none in the 9 days since ab0da798). Kills since: notice-word-journal 10-22 22:30Z, 10-24 03:04Z (with notice-chat-names, one batch stall), 10-29 11:29Z alone, each in a swap-bound stretch (system-doctor ticks: busy 0.99-1.0, swap 0.82-0.90, pagein 4-12k/s). word-journal's usual 0.05 s is its jq fast path; its python3 words_journal.py runs only on a turn with a notice, a silent keyword or a ⚡ line, so x101 over usual is the slow path under page-in, not a hang (no hang in its code: the 30 s late wait is already detached). The hook is live (harness-doctor words_journal reads its journal). Ruled out: detaching it like ab0da798 (main reads last.json, turn and last.txt, which the next prompt's intake rewrites, so a detached row could judge the wrong turn). Seen, not cut: main's chat-name subprocess (2 s timeout) sits in the stop; words-log could name the chat at read time. 2026-10-20: 9 kills in 24 h (hits.jsonl), 6 of them notice-connections (6 of its 420 runs; 15 over 2 s, against notice-reports 1 and word-journal 4), 3 siblings only inside two stops where the whole notice batch stalled (2026-10-19 22:48Z; 2026-10-20 10:06Z: chat-names, connections, word-attested killed together, word-journal 4.25 s, usual 0.03-0.12 s). Samples at the kills: busy 0.92-0.997 in 4 of 5; load average 140-272 during this run. The connections check is 0.06-0.1 CPU-s under Homebrew python3 (0.36-0.51 s wall at load 210, no stall reproduced); the read-only path waits on nothing (2026-10-14 note). Fix: with the report bus and a session id the check runs detached and posts its notice to the chat's queue (report-bus post --session), so no stop waits on it or kills it; it was the slowest notice in 229 of 586 stops (+87 s stop wall over 3 days). Not fixed: kills of the other notices in a whole-batch stall (load, the limit's own normal); a recurrence there is that, not this hook (blind spot hook-off-cpu-wait still unattributed). Ruled out: lock contention (no sync since 10-08, last-sync.json), log-sweep I/O (no sweep within 15 min of any kill), memory (mem_free 36-84). Found: /usr/bin/python3 (Xcode 3.9) runs with dont_write_bytecode and no stdlib __pycache__, 0.23 CPU-s for this check against 0.08 under Homebrew's; the killed chats' PATH puts /opt/homebrew/bin first, so not this cause, but any hook reached through /usr/bin/python3 pays it.",
       "handoff": null,
-      "ruled_at": "2026-10-29T17:20:00Z"
+      "ruled_at": "2026-10-29T17:31:10Z"
     },
     {
       "id": "regression-test-health-wait-night-volume",
@@ -10360,7 +10360,7 @@
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
           "in": "llm-legs@816bd668",
-          "regressed_at": null
+          "regressed_at": "2026-10-29T20:09:52+02:00"
         }
       ],
       "same_cause": [],
@@ -11013,7 +11013,7 @@
             "llm-legs/tests/test_run_suites_shards.sh"
           ],
           "in": "llm-legs@8b0a06e7",
-          "regressed_at": null
+          "regressed_at": "2026-10-29T19:18:10+02:00"
         }
       ],
       "same_cause": [],
@@ -12480,7 +12480,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_llm_limits"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T19:10:00+02:00",
@@ -12488,7 +12488,7 @@
           "files": [
             "llm-legs/tests/test_llm_limits.sh"
           ],
-          "in": null,
+          "in": "llm-legs@68419d63",
           "regressed_at": null
         }
       ],
@@ -12544,7 +12544,7 @@
       "reviewed_by": "harness-limits-20261029T165019Z-1899",
       "note": "The cap did its job: evict_frames dropped the oldest frames (10-26T16:34-18:32, 35-88 MB each) for newer episodes, a day before rotate_files' 3-day retention would delete them anyway; INCIDENT lines (5, 1, 8, 11 on 10-26..29, avail under 4 GB) stay in the day logs. Episodes are 23-82 MB of 1 Hz ps dumps, so 1 GB holds ~2 days at this pressure. No harness reader opens frames (grep: memlogd only). Measured, not cut: cutting frame lines at 300 chars keeps 60 % of a frame's bytes, little room for the evidence it costs. Cause of the volume is load (memory pressure from the benchmark and chats).",
       "handoff": null,
-      "ruled_at": "2026-10-29T17:20:00Z"
+      "ruled_at": "2026-10-29T17:31:10Z"
     },
     {
       "id": "limit_hit:llm-legs:store-lock.ownerless-stale",
@@ -12569,7 +12569,7 @@
         "rule": "opportunity",
         "ident": "test-health/flaky/llm-legs/test_llm_limits"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T19:55:00+03:00",
@@ -12577,7 +12577,7 @@
           "files": [
             "llm-legs/tests/test_llm_limits.sh"
           ],
-          "in": null,
+          "in": "llm-legs@68419d63",
           "regressed_at": null,
           "equivalence": {
             "compared": "the Gemini parallel-profile gate's wait for the second profile's start (50 x 0.1 s -> 600 x 0.1 s, exits at once when both started) and the 16-64 KiB rollout collection bound (timeout 60 -> 180); a sequential refresh still fails the gate, after the cap",
@@ -12599,7 +12599,7 @@
         "rule": "opportunity",
         "ident": "test-health/flaky/llm-legs/test_statusline_hooks"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T19:55:00+03:00",
@@ -12607,7 +12607,7 @@
           "files": [
             "llm-legs/tests/test_statusline_hooks.sh"
           ],
-          "in": null,
+          "in": "llm-legs@68419d63",
           "regressed_at": null,
           "equivalence": {
             "compared": "assert 898 (ctx-bnd-big): wall of one cold-sidecar render of a 150 MB transcript < 2500 ms vs the same render's children CPU < 2500 ms; run_statusline through env on every render vs only when NO_TIMEOUT_BIN is set",
@@ -12629,7 +12629,7 @@
         "rule": "regression",
         "ident": "fix/harness-speed-suite-audit-review-bench-test-panel-preparation-20261012T235429Z-346b"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T20:00:00+03:00",
@@ -12638,7 +12638,7 @@
             "llm-legs/share/time_budget.py",
             "llm-legs/tests/test_time_budget.sh"
           ],
-          "in": null,
+          "in": "llm-legs@5fb61f8a",
           "regressed_at": null
         }
       ],
