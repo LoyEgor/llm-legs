@@ -242,7 +242,7 @@ Workers are unified and relay-free: every run that edits, reviews, verifies or s
 
 1. write the brief to a file;
 2. ONE background Bash `worker-run run auto --brief <file> --workdir <dir>`: worker-pick's NEXT
-   row 1 vendor (a RESUME brief: its session's), a start (`RUN:` / `TAG:` / `DIR:`), then an exec
+   row 1 vendor (a RESUME brief: its session's; a `COMPUTER: yes` brief: codex), a start (`RUN:` / `TAG:` / `DIR:`), then an exec
    of `wait <run-id> --report`;
 3. on its completion notification, read that output: the report, no progress rows.
 

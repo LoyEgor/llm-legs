@@ -394,10 +394,10 @@ wait_report() { # directory
 
 # The one-call delegation: the account pick, the start and a `wait --report`, so a chat spends one
 # background Bash and one wake on a run. `auto` is the vendor of worker-pick's NEXT row 1; a RESUME
-# brief goes back to the vendor and account its session lives in.
+# brief goes back to the vendor and account its session lives in, a computer run to codex.
 run_run() { # auto|vendor start-args...
   [ "$#" -ge 1 ] || usage
-  local vendor=$1 brief='' account='' handle='' entry='' picked started rc=0 run_id i role=''
+  local vendor=$1 brief='' account='' handle='' entry='' picked started rc=0 run_id i role='' computer=false
   shift
   local -a args=("$@")
   for ((i = 0; i < ${#args[@]}; i++)); do
@@ -405,6 +405,7 @@ run_run() { # auto|vendor start-args...
       --brief) brief=${args[i + 1]-} ;;
       --account) account=${args[i + 1]-} ;;
       --browser) role=browser ;;
+      --computer) computer=true ;;
     esac
   done
   [ -r "$brief" ] || fail "brief is not readable: ${brief:-none given}"
@@ -423,6 +424,8 @@ run_run() { # auto|vendor start-args...
         args+=(--account "$account"); }
     fi
   fi
+  [ "$(brief_line_value "$brief" COMPUTER)" != yes ] || computer=true
+  [ "$vendor" != auto ] || [ "$computer" = false ] || vendor=codex
   if [ "$vendor" = auto ]; then
     picked=$("${WORKER_RUN_WORKER_PICK:-$SCRIPT_DIRECTORY/worker-pick}" ${role:+--role "$role"} 2>/dev/null)
     vendor=$(sed -n 's/^START: worker-run [a-z]* \([a-z]*\)$/\1/p' <<<"$picked" | head -n1)
