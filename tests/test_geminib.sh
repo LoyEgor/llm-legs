@@ -402,10 +402,24 @@ gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
 assert test "$(readlink "$ALPHA_KC/login.keychain-db")" = gemini.keychain-db
 assert grep -qx adopted "$ALPHA_KC/gemini.keychain-db"
 
-# Every launch unlocks again, because the keychain is locked by the next boot.
+# One unlock lasts as long as the securityd holding it: a second launch under it makes no security
+# call, and the first under a new one — a reboot or a restart, both relock — unlocks again.
+test_epoch=1
+gemini_keychain_epoch() { printf 'epoch-%s' "$test_epoch"; }
+gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
 : >"$SECURITY_CALLS"
 gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
+assert test ! -s "$SECURITY_CALLS"
+test_epoch=2
+gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
 assert grep -q "unlock-keychain -p adopted $ALPHA_KC/gemini.keychain-db" "$SECURITY_CALLS"
+
+# Under the real security a temp-directory profile is a suite's fixture, and securityd would hold
+# every keychain built there open until the next boot.
+fixture_home=$(mktemp -d /tmp/geminib-fixture.XXXXXX)
+GEMINIB_SECURITY_CMD=/usr/bin/security gemini_ensure_keychain "$fixture_home"
+assert test ! -e "$fixture_home/Library/Keychains/gemini.keychain-db"
+rm -rf "$fixture_home"
 
 gemini_ensure_keychain "$HOME/.gemini-profiles/vanished"
 assert test ! -e "$HOME/.gemini-profiles/vanished"

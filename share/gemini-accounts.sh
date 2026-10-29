@@ -49,8 +49,8 @@ gemini_account_home() {
 # basename is the trap: macOS routes every `security` command naming it — absolute path included —
 # to the session's own keychain, so a profile keychain called login.keychain-db can never be
 # unlocked, and unlocking a renamed copy does not survive renaming it back. The database therefore
-# lives under a name security can address, login.keychain-db is only a symlink to it, and every
-# launch unlocks it by the real name. Measured 2026-07-27 across reboots: without that unlock agy's
+# lives under a name security can address, login.keychain-db is only a symlink to it, and the
+# first launch under each securityd unlocks it by the real name. Measured 2026-07-27 across reboots: without that unlock agy's
 # token refresh — a write — raises the modal keychain password dialog on the first run after every
 # boot; with it nothing prompts. HOME is pinned on every security call, or the profile keychain
 # lands in the real session's search list where a locked entry makes unrelated lookups prompt too.
@@ -59,6 +59,11 @@ gemini_ensure_keychain() {
   local security_cmd="${GEMINIB_SECURITY_CMD:-/usr/bin/security}"
   # The profiles root is nobody's HOME: a keychain built there becomes a `Library` account.
   case "$home" in ''|"$gemini_base_home"|"$gemini_profiles_dir"|"$gemini_profiles_dir"/) return 0 ;; esac
+  # A profile in a temp directory is a suite's fixture, and securityd keeps every keychain the real
+  # security creates open until the next boot: fixture profiles grew it to 11 GB over 18 days.
+  case "$security_cmd:$home" in
+    /usr/bin/security:/tmp/*|/usr/bin/security:/private/tmp/*|/usr/bin/security:/var/folders/*|/usr/bin/security:/private/var/folders/*) return 0 ;;
+  esac
   # A profile removed between listing and probing must stay removed, not be rebuilt as a ghost.
   [ -d "$home" ] || return 0
   name=$(basename "$home")
@@ -90,12 +95,13 @@ gemini_prepare_keychain() {
   local keychains="$1/Library/Keychains"
   local real="$keychains/gemini.keychain-db" link="$keychains/login.keychain-db"
   local password_file="$home/.keychain-password" password_tmp="$home/.keychain-password.new"
-  local password usable=0
+  local password usable=0 repaired=0 ready="$home/.geminib-keychain-ready" stamp
   # agy recreates login.keychain-db as a real file whenever it is missing, so a real file at that
   # path is always the database it has been writing and outranks whatever this function left there.
   # `mv -f` rather than a delete first: nothing is thrown away until the replacement is in place.
   if [ ! -L "$link" ] && [ -f "$link" ]; then
     mv -f "$link" "$real" 2>/dev/null || return 1
+    repaired=1
   fi
   # rm -rf throughout: a directory sitting on either path would otherwise survive every repair and
   # fail create-keychain forever.
@@ -104,10 +110,19 @@ gemini_prepare_keychain() {
   fi
   if [ ! -L "$link" ] && [ -e "$link" ]; then
     rm -rf "$link" 2>/dev/null || return 1
+    repaired=1
   fi
   if [ "$(readlink "$link" 2>/dev/null)" != gemini.keychain-db ]; then
     rm -f "$link" 2>/dev/null
     ln -s gemini.keychain-db "$link" 2>/dev/null || return 1
+    repaired=1
+  fi
+  # Redone on every list and status this was ~40 security calls a minute (2026-10-29), yet one
+  # unlock lasts as long as the securityd holding it: the same keychain and password files under
+  # the same securityd need none.
+  if [ "$repaired" -eq 0 ] && stamp=$(gemini_keychain_stamp "$real" "$password_file") &&
+    [ "$(cat "$ready" 2>/dev/null)" = "$stamp" ]; then
+    return 0
   fi
   if [ -f "$real" ] && [ -s "$password_file" ]; then
     password=$(cat "$password_file" 2>/dev/null) || password=''
@@ -143,4 +158,19 @@ gemini_prepare_keychain() {
   HOME="$home" "$security_cmd" list-keychains -d user -s "$link" >/dev/null 2>&1 || true
   HOME="$home" "$security_cmd" default-keychain -d user -s "$link" >/dev/null 2>&1 || true
   HOME="$home" "$security_cmd" set-keychain-settings -u "$real" >/dev/null 2>&1 || true
+  stamp=$(gemini_keychain_stamp "$real" "$password_file") && printf '%s\n' "$stamp" >"$ready" 2>/dev/null || true
+}
+
+# Profile keychains carry no timeout and no lock on sleep, so an unlock lasts until the securityd
+# holding it stops: a reboot, or a restart that relocks every keychain.
+gemini_keychain_epoch() {
+  local boot pid
+  boot=$(sysctl -n kern.boottime 2>/dev/null) && pid=$(pgrep -x -o securityd 2>/dev/null) || return 1
+  printf '%s:%s' "${boot%%,*}" "$pid"
+}
+
+gemini_keychain_stamp() { # keychain password-file → what the last unlock of them was made under
+  local epoch
+  epoch=$(gemini_keychain_epoch) && [ -n "$epoch" ] || return 1
+  printf '%s %s' "$epoch" "$(stat -f '%i:%z:%Fm' "$1" "$2" 2>/dev/null | tr '\n' ' ')"
 }
