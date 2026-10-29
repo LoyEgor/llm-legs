@@ -67,6 +67,10 @@ export WORKER_RUN_GROKB="$WORK/bin/grokb"
 export CLAUDEB_PROFILES_ROOT="$HOME/.claude-profiles"
 export CODEX_PROFILES_DIR="$HOME/.codex-profiles"
 export GEMINIB_PROFILES_DIR="$HOME/.gemini-profiles"
+# share/worker-model.sh runs the real bin/geminib, which builds a keychain for every roster profile
+# below, and securityd keeps each one it created open until the next boot: ~80 a suite run grew it
+# to 11 GB over 18 days (measured 2026-10-29).
+export GEMINIB_SECURITY_CMD=/usr/bin/true
 export GROKB_PROFILES_DIR="$HOME/.grok-profiles"
 export STUB_DIR="$WORK/stub-state"
 export CALL_LOG="$WORK/calls"
