@@ -9,13 +9,13 @@ Blocks (the numbers are names, 2026-10-20; the order is State):
 | # | Block | Metric | State |
 |---|---|---|---|
 | 0 | Always on | none: nightly prep (vendor CLIs, log audit, doctors), monthly directions refresh | runs |
-| 1 | [Breakages](breakages.md) | new distinct problems (doctors' day journal) per 100 units of work, 7 days against the 7 before; repeats 0 | landed 10-25; read 7 d after Doctors lands |
+| 1 | [Breakages](breakages.md) | new distinct problems (doctors' day journal) per 100 units of work, 7 days against the 7 before; repeats 0 | landed 10-25; read 11-05, 7 d after Doctors lands |
 | 2 | [Tests and lost time](lost-time.md) | Lost time index; test legacy lines watched | after 1's read |
 | 3 | [System](system.md) | own background CPU-min/day, hooks included; SSD and swap written watched | after 1's read |
 | 4 | [Spend](spend.md) | Fee index of workers, reviewers and background; Doctors' share watched | after 1's read |
 | 5 | [Legacy](legacy.md) | legacy lines standing in the four sweep repositories, code only; net lines watched | independent |
 | 6 | [Vendors](vendors.md) | integration lag: mean days from a vendor event to its close; changes found outside the fingerprint 0 | independent |
-| 7 | [Doctors](doctors.md) | false-alarm share of decided Fix rows; outside-found share (what no doctor shows) | next (1–4 read through it) |
+| 7 | [Doctors](doctors.md) | false-alarm share of decided Fix rows; outside-found share (what no doctor shows) | landed 10-29; read 11-05 (1–4 read through it) |
 | 8 | [Leftovers](leftovers.md) | handoffs and branches that outlive a night, plus returns, per night; target 0 | after 2–4 |
 | 9 | Monthly research | vendor news, repeated ad-hoc scripts become tools | postponed (Egor 2026-10-20) |
 | 10 | [Debt](debt.md) | review debt closed: a bugs read of settled code only (Egor 2026-10-06) | paused, last |
