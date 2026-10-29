@@ -48,7 +48,11 @@ def writes(command):
     # Empty is a poll (codex write_stdin chars:""), not an unclassified write.
     if command == "":
         return False
-    if not command.strip() or any(token in command for token in ("$", "`", "\\", "<<")):
+    # A command substitution runs a program the words around it never show, and a heredoc feeds one; a variable
+    # in an argument is read as the word it names (a flag smuggled in through one is not how a worker writes).
+    # Taken as writes, `$` and `\` made codex's opening CLAUDE.md lookup loop a write in 99 of 295 runs, each
+    # losing its whole file list (30 days to 2026-10-29).
+    if not command.strip() or any(token in command for token in ("$(", "`", "<<")):
         return True
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>\n()")
@@ -59,20 +63,56 @@ def writes(command):
     except ValueError:
         return True
 
+    # The words that frame a compound command run nothing: the commands between them are judged one by one,
+    # wherever they stand, since a transcript row arrives with its newlines turned into spaces.
+    frame = {"do", "done", "then", "else", "elif", "fi", "if", "while", "until", "!", "{", "}"}
+
     def readonly(words):
+        segment = []
+        for word in words + ["done"]:
+            if word not in frame:
+                segment.append(word)
+            elif not simple(segment):
+                return False
+            else:
+                segment = []
+        return True
+
+    def simple(words):
         if not words:
             return True
         name, *args = words
+        if not args and re.fullmatch(r"[A-Za-z_]\w*=.*", name):
+            # A bare assignment sets a shell variable; one prefixed to a command (GIT_EXTERNAL_DIFF=...) is no read.
+            return True
+        name = re.sub(r"^/(?:usr/)?bin/", "", name)
+        if name == "command":
+            return bool(args) and args[0] in {"-v", "-V"}
+        if name == "for":
+            # `for NAME [in WORDS]` only sets the loop variable; its body is the next segment.
+            return bool(args) and re.fullmatch(r"[A-Za-z_]\w*", args[0]) is not None and (len(args) == 1 or args[1] == "in")
         if name in {"bash", "sh", "python3"}:
             return len(args) == 1 and ".." not in args[0].split("/") and re.fullmatch(r"(?:\./)?tests/[\w./-]+\.(?:sh|py)", args[0]) is not None
         if name == "git":
-            return bool(args) and args[0] in {"diff", "status", "show", "log", "ls-files", "rev-parse"} and not any(
-                arg.startswith(("--output", "--ext-diff", "--textconv")) for arg in args)
+            while args and args[0] in {"-C", "--no-pager"}:
+                args = args[2:] if args[0] == "-C" else args[1:]
+            return bool(args) and args[0] in {"diff", "status", "show", "log", "ls-files", "rev-parse", "grep", "ls-tree",
+                                              "cat-file", "blame", "rev-list", "merge-base", "show-ref", "describe"} and not any(
+                arg.startswith(("--output", "--ext-diff", "--textconv", "--filters", "-O", "--open-files-in-pager")) for arg in args)
         if name == "sed":
             return len(args) >= 2 and args[0] == "-n" and re.fullmatch(r"[0-9]+(?:,[0-9]+)?p", args[1]) is not None and not any(arg.startswith("-") for arg in args[2:])
         if name in {"grep", "egrep", "fgrep", "rg"}:
             return not any(arg.startswith(("--pre", "--hostname-bin")) for arg in args)
-        return name in {"cat", "head", "tail", "wc", "pwd", "ls", "stat", "readlink", "basename", "dirname", "echo", "printf", "true", "false", "test", "[", "cd"}
+        if name == "find":
+            return not any(arg in {"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"} for arg in args)
+        if name == "sort":
+            return not any(arg.startswith(("--output", "--compress-program")) or re.fullmatch(r"-[A-Za-z]*o.*", arg) for arg in args)
+        if name == "uniq":
+            # `uniq IN OUT` writes OUT.
+            return len([arg for arg in args if not arg.startswith("-")]) <= 1
+        return name in {"cat", "head", "tail", "wc", "pwd", "ls", "stat", "readlink", "basename", "dirname", "echo", "printf",
+                        "true", "false", "test", "[", "[[", "cd", "nl", "cut", "tr", "jq", "diff", "cmp", "comm", "du", "df",
+                        "which", "type", "date", "shasum", "md5", "realpath", "uname", "whoami", "id", "read", "sleep"}
 
     words = []
     tokens = iter(tokens + [";"])
@@ -84,6 +124,10 @@ def writes(command):
                     words.pop()
                 continue
             return True
+        if token == "<":
+            # An input redirect only reads its file.
+            next(tokens, "")
+            continue
         if token in {";", "&&", "||", "|", "\n"}:
             if not readonly(words):
                 return True
@@ -133,7 +177,7 @@ resolve_tool_path() { # path workdir
 }
 
 classify_tool_rows() { # rows workdir
-  local rows="$1" workdir="$2" line tag value paths='' places='' shell=false inside=0 outside='' dir='' commands='' first
+  local rows="$1" workdir="$2" line tag value paths='' places='' inside=0 outside='' dir='' commands='' first
   local unexpanded_target_re='(^|/)(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|`[^`]+`)(/|$)'
   [ -z "$workdir" ] || [ "$workdir" = null ] || dir="${workdir%/}/"
   while IFS= read -r line; do
@@ -158,7 +202,6 @@ classify_tool_rows() { # rows workdir
         ;;
       C)
         [ -n "$value" ] || continue
-        shell=true
         # Classified once after the loop, one python3 for the window: each comes before any reason set so far.
         [ -n "$RUN_FILES_REASON" ] || commands+="$value"$'\n'
         ;;
@@ -175,10 +218,12 @@ classify_tool_rows() { # rows workdir
         ;;
     esac
   done <<<"$rows"
-  # A command collected came before every reason the loop set, so a write among them wins; a failed classifier is a write.
+  # A shell write makes the list a floor, as it does a claudeb run's: the editor calls it names are the run's
+  # for certain, and what the shell wrote is left to the UNNAMED claim beside them. Read as an UNKNOWN it threw
+  # those away too (19 codex runs in 30 days to 2026-10-29). A failed classifier is a write.
   if [ -n "$commands" ]; then
     first=$(WRITES_FIRST_RAW=1 writes_through_shell 3<<<"${commands%$'\n'}") && [[ $first =~ ^[0-9]+$ ]] || first=1
-    [ "$first" = 0 ] || RUN_FILES_REASON='the run wrote through the shell, whose targets no transcript names'
+    [ "$first" = 0 ] || [ -n "$RUN_FILES_PARTIAL" ] || RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL"
   fi
   # Live-reproduced 2026-08-24: handed a workdir agy does not trust, agy worked in the first
   # --add-dir instead and said nothing — every path it touched was somewhere else entirely. Not
@@ -199,9 +244,6 @@ classify_tool_rows() { # rows workdir
     'BEGIN { dir = ENVIRON["AWK_DIR"] }
      { if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
     <<<"$paths" | sort -u)
-  # First reason wins, like RUN_FILES_REASON: one PARTIAL line carries the caveat, and the named
-  # unresolvable target says more than the generic shell floor beside it.
-  [ "$shell" = false ] || [ -n "$RUN_FILES_PARTIAL" ] || RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL"
   return 0
 }
 

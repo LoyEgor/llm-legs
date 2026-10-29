@@ -9,8 +9,8 @@
 # Those vendors DO name the files they write, each in its own log, and a listless run claimed the
 # whole workdir dirt of its time window — every path a co-tenant chat had edited in the same
 # minutes read as this run's (shared-invariants row am bounds the claim, and only a real list can
-# narrow it). The rule is fail-closed and whole-run: the list is exact only where every mutating
-# action named its target.
+# narrow it). The list is exact only where every mutating action named its target: a shell write
+# leaves it a floor, as on a claudeb run, and a call naming no target leaves it unknown.
 clear_stub
 unset CLAUDE_CODE_SESSION_ID
 set_config 'gemini_model=flash38' 'gemini_effort=high'
@@ -55,9 +55,9 @@ assert grep -qxF "RUN-FILE: $WORK/outside/agy-absolute" <<<"$report"
 # A file the run only READ is not a file it changed, and every listed path is one somebody will be
 # asked to review.
 assert test "$(grep -c 'agy-only-read' <<<"$report")" -eq 0
-# A read-only shell command does not spoil the list, but any shell at all makes the list a floor —
-# the same sentence claudeb's own runs carry, since it is the same fact about a transcript.
-assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
+# A read-only shell command leaves the list complete, as it leaves a claudeb run's: the same fact about a
+# transcript gets the same answer on every vendor.
+assert test "$(grep -c '^RUN-FILES-PARTIAL: ' <<<"$report")" -eq 0
 assert grep -qx 'bin/agy-written' "$WORK/transcript-files"
 assert test "$(grep -c '^UNKNOWN: ' "$WORK/transcript-files")" -eq 0
 assert test ! -e "$RUN_DIR/workdir-escape"
@@ -92,20 +92,19 @@ assert test "$(grep -c 'agy-write-failed' <<<"$report")" -eq 0
 # ARGUMENTS stripped: read instead of `transcript_full.jsonl` it can name no file ever again.
 assert grep -q 'transcript_full.jsonl' "$ROOT/share/worker-run-vendors.sh"
 
-# A shell command that WRITES leaves the run exactly as unanswerable as it was before any extractor
-# existed: the transcript names the editor calls and nothing names the redirect beside them.
+# A shell command that WRITES makes the list a floor, as on a claudeb run: the editor calls it names stay
+# listed, and what the redirect wrote is left to the UNNAMED claim beside them.
 AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_shell "printf hello > $agy_workdir/bin/agy-through-a-redirect" "$agy_workdir"
 } >"$AGY_TRANSCRIPT"
-assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+assert grep -qx 'RUN-FILES-PARTIAL: the run also ran shell commands, whose edits no transcript records' \
   <<<"$(transcript_report "$RUN_DIR")"
-assert grep -qx 'UNKNOWN: the run wrote through the shell, whose targets no transcript names' \
+assert grep -qx 'PARTIAL: the run also ran shell commands, whose edits no transcript records' \
   "$WORK/transcript-files"
-# And no path stands beside the UNKNOWN: half a list read as the whole of one is the claim the
-# fail-closed rule exists to refuse.
-assert test "$(grep -c 'agy-written' "$WORK/transcript-files")" -eq 0
+assert grep -qx 'bin/agy-written' "$WORK/transcript-files"
+assert test "$(grep -c '^UNKNOWN: ' "$WORK/transcript-files")" -eq 0
 
 # Numbered and ampersand redirects open files too, so every supported fd spelling spoils the list.
 AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
@@ -113,7 +112,7 @@ AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_shell 'printf one 1>one; printf two 2>two; printf three 3>three; printf all &>all' "$agy_workdir"
 } >"$AGY_TRANSCRIPT"
-assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+assert grep -qx 'RUN-FILES-PARTIAL: the run also ran shell commands, whose edits no transcript records' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # A redirect to a file descriptor or to /dev/null writes no file. Counted as a write it made every
@@ -131,10 +130,10 @@ AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
   agy_write write_to_file "$agy_workdir/bin/agy-written"
   agy_shell 'printf hidden >/dev/null.log' "$agy_workdir"
 } >"$AGY_TRANSCRIPT"
-assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+assert grep -qx 'RUN-FILES-PARTIAL: the run also ran shell commands, whose edits no transcript records' \
   <<<"$(transcript_report "$RUN_DIR")"
 
-# Comparison and arrow operators are not redirects; the shell still makes this exact editor list a floor.
+# Comparison and arrow operators are not redirects, and the list stays complete.
 AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
   agy_write write_to_file "$agy_workdir/bin/agy-written"
@@ -142,7 +141,7 @@ AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 } >"$AGY_TRANSCRIPT"
 report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
-assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
+assert test "$(grep -c '^RUN-FILES-PARTIAL: ' <<<"$report")" -eq 0
 
 # A tool this reader does not know is a tool whose targets it cannot name: agy's own image
 # generation names only the image's LABEL, and a subagent it invokes edits under a transcript of
@@ -201,7 +200,7 @@ rm -f "$AGY_TRANSCRIPT.moved"
 # --add-dir, worked THERE, and reported success — a green run over an untouched workdir, which is
 # the one failure a launcher cannot see. Not "a path outside the workdir", which is ordinary: the
 # signal is that NOTHING the run named is inside it. Said in the report and marked beside the run,
-# and said even where the list itself is unanswerable — the escape is the louder of the two facts.
+# and said even where the list is only a floor — the escape is the louder of the two facts.
 clear_stub
 AGY_TS=$(agy_iso $((EPOCHSECONDS + 60)))
 {
@@ -213,7 +212,7 @@ assert await_done
 report=$(transcript_report "$RUN_DIR")
 assert grep -qxF "WORKDIR-ESCAPE: the run named no path inside its own workdir; it worked in $WORK/extra/agy-went-elsewhere" \
   <<<"$report"
-assert grep -q '^RUN-FILES: unknown' <<<"$report"
+assert grep -qx 'RUN-FILES-PARTIAL: the run also ran shell commands, whose edits no transcript records' <<<"$report"
 assert grep -q '^RUN-FILES-RULE: claim only the files the result names' <<<"$("$RUNNER" report "$RUN_ID")"
 assert grep -qxF "$WORK/extra/agy-went-elsewhere" "$RUN_DIR/workdir-escape"
 # The same sentence in the report `wait` prints the moment the run ends, which computes no list of
@@ -292,11 +291,11 @@ assert grep -qx 'RUN-FILE: bin/cx-from-the-patch-text' <<<"$report"
 assert test "$(grep -c 'cx-patch-failed' <<<"$report")" -eq 0
 assert test "$(grep -c 'cx-patch-text-failed' <<<"$report")" -eq 0
 assert test "$(grep -c 'cx-no-event-failed' <<<"$report")" -eq 0
-assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
+assert test "$(grep -c '^RUN-FILES-PARTIAL: ' <<<"$report")" -eq 0
 assert grep -qx 'bin/cx-patched' "$WORK/transcript-files"
 
 # The watchdog parses a transcript again only once it moved, and no command after the first shell
-# write is classified: that write already settled the reason.
+# write is classified: that write already settled the floor.
 cp "$CX_ROLLOUT" "$WORK/memo-rollout.saved"
 mkdir -p "$WORK/memo-run" "$WORK/memo-shim"
 jq -n --arg w "$cx_workdir" '{vendor: "codex", account: "codexfiles", workdir: $w, started_at: 0}' \
@@ -317,7 +316,7 @@ chmod +x "$WORK/memo-shim/python3"
   memo_parse() { : >"$WORK/memo-shim/starts"; PATH="$WORK/memo-shim:$PATH" compute_transcript_files "$WORK/memo-run"; }
   memo_parse
   assert test "$(grep -c '' "$WORK/memo-shim/starts")" = 1
-  assert grep -q 'wrote through the shell' <<<"$RUN_FILES_REASON"
+  assert test "$RUN_FILES_PARTIAL" = 'the run also ran shell commands, whose edits no transcript records'
   first="$RUN_FILES_REASON|$RUN_FILES_LIST|$RUN_FILES_PARTIAL|$RUN_FILES_ESCAPE|$RUN_SHELL_COMMANDS"
   memo_parse
   assert test ! -s "$WORK/memo-shim/starts"
@@ -402,7 +401,7 @@ CX_TS=$(iso $((EPOCHSECONDS + 60)))
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_exec "const r = await tools.exec_command({\"cmd\":\"sed -i '' s/a/b/ bin/cx-through-the-shell\",\"workdir\":\"$cx_workdir\"}); text(r.output);"
 } >"$CX_ROLLOUT"
-assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+assert grep -qx 'RUN-FILES-PARTIAL: the run also ran shell commands, whose edits no transcript records' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # Single quotes and backticks are string literals like any other, and a call spelled with them reads.
@@ -502,7 +501,7 @@ CX_TS=$(iso $((EPOCHSECONDS + 60)))
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_exec "const r = await tools.exec_command({cmd:\"sed -i '' s/a/b/ bin/cx-bare-shell\",workdir:\"$cx_workdir\"}); text(r.output);"
 } >"$CX_ROLLOUT"
-assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+assert grep -qx 'RUN-FILES-PARTIAL: the run also ran shell commands, whose edits no transcript records' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # JavaScript shorthand arguments resolve through their string bindings.
@@ -518,7 +517,7 @@ CX_TS=$(iso $((EPOCHSECONDS + 60)))
   cx_patch_event "$cx_workdir/bin/cx-patched" '' true
   cx_call write_stdin '{"session_id":1,"chars":"cat header > bin/cx-typed-in\n"}'
 } >"$CX_ROLLOUT"
-assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+assert grep -qx 'RUN-FILES-PARTIAL: the run also ran shell commands, whose edits no transcript records' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # A tool this reader does not know: node's own REPL, a spawned subagent, an MCP server's write —

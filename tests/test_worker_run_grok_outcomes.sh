@@ -290,7 +290,7 @@ assert grep -qx 'RUN-FILES: 2' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/grok-written' <<<"$report"
 assert grep -qxF "RUN-FILE: $WORK/outside/grok-absolute" <<<"$report"
 assert test "$(grep -c 'grok-only-read' <<<"$report")" -eq 0
-assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
+assert test "$(grep -c '^RUN-FILES-PARTIAL: ' <<<"$report")" -eq 0
 assert test ! -e "$RUN_DIR/workdir-escape"
 
 # The reader takes only the run's meta and its session record: the cases down to the escape one
@@ -327,7 +327,7 @@ GROK_TS=$(($(date +%s) + 60))
     "$(jq -cn '{tool_name: "bash", tool_input: {command: "printf x > out.txt"}}')"
   grok_update u1 completed "$grok_workdir"
 } >"$GROK_UPDATES"
-assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+assert grep -qx 'RUN-FILES-PARTIAL: the run also ran shell commands, whose edits no transcript records' \
   <<<"$(transcript_report "$RUN_DIR")"
 
 # A mutating row with no usable time cannot be silently dropped out of the run's window.

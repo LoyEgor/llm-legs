@@ -272,9 +272,9 @@ attribution_repair_tests() {
     writes_through_shell 3<<<"$(jq -Rn --arg c "$1" '$c')" || rc=$?
     [ "$rc" -ne 1 ]
   }
-  # A window's shell commands are classified by one python3, and the first reason still wins: a write
-  # before an unnamed-target call is the shell's, one after it is not.
-  eval "$(sed -n '/^classify_tool_rows() {/,/^}/p' "$ROOT/share/worker-run-files.sh")"
+  # A window's shell commands are classified by one python3. A write makes the list a floor (PARTIAL) and
+  # keeps what the editor calls name; an unnamed-target call still makes it UNKNOWN wherever it stands.
+  eval "$(sed -n '/^classify_tool_rows() {/,/^}/p; /^resolve_tool_path() {/,/^}/p' "$ROOT/share/worker-run-files.sh")"
   eval "$(grep '^SHELL_FLOOR_PARTIAL=' "$ROOT/share/worker-run-files.sh")"
   mkdir -p "$WORK/py-shim"
   printf '#!/bin/sh\necho python3 >>"%s"\nexec "%s" "$@"\n' "$WORK/py-runs" "$(command -v python3)" >"$WORK/py-shim/python3"
@@ -282,31 +282,47 @@ attribution_repair_tests() {
   mkdir -p "$WORK/py-fail"
   printf '#!/bin/sh\nexit 2\n' >"$WORK/py-fail/python3"
   chmod +x "$WORK/py-fail/python3"
-  classified() ( # rows [python3 dir] -> the reason classify_tool_rows leaves
+  classified() ( # rows [python3 dir] -> the reason classify_tool_rows leaves, else `PARTIAL: <floor>`, then the list
     RUN_FILES_REASON='' RUN_FILES_PARTIAL='' RUN_FILES_ESCAPE='' RUN_FILES_OUTSIDE='' RUN_FILES_LIST=''
     PATH="${2:-$WORK/py-shim}:$PATH" classify_tool_rows "$1" "$WORK/workdir"
-    printf '%s\n' "$RUN_FILES_REASON"
+    printf '%s\n' "${RUN_FILES_REASON:-${RUN_FILES_PARTIAL:+PARTIAL: $RUN_FILES_PARTIAL}}"
+    [ -z "$RUN_FILES_LIST" ] || printf '%s\n' "$RUN_FILES_LIST"
   )
   # A classifier that fails counts the window's commands as a write.
-  assert test "$(classified $'C\tgit diff' "$WORK/py-fail")" = 'the run wrote through the shell, whose targets no transcript names'
+  assert test "$(classified $'C\tgit diff' "$WORK/py-fail")" = "PARTIAL: $SHELL_FLOOR_PARTIAL"
   rm -f "$WORK/py-runs"
-  assert test "$(classified $'C\tls\nC\tgrep x f\nC\techo a >f\nX\tTool')" = 'the run wrote through the shell, whose targets no transcript names'
+  assert test "$(classified $'C\tls\nC\tgrep x f\nC\techo a >f\nX\tTool')" = 'the transcript records a call whose file targets it does not name: Tool'
   assert test "$(wc -l <"$WORK/py-runs")" -eq 1
   assert test "$(classified $'C\tls\nX\tTool\nC\techo a >f')" = 'the transcript records a call whose file targets it does not name: Tool'
   assert test -z "$(classified $'C\tls\nC\tgrep x f')"
+  # The file an editor call names stays listed beside a shell write: the list is a floor, as a claudeb run's
+  # is, not thrown away (codex lost its apply_patch files that way, 19 runs in 30 days to 2026-10-29).
+  assert test "$(classified $'F\tbin/named\nC\techo a >f')" = "PARTIAL: $SHELL_FLOOR_PARTIAL"$'\n'"bin/named"
+  # Only a write makes the floor: a run whose shell only read keeps a complete list.
+  assert test "$(classified $'F\tbin/named\nC\tls')" = $'\n'"bin/named"
   for command in 'python3 -c "rewrite()"' 'python3 -' 'tee target' 'perl -pi -e s/a/b/ target' \
       'git apply changes.patch' 'patch -p1' 'mv source target' 'cp source target' \
       'install source target' 'bash tests/../rewrite.sh' 'printf data >target' 'grep x source >target' \
       'sed -n "1p" -e "w target" source' 'bash -c "rewrite"' 'unknown-command' \
       'grep "unterminated' 'printf "$(rewrite)"' 'pnpm install >/dev/null 2>&1' \
       "node -e 'items.filter(x => x)'" 'sed -i "" s/dirty/base/ bin/restored' \
-      $'grep base bin/restored # inspected\npython3 -c "rewrite()"'; do
+      $'grep base bin/restored # inspected\npython3 -c "rewrite()"' \
+      'for f in a b do rm "$f" done' 'for f in a b; do rm "$f"; done' 'find . -name x -exec rm {} ;' 'find . -delete' \
+      'sort -o out in' 'sort -uo out in' 'uniq in out' 'printf x >"$out"' '$cmd file' 'cat <(rm x)' 'echo $(rm x)' \
+      'git grep -O vim x'; do
     assert shell_writes "$command"
   done
+  # codex opens most runs by reading every CLAUDE.md up the tree in a loop; read as a write it cost the run its
+  # whole file list (99 of 295 shell-write runs in 30 days to 2026-10-29), and so did find, rg and nl.
   for command in '' 'grep x source' 'sed -n "1,5p" source' 'git diff --stat' \
       'bash tests/test_worker_run.sh' 'git status --short 2>/dev/null' \
       'grep x source | head -n 3' 'git diff 2>&1' \
-      "printf '%s' 'a >= b' 'x => x'"; do
+      "printf '%s' 'a >= b' 'x => x'" \
+      "for p in /CLAUDE.md /x/CLAUDE.md; do if [ -f \"\$p\" ]; then printf '\\n--- %s ---\\n' \"\$p\"; cat \"\$p\"; fi; done" \
+      'for d in / /x; do [ -f "$d/CLAUDE.md" ] && { echo "$d"; sed -n "1,220p" "$d/CLAUDE.md"; }; done' \
+      'find renders -maxdepth 2 -type f | sort' "rg -n 'a\\.b' --glob '*.html' | head -70" \
+      'nl -ba bin/x | sed -n "1,120p"' 'git -C /x status --short' 'while read -r l; do echo "$l"; done < list' \
+      'sort -u in | uniq -c'; do
     assert_fails shell_writes "$command"
   done
   attribution_fixture
