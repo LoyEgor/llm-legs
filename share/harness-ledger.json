@@ -11492,6 +11492,68 @@
       "handoff": null,
       "last_reviewed": "2026-10-29",
       "reviewed_by": "night fixer harness-speed-time-hung-20261029T053342Z-113e"
+    },
+    {
+      "id": "speed-refusal-english-gate",
+      "title": "Speed's refusal lever: english-gate denied Russian elsewhere in a worker-run call that hands no text to a model",
+      "match": {
+        "rule": "opportunity",
+        "ident": "refusal/english-gate\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:40:00+02:00",
+          "by": "night 20261029T012849Z-5e69 harness-speed-refusal-english-gate-sh-20261029T053212Z-225c",
+          "files": [
+            "claude-setup/hooks/english-gate.sh",
+            "claude-setup/tests/test_english_gates.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "english-gate at the night base vs the fix: exit code, stdout and stderr per Bash call",
+            "data": "1000 distinct launcher-bearing Bash commands of the last 3 days' transcripts (300 naming worker-run wait/stop/report/transcript/claim/browse/--help, 700 others; seed 5, cwd as recorded), scratch cwd /tmp, CLAUDE_PROJECT_DIR unset; plus the 24 denied payloads of the last 8 days rebuilt from transcripts",
+            "result": "1000/1000 identical (977 allow, 23 deny); the only calls that change are a worker-run segment with a non-text subcommand beside Russian text elsewhere in the command (the 2 denials of session e4ebb028, a `grep` pattern beside `worker-run --help`), pinned in tests/test_english_gates.sh (worker-run wait|report|stop|transcript|claim|browse|--help allowed, say|run|start and a later say still denied)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "handoff": null,
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night 20261029T012849Z-5e69 harness-speed-refusal-english-gate-sh-20261029T053212Z-225c",
+      "note": "2026-10-29: 19 english-gate denials in 7 days cost 158 s of recovery (0.38 min/day; the doctor's 0.59 is its 24 h window). By kind, read off the transcripts: about 11 true catches (Russian in a memory file, a handoff or a brief, a long Russian quote in `worker-run say`), 2 false catches fixed here, about 6 `brief cannot be read before this call runs` (4 of the last 3 days derive the brief by a redirect from another file or by a program, `sed ... src > brief`, `{ echo; cat src; } > brief`, `judge.py brief`, 2-13 s each; 2 older ones do not reproduce). The derived-brief denial is by design (tests/test_english_gates.sh pins `cat /src > brief` as deny: a brief whose text is not in the command cannot be checked before it exists) and lifting it narrows a deny class, the speed design's Never list; cut `read the derived brief's source operands and judge them` saves about 5 s x 1/day, costs a parser for sed/cat/printf operand forms inside a gate. Ruled out on that price. Older rows of the same message (2ddedf36 10-23, 233cceb1 10-24, heredoc written to a relative path then launched by an absolute one) predate the 10-23/10-25 argv fixes or are a cwd mismatch of the call itself; they replay as allow once the file exists, so they are not reproducible."
+    },
+    {
+      "id": "speed-hook-edit-conflict-notice-run-sessions",
+      "title": "Speed's hook lever: edit-conflict-notice grepped every worker run's session files on each Edit of a dirty file with a foreign journal entry",
+      "match": {
+        "rule": "opportunity",
+        "ident": "hooks/edit-conflict-notice\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T09:00:00+02:00",
+          "by": "night 20261029T012849Z-5e69 harness-speed-refusal-english-gate-sh-20261029T053212Z-225c",
+          "files": [
+            "claude-setup/hooks/edit-conflict-notice.sh",
+            "claude-setup/tests/test_edit_conflict_notice.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "edit-conflict-notice at the night base vs the fix: exit code, stdout and stderr per call; and the session lines the hook looks launchers up in (old: grep -Hx over every run's worker-session and session file) vs the new index plus live read",
+            "data": "200 interleaved pairs on a dirty file with three foreign journal owners, a fresh session per call, own marker store per variant, /bin/bash 3.2, scratch repo and EDIT_CONFLICT_DIR, the live worker-run store read-only (2066 run directories); the line sets compared on that store cold and warm; the hook's own suite for the fresh-run, open-then-finished and kept-index arms",
+            "result": "200/200 identical in exit, stdout and stderr; 3033/3033 session lines equal, cold and warm; mean 719 -> 386 ms, p50 602 -> 292 ms at load 73-82 (the old grep was 319 ms alone at that load, the warm read is a 14 ms mtime check). One difference by construction: the order of duplicate session ids across an unfinished and a finished run (no id in the store has two launchers: 0 of 2042)"
+          }
+        }
+      ],
+      "same_cause": [],
+      "handoff": null,
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night 20261029T012849Z-5e69 harness-speed-refusal-english-gate-sh-20261029T053212Z-225c",
+      "note": "2026-10-29: hook-time rows, 3 whole days: 82-219 of 960-2450 runs a day take over 300 ms and are 1.45-3.31 of the day's 1.5-7.7 hook minutes, p50 78-114 ms. The tail is the dirty-file path: with a foreign owner in the writes journal, same_owner loads run_sessions, a grep -Hx over 3000 worker-session/session files (0.3-1 s, 0.74 s in a bash -x trace of one call), the same cause as hook_grows_repos:edit-conflict-notice.sh (a chat in 5+ repositories meets more foreign rows). Fix: the finished runs' lines are an index beside unswept-runs (same stamp, extended with the directories touched since it, rebuilt whole after a day), only unswept runs are grepped; a worker-session or session file of a finished run is never written after exit_code (0 of 2987). Left: the clean path (git status 12 ms, the written blob's jq and hash-object 14 ms, rj_writes_note's git rev-parse 14 ms, dirname/date/wc forks, 3-5 ms each) is 70-110 ms of which an estimated 15 ms is a plain-checkout fast path for rj_writes_note's rev-parse; not built, it re-derives git's output (dubious-ownership and GIT_DIR cases differ) for about 0.2 min/day. Bash 3.2 `read -d ''` of a 360 KB file takes 1.1 s, which is why the index is grepped from its file and never read into a variable."
     }
   ],
   "blind_spots": [
