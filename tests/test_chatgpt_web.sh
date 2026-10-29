@@ -29,6 +29,8 @@ export PYTHONPYCACHEPREFIX="${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/pycache"
 export HOME="$WORK/home"
 export CHATGPT_WEB_DIR="$WORK/home/.chatgpt-web" GEMINI_WEB_DIR="$WORK/home/.gemini-web"
 export GEMINI_WEB_CHROME="$WORK/no-chrome.app"
+# The faked pages drive one job's own browser; the account server (CHATGPT_WEB_SHARED) runs only live.
+export CHATGPT_WEB_SHARED=0
 export CODEX_PROFILES_DIR="$WORK/codex-profiles" CODEXB_PROFILES_DIR="$WORK/codex-profiles"
 export WORKER_PICK_CONFIG_FILE="$WORK/pins" WORKER_CLAIMS_DIR="$WORK/claims" IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
 sidecar() { (. "$ROOT/share/image-leg.sh"; image_leg_sidecar "$1"); }

@@ -402,6 +402,7 @@ list_accounts() { # vendor
     jq -r --argjson now "$(date +%s)" '.accounts[] | select((.account // "") != "")
       | .account + "\t" + (.lock // "-" | if . == "" then "-" else . end) + "\t"
         + ((.last_used // 0 | tonumber? // 0) * 1000 | floor | tostring) + "\t"
+        + (.tabs // 1 | tostring) + "\t"
         + (if .login == false then "login needed"
           elif .roster == false then "out of pool"
           elif ((.walled_until // 0) | tonumber? // 0) > $now then "walled"
@@ -417,9 +418,9 @@ list_accounts() { # vendor
       gsub(/[[:space:]]+$/, "", name)
       gsub(/^[[:space:]]+/, "", rest)
       if (name == "") next
-      if (rest ~ /^(login needed|Not logged in)/) print name "\t-\t0\tlogin needed"
-      else if (rest ~ /\(out of pool\)/) print name "\t-\t0\tout of pool"
-      else print name "\t-\t0"
+      if (rest ~ /^(login needed|Not logged in)/) print name "\t-\t0\t1\tlogin needed"
+      else if (rest ~ /\(out of pool\)/) print name "\t-\t0\t1\tout of pool"
+      else print name "\t-\t0\t1"
     }
   '
 }
@@ -539,7 +540,7 @@ u_group=() u_take=() u_tid=() u_count=() u_mode=() u_pin=() u_state=() u_acct=()
 u_pid=() u_rc=() u_delivered=() u_notes=() u_not_before=() u_busy_since=() u_job=() u_spare=() u_row=()
 u_route=() u_started=() u_kill_at=() u_tree=() u_killed=()
 a_n=0
-a_vendor=() a_name=() a_live=() a_excl=() a_cool=() a_launches=() a_used=() a_why=() a_lock=() a_held=()
+a_vendor=() a_name=() a_live=() a_slots=() a_excl=() a_cool=() a_launches=() a_used=() a_why=() a_lock=() a_held=()
 limited_why=''
 rq_tid=()
 
@@ -562,16 +563,17 @@ account_index() { # vendor name -> account_at, its index (a_n + 1 when unknown)
   return 0
 }
 
-register_account() { # vendor name [last used ms] [lock file]
-  local i used=${3:-0} lock=${4:--}
+register_account() { # vendor name [last used ms] [lock file] [tabs]
+  local i used=${3:-0} lock=${4:--} tabs=${5:-1}
   [[ "$used" =~ ^[0-9]+$ ]] || used=0
+  [[ "$tabs" =~ ^[1-9][0-9]*$ ]] || tabs=1
   [ "$lock" != - ] || lock=''
   account_index "$1" "$2"
   i=$account_at
   if [ "$i" -gt "$a_n" ]; then
     a_n=$i
     a_vendor[i]=$1 a_name[i]=$2 a_live[i]=0 a_excl[i]='' a_cool[i]=0 a_launches[i]=0 a_used[i]=$used
-    a_lock[i]=$lock a_held[i]=0
+    a_lock[i]=$lock a_held[i]=0 a_slots[i]=$tabs
   else
     [ "$used" -le "${a_used[i]}" ] || a_used[i]=$used
     [ -z "$lock" ] || a_lock[i]=$lock
@@ -820,7 +822,8 @@ plan_group() { # request vendor
       # The roster only names the account's lock here: a pinned take never moves off it.
       roster_of "$vendor"
       register_account "$vendor" "${rq_account[r]}" 0 \
-        "$(awk -F'\t' -v a="${rq_account[r]}" '$1 == a { print $2; exit }' <<<"$roster_rows")"
+        "$(awk -F'\t' -v a="${rq_account[r]}" '$1 == a { print $2; exit }' <<<"$roster_rows")" \
+        "$(awk -F'\t' -v a="${rq_account[r]}" '$1 == a { print $4; exit }' <<<"$roster_rows")"
       g_target[g]=${rq_takes[r]}
       add_takes "$g" "${rq_takes[r]}" pinned "${rq_account[r]}" $((rq_takes[r] + 1))
       ;;
@@ -830,22 +833,22 @@ plan_group() { # request vendor
         add_static "$vendor" - skipped 'no accounts'
         return
       fi
-      while IFS=$'\t' read -r acct lock used skip; do
+      while IFS=$'\t' read -r acct lock used tabs skip; do
         [ -n "$acct" ] || continue
         if [ -n "${skip:-}" ]; then
           add_static "$vendor" "$acct" skipped "$skip"
           continue
         fi
-        register_account "$vendor" "$acct" "$used" "$lock"
+        register_account "$vendor" "$acct" "$used" "$lock" "$tabs"
         g_target[g]=$((g_target[g] + 1))
         add_unit "$g" 1 1 pinned "$acct" 0
       done <<<"$rows"
       ;;
     pool)
       roster_of "$vendor"; rows=$roster_rows
-      accounts=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "" && $4 == "" { print $1 "\t" $3 "\t" $2 }')
+      accounts=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "" && $5 == "" { print $1 "\t" $3 "\t" $2 "\t" $4 }')
       if [ -n "$every_n" ]; then
-        while IFS=$'\t' read -r acct lock used skip; do
+        while IFS=$'\t' read -r acct lock used tabs skip; do
           [ -z "$acct" ] || [ -z "${skip:-}" ] || add_static "$vendor" "$acct" skipped "$skip"
         done <<<"$rows"
         [ -n "$accounts" ] || [ -z "$rows" ] || return
@@ -854,7 +857,7 @@ plan_group() { # request vendor
         add_static "$vendor" - skipped 'no accounts'
         return
       fi
-      while IFS=$'\t' read -r acct used lock; do register_account "$vendor" "$acct" "$used" "$lock"; done <<<"$accounts"
+      while IFS=$'\t' read -r acct used lock tabs; do register_account "$vendor" "$acct" "$used" "$lock" "$tabs"; done <<<"$accounts"
       n=${rq_takes[r]} spares_n=0
       if [ -n "$every_n" ]; then
         n=$(printf '%s\n' "$accounts" | wc -l | tr -d ' ')
@@ -1040,7 +1043,7 @@ drain_stopping() {
     rc=0
     wait "${u_pid[u]}" 2>/dev/null || rc=$?
     g=${u_group[u]}
-    [ "${u_acct[u]}" -eq 0 ] || a_live[${u_acct[u]}]=0
+    [ "${u_acct[u]}" -eq 0 ] || a_live[${u_acct[u]}]=$((a_live[${u_acct[u]}] - u_count[u]))
     u_rc[u]=$rc
     u_delivered[u]=$(count_delivered "$u")
     if [ "${u_delivered[u]}" -gt 0 ]; then
@@ -1105,7 +1108,7 @@ busy_gave_up() { # unit now held-accounts -> 0 once the unit has waited busy_giv
 handle_exit() { # unit rc
   local u=$1 rc=$2 a delivered now g
   a=${u_acct[u]} g=${u_group[u]}
-  [ "$a" -eq 0 ] || a_live[a]=0
+  [ "$a" -eq 0 ] || a_live[a]=$((a_live[a] - u_count[u]))
   delivered=$(count_delivered "$u")
   now_ms; now=$clock_ms
   state_dirty=1
@@ -1147,6 +1150,12 @@ reap() {
   done
 }
 
+# An account runs one unit at a time; one whose engine serves several jobs from one browser (the roster's tabs:
+# chatgpt-web's account server) takes more while their takes fit them.
+slot_free() { # account unit
+  [ "${a_live[$1]}" = 0 ] || [ $((a_live[$1] + u_count[$2])) -le "${a_slots[$1]}" ]
+}
+
 pick_account() { # unit now -> picked, the account index (0 = the script picks); 1 = none free now, 2 = none left
   local u=$1 now=$2 a best='' vendor
   picked=''
@@ -1156,14 +1165,14 @@ pick_account() { # unit now -> picked, the account index (0 = the script picks);
     pinned)
       account_index "$vendor" "${u_pin[u]}"
       a=$account_at
-      [ "${a_live[a]-}" = 0 ] && [ "${a_cool[a]}" -le "$now" ] || return 1
+      [ -n "${a_live[a]-}" ] && slot_free "$a" "$u" && [ "${a_cool[a]}" -le "$now" ] || return 1
       picked=$a
       return 0
       ;;
   esac
   vendor_has_account "$vendor" || return 2
   for ((a = 1; a <= a_n; a++)); do
-    [ "${a_vendor[a]}" = "$vendor" ] && [ -z "${a_excl[a]}" ] && [ "${a_live[a]}" = 0 ] && [ "${a_cool[a]}" -le "$now" ] || continue
+    [ "${a_vendor[a]}" = "$vendor" ] && [ -z "${a_excl[a]}" ] && slot_free "$a" "$u" && [ "${a_cool[a]}" -le "$now" ] || continue
     if [ -z "$best" ] || [ "${a_used[a]}" -lt "${a_used[best]}" ] ||
       { [ "${a_used[a]}" -eq "${a_used[best]}" ] && [ "${a_launches[a]}" -lt "${a_launches[best]}" ]; }; then
       best=$a
@@ -1231,7 +1240,7 @@ launch_unit() { # unit account-index
   last_launch_at=$clock_ms
   u_started[u]=$last_launch_at
   if [ "$a" -ne 0 ]; then
-    a_live[a]=$u
+    a_live[a]=$((a_live[a] + u_count[u]))
     a_launches[a]=$((a_launches[a] + 1))
     a_used[a]=$last_launch_at
   fi
@@ -1245,6 +1254,8 @@ gap_open() {
   local u=$last_launch
   [ -n "$u" ] && [ "$gap_ms" -gt 0 ] || return 1
   [ "${u_state[u]}" = running ] || return 1
+  # A unit on a served account hands its job to that account's browser: no Chrome of its own to wait for.
+  [ "${u_acct[u]}" -eq 0 ] || [ "${a_slots[${u_acct[u]}]}" -le 1 ] || return 1
   now_ms
   [ $((clock_ms - last_launch_at)) -lt "$gap_ms" ] || return 1
   ! proc_tree "${u_pid[u]}" | awk -F'\t' '{ n = split($2, p, "/"); if (tolower(p[n]) ~ /chrom/) up = 1 } END { exit !up }' || return 1
@@ -1333,16 +1344,25 @@ if [ "$dry_run" = false ]; then
   while :; do
     reap
     drain_stopping
-    running=0 pending=0
+    # --max-parallel counts browsers: the units on one served account share its one.
+    running=0 pending=0 browsers=0 shared=' '
     for ((u = 1; u <= u_n; u++)); do
       case "${u_state[u]}" in
-        running|stopping) running=$((running + 1)) ;;
+        running|stopping)
+          running=$((running + 1))
+          a=${u_acct[u]}
+          if [ "$a" -eq 0 ] || [ "${a_slots[a]}" -le 1 ]; then
+            browsers=$((browsers + 1))
+          elif [[ "$shared" != *" $a "* ]]; then
+            browsers=$((browsers + 1)) shared+="$a "
+          fi
+          ;;
         pending) pending=$((pending + 1)) ;;
       esac
     done
     [ $((running + pending)) -gt 0 ] || break
     launched=0
-    if [ "$pending" -gt 0 ] && [ "$running" -lt "$max_parallel" ] && ! gap_open && try_launch; then
+    if [ "$pending" -gt 0 ] && [ "$browsers" -lt "$max_parallel" ] && ! gap_open && try_launch; then
       launched=1
     fi
     refresh_state

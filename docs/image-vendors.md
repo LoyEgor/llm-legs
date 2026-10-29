@@ -112,8 +112,8 @@ rotates its own signed-in gemini-web profiles instead). That role answers
 the least recently started eligible account, a never-started one first (shared-invariants row `dh`);
 every new generation, picked or pinned, stamps its start, and a `--resume` stamps nothing.
 
-**Scheduling.** At most one live job per vendor account and at most `--max-parallel` (6) jobs; a
-waiting job holds no slot. Primary takes launch before spares; a spare launches only when no primary
+**Scheduling.** At most one live job per vendor account (a roster `tabs` of 2, codex's account server: two)
+and at most `--max-parallel` (6) browsers; a waiting job holds no slot. Primary takes launch before spares; a spare launches only when no primary
 can. Image and video jobs run with `--lock-wait 5` (video: gemini-video forwards it to the Flow
 engine, grok-video waits that long for its account lock; both exit 5 busy) and `IMAGE_LEG_SCHEDULER=1`, which turns off the wrappers'
 own busy/limit fallback to the CLI route on the same account (direct wrapper calls keep it). Before a
@@ -154,8 +154,7 @@ Flow, codex web; video: gemini's `video.counts`) launch packed, up to its larges
 delivered variant is a take.
 `--pack N` (1-4) caps a pack, `--pack 1` opts out. Measured 2026-10-03: a Flow `--count 4` renders
 in the time of one image (9.4 s per image against 47 s unpacked) and holds one browser, not four; a
-ChatGPT `--count 3` is three chats in tabs of one browser on one account (2026-10-04, load ~30: 26-52 s
-for all three against 24 s for one).
+ChatGPT `--count 3` is three tabs of one browser (26-52 s against 24 s for one).
 Without `--takes` every logged-in account gets one pinned take, as before. Edits of a delivered
 take resume that take's session instead.
 An explicit `--account` (including `--accounts all`) is a pin and is not claimed.

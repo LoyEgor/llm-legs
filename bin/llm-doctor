@@ -244,7 +244,8 @@ BROWSER_REASONS = (
     ("browser not sent", re.compile(r"never sent", re.IGNORECASE)),
     ("browser price", re.compile(r"quotes \d+ credits|charged \d+ credits|the manifest says", re.IGNORECASE)),
     ("browser profile", re.compile(r"open in another Chrome|is already open|timed out waiting for \S+\.lock"
-                                   r"|signed in as .* bound to|Google Chrome not found", re.IGNORECASE)),
+                                   r"|signed in as .* bound to|Google Chrome not found"
+                                   r"|browser server of \S+ (?:did not come up|quit)", re.IGNORECASE)),
     ("browser upload", re.compile(r"upload|file ?chooser|frame slot never took|never showed up as a prompt ingredient",
                                   re.IGNORECASE)),
     ("browser download", re.compile(r"download|no video URL|not an mp4", re.IGNORECASE)),

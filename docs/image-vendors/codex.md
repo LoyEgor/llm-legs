@@ -254,14 +254,18 @@ when a codex home holds it, else the web's). Exit 5 without a fallback prints `A
   `route=web`, `phases=` when the engine reported them, and no `caps=` line (no CLI to version).
 - **`--count N`** (2-4, `web.counts`): N new chats of one request in N tabs of the one browser holding the
   account's lock, all loading at once, then each bound with its refs' upload started, then each sent in tab order once
-  its own upload is done (uploads one tab after another left the last send 10.7 s behind the first under load, median
-  of 26 ref packs), then every tab polled in one loop. Several variants asked in one chat come back as one image cut
-  into panels, or only the first image (live 2026-10-06), so variants are always tabs. The first take
+  its own upload is done, then every tab polled in one loop. Variants asked in one chat come back as one paneled
+  image, so variants are always tabs. The first take
   saved is `--dest`, the others print as `variant=<path> size=<WxH> session=<chat>` (`<stem>-2.<ext>`, …) the way
   Flow's do; a take that fails (a limit on its tab) while others deliver is a `failed=<n>` line and its reason on
   stderr, and a limit seen walls the account; none delivered fails as one take would. Never with `--resume`,
   `--region`, `--point`, `--remove-bg` or re-aspect, never on `--route cli` (image_gen renders one image), and
   no CLI fallback. `image-fanout` packs codex takes into one `--count` launch.
+- **Account server** (`chatgpt-web serve <account>`): a `generate` without `--region`/`--point` joins one
+  browser per account, holding `<account>.lock` until 60 s after its last job, over `locks/<account>.sock`; two
+  jobs from any run at a time (`slot-N.lock`) in tabs reused without a reload. 20 prompts, six accounts:
+  90-108 s against 194-198 s. An editor tool drains it first; `CHATGPT_WEB_SHARED=0` opts out; log
+  `logs/<account>-serve.log`.
 - **`--each <img>`** (2-4, web only): different images edited by one prompt, a tab each in one pack (tab k
   uploads image k, then the `--ref`s). Its bytes land at `<stem>.landing` (k = 1) or `<stem>-k.landing`; at
   the end tab k goes to `--dest` or `<stem>-k.<ext>` as a `take=<k>` line and the lone-edit block, composited
@@ -269,16 +273,13 @@ when a codex home holds it, else the web's). Exit 5 without a fallback prints `A
 - **Images project**: every new chat (one take, a `--count` tab, a `--ref` edit) opens on the account's own
   ChatGPT project "Images", so generations stay off the owner's chats. The engine finds it in the sidebar or
   creates it once with project-only memory (its chats neither read his other chats nor feed his memory) and
-  keeps its path as `project` in `accounts/<account>.json`; later runs open it directly (paired A/B 2026-10-06:
-  same open and render time as the home page). A `--resume` opens its own chat. A failed lookup leaves new chats
+  keeps its path as `project` in `accounts/<account>.json`; later runs open it directly. A `--resume` opens its own chat. A failed lookup leaves new chats
   on the home page (`project_failed` ledger row, retried after a day); a project the owner deleted is forgotten
   (`project_gone`). ChatGPT still lists project chats under Recents unless that browser's Recents menu has
   Show > Projects unchecked; the checkbox is local to each browser, never the account's.
 - **Stalled replies**: a new chat's page that shows no image `STALL_S` (90 s) after the send is reloaded, again
-  every 90 s until `--timeout`: the image often lands server-side while the page never shows it (4 of 5 stalls on
-  2026-10-04; the fifth was ChatGPT itself stuck on "Thinking"). Stalls are mostly a `--count` thing (13 of 92 pack
-  takes, 0 of 56 lone ones below load 200; a lone take stalls under heavier load too), and a stalled take's image was mostly there already: it showed 3-5 s after the
-  reload. So once one take of a pack lands, every still-blank sibling is reloaded `SIBLING_S` (20 s) later, and a
+  every 90 s until `--timeout`: the image often lands server-side while the page never shows it (4 of 5 stalls). Stalls are mostly a `--count` thing (13 of 92 pack takes, 0 of 56 lone ones below load 200), and
+  the image mostly showed 3-5 s after the reload. So once one take of a pack lands, every still-blank sibling is reloaded `SIBLING_S` (20 s) later, and a
   take still blank `STRAGGLER_S` (180 s) after the last sibling landed fails as `failed=` instead of holding the
   pack to `--timeout`. Each reload is a `reloaded` row in `jobs.jsonl` with `cause` `stall|sibling`.
   A resume or an editor tool is never reloaded: a reload can re-issue the old images' srcs, read then as new.
@@ -295,16 +296,16 @@ when a codex home holds it, else the web's). Exit 5 without a fallback prints `A
   `comment`, `remove-bg`). A failure with exit 3, 4 or 5 moves on to the next candidate.
 - **Exit codes**: 3 (`CODEX_USAGE_LIMIT`) when the page shows its image limit — the stated reset time
   becomes the account's wall in `walls.json`, else `gw.WALL_SECONDS` — and 4 when the profile is signed out
-  or was never signed in. 5 = account busy: its lock (`<account>.lock`) was not taken within `--lock-wait`.
+  or was never signed in. 5 = account busy past `--lock-wait`.
   A pinned `--account` that is walled is refused unsent with exit 3 and the wall's end.
 - **Timing**: the JSON result carries `job` (`IMAGE_JOB_ID`), `phases` (seconds since engine start at `lock`,
   `browser`, `page`, `sent`, `media`, `saved`), `lock_wait_s`, and on failure `sent`; the job ledger rows
   carry the same, and a `{"kind": "teardown", "account", "route", "close_s"}` row times the browser close.
 - **Never**: a call of a ChatGPT backend endpoint or a replayed request. The page's own `/backend-api/me`
   reply is read passively for the email and its `accounts/check` replies for the plan; the image is the
-  page's own `blob:` src of the generated-image gallery, read inside the page (full size, e.g. 1374×1145).
+  page's own `blob:` src of the generated-image gallery, read inside the page at full size.
 
 Verified live 2026-10-01 (burkhartor, Plus): the session read, Chat mode, composer, file input, attachment
-chip, send, the gallery image and its blob download, new chat and resume with a ref. Still unseen: the
+chip, send, the gallery image's blob download, new chat and resume with a ref. Still unseen: the
 stop button's label (streaming also counts the idle composer button being absent) and the limit wording
 (`LIMIT`, `LIMIT_CUE`, `LIMIT_WHEN`).

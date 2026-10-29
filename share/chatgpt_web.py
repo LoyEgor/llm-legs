@@ -16,11 +16,16 @@ import argparse
 import base64
 import contextlib
 import datetime
+import fcntl
 import json
 import os
 import re
+import select
+import socket
+import subprocess
 import sys
 import time
+import types
 import urllib.parse
 from pathlib import Path
 
@@ -48,6 +53,16 @@ STALL_S = 90
 SIBLING_S = 20
 # The latest a stalled take landed after its last sibling was 128 s (2026-10-03); a dead one held its pack 600 s.
 STRAGGLER_S = 180
+# One browser per account, kept by `chatgpt-web serve`, takes the generate jobs of every run on that account over
+# a socket, SLOTS at a time, in tabs that stay open: a tab done with its image moves to the next new chat through
+# the sidebar instead of reloading the app. The Mac's CPU is what a batch waits on (load 160-190 with 20 pages
+# opening at once, ChatGPT's own render still 21-24 s). 20 different prompts on six accounts through image-fanout,
+# 2026-10-30: 90 and 108 s against 194 and 198 s with a Chrome per job. CHATGPT_WEB_SHARED=0 opts out.
+SHARED = os.environ.get("CHATGPT_WEB_SHARED", "1") != "0"
+SLOTS = 2
+SERVE_IDLE_S = 60
+SERVE_UP_S = 120
+TAB_TAKES = 10
 LOAD_S = 45
 POLL_MS = 500
 PROJECT = "Images"
@@ -1044,7 +1059,7 @@ def generate_on(account: str, args) -> dict:
         gw.note_started(account)
     for attempt in range(2):
         try:
-            return render_on(account, args, meta)
+            return served(account, args) if serving(args) else render_on(account, args, meta)
         except Exception as error:
             cause = error
             crashed = isinstance(error, gw.Failure) and error.extra.get("crashed")
@@ -1055,6 +1070,432 @@ def generate_on(account: str, args) -> dict:
                 raise
             gw.ledger({"kind": KIND, "event": "browser_retry", "account": account,
                        "reason": "TargetClosedError"})
+
+
+def lock_file(account: str, part: str) -> Path:
+    return ROOT / "locks" / f"{account}.{part}"
+
+
+def try_flock(path: Path):
+    """The open handle of path with its lock now held here, or None while another process holds it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+def lock_busy(path: Path) -> bool:
+    handle = try_flock(path)
+    if handle:
+        handle.close()
+    return handle is None
+
+
+def held_slots(account: str) -> int:
+    return sum(lock_busy(lock_file(account, f"slot-{n}.lock")) for n in range(1, SLOTS + 1))
+
+
+def take_slots(account: str, need: int) -> list | None:
+    """`need` of the account's job slots, held, or None; the last free one also takes full.lock, the lock the
+    fan-out probes. None while a job outside the server holds the account's own lock."""
+    if gw.busy(account) and not lock_busy(lock_file(account, "serve.lock")):
+        return None
+    handles = []
+    for n in range(1, SLOTS + 1):
+        if len(handles) < need and (handle := try_flock(lock_file(account, f"slot-{n}.lock"))):
+            handles.append(handle)
+    if len(handles) < need:
+        for handle in handles:
+            handle.close()
+        return None
+    if held_slots(account) == SLOTS and (full := try_flock(lock_file(account, "full.lock"))):
+        handles.append(full)
+    return handles
+
+
+def claimed_slots(accounts: list[str], wait_s: float, need: int):
+    """gw.claimed for the account servers: (account, None) with `need` of its job slots held until the caller
+    moves on, idle accounts first, then the least busy; (account, Failure 5) for each one still full after the
+    wait."""
+    left = list(accounts)
+    while left:
+        started, got = time.monotonic(), None
+        while True:
+            got = next(((name, handles) for name in sorted(left, key=held_slots)
+                        if (handles := take_slots(name, need))), None)
+            if got or time.monotonic() - started >= wait_s:
+                break
+            time.sleep(0.5)
+        gw.lock_waited += time.monotonic() - started
+        if not got:
+            for account in left:
+                yield account, gw.Failure(5, f"account busy: timed out waiting for {account}.slot-N.lock after {wait_s:.0f}s")
+            return
+        gw.phase("lock")
+        account, handles = got
+        left.remove(account)
+        try:
+            yield account, None
+        finally:
+            for handle in handles:
+                handle.close()
+
+
+def serving(args) -> bool:
+    return SHARED and args.tool == "generate" and not args.region and not args.point
+
+
+def lines(sock):
+    """The JSON lines a socket sends, one per next(); None once it closed or stayed quiet past its timeout."""
+    buffer = b""
+    while True:
+        while b"\n" not in buffer:
+            try:
+                chunk = sock.recv(65536)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                yield None
+                return
+            buffer += chunk
+        line, buffer = buffer.split(b"\n", 1)
+        yield json.loads(line)
+
+
+def ask(path: Path, request: dict, timeout_s: float) -> tuple[bool, dict | None]:
+    """(True, the server's reply, None when it died mid-job), or (False, None) when no server took the job."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        try:
+            sock.connect(str(path))
+            sock.sendall((json.dumps(request) + "\n").encode())
+        except OSError:
+            return False, None
+        replies = lines(sock)
+        sock.settimeout(30)
+        if not next(replies):
+            return False, None
+        gw.phase("browser")
+        sock.settimeout(timeout_s)
+        return True, next(replies)
+
+
+def spawn_server(account: str, log: Path) -> None:
+    """Through a shell that backgrounds it: no descendant of this job, whose whole process tree the fan-out kills
+    when it stops a take."""
+    log.parent.mkdir(parents=True, exist_ok=True)
+    env = {name: value for name, value in os.environ.items() if name != "IMAGE_JOB_ID"}
+    subprocess.run(["/bin/sh", "-c", '"$@" </dev/null >>"$SERVE_LOG" 2>&1 &', "sh", sys.executable,
+                    str(Path(__file__).resolve()), "serve", account],
+                   env={**env, "SERVE_LOG": str(log)}, start_new_session=True, check=False)
+
+
+def drain_server(account: str) -> None:
+    """A job the server does not run (an editor tool) waits for the account's own lock: its server takes no new
+    job, finishes the ones it has and quits now instead of SERVE_IDLE_S later."""
+    if lock_busy(lock_file(account, "serve.lock")):
+        ask(lock_file(account, "sock"), {"drain": True}, 5)
+
+
+def served(account: str, args) -> dict:
+    """The job done by the account's server, started here when none runs; one that closed without taking it (it
+    was going idle) is asked again."""
+    started = time.time()
+    request = {"prompt": args.prompt, "dest": args.dest, "ref": args.ref, "each": args.each, "count": args.count,
+               "resume": args.resume, "timeout": args.timeout, "job": os.environ.get("IMAGE_JOB_ID") or None}
+    path, log = lock_file(account, "sock"), ROOT / "logs" / f"{account}-serve.log"
+    deadline, spawned = time.monotonic() + SERVE_UP_S, 0.0
+    while True:
+        taken, reply = ask(path, request, args.timeout * 2 + 300)
+        if taken:
+            break
+        if time.monotonic() > deadline:
+            raise gw.Failure(1, f"the browser server of {account} did not come up within {SERVE_UP_S}s; see {log}",
+                             crashed=True)
+        if time.monotonic() - spawned > 5 and not lock_busy(lock_file(account, "serve.lock")):
+            spawn_server(account, log)
+            spawned = time.monotonic()
+        time.sleep(0.25)
+    queued = time.time() - started
+    if reply is None:
+        raise gw.Failure(1, f"the browser server of {account} quit mid-job; see {log}", crashed=True)
+    offset = gw.PHASES.get("browser", 0.0)
+    gw.PHASES.update({name: round(offset + at, 2) for name, at in reply.get("phases", {}).items()})
+    gw.LOADS.update(reply.get("loads", {}))
+    if not reply.get("ok"):
+        failure = gw.Failure(reply["code"], reply["reason"], **reply.get("extra", {}))
+        failure.shot = reply.get("shot") or ""
+        raise failure
+    result = reply["result"]
+    result["seconds"].update(harness=round(result["seconds"]["harness"] + queued, 1),
+                             total=round(time.time() - started, 1))
+    return result
+
+
+class Tab:
+    def __init__(self, page):
+        self.page, self.session, self.job, self.used, self.dirty, self.loading = page, Session(page), None, 0, True, False
+
+    def load(self, home: str) -> None:
+        """The page starts loading now, its composer awaited when the tab gets its take."""
+        with contextlib.suppress(Exception):
+            self.page.goto(f"{SITE}{home}", wait_until="commit", timeout=LOAD_S * 1000)
+            self.loading = True
+
+
+class Job:
+    """One run's request on the server: its takes, each a new chat (or the resumed one) in a tab of its own."""
+
+    def __init__(self, conn, request: dict):
+        self.conn, self.args = conn, types.SimpleNamespace(**request)
+        self.received, self.phases, self.loads = time.monotonic(), {}, {}
+        self.waiting, self.running = list(range(self.args.count)), []
+        self.delivered, self.failures = [], []
+        self.sent_at = self.straggle_until = self.session = None
+
+    def phase(self, name: str) -> None:
+        self.phases[name] = round(time.monotonic() - self.received, 2)
+        self.loads[name] = round(os.getloadavg()[0], 1)
+
+    def refs(self, index: int) -> list[str]:
+        return [self.args.each[index], *self.args.ref] if self.args.each else self.args.ref
+
+    def tab_of(self, index: int) -> dict:
+        return {"tab": index + 1} if self.args.count > 1 else {}
+
+
+def target_closed(error: BaseException | None) -> bool:
+    while error is not None:
+        if error.__class__.__name__ == "TargetClosedError":
+            return True
+        error = error.__cause__
+    return False
+
+
+def next_chat(tab: Tab, account: str, home: str) -> None:
+    """A new chat in a tab done with its last one, through the sidebar's link to `home` with no reload of the
+    app; a new, failed or long-used tab loads the page anew."""
+    page = tab.page
+    if not tab.dirty and not tab.loading and tab.used < TAB_TAKES:
+        with contextlib.suppress(Exception):
+            page.locator(f"a[href='{home}']").first.click(timeout=5000)
+            page.wait_for_url(lambda url: "/c/" not in url, timeout=10000)
+            open_chat(page, tab.session, account, None, navigate=False)
+            return
+    open_new(page, tab.session, account, home, navigate=not (tab.loading and page.url.startswith(SITE)))
+    tab.used = 0
+
+
+def start_take(job: Job, index: int, tab: Tab, account: str, home: str, meta: dict) -> None:
+    args, page = job.args, tab.page
+    tab.job = job
+    page.bring_to_front()
+    if args.resume:
+        open_chat(page, tab.session, account, args.resume)
+    else:
+        next_chat(tab, account, home)
+    tab.dirty, tab.loading, tab.used = False, False, tab.used + 1
+    bind(account, tab.session, meta)
+    job.phase("page")
+    gw.close_promos(page, account)
+    attach(page, job.refs(index))
+    before = probe(page)
+    send(page, args.prompt)
+    job.phase("sent")
+    job.sent_at = job.sent_at or time.monotonic()
+    job.session = job.session or tab.session
+    gw.ledger({"kind": KIND, "event": "sent", "account": account, "chat": args.resume, "job": args.job,
+               "refs": len(job.refs(index)), "resume": bool(args.resume), **job.tab_of(index)})
+    job.running.append((index, tab, Watch(page, account, before, None if args.resume else STALL_S)))
+
+
+def failed_take(job: Job, index: int, tab: Tab, account: str, error: Exception, chat: str | None) -> None:
+    failure = take_failure(error)
+    if target_closed(error):
+        failure.extra["crashed"] = True
+    failure.shot = gw.snapshot(types.SimpleNamespace(pages=[tab.page]), account, gw.failure_text(failure))
+    chat = failure.extra.get("chat") or chat or chat_of(tab.page.url) or job.args.resume
+    job.failures.append((index + 1, failure, chat))
+    gw.ledger({"kind": KIND, "event": "failed", "account": account, "chat": chat, "code": failure.code,
+               "job": job.args.job, **job.tab_of(index)})
+    if failure.code == 4:
+        gw.note_owner_action(account, failure.reason)
+    tab.dirty = True
+
+
+def poll_take(job: Job, entry: tuple, context, account: str) -> bool:
+    """True once the take is over: its image saved or its failure noted."""
+    index, tab, watch = entry
+    args = job.args
+    try:
+        src = watch.step()
+        if not src:
+            if watch.late(args.timeout):
+                raise watch.late(args.timeout)
+            if job.straggle_until and time.time() > job.straggle_until:
+                gw.limit_hit.hit("chatgpt-web.straggler", STRAGGLER_S, "s", "drop",
+                                 f"take {index + 1} on {account}: no image {STRAGGLER_S:.0f} s after its last sibling landed",
+                                 "share/chatgpt_web.py:STRAGGLER_S = ")
+                raise gw.Failure(1, f"no image {STRAGGLER_S:.0f}s after the last sibling take landed; it may "
+                                    f"still land in chat {watch.chat or 'unknown'}", chat=watch.chat)
+            return False
+        job.phase("media")
+        path = gw.variant_path(Path(args.dest), index if args.each else len(job.delivered))
+        size, fmt = save_image(context, tab.page, src, path)
+        job.phase("saved")
+    except Exception as error:  # noqa: BLE001
+        failed_take(job, index, tab, account, error, watch.chat)
+        return True
+    chat = watch.chat or args.resume
+    job.delivered.append({"path": str(path), "chat": chat, "bytes": size, "format": fmt, "tab": index + 1})
+    gw.ledger({"kind": KIND, "event": "saved", "account": account, "chat": chat, "dest": str(path), "bytes": size,
+               "format": fmt, "refs": len(job.refs(index)), "resume": bool(args.resume), "job": args.job,
+               **job.tab_of(index)})
+    if args.count > 1:
+        job.straggle_until = time.time() + STRAGGLER_S
+        for _, _, other in job.running:
+            other.reload_by(time.time() + SIBLING_S)
+    return True
+
+
+def job_reply(job: Job, account: str, meta: dict) -> dict:
+    """What render_on (one take) or render_takes (--count, --each) would have returned or raised."""
+    out = {"phases": job.phases, "loads": job.loads}
+    failures = sorted(job.failures, key=lambda row: row[0])
+    limits = [failure for _, failure, _ in failures if failure.code == 3]
+    if not job.delivered:
+        failure = max(limits, key=lambda failure: failure.extra["until"]) if limits else failures[0][1]
+        return {**out, "ok": False, "code": failure.code, "reason": failure.reason, "extra": failure.extra,
+                "shot": getattr(failure, "shot", "")}
+    session, first, now = job.session, job.delivered[0], time.monotonic()
+    if session.plan and session.plan != meta.get("plan"):
+        meta.update(gw.write_meta(account, plan=session.plan))
+    gw.note_owner_action(account, None)
+    result = {"ok": True, "account": account, "chat": first["chat"],
+              "url": f"{SITE}/c/{first['chat']}" if first["chat"] else None, "dest": first["path"],
+              "format": first["format"], "bytes": first["bytes"], "plan": session.plan}
+    if job.args.count > 1:
+        result.update({"count": job.args.count, "takes": job.delivered, "failed": len(failures),
+                       "failures": [{"tab": tab, "code": failure.code, "reason": failure.reason, "chat": chat}
+                                    for tab, failure, chat in failures],
+                       **({"walled_until": max(failure.extra["until"] for failure in limits)} if limits else {})})
+    result["seconds"] = {"harness": round(job.sent_at - job.received, 1), "render": round(now - job.sent_at, 1),
+                         "total": round(now - job.received, 1)}
+    return {**out, "ok": True, "result": result}
+
+
+def reply(job: Job, payload: dict) -> None:
+    with contextlib.suppress(OSError):
+        job.conn.sendall((json.dumps(payload) + "\n").encode())
+    job.conn.close()
+
+
+def accept_job(listener, draining: bool) -> Job | str | None:
+    """The job a run sent, "drain" for a drain request (answered here), None when nothing is taken: a draining
+    server closes on a job unanswered, and its run asks the next server."""
+    conn, _ = listener.accept()
+    try:
+        conn.settimeout(10)
+        request = next(lines(conn))
+        if not isinstance(request, dict):
+            raise ValueError("no request")
+        if request.get("drain"):
+            conn.sendall(b'{"accepted": true}\n{"ok": true}\n')
+            conn.close()
+            return "drain"
+        if draining:
+            raise ValueError("draining")
+        job = Job(conn, request)
+        conn.sendall(b'{"accepted": true}\n')
+        conn.settimeout(30)
+        return job
+    except (OSError, ValueError, TypeError):
+        conn.close()
+        return None
+
+
+def cmd_serve(args) -> None:
+    """The account's browser server (CHATGPT_WEB_SHARED=1), started by the first generate on it: every run's
+    generate jobs on the account come in over its socket, and it quits SERVE_IDLE_S after the last one. It holds
+    the account's own lock all along, so status, login and the editor tools wait for it to go."""
+    account, me = args.account, try_flock(lock_file(args.account, "serve.lock"))
+    if not me:
+        return
+    path, jobs = lock_file(account, "sock"), []
+    with gw.file_lock(gw.lock_path(account), wait_s=900), gw.browser(account) as context:
+        meta = gw.read_meta(account)
+        tabs = [Tab(context.pages[0] if context.pages else context.new_page())]
+        home = project_home(tabs[0].page, tabs[0].session, account, meta)
+        tabs[0].load(home)
+        with contextlib.suppress(OSError):
+            path.unlink()
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(path))
+        listener.listen(16)
+        print(f"serve {account}: up", file=sys.stderr, flush=True)
+        idle_since, most, draining = time.monotonic(), max(take_counts()), False
+        try:
+            while jobs or not draining and time.monotonic() - idle_since < SERVE_IDLE_S:
+                for sock in select.select([listener, *(job.conn for job in jobs)], [], [], 0)[0]:
+                    if sock is listener:
+                        job = accept_job(listener, draining)
+                        if job == "drain":
+                            draining = True
+                            print(f"serve {account}: drain asked, taking no new job", file=sys.stderr, flush=True)
+                        elif job:
+                            jobs.append(job)
+                        continue
+                    job = next(job for job in jobs if job.conn is sock)
+                    with contextlib.suppress(OSError):
+                        if sock.recv(1):
+                            continue
+                    print(f"serve {account}: job {job.args.job} gone before its image", file=sys.stderr, flush=True)
+                    jobs.remove(job)
+                    job.conn.close()
+                    for _, tab, _ in job.running:
+                        tab.job, tab.dirty = None, True
+                waiting = sum(len(job.waiting) for job in jobs) - sum(tab.job is None for tab in tabs)
+                for _ in range(min(waiting, most - len(tabs))):
+                    tabs.append(Tab(context.new_page()))
+                    tabs[-1].load(home)
+                for job in jobs:
+                    while job.waiting and (tab := next((tab for tab in tabs if tab.job is None), None)):
+                        index = job.waiting.pop(0)
+                        try:
+                            start_take(job, index, tab, account, home, meta)
+                        except Exception as error:  # noqa: BLE001
+                            failed_take(job, index, tab, account, error, None)
+                            tab.job = None
+                for job in list(jobs):
+                    for entry in list(job.running):
+                        if poll_take(job, entry, context, account):
+                            job.running.remove(entry)
+                            entry[1].job = None
+                    if not job.waiting and not job.running:
+                        payload = job_reply(job, account, meta)
+                        reply(job, payload)
+                        jobs.remove(job)
+                        print(f"serve {account}: job {job.args.job} {'ok' if payload['ok'] else payload['reason'][:120]}"
+                              f" in {time.monotonic() - job.received:.1f}s", file=sys.stderr, flush=True)
+                for tab in [tab for tab in tabs[SLOTS:] if tab.job is None]:
+                    with contextlib.suppress(Exception):
+                        tab.page.close()
+                    tabs.remove(tab)
+                if jobs:
+                    idle_since = time.monotonic()
+                tabs[0].page.wait_for_timeout(POLL_MS)
+        finally:
+            with contextlib.suppress(OSError):
+                path.unlink()
+            listener.close()
+            for job in jobs:
+                reply(job, {"ok": False, "code": 1, "reason": f"the browser server of {account} closed mid-job",
+                            "extra": {"crashed": True}})
+        print(f"serve {account}: {'drained' if draining else f'idle {SERVE_IDLE_S} s'}, closing", file=sys.stderr,
+              flush=True)
 
 
 def region_arg(text: str) -> tuple[float, float, float, float]:
@@ -1134,7 +1575,11 @@ def cmd_generate(args) -> None:
                                 "back on for one, or pin it in ~/.claude/worker-model")
         raise gw.Failure(3, "every signed-in ChatGPT account is walled by its image limit (walls.json)")
     skipped: list[tuple[str, gw.Failure]] = []
-    with contextlib.closing(gw.claimed(candidates, args.lock_wait)) as picks:
+    if SHARED and pinned and not serving(args):
+        drain_server(pinned)
+    picks = (claimed_slots(candidates, args.lock_wait, min(args.count, SLOTS)) if serving(args)
+             else gw.claimed(candidates, args.lock_wait))
+    with contextlib.closing(picks) as picks:
         for account, refusal in picks:
             try:
                 if refusal:
@@ -1185,7 +1630,8 @@ def cmd_accounts(args) -> None:
         rows.append({"account": name, "login": gw.has_login(name), "roster": gw.in_pool(name),
                      "email": mask_email(meta.get("email")),
                      "plan": meta.get("plan"), "walled_until": walled.get(name), "last_used": used.get(name),
-                     "lock": str(gw.lock_path(name))})
+                     "lock": str(lock_file(name, "full.lock") if SHARED else gw.lock_path(name)),
+                     **({"tabs": SLOTS} if SHARED else {})})
     gw.emit({"ok": True, "accounts": rows})
 
 
@@ -1202,6 +1648,9 @@ def main() -> None:
     p.set_defaults(func=cmd_status)
     p = sub.add_parser("accounts", help="codex profiles with their login, bound email, plan and walls")
     p.set_defaults(func=cmd_accounts)
+    p = sub.add_parser("serve", help="the account's browser server (CHATGPT_WEB_SHARED=1); generate starts it")
+    p.add_argument("account", type=gw.account_arg)
+    p.set_defaults(func=cmd_serve)
     p = sub.add_parser("generate")
     p.add_argument("--prompt", required=True)
     p.add_argument("--dest", required=True)
