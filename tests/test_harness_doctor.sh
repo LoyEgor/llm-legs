@@ -417,6 +417,24 @@ for command, want in (("ls -la | grep x", True), ("cat f 2>/dev/null", True), ("
 EOF
 asserts=$((asserts + 1))
 
+python3 - "$DOCTOR" <<'EOF' || fail "wait_call counted a sleep outside any loop as a poll loop, or lost a real one"
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(module)
+for command, shape, every in (
+        ("for s in a b; do (run $s > $s.log 2>&1 &); done; sleep 100; ls out", "sleep 100", None),
+        ("while read l; do echo $l; done < f; sleep 20; tail log", "sleep 20", None),
+        ("until ! pgrep -f x; do sleep 15; done", "loop, sleep 15", 15.0),
+        ("sleep 30; until grep -q x run.log; do sleep 5; done; tail run.log", "loop, sleep 5", 5.0),
+        ("i=0; while [ $i -lt 9 ]; do\n  sleep 2\ndone", "loop, sleep 2", 2.0),
+        ("for i in 1; do for j in 2; do sleep 1; done; sleep 2; done; sleep 50", "loop, sleep 2", 2.0),
+        ("echo to do; sleep 5; echo done", "sleep 5", None)):
+    got = module.wait_call(command)
+    assert got and got[1] == shape and got[2] == every, (command, got)
+EOF
+asserts=$((asserts + 1))
+
 # A run that hands over to Speed ends in os.execv, which skips atexit: what it learned of fix landings is
 # saved before the exec, or every run walks git again for the same commits.
 python3 - "$DOCTOR" "$WORK/landings/fix-landings.json" <<'EOF' || fail "a run exec'd into Speed without saving its fix landings"
