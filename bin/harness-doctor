@@ -6741,7 +6741,10 @@ def fix_audit_verdicts():
     return out
 
 
-def hold_verdicts(now, held):
+def hold_verdicts(now, held, journaled=None):
+    """Each live limiter's hold, each leaked hold file, and a limiter holding past hold_note_s whose class wrote no
+    wait journal row in wait_classes' days (its writer's hold_clear never calls wait_note: Wait classes cannot see
+    its jobs wait however long)."""
     live, leaked = read_holds()
     stuck, stuck_s = stuck_queues(now)
     out = []
@@ -6760,6 +6763,14 @@ def hold_verdicts(now, held):
             evidence=[evidence(h["since"], "holds/" + h["file"], "%s · %s" % (held_of(h).get("what"), h.get("why")),
                                str(held_of(h).get("session") or held_of(h).get("cwd") or "")) for h in holds],
             bad=len(holds)))
+        if journaled is not None and limiter not in journaled and longest >= LIMITS["hold_note_s"]:
+            out.append(verdict(
+                "hold_unjournaled", limiter, len(holds), 0, "holds", 24 * 8, len(holds), "watch",
+                fact="%s holds %d job%s, longest %s, and journaled no wait in 8 days: its hold_clear writes no "
+                     "wait_note row, so Wait classes never shows it" % (
+                         limiter, len(holds), "" if len(holds) == 1 else "s", fmt_long(longest)),
+                evidence=[evidence(holds[0]["since"], "holds/" + holds[0]["file"], "no %s row in waits/" % limiter)],
+                bad=len(holds)))
     for limiter, holds in sorted(leaked.items()):
         out.append(verdict(
             "limiter_hold_leak", limiter, len(holds), 0, "files", 0, len(holds), "watch",
@@ -6864,8 +6875,8 @@ def night_walled_line(now):
     return out
 
 
-def waits_classes_section(now):
-    classes, today = wait_classes(now)
+def waits_classes_section(now, read=None):
+    classes, today = read or wait_classes(now)
     reasons = {}
     for item in read_jsonl(os.path.join(wait_dir(), today + ".jsonl")) or ():
         secs = item.get("seconds")
@@ -7174,6 +7185,7 @@ def collect(write, now):
     dismissed, blind = unjournaled_dismissals(hooks, judging)
     raw["windows"] = slow_periods
     periods, week = periods_section(summaries, raw, tests, now, hooks)
+    waits_read = wait_classes(now)
     sections = [waits_section(calls, cuts, samples_h, week, now),
                 slow_section(slow_periods, now),
                 floors_section(view, hook_names(hooks), now),
@@ -7188,7 +7200,7 @@ def collect(write, now):
                 push_section(now),
                 pages_section(now),
                 browser_section(now, write),
-                waits_classes_section(now),
+                waits_classes_section(now, waits_read),
                 limits_section(now)]
     growth_part = growth_section(growth, now, spool_backlog(now))
     if growth_part:
@@ -7227,7 +7239,7 @@ def collect(write, now):
                                    fact="ledger %s dropped: %s" % (where, "; ".join(why)),
                                    evidence=[evidence(now, "ledger:" + where, "; ".join(why))], bad=1),
                            pid="ledger:" + where, group="Ledger") for where, why in sorted(by_row.items())]
-    holds, leaked_holds = hold_verdicts(now, held_now)
+    holds, leaked_holds = hold_verdicts(now, held_now, waits_read[0])
     for v in holds:
         v["group"] = HOLDS_GROUP
     speed = read_json(os.path.join(folder, "latest.json"), {}).get("speed")

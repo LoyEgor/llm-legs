@@ -12777,13 +12777,6 @@
       "would_catch_if": "a gate record carried the tool_use id and the watcher event the write it saw"
     },
     {
-      "id": "wait-journal-throttle-py",
-      "what": "logo-bench-throttle waits: none reaches the wait journal",
-      "reason": "logo-vectorizer-bench bench/throttle.py copies hold_raise/hold_clear but not wait_note, and tests/test_consistency.sh checks only its hold path, so Wait classes shows no logo-bench-throttle class however long its jobs wait",
-      "since": "2026-10-05",
-      "would_catch_if": "tests/test_consistency.sh asserted every row dc writer also calls wait_note in hold_clear"
-    },
-    {
       "id": "worktree-growth-unseen-until-landing",
       "what": "ungated instruction-file growth written in a linked worktree, which shows only when it lands in a main checkout, at the landing's time and with the landing chat as its writer",
       "reason": "the watcher prunes worktrees (_instruction_class_files) and an ungated write leaves no gate record, so harness-doctor's sibling-landing credit has nothing to join; seen 2026-10-05, w7_patch.py at 13:45:47Z read as the 16:35:05Z fast-forward",

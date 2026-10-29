@@ -2175,6 +2175,9 @@ jq '.rows = []' "$ROOT/share/harness-ledger.json" > "$WORK/hold-ledger.json"
 mkdir -p "$WORK/held-memlogd"
 jq -n --argjson now "$held_now" '{as_of: $now, queue_stuck_s: 1800, queues: [
   {limiter: "bench-throttle", stuck: true}, {limiter: "suite-slots", stuck: false}]}' > "$WORK/held-memlogd/chats.json"
+mkdir -p "$WORK/held/waits"
+jq -cn --argjson at $((held_now - 5 * 86400)) '{class: "suite-slots", source: "suite", started: $at, seconds: 12, pid: 1}' \
+  > "$WORK/held/waits/$(date -r $((held_now - 5 * 86400)) +%Y-%m-%d).jsonl"
 run_held() {
   HARNESS_LEDGER="$WORK/hold-ledger.json" RUN_SUITES_SLOTS_DIR="$WORK/no-slots" WORKER_SLOTS_DIR="$WORK/no-slots" \
     HARNESS_HOLDS_DIR="$holds" HARNESS_DOCTOR_DIR="$WORK/held" HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" \
@@ -2190,6 +2193,9 @@ assert_eq "$(jq -cn --arg b "gone-$dead_pid.json" --arg d "reused-$reused_pid.js
   "$(jq -c '[.problems[] | select(.rule | startswith("limiter_hold")) | [.id, .state, .count, .evidence[0].ref, .fact]] | sort' \
     "$WORK/held/latest.json")" \
   "a hold over 60 s is a watch, red only in a queue chat-load judged stuck, one under 60 s nothing; a dead pid's file and one whose pid started after since a leak"
+assert_eq '[["hold_unjournaled:bench-throttle","watch",3,"holds/bench-throttle-1.json"]]' \
+  "$(jq -c '[.problems[] | select(.rule == "hold_unjournaled") | [.id, .state, .count, .evidence[0].ref]]' "$WORK/held/latest.json")" \
+  "a limiter holding over 60 s whose class journaled no wait in 8 days is a watch (its hold_clear writes no wait_note); one with a wait row 5 days ago, or under 60 s, is not"
 assert_eq 2 "$(grep -c $'^[1-9][0-9]*\t.*holds [0-9]* jobs*, longest [0-9]* min: memory pressure' "$WORK/held/menu.txt")" \
   "the doctor's menu names each hold over 60 s, what it holds, for how long and why"
 mkdir -p "$WORK/worker-slots/1" && echo "$$" > "$WORK/worker-slots/1/pid"
