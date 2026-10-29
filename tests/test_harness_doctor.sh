@@ -1347,6 +1347,8 @@ check(judged(part) == {("growth-ungated", "~/.claude/skills/tool"): "red"}
 put(os.path.join(skill, "SKILL.md"), "---\nname: tool\n---\n")
 check(judged(health(G, events=[dict(install, files=refs, bytes=[5000] * 40)])) == {},
       "J Guards: growth only in an installed skill's on-demand files is not judged")
+check(judged(health(G, events=[change(T - 600, os.path.join(home, "p", "skills-on-demand", "rare", "SKILL.md"), 5000)])) == {},
+      "J Guards: growth of a skills-on-demand SKILL.md, which no chat lists, is not judged")
 plugin = os.path.join(home, ".claude", "plugins", "cache", "market", "kit", "0.5.0")
 landed = [os.path.join(plugin, "skills", n, "SKILL.md") for n in ("a", "b", "b/upstream")] + [os.path.join(plugin, "CLAUDE.md")]
 part = health(G, events=[dict(change(T - 610), files=landed[:2] + [os.path.join(plugin, "skills", "a", "ref.md")],

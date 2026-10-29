@@ -10703,6 +10703,64 @@
       "reviewed_by": "fixer harness-hooks-20261020T113858Z-147d",
       "note": "menu/2026-10-20.tsv: automation p50 ~80 ms 10-18/19, then 4.5-8.3 s builds at 02:40-03:05 and 12:12-12:17 and 1.5-2.8 s ones at 13:05-14:47; the 6-8 s ones match AX's 6 s messaging timeout on an unresponsive app (the hung Terminal of hammerspoon@d607320), since hs.window.find walks every app's windows. The rest of buildMenu (getStatus, Presence, AwdlGuard, iPad modules) is under 1 ms; sections are cached and rebuilt under backgroundMenu. Not fixed, outside the click: the hammerspoon repo's init.lua/display_mirror.lua ask hs.application.get(\"BetterDisplay\"/\"Jump Desktop Connect\") by name, which takes the same window walk whenever that app is not running (hs-lag, not menu_build). The same code fix landed first as 0cf6ca11; its renderer harness fakes no hs.application.get, so a call errors (red on the old code).",
       "handoff": null
+    },
+    {
+      "id": "guards-growth-skills-on-demand-experiment",
+      "title": "skills-on-demand/experiment SKILL.md +4496 B ungated, 2026-10-28T15:25:45Z: a move out of ~/.claude/skills, read as growth",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/claude\\-setup/skills\\-on\\-demand/experiment$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T06:00:00+02:00",
+          "by": "harness-guards-20261029T053107Z-055d",
+          "files": [
+            "bin/harness-doctor",
+            "tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "guards-growth-skills-on-demand-impeccable"
+      ],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-guards-20261029T053107Z-055d",
+      "note": "claude-setup@5ca90871 (Egor 2026-10-28) moved skills/experiment to skills-on-demand/experiment behind commands/experiment.md: the watcher journaled DELETED ~/.claude/skills/experiment/SKILL.md -4496 and ADDED skills-on-demand/experiment/SKILL.md +4496 in the same second, then a -131/+95 Edit the bloat gate passed. Cause: growth_root priced every SKILL.md as every-chat context, but a skills-on-demand skill is listed by no chat (reached only through a typed command or a word family naming its body path), so the rule's goal (design §11: context every chat loads unaudited) was missed. Fixed: growth_root reads every file of a skill whose parent dir is skills-on-demand as on-demand (test_harness_doctor 'J Guards: growth of a skills-on-demand SKILL.md, which no chat lists, is not judged', red on the old code). The listed wrapper commands/<name>.md stays judged as its own root. Checked: no symlink in ~/.claude/skills or any project .claude/skills points into skills-on-demand. Not fixed: a move between two listed roots (skills/a to skills/b) still reads as growth of the new root, since the doctor joins no DELETED+ADDED pair of equal bytes.",
+      "handoff": null,
+      "ruled_at": null
+    },
+    {
+      "id": "guards-growth-skills-on-demand-impeccable",
+      "title": "skills-on-demand/impeccable SKILL.md +1265 B ungated, 2026-10-29T01:15:28Z: the vendor upgrade 4.0.4 to 4.8.0 of an on-demand skill",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/claude\\-setup/skills\\-on\\-demand/impeccable$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T06:00:00+02:00",
+          "by": "harness-guards-20261029T053107Z-055d",
+          "files": [
+            "bin/harness-doctor",
+            "tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "guards-growth-skills-on-demand-experiment"
+      ],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-guards-20261029T053107Z-055d",
+      "note": "The chat 'Rental project career requirements' (77a2b895, Rentiva) installed impeccable 4.8.0 into a temp project and mv'd the fresh files over claude-setup/skills-on-demand/impeccable (gitignored third-party skill since claude-setup@845a4341, 4.0.4 kept as impeccable.4.0.4.bak); the mv no gate reads, so only the watcher saw it. The skill is reached only through commands/impeccable.md (disable-model-invocation, typed only) and its ⚡ word family (claude-setup@747547d2), so its SKILL.md loads in no chat unasked. Same cause and fix as guards-growth-skills-on-demand-experiment. Ruled out: an Updater doctor run (no doctors run or brief names it since 2026-10-20).",
+      "handoff": null,
+      "ruled_at": null
     }
   ],
   "blind_spots": [

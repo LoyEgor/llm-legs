@@ -4558,13 +4558,15 @@ def write_classes(paths):
 
 def growth_root(path, skills):
     """(root, on_demand): the skill directory, else the docs tree, else the file. A skill's files other than
-    its SKILL.md load only when it runs, not the every-chat context growth_min_b prices (design §11)."""
+    its SKILL.md load only when it runs, not the every-chat context growth_min_b prices (design §11); so does
+    every file of a skill under skills-on-demand, which no chat lists."""
     parent = os.path.dirname(path)
     while parent != os.path.dirname(parent):
         if parent not in skills:
             skills[parent] = os.path.isfile(os.path.join(parent, "SKILL.md"))
         if skills[parent]:
-            return parent, not (os.path.dirname(path) == parent and os.path.basename(path).upper() == "SKILL.MD")
+            return parent, (os.path.basename(os.path.dirname(parent)) == "skills-on-demand"
+                            or not (os.path.dirname(path) == parent and os.path.basename(path).upper() == "SKILL.MD"))
         parent = os.path.dirname(parent)
     parts = path.split("/")
     if "docs" in parts[:-1]:
