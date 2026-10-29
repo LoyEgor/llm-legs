@@ -70,6 +70,7 @@ SELECTORS = {
     "stop": "form button[aria-label^='Stop'], button[data-testid=stop-button]",
     "idle": "form button[aria-label='Start Voice'], form button[aria-label='Send']",
     "remove": "form button[aria-label^='Remove']",
+    "uploading": "form [class*=animate-spin], form [role=progressbar], form circle",
     "login": f"{LOGIN_BUTTON}, button:text-is('{LOGIN_TEXT}'){OUTSIDE_CHAT}, a:text-is('{LOGIN_TEXT}'){OUTSIDE_CHAT}",
     "assistant": "[data-turn-key] [data-chatgpt-search-message-ids]:not([data-chatgpt-search-unit-key$=':user']), "
                  "[data-message-author-role=assistant]",
@@ -110,6 +111,12 @@ SEEN = """const seen = el => { const r = el.getBoundingClientRect();
   const ready = sel => { const b = [...document.querySelectorAll(sel)].find(seen);
     return !!b && !b.disabled && !b.closest('[aria-disabled=true]'); };"""
 SEND_READY = "(sel) => { " + SEEN + " return ready(sel.send); }"
+# A reference still uploading shows a spinner and a progress ring over its thumbnail while the send button stays
+# lit on some accounts, and a click then is swallowed: the send waited out SEND_CHECK_S and clicked again (live
+# 2026-10-29: ~9.5 s from typed to sent on borodatch, com and locomthebest against ~2.3 s on egbogd and rawilimo,
+# the ring gone ~1 s after the button lit). Awaited for UPLOAD_S at most, then the send goes on as before.
+UPLOADED = "(sel) => { " + SEEN + " return ![...document.querySelectorAll(sel.uploading)].some(seen); }"
+UPLOAD_S = 15
 # A send took when the prompt left the composer or a reply started streaming. A click the page swallows
 # leaves the prompt sitting in the composer while the job waits out the whole image timeout (live
 # 2026-10-15: two takes idled 600 s each with the send button lit). A posted turn counts too: ChatGPT puts the
@@ -505,6 +512,8 @@ def send(page, prompt: str, wait_s: float = 120) -> None:
     page.keyboard.insert_text(prompt)
     button = live(page, "send").first
     await_send_ready(page, wait_s)
+    with contextlib.suppress(Exception):
+        page.wait_for_function(UPLOADED, arg=SELECTORS, timeout=UPLOAD_S * 1000, polling=100)
     head = " ".join(prompt.split())[:40]
     turns = page.locator(SELECTORS["user"]).count()
     for attempt in range(SEND_TRIES):
