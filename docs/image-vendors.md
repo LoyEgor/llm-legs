@@ -324,8 +324,8 @@ tile on another account; a tile is taken as its first render lands, and the pack
 are stopped: the slow tile's tail is cut at up to twice the images (`--no-copies` opts out). A failed tile
 goes to the next free account (2 renders at most; an account that sent nothing hands it on at no cost).
 Renders are registered onto their tiles (SIFT) and cross-faded; a tile still missing is named (exit 1),
-`logs/` holds a log per pack. 2752x1536 wall, 2026-10-29: photo, 4 tiles, 70 s (no copies 81 s, one tab per
-account 162 s); strong, 2 takes, 146-156 s; restore x2, 16 tiles, 146 s on 3 browsers, 315 s on 1. The floor
+`logs/` holds a log per pack. 2752x1536 wall, 2026-10-29: photo, 4 tiles, 51-68 s (no copies 60-83 s, 4
+runs each); strong, 2 takes, 146-156 s; restore x2, 16 tiles, 146 s on 3 browsers, 315 s on 1. The floor
 is ChatGPT's own render, 30-75 s a tile.
 
 ```bash
