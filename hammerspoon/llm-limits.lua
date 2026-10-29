@@ -1606,7 +1606,7 @@ end
 
 -- review-bench doctor's classes as one group row. A class the ledger does not know is new — also
 -- every class while llm-doctor has no document, when the row counts the snapshot's own classes.
-local function machineryRow(snapshot, statuses, counted)
+local function buildMachineryRow(snapshot, statuses, counted)
   local items = {}
   local found = 0
   if snapshot then
@@ -1658,13 +1658,28 @@ local function machineryRow(snapshot, statuses, counted)
   return { title = infoTitle("Review machinery: " .. text, count > 0, count == 0), menu = items }, count
 end
 
+-- The snapshot and document tables are the cached decodes, so the row is rebuilt only when either
+-- file changed, the counted figure moved or the rescan started or ended.
+local machineryMemo = {}
+local function machineryRow(snapshot, document, counted)
+  local rescanning = taskRunning(M.doctorRescanTask)
+  local memo = machineryMemo
+  if memo.row and memo.snapshot == snapshot and memo.document == document and memo.counted == counted
+    and memo.rescanning == rescanning then
+    return memo.row, memo.count
+  end
+  local row, count = buildMachineryRow(snapshot, machineryStatuses(document), counted)
+  machineryMemo = { snapshot = snapshot, document = document, counted = counted, rescanning = rescanning,
+    row = row, count = count }
+  return row, count
+end
+
 -- One row per group of the document; each counts the problems the collector filed under it (never
 -- legs or events), so the rows sum to problem_count. Returns that sum.
 local function appendDoctorBlocks(items, snapshot)
   local document = readLlmDoctor()
   local groups = document and type(document.groups) == "table" and document.groups or {}
-  local machinery, total = machineryRow(snapshot, machineryStatuses(document),
-    document and (tonumber(groups.machinery) or 0) or nil)
+  local machinery, total = machineryRow(snapshot, document, document and (tonumber(groups.machinery) or 0) or nil)
   local shown = { machinery = true }
   local judged
   for _, entry in ipairs(document and document.blocks or {}) do
