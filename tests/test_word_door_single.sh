@@ -16,7 +16,7 @@ GRANT_READ='words_grant_fresh|(^|[/"'\''])grant\.([$]|[{]|[a-z])'
 # path<TAB>reason
 ALLOWED=$(cat <<'EOF'
 bin/night-run	the hold records the grant's excerpt as his words; it decides nothing on it
-share/llm-launch.sh	the launch guard: an LLM chat starts LLM work only under his fresh «сделай апдейт» grant (or his sweep span)
+share/llm-launch.sh	the launch guard: an LLM chat starts LLM work only under his fresh «сделай апдейт» grant (or his sweep span, or his WORD= quote words.sh attests)
 EOF
 )
 

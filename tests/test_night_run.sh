@@ -131,7 +131,7 @@ assert lg sweep
 assert last_launch '.what == "the probe" and .by == "egor" and .allowed == true and (.at | test("^[0-9-]{10}T[0-9:]{8}Z$"))'
 assert lg update
 assert_fails lg sweep CLAUDE_CODE_SESSION_ID=chat-g
-assert grep -qxF "LLM_LAUNCH_REFUSED: the probe starts only on Egor's own act: his click in the Doctors menu or his word «сделай чистку» in this chat. Tell him so in one line; never start it another way." "$WORK/err"
+assert grep -qxF "LLM_LAUNCH_REFUSED: the probe starts only on Egor's own act: his click in the Doctors menu, his word «сделай чистку» in this chat, or a sentence of his last message asking for it now: write \`⚡ понял без хука: sweep\` and run it with WORD='<that sentence>' heading the call. With no such sentence tell him so in one line; never start it another way." "$WORK/err"
 assert last_launch '.by == "chat-g" and .allowed == false'
 assert_fails lg update CLAUDE_CODE_SESSION_ID=chat-g
 assert grep -qF '«сделай апдейт»' "$WORK/err"
@@ -154,11 +154,56 @@ assert_fails lg sweep CLAUDE_CODE_SESSION_ID=chat-g WORKER_RUN_ID=w-1
 assert last_launch '.by == "worker:w-1" and .allowed == false'
 assert_fails lg sweep CLAUDE_LAUNCHER_SESSION=l-1
 assert last_launch '.by == "l-1" and .allowed == false'
+# His sentence the chat read as the order, quoted in WORD= (`⚡ понял без хука: sweep`), opens one launch (Egor
+# 2026-10-29: «с моим словом даже без точного»): his own words from his latest message, naming the night, unspent.
+# It arms the sweep span as «сделай чистку» does, and the journal says by=word.
+mkdir -p "$WORK/tr/projects/p"
+said() { # session text -> his newest message in the chat's transcript
+  jq -nc --arg t "$2" --arg u "u-$RANDOM" '{type: "user", uuid: $u, message: {content: $t}}' >>"$WORK/tr/projects/p/$1.jsonl"
+}
+wl() { lg "$@" CLAUDE_TRANSCRIPT_ROOTS="$WORK/tr"; }
+said chat-w 'так, запускай ночи. и ещё глянь логи'
+assert_fails wl sweep CLAUDE_CODE_SESSION_ID=chat-w
+assert grep -qF "write \`⚡ понял без хука: sweep\` and run it with WORD='<that sentence>'" "$WORK/err"
+assert last_launch '.by == "chat-w" and .allowed == false'
+assert_fails wl sweep CLAUDE_CODE_SESSION_ID=chat-w WORD='запускай ночи сейчас'
+assert grep -qF '(WORD= was not found in his last message.)' "$WORK/err"
+assert_fails wl sweep CLAUDE_CODE_SESSION_ID=chat-w WORD='и ещё глянь логи'
+assert grep -qF 'the quoted words must at least name it' "$WORK/err"
+assert_fails wl sweep CLAUDE_CODE_SESSION_ID=chat-w WORKER_RUN_ID=w-2 WORD='так, запускай ночи'
+assert last_launch '.by == "worker:w-2" and .allowed == false'
+assert wl sweep CLAUDE_CODE_SESSION_ID=chat-w WORD='так, запускай ночи'
+assert last_launch '.by == "word" and .allowed == true'
+assert [ "$(cut -d' ' -f2- "$HOME/.cache/claude/review-journal/span-arm-chat-w")" = 'words sweep' ]
+# The span ends with the round; the spent sentence never reopens the night.
+printf '%s\n' "$(($(date +%s) + 1))" >"$HOME/.cache/claude/review-journal/span-off-chat-w"
+assert_fails wl sweep CLAUDE_CODE_SESSION_ID=chat-w WORD='так, запускай ночи'
+assert grep -qF '(WORD= that quote was already spent on a sweep.)' "$WORK/err"
+# The update the same way, naming it by its family's aliases; it leaves the grant «сделай апдейт» leaves, which the
+# detached pass asks again, and once that ages out the spent sentence opens nothing.
+said chat-u 'обновление вендоров запусти сейчас, пожалуйста'
+assert_fails wl update CLAUDE_CODE_SESSION_ID=chat-u
+assert_fails wl update CLAUDE_CODE_SESSION_ID=chat-u WORD='обновление всех вендоров'
+assert_fails wl update CLAUDE_CODE_SESSION_ID=chat-u WORD='вендоров запусти сейчас'
+assert_fails wl update CLAUDE_CODE_SESSION_ID=chat-u WORKER_RUN_ID=w-3 WORD='обновление вендоров запусти сейчас'
+assert wl update CLAUDE_CODE_SESSION_ID=chat-u WORD='обновление вендоров запусти сейчас'
+assert last_launch '.by == "word" and .allowed == true'
+assert wl update CLAUDE_CODE_SESSION_ID=chat-u
+touch -t "$(date -v-40M +%Y%m%d%H%M)" "$WORK/words/chat-u/grant.update"
+assert_fails wl update CLAUDE_CODE_SESSION_ID=chat-u WORD='обновление вендоров запусти сейчас'
+assert grep -qF 'already spent' "$WORK/err"
 # night-run start asks it first: refused before any record, lock or chat, whatever night is open.
 nights_before=$(ls "$NIGHTS")
 assert_fails env -u WORKER_RUN_ID CLAUDE_CODE_SESSION_ID=chat-x WORDS_LIB="$WORK/no-words.sh" bash "$ROOT/bin/night-run" start --cleanup 2>"$WORK/err"
 assert grep -qF 'LLM_LAUNCH_REFUSED: the night starts only on' "$WORK/err"
 assert [ "$(ls "$NIGHTS")" = "$nights_before" ]
+assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
+# With his sentence quoted it passes the guard: the open night, not the guard, stops this start.
+said chat-n 'запускай ночи'
+assert_fails env -u WORKER_RUN_ID CLAUDE_CODE_SESSION_ID=chat-n WORD='запускай ночи' WORDS_LIB="$WL" WORDS_DIR="$WORK/words" \
+  CLAUDE_TRANSCRIPT_ROOTS="$WORK/tr" bash "$ROOT/bin/night-run" start 2>"$WORK/err"
+assert grep -qF "night $id is still running" "$WORK/err"
+assert last_launch '.what == "the night" and .by == "word" and .allowed == true'
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
 assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "command", "note",
   "doctors_before", "doctors_after", "doctor_states_after",
