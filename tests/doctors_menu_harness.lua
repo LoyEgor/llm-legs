@@ -636,6 +636,40 @@ check(text(staleItem.title) == summary("LLM", 2) and sameColor(colorAt(staleItem
   and text(staleDetails[2].title) == "original detail" and egorLayer({ staleItem }),
   "a stale doctor is a DIM name with its count; the full status and original rows sit in details")
 limits.llmDoctorEntry = realEntry
+do
+  local function settle(path) os.execute("touch -t 202001010000 '" .. dir .. path .. "'") end
+  local function machineryRow()
+    local row = find(limits.llmDoctorEntry().menu, "Review machinery")
+    return row, row and row.menu
+  end
+  local document = llmDocument("problems", 1)
+  document.groups = { machinery = 1 }
+  document.blocks[1].machinery.classes = { { class = "anchors", status = "open", count = 2 } }
+  write("/llm-doctor/latest.json", document)
+  write("/snapshot.json", { as_of = now, total = 2, anomalies = { anchors = 2 }, rows = {} })
+  settle("/llm-doctor/latest.json")
+  settle("/snapshot.json")
+  local firstRow, firstMenu = machineryRow()
+  local secondRow, secondMenu = machineryRow()
+  check(firstRow and text(firstRow.title) == "Review machinery: 1 problem" and find(firstMenu, "anchors: 2 · open")
+    and find(firstMenu, "  … 2 more") and find(firstMenu, "Refresh"),
+    "the Review machinery row lists the snapshot class with its status")
+  check(secondRow == firstRow and secondMenu == firstMenu,
+    "a repeat build over unchanged snapshot and document reuses the Review machinery row, built once")
+  write("/snapshot.json", { as_of = now, total = 3, anomalies = { anchors = 3 }, rows = {} })
+  settle("/snapshot.json")
+  local changedRow, changedMenu = machineryRow()
+  check(changedRow ~= firstRow and find(changedMenu, "anchors: 3 · open") and find(changedMenu, "  … 3 more"),
+    "a rewritten snapshot rebuilds the Review machinery row")
+  limits.doctorRescanTask = { isRunning = function() return true end }
+  local scanningRow, scanningMenu = machineryRow()
+  limits.doctorRescanTask = nil
+  local idleRow, idleMenu = machineryRow()
+  check(scanningRow ~= changedRow and find(scanningMenu, "rescanning…") and not find(scanningMenu, "Refresh")
+    and idleRow ~= scanningRow and find(idleMenu, "Refresh") and not find(idleMenu, "rescanning…"),
+    "a rescan starting or ending rebuilds the Review machinery row")
+  write("/snapshot.json", { as_of = now, total = 0, anomalies = {} })
+end
 remove("/speed-doctor/hs/" .. os.date("%Y-%m-%d") .. ".tsv")
 remove("/doctors/red-days.jsonl")
 remove("/code-doctor/latest.json")
