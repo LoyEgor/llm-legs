@@ -248,6 +248,7 @@ run_result_text() {
 complete_run() {
   local directory="$1" code="$2" vendor run_status
   fold_run_anchors "$directory"
+  rm -f "$directory/dirty-stat" "$directory"/families/*/dirty-stat
   vendor=$(jq -r .vendor "$directory/meta.json")
   if [ ! -f "$directory/result" ]; then
     if run_result_text "$directory" "$vendor" >"$directory/result.tmp.$$"; then

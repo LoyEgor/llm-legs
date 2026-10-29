@@ -214,13 +214,30 @@ sys.stdout.buffer.write(b"".join(path + b"\n" for path in shaped))
 # A symlink's git blob is the link text, never the target. `test -f` follows the link, so a
 # symlink-to-dir or a dangling link hashed as `-` and read as a deletion.
 # NUL-terminated top-relative paths in, `<sha>\t<path>` rows out; `-` where git cannot hash one.
-hash_workdir_paths() { # top
+# A stat cache (the before pass writes it, the after pass reads it) keeps a path's sha while its lstat,
+# taken before the hash, is unchanged: a write moves ctime, and a 2000-file dirty tree re-hashed 100 MB.
+hash_workdir_paths() { # top [stat-cache]
   python3 -c '
 import os, stat, subprocess, sys, tempfile
 
 top = sys.argv[1]
+cache = sys.argv[2] if len(sys.argv) > 2 else ""
 paths = [path for path in sys.stdin.buffer.read().split(b"\0") if path]
 shas = [b"-"] * len(paths)
+keys = [b""] * len(paths)
+known = {}
+if cache:
+    try:
+        with open(cache, "rb") as fh:
+            records = fh.read().split(b"\0")
+    except OSError:
+        records = []
+    if records and records[0] == os.fsencode(top):
+        for record in records[1:]:
+            key, _, rest = record.partition(b"\t")
+            sha, tab, path = rest.partition(b"\t")
+            if tab:
+                known[path] = (key, sha)
 
 
 def hash_into(indices, names, flags):
@@ -255,10 +272,14 @@ root = os.fsencode(top) + b"/"
 files, links = [], []
 for i, path in enumerate(paths):
     try:
-        mode = os.lstat(root + path).st_mode
+        st = os.lstat(root + path)
     except OSError:
         continue
-    if stat.S_ISLNK(mode):
+    mode = st.st_mode
+    keys[i] = b"%d %d %d %d %d %d" % (st.st_dev, st.st_ino, mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    if known.get(path, (None,))[0] == keys[i]:
+        shas[i] = known[path][1]
+    elif stat.S_ISLNK(mode):
         links.append(i)
     elif stat.S_ISREG(mode):
         files.append(i)
@@ -275,8 +296,16 @@ if links:
             with open(texts[i], "wb") as fh:
                 fh.write(text.rstrip(b"\n"))
         hash_into(links, texts, ["--no-filters"])
+if cache:
+    try:
+        with open(cache + ".tmp", "wb") as fh:
+            fh.write(b"\0".join([os.fsencode(top)] + [keys[i] + b"\t" + shas[i] + b"\t" + paths[i]
+                                                       for i in range(len(paths)) if keys[i] and shas[i] != b"-"]))
+        os.replace(cache + ".tmp", cache)
+    except OSError:
+        pass
 sys.stdout.buffer.write(b"".join(sha + b"\t" + path + b"\n" for sha, path in zip(shas, paths)))
-' "$1"
+' "$@"
 }
 
 hash_workdir_path() { # top path
@@ -311,7 +340,7 @@ workdir_dirty_paths() { # workdir [unshaped-list]
 # compares equal only to itself.
 # A paths-out file gets workdir_dirty_paths' answer whenever the status itself succeeded, even if
 # the hashing after it fails.
-workdir_dirty_shas() { # workdir [unshaped-digest-out] [paths-out]
+workdir_dirty_shas() { # workdir [unshaped-digest-out] [paths-out] [stat-cache]
   local top paths
   if [ -n "${2:-}" ]; then
     : >"$2.list" && paths=$(workdir_dirty_paths "$1" "$2.list") || { rm -f "$2.list"; return 1; }
@@ -326,7 +355,7 @@ workdir_dirty_shas() { # workdir [unshaped-digest-out] [paths-out]
     rm -f "$2.list"
   fi
   [ -n "$paths" ] || return 0
-  printf '%s\n' "$paths" | tr '\n' '\0' | hash_workdir_paths "$top"
+  printf '%s\n' "$paths" | tr '\n' '\0' | hash_workdir_paths "$top" ${4:+"$4"}
 }
 
 unshaped_digest() { # top list
@@ -342,7 +371,7 @@ snapshot_workdir() { # directory workdir side
   local directory="$1" workdir="$2" side="$3" shas head
   # A moved unshaped digest fails the after side itself: a claim reads an absent head-after as "no
   # snapshot" and takes the --complete/PARTIAL path, while a written one demands a diff never computed.
-  shas=$(workdir_dirty_shas "$workdir" "$directory/unshaped-$side.tmp.$$") &&
+  shas=$(workdir_dirty_shas "$workdir" "$directory/unshaped-$side.tmp.$$" "" "$directory/dirty-stat") &&
     { [ "$side" != after ] ||
       [ "$(cat "$directory/unshaped-before" 2>/dev/null)" = "$(cat "$directory/unshaped-$side.tmp.$$")" ]; } &&
     mv -f "$directory/unshaped-$side.tmp.$$" "$directory/unshaped-$side" || {

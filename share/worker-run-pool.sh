@@ -155,7 +155,7 @@ take_floor() { # directory workdir
   # What was already uncommitted here before this run touched anything. It is the floor the dirt
   # snapshot at the end is measured against: without it, every file Egor or a co-tenant chat had
   # open would be evidence produced by whichever run happened to finish beside them.
-  workdir_dirty_shas "$workdir" "$directory/unshaped-before" "$directory/dirty-before.tmp.$$" \
+  workdir_dirty_shas "$workdir" "$directory/unshaped-before" "$directory/dirty-before.tmp.$$" "$directory/dirty-stat" \
     >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null; shas_rc=$?
   [ -f "$directory/dirty-before.tmp.$$" ] &&
     mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before" 2>/dev/null ||
