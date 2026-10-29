@@ -142,6 +142,21 @@ def rows(path, keep=False):
         return
 
 
+def rows_backward(path, chunk=1 << 22):
+    """rows() from the last line to the first, read in chunks off the end."""
+    try:
+        with open(path, "rb") as handle:
+            end, tail = handle.seek(0, os.SEEK_END), b""
+            while end > 0:
+                start = max(0, end - chunk)
+                handle.seek(start)
+                lines = (handle.read(end - start) + tail).split(b"\n")
+                tail, end = lines.pop(0) if start else b"", start
+                yield from parsed(line.decode(errors="ignore") for line in reversed(lines))
+    except OSError:
+        return
+
+
 def parsed(lines):
     for line in lines:
         try:
@@ -184,11 +199,15 @@ def claude_usage(path, seen, window=None):
 
 
 def codex_usage(path, model):
+    # total_token_usage is the session's running total: the last one counts it whole, so a rollout of hundreds
+    # of MB is read off its end (a codex wait's last pass, harness-ledger speed-locks-worker-run-wait-poll).
     last = {}
-    for row in rows(path):
+    for row in rows_backward(path):
         payload = row.get("payload") or {}
         if payload.get("type") == "token_count":
             last = (payload.get("info") or {}).get("total_token_usage") or last
+            if last:
+                break
     cached = last.get("cached_input_tokens", 0)
     return vendor_eq("codex", model, max(last.get("input_tokens", 0) - cached, 0), cached,
                      last.get("cache_write_input_tokens", 0), last.get("output_tokens", 0))

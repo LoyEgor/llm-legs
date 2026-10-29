@@ -495,6 +495,24 @@ seen = set()
 check([bool(night_spend.weighted(night_spend.run_usage("/usr/bin/false", resumed, "codex", seen)))
        for resumed in ("codex-1-1-aaaa", "codex-2-2-bbbb")] == [True, False],
       "a codex RESUME sharing its session's rollout counts that session's whole total once, not once per run")
+long_rollout = os.path.join(work, "codex-long-rollout.jsonl")
+lines(long_rollout, [{"payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 9000 - n,
+                                                                                         "output_tokens": 900}}}}
+                     for n in range(300)] + [{"payload": {"type": "token_count", "info": None}}, {"payload": {}}])
+kept_parsed, read_rows = night_spend.parsed, [0]
+
+
+def counted(lines):
+    for row in kept_parsed(lines):
+        read_rows[0] += 1
+        yield row
+
+
+night_spend.parsed = counted
+tail_usage = night_spend.codex_usage(long_rollout, None)
+night_spend.parsed = kept_parsed
+check(tail_usage == night_spend.vendor_eq("codex", None, 8701, 0, 0, 900) and read_rows[0] <= 3,
+      "a codex rollout's running total is read off its end, never its whole file: %s rows read" % read_rows[0])
 printed = io.StringIO()
 with contextlib.redirect_stdout(printed):
     T.main(["night", "/usr/bin/false", os.path.join(nights, "N1.json")])
