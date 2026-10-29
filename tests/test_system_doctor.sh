@@ -251,6 +251,30 @@ check(lives[1:3] == [[["codex", 5.0, 0.0, "third-party"]], [["codex", 3.0, 3.0, 
 os.remove(os.path.join(fix, "rusage.json"))
 for name, text in saved.items():
     put(name, text)
+tick_state = os.path.join(work, "state", "tick-state.json")
+
+
+def gone_rows():
+    return "".join(open(p).read() for p in sorted(glob.glob(os.path.join(work, "state", "pids", "*"))))
+
+
+cli("tick")
+kept = json.load(open(tick_state))
+pids_before = gone_rows()
+mute = os.path.join(work, "bin", "ps-timeout")
+with open(mute, "w") as handle:
+    handle.write("#!/bin/bash\n")
+os.chmod(mute, 0o755)
+blind = [json.loads(cli("tick", env={"SYSTEM_DOCTOR_PS": mute}).stdout)]
+put("ps", "")
+blind.append(json.loads(cli("tick").stdout))
+put("ps", saved["ps"])
+after = json.load(open(tick_state))
+check(all(r["procs"] is None and r["births_seen"] is None and r["births_top"] is None and r["cpu_top"] is None
+          for r in blind) and kept["named"] and all(after[k] == kept[k] for k in ("procs", "usage", "named"))
+      and gone_rows() == pids_before,
+      "a timed-out ps reads as unknown processes, never every process born or gone, and the next tick measures "
+      "against the last listing: %s" % blind)
 
 # ---- the nightly pass: report headers, relaunched jobs, `last`, caches, SMART
 now = time.time()

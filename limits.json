@@ -114,7 +114,7 @@
   "claudeb.warm-timeout": {
     "value": 90,
     "unit": "s",
-    "where": "bin/claudeb:2085",
+    "where": "bin/claudeb:2042",
     "set_by": "chat 888bf7ba",
     "why": "A warm session is one tiny prompt; 90 s means the CLI wedged.",
     "normal": "0 hits; a hit leaves the account's token verdict unknown."
@@ -642,7 +642,7 @@
   "machine-probe.timeout": {
     "value": 10,
     "unit": "s",
-    "where": "share/machine_probe.py:25",
+    "where": "share/machine_probe.py:27",
     "set_by": "night 5db21770",
     "why": "A machine probe (sysctl 5 s) answers instantly; past the bound its value is missing from the system doctor.",
     "normal": "0 hits."
@@ -658,7 +658,7 @@
   "memlogd.frames-cap": {
     "value": 1073741824,
     "unit": "bytes",
-    "where": "bin/memlogd:203",
+    "where": "bin/memlogd:42",
     "set_by": "chat 0bc21301",
     "why": "All episode frames together stay under 1 GB; the oldest go first.",
     "normal": "0 hits in the audit window."

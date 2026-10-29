@@ -9480,7 +9480,7 @@
         "rule": "limit_hit",
         "ident": "^claude\\-setup:stop\\-dispatch\\.hook\\-kill$"
       },
-      "status": "fixed-pending",
+      "status": "ruled-out",
       "fixes": [
         {
           "at": "2026-10-20T15:30:00+03:00",
@@ -9494,11 +9494,11 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-20",
-      "reviewed_by": "harness-limits-20261020T113903Z-59b1",
-      "note": "2026-10-20: 9 kills in 24 h (hits.jsonl), 6 of them notice-connections (6 of its 420 runs; 15 over 2 s, against notice-reports 1 and word-journal 4), 3 siblings only inside two stops where the whole notice batch stalled (2026-10-19 22:48Z; 2026-10-20 10:06Z: chat-names, connections, word-attested killed together, word-journal 4.25 s, usual 0.03-0.12 s). Samples at the kills: busy 0.92-0.997 in 4 of 5; load average 140-272 during this run. The connections check is 0.06-0.1 CPU-s under Homebrew python3 (0.36-0.51 s wall at load 210, no stall reproduced); the read-only path waits on nothing (2026-10-14 note). Fix: with the report bus and a session id the check runs detached and posts its notice to the chat's queue (report-bus post --session), so no stop waits on it or kills it; it was the slowest notice in 229 of 586 stops (+87 s stop wall over 3 days). Not fixed: kills of the other notices in a whole-batch stall (load, the limit's own normal); a recurrence there is that, not this hook (blind spot hook-off-cpu-wait still unattributed). Ruled out: lock contention (no sync since 10-08, last-sync.json), log-sweep I/O (no sweep within 15 min of any kill), memory (mem_free 36-84). Found: /usr/bin/python3 (Xcode 3.9) runs with dont_write_bytecode and no stdlib __pycache__, 0.23 CPU-s for this check against 0.08 under Homebrew's; the killed chats' PATH puts /opt/homebrew/bin first, so not this cause, but any hook reached through /usr/bin/python3 pays it.",
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T165019Z-1899",
+      "note": "2026-10-29 regression read: not notice-connections (its last kill 2026-10-20 13:02Z, none in the 9 days since ab0da798). Kills since: notice-word-journal 10-22 22:30Z, 10-24 03:04Z (with notice-chat-names, one batch stall), 10-29 11:29Z alone, each in a swap-bound stretch (system-doctor ticks: busy 0.99-1.0, swap 0.82-0.90, pagein 4-12k/s). word-journal's usual 0.05 s is its jq fast path; its python3 words_journal.py runs only on a turn with a notice, a silent keyword or a ⚡ line, so x101 over usual is the slow path under page-in, not a hang (no hang in its code: the 30 s late wait is already detached). The hook is live (harness-doctor words_journal reads its journal). Ruled out: detaching it like ab0da798 (main reads last.json, turn and last.txt, which the next prompt's intake rewrites, so a detached row could judge the wrong turn). Seen, not cut: main's chat-name subprocess (2 s timeout) sits in the stop; words-log could name the chat at read time. 2026-10-20: 9 kills in 24 h (hits.jsonl), 6 of them notice-connections (6 of its 420 runs; 15 over 2 s, against notice-reports 1 and word-journal 4), 3 siblings only inside two stops where the whole notice batch stalled (2026-10-19 22:48Z; 2026-10-20 10:06Z: chat-names, connections, word-attested killed together, word-journal 4.25 s, usual 0.03-0.12 s). Samples at the kills: busy 0.92-0.997 in 4 of 5; load average 140-272 during this run. The connections check is 0.06-0.1 CPU-s under Homebrew python3 (0.36-0.51 s wall at load 210, no stall reproduced); the read-only path waits on nothing (2026-10-14 note). Fix: with the report bus and a session id the check runs detached and posts its notice to the chat's queue (report-bus post --session), so no stop waits on it or kills it; it was the slowest notice in 229 of 586 stops (+87 s stop wall over 3 days). Not fixed: kills of the other notices in a whole-batch stall (load, the limit's own normal); a recurrence there is that, not this hook (blind spot hook-off-cpu-wait still unattributed). Ruled out: lock contention (no sync since 10-08, last-sync.json), log-sweep I/O (no sweep within 15 min of any kill), memory (mem_free 36-84). Found: /usr/bin/python3 (Xcode 3.9) runs with dont_write_bytecode and no stdlib __pycache__, 0.23 CPU-s for this check against 0.08 under Homebrew's; the killed chats' PATH puts /opt/homebrew/bin first, so not this cause, but any hook reached through /usr/bin/python3 pays it.",
       "handoff": null,
-      "ruled_at": null
+      "ruled_at": "2026-10-29T17:20:00Z"
     },
     {
       "id": "regression-test-health-wait-night-volume",
@@ -12415,6 +12415,70 @@
       "reviewed_by": "night 20261029T163046Z-74c1 harness-tests-20261029T165037Z-644d",
       "note": "Not a block: run 65331 (worker claudeb-1793273550-18790-1321, 11:37-11:53Z) wall 952 s, cpu 39 s (its usual ~38 s), the rest 913 s run-queue wait; its sibling test_llm_limits_refresh in the same run took 925 s at 36 s cpu and passed, test_night_carry in run 90831 924 s at 61 s cpu. Machine saturated (system-doctor ticks 11:36-11:57Z: busy 1.0, kernel 0.43-0.56, swap 10.4-11.1 GB, logo-vectorizer-bench tracers champ84f c52/c53/c59 at 290-800 % cpu): weather. The red was ours: the log's only FAIL is 'a Mac awake one minute read its sleep as a stalled refresh', whose LLM_LIMITS_AWAKE_SINCE was the suite-start now - 60 while llm-limits.sh compares it with the real clock against limit_s 900, so any run past ~840 s failed it, and test_hang counts only red runs. Proof: awake 960 s ago -> stalled:true, 60 s ago -> false. Fix: the big-rollout/heartbeat block re-reads now (its now+1000 resets had the same exposure) and the assert takes date +%s at the call. Ruled out in test_llm_limits_refresh: its now-60 values (:280, :678) are already-expired resets, which aging only keeps expired; it passed at 925 s.",
       "handoff": null
+    },
+    {
+      "id": "limit_hit:llm-legs:claudeb.warm-timeout",
+      "title": "claudeb's 90 s warm session timed out on a swap-bound machine: 3 of 13 warms in 7 days",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:claudeb\\.warm\\-timeout$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T165019Z-1899",
+      "note": "Weather (load). Hits 10-22 22:11Z and 10-23 00:55Z (com), 10-29 11:26Z (locomthebest): `claude -p /usage` under run_bounded 90 printed nothing (warm-logs: exit_code=124, empty body), all at busy 0.99-1.0, swap 0.82-0.90, pagein 4-21k/s, 64-137 s system-doctor ticks; the other 10 warms of the week succeeded. The loss is one token verdict the next heartbeat retries (oauth-attempts warm-failed/timeout). limits.json where moved to bin/claudeb:2042.",
+      "handoff": null,
+      "ruled_at": null
+    },
+    {
+      "id": "limit_hit:llm-legs:machine-probe.timeout",
+      "title": "The system doctor's ps probe passed its 10 s bound 14 times in 24 h on a swap-bound machine",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:machine\\-probe\\.timeout$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T165019Z-1899",
+      "note": "Weather for the timeouts: every ps hit is a tick's ps or ps_children step at 10-17 s (ticks/<day>.jsonl self.steps) inside swap stretches (swap 0.86-0.97, pagein 1.3-10k/s, procs up to 3136), the LaunchAgent at its designed Nice 10 + LowPriorityIO (system-doctor-design), ps -o args reading every process's argv; 0.27 s at rest. The dumpstate orphan census's ps never timed out (max 5.1 s). The du hits (values 11-600 s) are nightly/logstores walks with their own budgets journaled under this name, so the registry's 10 s fits ps/sysctl/diskutil only. Fixed beside it, the loss's harm: a timed-out ps lists nothing, and tick() read that as every process born (births_top launchd 547, geminib 1286 on 10-29) or gone (procs 0, a pids gone row per named script, the next tick's CPU baseline emptied); now those fields are null and the previous process state carries over (tests/test_system_doctor.sh, red on the old code). limits.json where moved to share/machine_probe.py:27.",
+      "handoff": null,
+      "ruled_at": null
+    },
+    {
+      "id": "limit_hit:llm-legs:memlogd.frames-cap",
+      "title": "memlogd's 1 GB frames cap evicted 3-day-old incident frames as memory-pressure episodes rose to 11 a day",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:memlogd\\.frames\\-cap$"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T165019Z-1899",
+      "note": "The cap did its job: evict_frames dropped the oldest frames (10-26T16:34-18:32, 35-88 MB each) for newer episodes, a day before rotate_files' 3-day retention would delete them anyway; INCIDENT lines (5, 1, 8, 11 on 10-26..29, avail under 4 GB) stay in the day logs. Episodes are 23-82 MB of 1 Hz ps dumps, so 1 GB holds ~2 days at this pressure. No harness reader opens frames (grep: memlogd only). Measured, not cut: cutting frame lines at 300 chars keeps 60 % of a frame's bytes, little room for the evidence it costs. Cause of the volume is load (memory pressure from the benchmark and chats).",
+      "handoff": null,
+      "ruled_at": "2026-10-29T17:20:00Z"
+    },
+    {
+      "id": "limit_hit:llm-legs:store-lock.ownerless-stale",
+      "title": "store-lock broke two ownerless claudeb account-store locks (102 and 115 s old) since claudeb moved onto it",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:store\\-lock\\.ownerless\\-stale$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T165019Z-1899",
+      "note": "New exposure, not a new failure: llm-legs@bfb86732 (10-29 08:45Z) moved claudeb's <account>.json.lock, the busiest locks, onto share/store-lock.sh, so its journal saw them for the first time (before, the same breaks read claudeb.lock-stale, 7 in 24 h). Breaks 12:06:17Z notcom.json.lock (115 s) and 15:46:34Z locomthebest.json.lock (102 s), each by a claudeb revive's usage merge (token-attempts pids 86903, 77623) that waited 2.8 and 3.2 s (waits journal); no store-lock.retries give-up and no other hit touched them, so nothing claimed them in between and nothing was lost beyond those waits. The directory sat 100+ s with no readable pid: a claim stopped between mkdir and its pid write, or a release between rm's unlink and rmdir. Only claudeb writes these locks; no claudeb bash process from before bfb86732 still runs; no killer journaled a kill near 12:04Z or 15:44Z; load was busy 1.0. Creator unattributed: blind spot store-lock-ownerless-creator.",
+      "handoff": null,
+      "ruled_at": null
     }
   ],
   "blind_spots": [
@@ -12809,6 +12873,13 @@
       "reason": "2026-10-29: night_priority.decide keeps only the admitted run's room; a wait verdict's pool room, held cost and spare live in the hold's why, deleted at hold_clear, and no 5h reading history exists, so night 5e69's double count (room 149 -> ~133 during a 26 min wait while 13 runs stayed reserved in full) was estimated from two harness snapshots",
       "since": "2026-10-29",
       "would_catch_if": "each admit verdict appended {at, ref, five, used, spare, running} to the night file's admission store, and Wait classes split night-admission waits into room the readings lacked and room held twice"
+    },
+    {
+      "id": "store-lock-ownerless-creator",
+      "what": "which process left a store-lock directory with no pid and how it ended (killed mid-claim, stalled between mkdir and the pid write, or a release cut between unlink and rmdir)",
+      "reason": "2026-10-29: two claudeb account locks sat 102-115 s ownerless; store_lock_broke journals only the breaker's view (path, age), and no journal ties a lock directory's birth to a pid, so the creator stayed unattributed",
+      "since": "2026-10-29",
+      "would_catch_if": "the ownerless break journaled the lock directory's birth time and the claudeb starts.tsv / token-attempts rows within 5 s of it, so the creating command and whether a kill hit it read off the hit"
     }
   ]
 }

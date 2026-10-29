@@ -620,6 +620,8 @@ def tick(now=None):
     disks = steps("ioreg", disk_counters)
     volumes = steps("df", free_space)
     usage = steps("rusage", readable_usage, last)
+    # a ps that timed out lists nothing, not even itself: this tick's processes are unknown, never all born or all gone
+    ps_read = bool(first) and bool(last)
 
     gap = now - previous["t"] if isinstance(previous.get("t"), (int, float)) else None
     joined = gap is not None and 0 < gap <= TICK_GAP_S and previous.get("boot") == mem["boot"]
@@ -734,6 +736,9 @@ def tick(now=None):
     foreign = {(entry[2], entry[3]) for entry in last.values() if entry[3] != "own" and entry[5] != os.getuid()}
     listed = {(entry[0], entry[-1]) for key in ("cpu_top", "births_top", "io_top", "mem_top") for entry in row[key]}
     row["usage_blind"] = sorted(list(item) for item in foreign & listed)
+    if not ps_read:
+        row.update(dict.fromkeys(("procs", "births_seen", "births_top", "cpu_top", "cpu_own", "own_procs", "usage_read",
+                                  "mem_top", "rss_top", "rss_total", "io_top", "usage_blind")))
 
     state = {"t": now, "boot": mem["boot"], "ticks": ticks, "vm": vm, "disks": disks,
              "procs": {key: [first[key][1], entry[1], old_procs[key][2] if joined and len(old_procs.get(key) or ()) >= 4
@@ -746,8 +751,11 @@ def tick(now=None):
              "recent": (previous.get("recent") or [])[-2:] + [{"t": round(now, 1), "births_s": row["births_s"],
                                                               "kernel": row["kernel"], "free_gib": row["free_gib"]}],
              "named": {key: entry[2:4] for key, entry in last.items() if entry[6] == "script" and key in first}}
+    if not ps_read:
+        state.update({key: previous.get(key) or {} for key in ("procs", "usage", "named")})
     gone = [[int(key.split("@", 1)[0]), start_epoch(key), previous["t"]] + list(named)
-            for key, named in (previous.get("named") or {}).items() if key not in last and isinstance(previous.get("t"), (int, float))]
+            for key, named in (previous.get("named") or {}).items()
+            if ps_read and key not in last and isinstance(previous.get("t"), (int, float))]
     if gone:
         append_row("pids", {"t": round(now, 1), "gone": gone}, REPORT_DAYS + 1)
     write_json(path, state)
