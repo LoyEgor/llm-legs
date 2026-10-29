@@ -12868,13 +12868,6 @@
       "would_catch_if": "the queue line's usual were taken over days of the same kind (night-heavy against night-heavy) or its row carried the night's concurrent runs beside the held-slot count"
     },
     {
-      "id": "hs-cli-lock-holder-outside-run-all",
-      "what": "a live-hs suite run directly (bash tests/test_x.sh from an agent shell) that blocks while holding /tmp/hs-cli.lock",
-      "reason": "hs -c reads a non-tty stdin to EOF; run-suites gives /dev/null but an agent shell's stdin is an open socket, so the client never exits and every live-hs suite on the machine waits in lockf (2026-10-13: a test_compact_boundary client held it 12 min, the waiters' wall showed only as slow suites); hammerspoon test_ipad_mode, test_send_actions, test_handoff, test_display_mirror, test_claude_chat_switch and test_compact_boundary still call hs without </dev/null, test_hs_cli_lock.sh checks the lock only; 2026-10-13 12:54-13:19Z an ad-hoc `lockf ... hs -t 120 -c` of chat doctors-regroup held it 25 min and six live-hs suites of run 75960 (test_dia_js, test_doctors_menu, test_e2e_isolated, test_hs_env_guard, test_presence, test_token_tracking_menu) failed at their 600 s bound; that client's stdin was probably /dev/null, so stdin is not the only way a holder outlives its -t",
-      "since": "2026-10-13",
-      "would_catch_if": "test_hs_cli_lock.sh also failed an hs call line without </dev/null, or the lock wait inside lockf were journaled with the holder's command"
-    },
-    {
       "id": "suite-journal-tree-hash-after-ended",
       "what": "the wall and CPU a direct suite run spends on its journal's tree hash",
       "reason": "tests/lib/suite-journal.sh suite_journal_end runs suite_journal_content (git ls-files plus a python3 hashing every tracked file, 0.27 s at load ~100 on 2026-10-13) after `ended` and cpu_s are taken, so each direct run's secs and cpu_s omit it; on a 0.8 s suite (test_doctors_menu) that is about a third unmeasured. The hash itself has a reader (share/test_health.py repeat detection), so it stays (review round 20261013T001026Z-0576a82, haiku-high#2 finding 2)",

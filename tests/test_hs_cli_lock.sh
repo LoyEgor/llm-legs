@@ -4,19 +4,26 @@
 # its -t (or a kill bound) and exits, and Hammerspoon then sends the result to the dead client's port
 # and dies with SIGTRAP in CFMessagePortSendRequest (crashes 2026-10-02, 10-03, 10-08). So every live
 # `hs` call in this repository's tests waits outside Hammerspoon, under one machine-wide lock that the
-# hammerspoon repository's tests take too: /usr/bin/lockf -k -t <wait> /tmp/hs-cli.lock hs -t <s> ...
+# hammerspoon repository's tests take too: /usr/bin/lockf -k -t <wait> /tmp/hs-cli.lock hs -t <s> ... </dev/null. hs -c
+# reads a non-tty stdin to EOF, so a suite run from an agent shell held the lock until killed (12 min, 2026-10-13).
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CALL='(^|\$\(|[[:space:]])(hs|"\$HS_BIN")( +-[A-Za-z]+( +[0-9]+)?)* +-[ct]( |$)|\["hs",|\[sys\.argv\[1\], "-t"'
 
 unlocked() { grep -nE "$CALL" "$@" | grep -v '/tmp/hs-cli\.lock' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; }
+open_stdin() { grep -n '/tmp/hs-cli\.lock' "$@" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' | grep -vF '</dev/null'; }
 
 probe=$(mktemp -d)
 trap 'rm -rf "$probe"' EXIT
 printf '%s\n' 'out=$(hs -q -t 120 -c "return 1")' '  hs -c '"'" \
   '    result = subprocess.run(["hs", "-c", "x"], timeout=20)' > "$probe/bare.sh"
 [ "$(unlocked "$probe/bare.sh" | wc -l | tr -d ' ')" = 3 ] || { echo "FAIL: the call pattern misses a bare hs call"; exit 1; }
+printf '%s\n' 'out=$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c "return 1")' \
+  'out=$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 </dev/null -c "return 1")' > "$probe/stdin.sh"
+[ "$(open_stdin "$probe/stdin.sh" | cut -d: -f1)" = 1 ] || { echo "FAIL: the stdin check misses a locked hs call on an open stdin"; exit 1; }
 
 found=$(unlocked $(ls "$ROOT"/tests/*.sh | grep -v /test_hs_cli_lock.sh))
 [ -z "$found" ] || { printf 'FAIL: hs calls outside /tmp/hs-cli.lock:\n%s\n' "$found"; exit 1; }
-echo "PASS: every live hs call in tests holds /tmp/hs-cli.lock"
+found=$(open_stdin $(ls "$ROOT"/tests/*.sh | grep -v /test_hs_cli_lock.sh))
+[ -z "$found" ] || { printf 'FAIL: hs calls under /tmp/hs-cli.lock with no </dev/null on that line:\n%s\n' "$found"; exit 1; }
+echo "PASS: every live hs call in tests holds /tmp/hs-cli.lock with stdin from /dev/null"
