@@ -257,6 +257,8 @@ BROWSER_REASONS = (
     ("browser drift", re.compile(r"UI drift|waiting for|Timeout \d+ ?ms|did not load within|does not stick"
                                  r"|stays (?:on|disabled)|composer|chip|menu item|toggle|frame slot", re.IGNORECASE)),
 )
+# The provider's own failure shown in the page (ChatGPT's "Unknown error" on a posted turn): its weather, not a step.
+BROWSER_SERVER = re.compile(r"ChatGPT failed the turn on")
 BROWSER_OWNER_STEP, BROWSER_OTHER = "browser owner step", "browser other"
 IMAGE_ORIGIN.update({word: "ours" for word, _ in BROWSER_REASONS})
 IMAGE_ORIGIN.update({BROWSER_OWNER_STEP: "ours", BROWSER_OTHER: "ours"})
@@ -1226,6 +1228,8 @@ def classify_browser(code, reason):
     if code and (FAILURE_ORIGIN.get(word) == "theirs" or word in WALL_REASONS):
         return classify_failure_text(reason, code)
     detail = reason[:200]
+    if code and BROWSER_SERVER.search(reason):
+        return "failed", "server error", detail, "theirs"
     if code == 4:
         return "failed", BROWSER_OWNER_STEP, detail, "ours"
     for word, pattern in BROWSER_REASONS:

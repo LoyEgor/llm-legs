@@ -60,7 +60,7 @@ assert grep -q "wall-clock suite(s) stay at nice $parent_nice; the wave is nice 
 
 # A suite in a linked worktree finds its sibling repositories beside the main checkout.
 mkdir -p "$WORK/projects/main" "$WORK/projects/claude-setup" "$WORK/projects/review-bench"
-git -C "$WORK/projects/main" init -q
+git -C "$WORK/projects/main" init -q -b main
 git -C "$WORK/projects/main" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m init
 git -C "$WORK/projects/main" worktree add -q --detach "$WORK/projects/main/.claude/worktrees/b"
 tree="$WORK/projects/main/.claude/worktrees/b"
@@ -73,11 +73,11 @@ out=$(CLAUDE_SETUP_ROOT=/elsewhere REVIEW_BENCH_ROOT=/other WANT='/elsewhere|/ot
 assert grep -q 'PASS: siblings' <<<"$out"
 
 # Same branch in a sibling repo: that worktree. No such worktree: the main checkout. An export wins.
-git -C "$WORK/projects/claude-setup" init -q
+git -C "$WORK/projects/claude-setup" init -q -b main
 git -C "$WORK/projects/claude-setup" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m init
 git -C "$WORK/projects/claude-setup" worktree add -q -b 'night/n/job' "$WORK/projects/claude-setup/.claude/worktrees/night-n-job"
 mkdir -p "$WORK/projects/llm-legs"
-git -C "$WORK/projects/llm-legs" init -q
+git -C "$WORK/projects/llm-legs" init -q -b main
 git -C "$WORK/projects/llm-legs" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m init
 git -C "$WORK/projects/llm-legs" worktree add -q -b 'night/n/job' "$WORK/projects/llm-legs/.claude/worktrees/night-n-job"
 git -C "$WORK/projects/main" worktree add -q -b 'night/n/job' "$WORK/projects/main/.claude/worktrees/night-n-job"
