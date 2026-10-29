@@ -4911,12 +4911,30 @@
         "rule": "opportunity",
         "ident": "delegation/reviews"
       },
-      "status": "not-a-bug",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:45:00+02:00",
+          "by": "night 20261029T012849Z-5e69 harness-speed-refusal-write-20261029T053222Z-7ac7",
+          "files": [
+            "llm-legs/share/slots.sh",
+            "llm-legs/tests/test_slots.sh",
+            "llm-legs/tests/test_night_carry.sh",
+            "llm-legs/tests/test_run_suites_shards.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "slot_room's verdict on the same machine readings before and after: the pressure veto moves from level > 1 to level >= 4 (image-fanout's line since llm-legs@39e352a8), the available-MB floor (chat-load guard + 1500) and the load-over-base rule untouched",
+            "data": "tests/test_slots.sh room cases: level 1 and 2 with room admit, level 4 refuses naming it, below the floor and over the load base refuse as before; waits journal 2026-10-26..28 (memlogd avail 5.4-7 GB against a 3548 MB floor in every review-cells, workers and run-suites room hold)",
+            "result": "an admitted cell, worker or suite runs the same command with the same inputs, only earlier; a review panel's cells no longer sit out up to REVIEW_CELLS_WAIT_S 300 s at macOS warn with GBs free"
+          }
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-10",
-      "reviewed_by": "Harness Doctor",
-      "note": "2026-10-20 (run harness-speed-time-wait-loop-20261020T114213Z-1337): unchanged, the poll still sits at review-bench share/rbench/cli.py PANEL_POLL_S = 2.0, ~1 s a review x ~3 a day. 2026-10-10 (Harness Doctor): not a bug. The wait is reviewer model time, which Speed never trades; its non-model parts are about 1 s of poll per review and the relay is cut (ee185fa8); blind spot delegation-model-time keeps the measure gap. 2026-10-09: ruled out. The slice is attended `review-bench wait` (bin/speed-doctor delegation_leaf), launch to notification. Non-model parts measured: (1) the review-waiter Agent relay, retired in llm-legs@ee185fa8, cost 2.1 s spawn + 1.4 s final message (medians, 109 waiter transcripts in ~/.claude/projects) of a 671 s median wait; 62 of the window's 67 rows predate it; (2) review-bench cmd_wait polls panel_still_running every PANEL_POLL_S 2 s, ~1 s per review; (3) review-cells slot holds (launch.py admitted): all 106 on 2026-10-09 (9892 s, p50 68 s) belong to the unattended bench chat 7977deeb, none to the attended chat c0f23f02. The rest is reviewer cells' model time, which Speed never trades. Cheapest cut: event-driven panel exit instead of the 2 s poll saves ~1000 ms x ~3/day, costs a review-bench change (another repository). The slice lever's 30 % saving is the generic SLICE_LEVER, not a measurement: see blind_spots delegation-model-time.",
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night 20261029T012849Z-5e69 harness-speed-refusal-write-20261029T053222Z-7ac7",
+      "note": "2026-10-29 (run harness-speed-refusal-write-20261029T053222Z-7ac7): reopened, the 2026-10-09 premise that no slot hold belongs to an attended chat no longer holds. review-cells waits journal 93 cell holds, 7676 s in 7 days, 83 of them from the attended chat 77a2b895 (a T2 panel on 10-23, 5 cells 231 s each on 10-28 22:42); across all pools slot_room's reason 'room' held workers 16718 s, review-cells 7676 s, run-suites 1263 s. Cause in share/slots.sh slot_room: it refused room at memory pressure level > 1, i.e. macOS warn, this Mac's resting state with 5-7 GB available (the same veto llm-legs@39e352a8 removed from image-fanout on 2026-10-26). Of the room holds with memlogd cover (10-26..29), none had available MB under the floor; by a rough load1 vs 15-min-mean test about 60 % of the held seconds were the load rule (left as designed: 1155 s of review-cells on 10-28) and the rest, review-cells 672 s, workers 4711 s, run-suites 628 s, were level 2 or a load the rough test missed. Fix: the veto is level >= 4, the available-MB floor and the load rule decide room as before. Remaining wait is reviewer model time. 2026-10-20 (run harness-speed-time-wait-loop-20261020T114213Z-1337): unchanged, the poll still sits at review-bench share/rbench/cli.py PANEL_POLL_S = 2.0, ~1 s a review x ~3 a day. 2026-10-10 (Harness Doctor): not a bug. The wait is reviewer model time, which Speed never trades; its non-model parts are about 1 s of poll per review and the relay is cut (ee185fa8); blind spot delegation-model-time keeps the measure gap. 2026-10-09: ruled out. The slice is attended `review-bench wait` (bin/speed-doctor delegation_leaf), launch to notification. Non-model parts measured: (1) the review-waiter Agent relay, retired in llm-legs@ee185fa8, cost 2.1 s spawn + 1.4 s final message (medians, 109 waiter transcripts in ~/.claude/projects) of a 671 s median wait; 62 of the window's 67 rows predate it; (2) review-bench cmd_wait polls panel_still_running every PANEL_POLL_S 2 s, ~1 s per review; (3) review-cells slot holds (launch.py admitted): all 106 on 2026-10-09 (9892 s, p50 68 s) belong to the unattended bench chat 7977deeb, none to the attended chat c0f23f02. The rest is reviewer cells' model time, which Speed never trades. Cheapest cut: event-driven panel exit instead of the 2 s poll saves ~1000 ms x ~3/day, costs a review-bench change (another repository). The slice lever's 30 % saving is the generic SLICE_LEVER, not a measurement: see blind_spots delegation-model-time.",
       "handoff": "docs/handoffs/2026-10-09-delegation-reviews-floor.md"
     },
     {
@@ -12046,6 +12064,13 @@
       "reason": "share/time_budget.py run_split counts `hung` only for an idle or silent kill; claudeb-1793245780-57053-417e sat 8 min after its final answer (stop journal busy bg-task:1 at 04:29:03Z) until its dev server's background cap woke it, and those minutes read as model time (2026-10-29, found by hand)",
       "since": "2026-10-29",
       "would_catch_if": "run_split cut a claudeb run's last attempt at its final end_turn whose stop journal row carried bg-task:N, and counted the rest to the CLI's exit as hung"
+    },
+    {
+      "id": "slot-room-why-unjournaled",
+      "what": "which slot_room reading (memory pressure level, available MB, load over base) held a slot wait",
+      "reason": "2026-10-29: wait_note keeps only reason 'room' (waits/*.jsonl), the hold file with the why is deleted at hold_clear, and memlogd logs available MB and load1 but neither the pressure level nor load15, so the level-2 share of 16718 s workers, 7676 s review-cells and 1263 s run-suites room holds was estimated, not read (rough load1 against a 15-minute mean of load1 samples)",
+      "since": "2026-10-29",
+      "would_catch_if": "hold_clear passed the hold's why into the wait row's reason (level, available, load) and the Wait classes split room holds by it"
     }
   ]
 }
