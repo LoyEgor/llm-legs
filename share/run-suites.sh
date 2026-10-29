@@ -166,12 +166,19 @@ kill_grace=${RUN_SUITES_KILL_GRACE:-10}
 [[ $kill_grace =~ ^[1-9][0-9]*$ ]] || fail "RUN_SUITES_KILL_GRACE must be whole seconds: $kill_grace"
 slow_listed=$'\n'$(cat "$repo/tests/slow-suites" 2>/dev/null)$'\n'
 declare -A pass_p90=()
-history_rows=0
+history_rows=0 history_read=''
+# The writer (suite_journal_str) escapes only \, ", tab and newline: any other path is its own JSON literal.
+journal_rows() { # path -> the journal's last 5000 rows, narrowed to those naming the path whenever a grep can
+  case $1 in
+    *[\\\"$'\t\n']*) tail -n 5000 "$run_journal" ;;
+    *) tail -n 5000 "$run_journal" | grep -F "\"$1\"" ;;
+  esac
+}
 if [ -r "$run_journal" ] && command -v jq >/dev/null; then
-  history_rows=$(wc -l <"$run_journal") && history_rows=${history_rows// /} || history_rows=0
+  history_read=1
   while IFS=$'\t' read -r name secs; do
     [[ "$secs" =~ ^[0-9]+$ ]] && pass_p90[$name]=$secs
-  done < <(tail -n 5000 "$run_journal" | jq -nRr --arg root "$times_key" '
+  done < <(journal_rows "$times_key" | jq -nRr --arg root "$times_key" '
     [inputs | fromjson? | objects | select(.repo_root == $root) | .suites | objects | to_entries[]
       | select(.value.rc == 0 and (.value.secs | type) == "number") | [.key, .value.secs]]
     | group_by(.[0])[] | (.[-50:] | map(.[1]) | sort) as $s | select($s | length >= 3)
@@ -595,7 +602,7 @@ run_one() { # suite-path [shard i/N]
 # run covering its set are red again, since the green rerun that must follow runs the rest.
 declare -A red_first=()
 if [ "${#suites[@]}" -gt 1 ] && { [ "$scope" = named ] || [ "$scope" = changed ]; } && [ -r "$run_journal" ] && command -v jq >/dev/null; then
-  while IFS= read -r name; do red_first[$name]=1; done < <(tail -n 5000 "$run_journal" |
+  while IFS= read -r name; do red_first[$name]=1; done < <(journal_rows "$repo" |
     jq -nRr --arg repo "$repo" --arg names "$(printf '%s\n' "${suites[@]##*/}")" '
       ($names | split("\n") | map(select(. != ""))) as $want
       | last(inputs | fromjson? | objects | select(.repo == $repo and (.suites | type) == "object")
@@ -603,6 +610,12 @@ if [ "${#suites[@]}" -gt 1 ] && { [ "$scope" = named ] || [ "$scope" = changed ]
       | .suites | to_entries[] | select((.key | IN($want[])) and (.value.rc | type) == "number" and .value.rc != 0) | .key' 2>/dev/null)
   [ "${#red_first[@]}" -lt "${#suites[@]}" ] || red_first=()
 fi
+
+for entry in "${suites[@]}"; do
+  [ -n "$history_read" ] && [ -z "${pass_p90[${entry##*/}]:-}" ] || continue
+  history_rows=$(wc -l <"$run_journal") && history_rows=${history_rows// /} || history_rows=0
+  break
+done
 
 declare -a wave=() tail_wave=()
 for entry in "${suites[@]}"; do
