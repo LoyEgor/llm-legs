@@ -30,7 +30,9 @@ the repositories.
    ! git merge-base --is-ancestor $n main && base=$n` — once rebased onto main (step 3, a refused merge) the
    night ref would replay main's commits and select nearly every suite. Then
    `suites=$(tests/affected --overlap "$base")`; a selection error stops landing.
-   `git rebase --onto main "$base"`, then `if [ -n "$suites" ]; then tests/run-all "$suites"; fi`.
+   `git rebase --onto main "$base"` in every repository of the branch first, then
+   `if [ -n "$suites" ]; then tests/run-all "$suites"; fi` per repository: run-suites reads a sibling
+   repository's same-branch worktree, so a suite run beside one still on the press snapshot fails on old code.
    No overlap means no rerun: mapped inputs main did not touch are still the worker's green inputs.
    Green: in the main checkout `git merge --ff-only <branch> &&` the teardown (`git worktree remove
    <worktree>`, `git branch -D <branch>`, `git push origin --delete <branch>`), the same per `ADD-DIR:` repository (one without commits loses only its
