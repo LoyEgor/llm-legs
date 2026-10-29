@@ -255,6 +255,41 @@ route_get() { # vendor jq-path-under-block top-level-fallback-filter [then-filte
     | (if \$block != null and (\$block | $2) != null then \$block | $2 else $3 end)${4:+ | $4}"
 }
 
+# Every vendor-wide manifest fact the planner reads, one jq per vendor and run (each jq start is a fork
+# of ~40 ms at load 100); one line per fact, empty where the filter yields nothing.
+facts_jq="def line(f): [f] | if length == 0 then \"\" else .[0] | if type == \"string\" then . else tojson end end;
+  ((.routes[0] // null) as \$route | $route_block_jq) as \$block
+  | line(.video | if . == null then \"no\" else \"yes\" end),
+    line(if \$block != null and (\$block | .image_policy) != null then \$block | .image_policy else null end),
+    line(.scripts[\$kind] // empty),
+    line(if \$block != null and (\$block | .refs_max) != null then \$block | .refs_max else .refs.max // empty end),
+    line(.video.refs_max // empty),
+    line(.exact_size | tostring), line(.transparent // \"\" | tostring),
+    line(.aspects | if . == null then \"yes\" else \"no\" end),
+    line(.routes[0] // empty),
+    line(try ((if \$block != null and (\$block | .counts) != null then \$block | .counts else null end)
+      | if type == \"array\" then max else 1 end) catch 1),
+    line(try (.video.counts // null | if type == \"array\" then max else 1 end) catch 1),
+    line(if \$block != null and (\$block | .counts_batch) != null then \$block | .counts_batch else false end)"
+facts_v=() facts_out=()
+facts_of() { # vendor; sets f_* globals from a cache, so never call it inside $(...) before the vendor's first read
+  local i out='' found=0
+  for ((i = 0; i < ${#facts_v[@]}; i++)); do
+    if [ "${facts_v[i]}" = "$1" ]; then out=${facts_out[i]} found=1; break; fi
+  done
+  if [ "$found" = 0 ]; then
+    out=$(image_caps_get "$caps_root" "$1" "$facts_jq" --arg kind "$kind")
+    facts_v+=("$1")
+    facts_out+=("$out")
+  fi
+  {
+    IFS= read -r f_video; IFS= read -r f_policy; IFS= read -r f_script; IFS= read -r f_refs_max
+    IFS= read -r f_video_refs_max; IFS= read -r f_exact_size; IFS= read -r f_transparent
+    IFS= read -r f_aspects_null; IFS= read -r f_route0; IFS= read -r f_counts_image
+    IFS= read -r f_counts_video; IFS= read -r f_counts_batch
+  } <<<"$out" || :
+}
+
 reduce_ratio() { # W:H or WxH
   local spec=$1
   spec=${spec/x/:}
@@ -356,7 +391,8 @@ roster_of() { # vendor -> roster_rows; sets globals, so never call it inside $(.
 list_accounts() { # vendor
   local vendor=$1 route lister out last item
   local -a argv=()
-  route=$(caps_get "$vendor" '.routes[0] // empty')
+  facts_of "$vendor"
+  route=$f_route0
   while IFS= read -r item; do argv+=("$item"); done < <(caps_get "$vendor" ".rosters[\"$route\"] // [] | .[]")
   [ ${#argv[@]} -gt 0 ] || return 1
   lister=$(find_bin "$lister_dir" "${argv[0]}") || return 1
@@ -591,11 +627,8 @@ spare_count() { # vendor takes
 pack_size() { # vendor -> takes per launch, within the first route's counts (all of them by default)
   local max
   [ "$pack" != 1 ] || { printf 1; return; }
-  if [ "$kind" = image ]; then
-    max=$(route_get "$1" '.counts' 'null' 'if type == "array" then max else 1 end' 2>/dev/null) || max=1
-  else
-    max=$(caps_get "$1" '.video.counts // null | if type == "array" then max else 1 end' 2>/dev/null) || max=1
-  fi
+  facts_of "$1"
+  if [ "$kind" = image ]; then max=$f_counts_image; else max=$f_counts_video; fi
   [[ "$max" =~ ^[0-9]+$ ]] && [ "$max" -ge 1 ] || max=1
   if [ -n "$pack" ] && [ "$pack" -le "$max" ]; then printf '%s' "$pack"; else printf '%s' "$max"; fi
 }
@@ -605,7 +638,8 @@ pack_size() { # vendor -> takes per launch, within the first route's counts (all
 add_takes() { # group total mode pin first-spare-take
   local g=$1 total=$2 mode=$3 pin=$4 first_spare=$5 pack_n batch t c
   pack_n=$(pack_size "${g_vendor[g]}")
-  batch=$(route_get "${g_vendor[g]}" '.counts_batch' 'false')
+  facts_of "${g_vendor[g]}"
+  batch=$f_counts_batch
   [ "$pack_n" -le 1 ] || g_lazy[g]=1
   for ((t = 1; t <= total; t += c)); do
     c=$pack_n
@@ -627,12 +661,13 @@ plan_group() { # request vendor
   local every_n='' policy r_upscale=${rq_upscale[r]}
   local -a used_refs=() extra=()
 
-  if [ "$video" = true ] && [ "$(caps_get "$vendor" '.video | if . == null then "no" else "yes" end')" != yes ]; then
+  facts_of "$vendor"
+  if [ "$video" = true ] && [ "$f_video" != yes ]; then
     add_static "$vendor" - skipped 'video unsupported'
     return
   fi
   if [ "$video" = false ]; then
-    policy=$(route_get "$vendor" '.image_policy' 'null')
+    policy=$f_policy
     if [ "$policy" != null ] && ! jq -e --arg upscale "$r_upscale" '.upscale | index($upscale) != null' <<<"$policy" >/dev/null; then
       add_static "$vendor" - skipped "$(jq -r .refusal <<<"$policy")"
       return
@@ -642,7 +677,7 @@ plan_group() { # request vendor
       return
     fi
   fi
-  bin_name=$(caps_get "$vendor" ".scripts.$kind // empty")
+  bin_name=$f_script
   bin=''
   [ -z "$bin_name" ] || bin=$(find_bin "$bin_dir" "$bin_name") || bin=''
   if [ -z "$bin" ]; then
@@ -654,9 +689,9 @@ plan_group() { # request vendor
     [ -z "$ref" ] || used_refs+=("$ref")
   done <<<"${rq_refs[r]}"
   n_in=${#used_refs[@]}
-  refs_max=$(route_get "$vendor" '.refs_max' '.refs.max // empty')
+  refs_max=$f_refs_max
   if [ "$video" = true ]; then
-    list=$(caps_get "$vendor" '.video.refs_max // empty')
+    list=$f_video_refs_max
     [ -z "$list" ] || refs_max=$list
   fi
   if [ -n "$r_edit" ] && [[ "$refs_max" =~ ^[1-9][0-9]*$ ]]; then refs_max=$((refs_max - 1)); fi
@@ -667,8 +702,7 @@ plan_group() { # request vendor
   n_used=${#used_refs[@]}
   [ -z "$r_edit" ] || n_used=$((n_used + 1))
 
-  { IFS= read -r exact_size; IFS= read -r transparent_mode; IFS= read -r aspects_null; } < <(caps_get "$vendor" \
-    '(.exact_size | tostring), (.transparent // "" | tostring), (.aspects | if . == null then "yes" else "no" end)')
+  exact_size=$f_exact_size transparent_mode=$f_transparent aspects_null=$f_aspects_null
   [ "$video" = false ] || aspects_null=no
 
   if [ "$video" = false ] && [ "${rq_transparent[r]}" = true ]; then
@@ -773,7 +807,7 @@ plan_group() { # request vendor
   # Flow renders a pack as one batch and its accounts alike, so a take on every account becomes one pack of
   # that many takes: one Flow send instead of six (2026-10-15).
   if [ "$mode" = every ] && [ "$(pack_size "$vendor")" -gt 1 ] &&
-    { [ "$kind" = video ] || [ "$(route_get "$vendor" '.counts_batch' 'false')" = true ]; }; then
+    { [ "$kind" = video ] || [ "$f_counts_batch" = true ]; }; then
     mode=pool every_n=1
   fi
 
