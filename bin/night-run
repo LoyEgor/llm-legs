@@ -32,7 +32,7 @@ PILOT=${NIGHT_RUN_PILOT-doctors legacy vendors}
 # What a pilot night does instead of night-sweep's Night mode prep, launches and debt pass: said in its prompt, so
 # the skill every night reads stays as it is.
 PILOT_CARRY='`nr carry R` records the next goal (and answered trades): run its brief in its worktree, land it by the per-branch flow, then `nr carry R` again until it prints nothing. Then Close, and step 6 with `--remainder '"'"'review debt paused: pilot night'"'"'`.'
-PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R`, `fix-audit read`, `llm-doctor --quiet`, `harness-doctor --quiet`, `updater-doctor --quiet` and `nr base R`; no `vendor-fingerprint`, leftovers, `debt` job or debt pass. '"$PILOT_CARRY"
+PILOT_RULES='Pilot night (llm-legs docs/directions/README.md), over Night mode: serial prep only `vendor-cli-update now --night`, `log-audit run --night R --detach` (it reads meanwhile), `fix-audit read`, `llm-doctor --quiet`, `updater-doctor --quiet` and `nr base R`, then `wait-until --max 2700 gone '"'"'log-audit run'"'"'` and `harness-doctor --quiet`; no `vendor-fingerprint`, leftovers, `debt` job or debt pass. '"$PILOT_CARRY"
 # A resumed pilot night keeps its pilot (resume_night adds no debt job): only its pending jobs, then the carry loop.
 PILOT_RESUME_RULES='Pilot night (llm-legs docs/directions/README.md), over resume: no `debt` job or debt pass; once the pending jobs land, '"$PILOT_CARRY"
 # Once the pilot reaches vendors, its events are integrated after the goal lands, so a goal is judged alone.
