@@ -20,7 +20,9 @@ usage() {
   printf '  --dry-run prints the champion, the source size and the traced size, and writes nothing\n' >&2
   printf '  Hints: rerun with them only after looking at a default output that mixes or loses colours:\n' >&2
   printf '  --gradient no   the art is flat: forces the palette path (every gate off), no gradients, no blend fills;\n' >&2
-  printf '                  use it when flat shapes got gradients, banding, mottle or in-between edge tones\n' >&2
+  printf '                  use it when flat shapes got gradients, banding, mottle or in-between edge tones, and from the\n' >&2
+  printf '                  start (with --palette) when rough or torn edges, carving marks or grain are the design (linocut,\n' >&2
+  printf '                  stamp, woodcut): the default reads them as noise, smooths them away and can add foreign tones\n' >&2
   printf '  --gradient yes  the art has real gradients (smooth ramps, metallic shading) that came out flat or banded\n' >&2
   printf '  --colors N      N distinct colours, background included (2-16); with --gradient no exactly N fills: missing ones\n' >&2
   printf '                  are searched among pixels no colour or blend explains, never added as blends; alone it keeps\n' >&2

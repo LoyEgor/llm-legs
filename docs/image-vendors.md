@@ -295,7 +295,9 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   independent images run in parallel. Prints `svg= champion= source= traced= seconds= auto=on`, then a `colcheck:` line when
   colours look lost or mixed. By default it detects flat art and its colour count (`tracers/hints-a4`): flat art takes a
   palette path that keeps colours apart, gradients/JPEG/transparency/blur/<300 px get the champion; `--auto no` runs the
-  champion alone. `--gradient`/`--colors`/`--palette` are the fallback hints (`--help`).
+  champion alone. `--gradient`/`--colors`/`--palette` are the fallback hints (`--help`). Art whose rough or torn
+  edges, carving marks or grain are the design (linocut, stamp, woodcut) takes `--gradient no --palette <its inks>`
+  from the start: the default smooths that roughness away and can add foreign tones.
 
   ```bash
   logo-vectorize --in /abs/logo.png --dest /abs/logo.svg
