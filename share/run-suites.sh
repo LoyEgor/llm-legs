@@ -454,6 +454,15 @@ else scope=full; fi
 # bin/harness-doctor joins the marker to the process start the probe saw, before any slot wait.
 test_scope_mark "$scope" suites "$repo" "${run_suites_queued%%[.,]*}"
 
+# Inside the suite's own job, so the results table forks nothing per suite once every .status is written.
+log_last_line() { # name -> the last non-blank line of its finished log, as the results table prints it
+  grep -v '^[[:space:]]*$' "$logdir/$1.log" 2>/dev/null | tail -n1 | cut -c1-100 >"$logdir/$1.last"
+}
+log_last_read() { # var name -> the line log_last_line wrote, or writes it now for a suite stopped unfinished
+  [ -e "$logdir/$2.last" ] || log_last_line "$2"
+  IFS= read -r "$1" 2>/dev/null <"$logdir/$2.last" || printf -v "$1" ''
+}
+
 shard_merge() { # name shards -> once its last shard has ended, the suite's .status and .log from theirs
   local name=$1 n=$2 i rc secs real bound cpu out_rc=0 out_secs=0 out_real=0 out_cpu=0 ms
   local -a passed=() failed_shards=()
@@ -481,6 +490,7 @@ shard_merge() { # name shards -> once its last shard has ended, the suite's .sta
     for ((i = 1; i <= n; i++)); do logs+=("$logdir/$name.shard-$i.log"); done
     suite_shard_last_line "${logs[@]}" >>"$logdir/$name.log"
   fi
+  log_last_line "$name"
   printf '%s\t%s\t%s\t%s\t%s\n' "$out_rc" "$out_secs" "$out_real" "$bound" "$out_cpu" >"$logdir/$name.status"
 }
 
@@ -590,6 +600,7 @@ run_one() { # suite-path [shard i/N]
   [ -z "$began" ] || suite_journal_secs began "$(( ended - began ))"
   # `-`, never empty: IFS=$'\t' is whitespace to read, so an empty field collapses and cpu lands in it.
   if [ -z "$shard" ]; then
+    log_last_line "$name"
     printf '%s\t%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "${began:--}" "$bound" "$cpu" >"$logdir/$name.status"
   else
     printf '%s\t%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "${began:--}" "$bound" "$cpu" >"$logdir/$job.st"
@@ -711,8 +722,8 @@ for entry in "${suites[@]}"; do
   if [ "$rc" = stop ]; then verdict=STOP; stopped+=("$name")
   elif [ "$rc" -ne 0 ]; then verdict="FAIL $rc"; failed+=("$name")
   else last_secs[$name]=$seconds; fi
-  printf '%-*s  %-6s  %5s  %s\n' "$width" "$name" "$verdict" "$seconds" \
-    "$(grep -v '^[[:space:]]*$' "$logdir/$name.log" 2>/dev/null | tail -n1 | cut -c1-100)"
+  log_last_read last_line "$name"
+  printf '%-*s  %-6s  %5s  %s\n' "$width" "$name" "$verdict" "$seconds" "$last_line"
 done
 stop_count=''
 [ "${#stopped[@]}" -eq 0 ] || stop_count=" · ${#stopped[@]} STOP"
