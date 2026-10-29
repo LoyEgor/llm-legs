@@ -995,14 +995,22 @@ suite_green() { # worktree suite log -> the suite passes in the press-time tree
   [ -x "$1/tests/run-all" ] && [ -e "$1/tests/$2" ] && bash "$1/tests/run-all" "$2" >"$3" 2>&1 </dev/null
 }
 
+sibling_add_dirs() { # repo branch text [no-helpers] -> an ADD-DIR line per other sweep repository, and per helper repository the text names
+  local other
+  # Every sweep repository: a handoff names a file (`stop-dispatch.sh`) far more often than its repository, a goal
+  # its component (`the judge`, ledger W8).
+  for other in $(grep -vxF -e "$1" -e '' "$sweep_repos" 2>/dev/null; [ -n "${4:-}" ] || grep -vxF '' "$helper_repos" 2>/dev/null); do
+    grep -qxF "$other" "$sweep_repos" 2>/dev/null || [[ $3 == *"$(basename "$other")"* ]] || continue
+    worktree_siblings "$2" "$other" | sed 's/^/ADD-DIR: /'
+  done
+}
+
 carry_brief() { # id kind ref repo what log worktree branch -> the brief file
-  local id=$1 kind=$2 ref=$3 repo=$4 what=$5 log=$6 wt=$7 branch=$8 file="$nights_dir/$1.$3.brief.md" other outside goal
+  local id=$1 kind=$2 ref=$3 repo=$4 what=$5 log=$6 wt=$7 branch=$8 file="$nights_dir/$1.$3.brief.md" outside goal
   if [ "$kind" = goal ]; then
     goal=$(goal_text "$repo/$what" "${ref#goal-}")
     { printf 'ROUND: none\nSTRONG: yes\n'
-      for other in $(grep -vxF -e "$repo" -e '' "$sweep_repos" 2>/dev/null; grep -vxF '' "$helper_repos" 2>/dev/null); do
-        [[ $goal != *"$(basename "$other")"* ]] || worktree_siblings "$branch" "$other" | sed 's/^/ADD-DIR: /'
-      done
+      sibling_add_dirs "$repo" "$branch" "$goal"
       printf 'Working directory: %s\n\n# Night %s goal %s\n\n' "$wt" "$id" "${ref#goal-}"
       printf 'Night %s is the pilot of one direction. Read `%s` whole first: it is the direction'"'"'s knowledge (metric, classes, decisions), and `%s/docs/directions/README.md` holds the rules every direction keeps. Your job is the goal below, a class: one change that makes the whole class impossible, never one more instance of it.\n\n' \
         "$id" "$wt/$what" "$repo"
@@ -1023,11 +1031,7 @@ carry_brief() { # id kind ref repo what log worktree branch -> the brief file
   {
     printf 'ROUND: none\n'
     [ "$kind" != suite ] || printf 'MODEL: sonnet\n'
-    # Every sweep repository: a handoff names a file (`stop-dispatch.sh`) far more often than its repository.
-    for other in $(grep -vxF -e "$repo" -e '' "$sweep_repos" 2>/dev/null; [ "$kind" = suite ] || grep -vxF '' "$helper_repos" 2>/dev/null); do
-      grep -qxF "$other" "$sweep_repos" 2>/dev/null || grep -qF "$(basename "$other")" "$repo/$what" 2>/dev/null || continue
-      worktree_siblings "$branch" "$other" | sed 's/^/ADD-DIR: /'
-    done
+    sibling_add_dirs "$repo" "$branch" "$(cat "$repo/$what" 2>/dev/null)" $([ "$kind" != suite ] || echo no-helpers)
     printf 'Working directory: %s\n\n# Night %s job %s\n\n' "$wt" "$kind" "$ref"
     if [ "$kind" = handoff ]; then
       printf 'Night %s. Settle the handoff `%s/%s` in the worktree `%s` on branch `%s`; its copy there is `%s`.\n\n' "$id" "$repo" "$what" "$wt" "$branch" "$wt/$what"

@@ -336,6 +336,8 @@ pnight base G2 >/dev/null || fail "night base G2 failed"
 pnight carry G2 >"$WORK/g2.out" 2>/dev/null || fail "a carry after the first direction failed"
 assert [ "$(cut -f1 "$WORK/g2.out")" = goal-attach ]
 assert grep -qxF '### goal attach: detached' "$NIGHTS/G2.goal-attach.brief.md"
+# A goal names its component, not its repository (W8: worth-bar's 'the judge' lives in review-bench): every sweep sibling.
+assert grep -qxF "ADD-DIR: $C/.claude/worktrees/night-G2-goal-attach" "$NIGHTS/G2.goal-attach.brief.md"
 # A goal after one that landed tonight starts from main, where the landed one's Done row already is: from the base
 # the two Done rows would conflict at landing.
 assert [ "$(git -C "$L/.claude/worktrees/night-G2-goal-attach" rev-parse HEAD)" = "$(git -C "$L" rev-parse refs/night/G2/base)" ]
