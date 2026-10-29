@@ -125,7 +125,7 @@ def load():
 
 
 def family(model):
-    """The vendor family of a model or cell label: opus-high, sonnet, claude-opus-5-5 -> claude."""
+    """The vendor family of a model or cell label: opus-high, sonnet or a full claude-* id -> claude."""
     name = str(model or "").lower()
     if re.match(r"(claude-)?(opus|sonnet|haiku|fable)", name):
         return "claude"
