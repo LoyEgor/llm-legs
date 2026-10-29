@@ -54,8 +54,8 @@ done
 [ -x "$BENCH/tracers/stable/run.sh" ] || { printf 'logo-vectorize: no stable champion at %s/tracers/stable\n' "$BENCH" >&2; exit 1; }
 runner="$BENCH/tracers/stable/run.sh" hints=''
 if [ -n "$grad$colors$palette" ]; then
-  runner="$BENCH/tracers/hints/run.sh"
-  [ -x "$runner" ] || { printf 'logo-vectorize: no hints tracer at %s/tracers/hints\n' "$BENCH" >&2; exit 1; }
+  runner="$BENCH/tracers/hints-a4/run.sh"
+  [ -x "$runner" ] || { printf 'logo-vectorize: no hints tracer at %s/tracers/hints-a4\n' "$BENCH" >&2; exit 1; }
   hints=" hints=gradient:${grad:-auto},colors:${colors:-auto}${palette:+,palette:$palette}"
 fi
 
