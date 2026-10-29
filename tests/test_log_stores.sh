@@ -11,7 +11,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(mktemp -d)
 WORK=$(cd -P "$WORK" && pwd)
 TMPW=$(mktemp -d /private/tmp/test-log-stores.XXXXXX)
-trap 'rm -rf "$WORK" "$TMPW"' EXIT
+trap 'chmod -R u+rwx "$WORK" "$TMPW" 2>/dev/null; rm -rf "$WORK" "$TMPW"' EXIT
 mkdir -p "$WORK/home" "$WORK/bin" "$WORK/state" "$WORK/path"
 printf '#!/bin/bash\necho >>"%s/python-execs"\nexec "%s" "$@"\n' "$WORK" "$(command -v python3)" >"$WORK/path/python3"
 chmod +x "$WORK/path/python3"

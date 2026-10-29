@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -110,7 +111,7 @@ def remove(path, also=()):
     """The unit, then each path that goes with it (a unit first: a Chromium IndexedDB leveldb before its blob
     directory, so a stop between them leaves stray blobs Chromium overwrites, never a database naming lost ones)."""
     if os.path.isdir(path) and not os.path.islink(path):
-        shutil.rmtree(path)
+        shutil.rmtree(path, onexc=reopen)
     else:
         os.remove(path)
     for extra in also:
@@ -118,6 +119,27 @@ def remove(path, also=()):
             remove(extra)
         except FileNotFoundError:
             pass
+
+
+def reopen(_function, path, error):
+    """rmtree's retry for a directory of ours its mode shuts (a killed suite's chmod 0 inside a temp unit): open it
+    and the one holding path to their owner, then remove path again; anything else, or a mode that already allowed
+    it (a privacy guard), raises."""
+    opened = False
+    for shut in {os.path.dirname(path), path} if isinstance(error, PermissionError) else ():
+        try:
+            found = os.lstat(shut)
+        except OSError:
+            continue
+        if stat.S_ISDIR(found.st_mode) and found.st_uid == os.getuid() and found.st_mode & 0o700 != 0o700:
+            os.chmod(shut, found.st_mode | 0o700)
+            opened = True
+    if not opened:
+        raise error
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, onexc=reopen)
+    else:
+        os.remove(path)
 
 
 def write(path, text):
