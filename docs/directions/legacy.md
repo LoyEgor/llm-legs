@@ -104,31 +104,13 @@ Checked, not a class:
 
 ## Goals
 
-### goal lift-not-copy: a tool modeled on a sibling imports the sibling's helpers, never copies them
-
-Class 3. 10-09…10-23, 377 helper lines in 27 units re-rolled an existing helper (10.7 per 1k code
-lines added, of 35,283; `image_enhance` 25 of them): 109 lines (10 units) near-copy a sibling's code, 268 only make
-the same calls (`cpu_audit#tally` re-rolls `speed-doctor#read_new`; some are parallel per-vendor `cmd_*`). The writer
-had opened or named the sibling first in 28 units (352 lines, of the older count): suno_music.py ← flow_music.py 97
-(156 with `main`), the Hammerspoon guards 54, cpu_audit.py 38. Chats wrote 279 (older count); nothing they load asks
-for reuse, and REUSE FIRST (worker briefs) says "use it", which a copy passes; neither says "import, never copy".
-- First step: read the five largest writers (suno_music, cpu_audit, awdl_guard, system-doctor, words_journal);
-  under 3 that read the copied helper itself, not only its file's name, stops the goal (suno's one chat, 3 forked
-  transcripts, read `flow_music.py`'s code first).
-- Change: REUSE FIRST in llm-legs `bin/worker-run` `BRIEF_PREAMBLE` adds "use it by import: a helper in another tool
-  moves to a module both import (`share/`, `gemini_web` for the browser legs, a Hammerspoon module), never a copy";
-  the same sentence goes into claude-setup `global/CLAUDE.md` for chats (the orchestrator's edit), paid by a trim
-  there. The 386 standing lines are the Code fixer's (block 7).
-- Proof, forward (prose has no replay), the 7 days after landing: a scratch `code-doctor refresh`; its clone and
-  reuse pairs with both units ≤ 60 lines, code only, `local-config/` out, the newer unit's def line `git blame` in
-  the window; same-file pairs, argparse `main`, bin `resolve_root` and the ledger's kept copies (chat-load) out; per
-  1k code lines added (git numstat between the window's ends, the Metric's buckets): 10.7 → ≤ 5.4, near-copies and
-  same-call re-rolls apart. Beside it, exact-body copies (index digests, symlinks out): 46 lines in 9 units.
-- Must not get worse: `global/CLAUDE.md` ≤ 5,519 bytes (its size now: the sentence needs an equal trim); the preamble + ≤ 120 bytes; no hook or gate; a lift keeps
-  both files' suites green and lowers the pair's lines.
-
 ## Done
 
+- goal lift-not-copy (llm-legs 647bf70c; claude-setup global/CLAUDE.md `## Reuse`): REUSE FIRST and chats' CLAUDE.md say
+  "use it by import … never a copy". First step held: 4 of the 5 largest writers (suno_music, cpu_audit#tally,
+  awdl_guard#startDemandWatch, system-doctor#worker_judge) read the copied helper's body first; words_journal's
+  transcript is gone. Preamble +119 bytes; CLAUDE.md 5,182 → 5,381. Forward read 7 days after landing: 10.7 → ≤ 5.4
+  re-rolled helper lines per 1k code lines added, near-copies and same-call re-rolls apart.
 - goal own-orphans (08914fb6): `check` passes an unjudged deletion whose base references all sat in the run's judged
   deleted units and stay gone, or a copy moved onto the judged merge's shared file. Replays old → new: 10f7f32 +
   normalizeDir, 84de7cc5's statusline.sh/grokb copies refused → passed; a live unit refused in both; check +0.1–0.3 s.
