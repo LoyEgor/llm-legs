@@ -9489,7 +9489,7 @@
             "claude-setup/hooks/stop.d/notice-connections.sh",
             "claude-setup/tests/test_connections.sh"
           ],
-          "in": null,
+          "in": "claude-setup@ab0da798",
           "regressed_at": "2026-10-29T13:28:21+02:00"
         }
       ],
