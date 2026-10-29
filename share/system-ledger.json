@@ -350,6 +350,32 @@
         "cause": "tokenmap-scand"
       },
       "note": "1.1 GB/day written, 510 cpu-s, 40 processes: the writes are token-map's scan and kinds runs (token-map repository, report-only from this run, no ADD-DIR worktree); 10-29 it was still running at 08:05 after its 05:00 start (13.8 cpu-s per 10 min, no new tasks). The incremental scan's write cut is ssd-writes row token-map/tokenmap/__main__.py (fixed-pending); next fixer: which of scan, rates or kinds writes the GB (the token-map owner). 10-29 (system-system-20261029T112240Z-5eba): the job log's steps, UTC: scan 03:00-09:42 (6.7 h at nice 19 under the night's load; 0.6 h on 10-28), kinds 09:42-11:00, canary and verify to 11:10, html from 11:10. The token-map helper repository had no worktree for this run."
+    },
+    {
+      "id": "spawn-machine-worker-run",
+      "title": "worker-run forks per call (machine births, top cause)",
+      "status": "fixed-pending",
+      "match": {
+        "rule": "spawn",
+        "key": "machine",
+        "cause": "llm-legs/bin/worker-run"
+      },
+      "note": "10-29 17:47-18:46 1,022 births/s (limit 1,000), worker-run 26 % of the births the ticks saw, then geminib 16 %, (bash) 12 %, claude 9 %: the night's load (worker suites, image legs, bench). causer() charges worker-run with its own forks and every child outside an LLM CLI, so most of its share is the test_worker_run_* suites driving it under fixtures, plus live supervisors, waits and the per-call module sourcing. A traced fixture codex start + supervise + wait --report (BASH_ENV xtrace, one PS4 pid per fork): 313 bash forks and 264 external commands; the spread is flat, no hot loop (the watchdog hop is 30 s and memoized, the wait poll 5 s on a kqueue watcher). Cut, output-equivalent: the script path by parameter expansion (no dirname, basename and their subshells per call), the perl setsid probe on first launch rather than at every source (wait, report, stop launch nothing), codex session_id as grep -m1 into the shell (no head, sed; 7 calls a run), config_value read in-shell, web_search_column and web_search_vendors over the table held in a variable (no cat|awk, 4 calls a start); same trace 577 -> 518 processes; old vs new outputs identical on the session_id, config_value and web-search cases under bash 5 and 3.2, and on 5 invocation forms of the path (relative, absolute, ./, symlink, nested relative symlink). Left, next levers by count: session_transcript's codex find|head (3 a run), session_id's jq .vendor when the caller passes none (4), worker-run-snapshot.sh:330 and :36, worker-model.sh:284. The proof shares blind_spots cohort-proof-work-mix (worker-run's births follow its runs and the suites run against it).",
+      "fixes": [
+        {
+          "at": "2026-10-29T19:10:00+02:00",
+          "by": "system-system-20261029T165052Z-2b21",
+          "files": [
+            "llm-legs/bin/worker-run",
+            "llm-legs/share/worker-run-watchdog.sh",
+            "llm-legs/share/worker-run-pool.sh",
+            "llm-legs/share/worker-run-vendors.sh",
+            "llm-legs/share/web-search.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ]
     }
   ],
   "blind_spots": [
@@ -412,6 +438,13 @@
       "reason": "proof() compares cores and births/s before and after a fix, not per unit of the cause's work: memlogd's CPU follows its 1 Hz incident ticks (82 on 10-27, 1,825 on 10-29), worker-run's its live runs and hops (a night-only after-window against a 7-day day-and-night baseline), so load reads as a regression and an idle week as a fix.",
       "since": "2026-10-29",
       "would_catch_if": "proof divided the cause's CPU by its own work count (memlogd ticks by kind from its day log, worker-run runs from the run dirs) or compared the same hours of day before and after"
+    },
+    {
+      "id": "kernel-cause-by-births",
+      "what": "the cause of the machine's kernel CPU share (kernel:machine)",
+      "reason": "The kernel rule names its top cause from the births ranking, yet over 138 ticks of 10-29 16:10-19:06 the kernel share barely followed births (r 0.25; 0.445 at under 400 births/s, 0.488 at 1,200 and more) and followed busy (0.58) and swap-ins (0.36) under swap 97 % full: paging and the compressor, which no births ranking can name. The same hour named worker-run, then geminib, as its cause.",
+      "since": "2026-10-29",
+      "would_catch_if": "the kernel rule ranked causes by per-process system time (ri_system_time, values[1] of the rusage struct machine_probe.proc_rusage already reads and drops) beside kernel_task's own CPU, and named paging when the compressor and swap-ins carry the share"
     }
   ]
 }
