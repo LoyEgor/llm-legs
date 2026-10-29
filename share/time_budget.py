@@ -1188,6 +1188,22 @@ def own_suites(item):
     return out
 
 
+def suite_names_helper(repo, suites, base):
+    """False when every named suite's source is readable in the helper's repository and none mentions the helper by
+    name: a `kept` suite audit of a job that cut other suites' fixtures runs none of them. True otherwise."""
+    root = night_churn.repo_dir(repo or "")
+    texts = []
+    for stem in suites:
+        for ext in (".sh", ".py"):
+            try:
+                with open(os.path.join(root, "tests", stem + ext), errors="replace") as handle:
+                    texts.append(handle.read())
+                break
+            except (OSError, TypeError):
+                continue
+    return len(texts) < len(suites) or any(base in text for text in texts)
+
+
 def runtime_change(item):
     """Whether a fix's commits changed code its measured unit runs: never by ledgers, docs, the measurers (their
     baselines and windows) or tests, save a suite unit's own suite and test helpers; None when its files are unknown.
@@ -1196,7 +1212,7 @@ def runtime_change(item):
     if files is None:
         return None
     suites = {k.split("/", 1)[1] for k in unit_names(item)} if item["class"] == "suite_run" else set()
-    for _, path in files:
+    for repo, path in files:
         base = os.path.basename(path)
         stem = os.path.splitext(base)[0]
         if bookkeeping(path):
@@ -1206,6 +1222,8 @@ def runtime_change(item):
             continue
         if is_test(path) and (item["class"] != "suite_run" or suites and base.startswith("test_")
                               and stem not in suites):
+            continue
+        if is_test(path) and suites and not base.startswith("test_") and not suite_names_helper(repo, suites, base):
             continue
         return True
     return False

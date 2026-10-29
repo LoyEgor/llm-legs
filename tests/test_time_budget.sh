@@ -666,6 +666,15 @@ check(suite(["share/suite_audit.py", "tests/test_suite_audit.sh", "share/spend-l
       and T.runtime_change(dict(measure, files=None)) is None,
       "runtime code of a unit: any code but measurers, ledgers and docs; tests only for a suite unit, and only its "
       "named suite, test helpers, or a measurer for the measurer's own suite")
+helpers = os.path.join(work, "helpers-repo")
+os.makedirs(os.path.join(helpers, "tests"))
+open(os.path.join(helpers, "tests", "test_kept.sh"), "w").write("bash fixtures/other-probe.py\n")
+open(os.path.join(helpers, "tests", "test_cut.sh"), "w").write("python3 fixtures/cut-probe.py\n")
+shared = lambda name: T.runtime_change({"class": "suite_run", "ids": ["suite_audit:r:" + name],
+                                        "files": [[helpers, "tests/fixtures/cut-probe.py"]]})
+check(shared("test_kept") is False and shared("test_cut") is True and shared("test_unread") is True,
+      "a test helper is runtime only for a named suite whose source names it (a kept suite audit of a job that cut "
+      "another suite's fixture was blamed for the fixture), unreadable suite sources stay runtime")
 empty = T.document(L + 86400 * 9, write=False)
 check(empty["lost_min_day"] is None and empty["lines"] == ["Lost time: nothing measured in the last 24 h"],
       "a window with no recorded time is unmeasured, never a zero day: %s" % empty["lines"])
