@@ -291,8 +291,11 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   (`/Volumes/Work/Projects/logo-vectorizer-bench/tracers/stable`, moved on each adopted champion; `LOGO_BENCH`
   overrides the bench path). `--size native` (default) traces up to 1024 px as given: finer edges, better than
   512 on 11 of 16 clean 1024 logos, but above 512 only the core steps apply; `--size 512` fits the long side
-  into 512 px, where every champion step is tuned and judged (JPEG, soft-edged or gradient-heavy art). The SVG keeps the source's pixel size as width/height. ~1.5–3 min an image,
-  independent images run in parallel. Prints `svg= champion= source= traced= seconds=`.
+  into 512 px, where every champion step is tuned and judged (JPEG, soft-edged or gradient-heavy art). The SVG keeps the source's pixel size as width/height. ~2–5 min an image,
+  independent images run in parallel. Prints `svg= champion= source= traced= seconds= auto=on`, then a `colcheck:` line when
+  colours look lost or mixed. By default it detects flat art and its colour count (`tracers/hints-a4`): flat art takes a
+  palette path that keeps colours apart, gradients/JPEG/transparency/blur/<300 px get the champion; `--auto no` runs the
+  champion alone. `--gradient`/`--colors`/`--palette` are the fallback hints (`--help`).
 
   ```bash
   logo-vectorize --in /abs/logo.png --dest /abs/logo.svg

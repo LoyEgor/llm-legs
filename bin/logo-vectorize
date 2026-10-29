@@ -5,10 +5,14 @@ set -euo pipefail
 BENCH=${LOGO_BENCH:-/Volumes/Work/Projects/logo-vectorizer-bench}
 
 usage() {
-  printf 'usage: logo-vectorize --in <absolute image> --dest <absolute .svg> [--size 512|native] [--dry-run]\n' >&2
+  printf 'usage: logo-vectorize --in <absolute image> --dest <absolute .svg> [--size 512|native] [--auto no] [--dry-run]\n' >&2
   printf '                      [--gradient yes|no] [--colors N] [--palette #rrggbb,#rrggbb,...]\n' >&2
   printf '  traces a logo or icon bitmap (PNG, JPEG, WebP; flat colours and gradients) into an SVG with the\n' >&2
-  printf '  logo bench'\''s stable champion (%s/tracers/stable); local, free, ~1.5-3 min per image\n' "$BENCH" >&2
+  printf '  logo bench'\''s stable champion (%s/tracers/stable); local, free, ~2-5 min per image\n' "$BENCH" >&2
+  printf '  By default (auto=on) it first decides whether the art is flat and how many colours it has: flat art takes a\n' >&2
+  printf '  palette path that keeps colours apart, kept only when it loses nothing the champion keeps; gradients, JPEG,\n' >&2
+  printf '  transparency, blur and art under 300 px get the champion unchanged. On unseen logos judges preferred it to\n' >&2
+  printf '  the champion alone on 29, the champion on 8, no element lost. --auto no runs the champion alone\n' >&2
   printf '  --size native (default) traces up to 1024 px as given (finer edges). Flat opaque PNG of 300 px or more takes the\n' >&2
   printf '  palette path at any size; on the fallback most post-steps match the bench sizes (256/512/1024) exactly, so other\n' >&2
   printf '  sizes (e.g. 257-511 px tiles) get the core trace plus crack/spike repair; above 512 px soft art gets the core steps)\n' >&2
@@ -32,9 +36,10 @@ usage() {
   exit 2
 }
 
-input='' dest='' size=native dry=0 grad='' colors='' palette=''
+input='' dest='' size=native dry=0 grad='' colors='' palette='' auto=on
 while [ $# -gt 0 ]; do
   case "$1" in
+    --auto) [ $# -ge 2 ] && [ "$2" = no ] || usage; auto=no; shift 2 ;;
     --in) [ $# -ge 2 ] || usage; input=$2; shift 2 ;;
     --dest) [ $# -ge 2 ] || usage; dest=$2; shift 2 ;;
     --size) [ $# -ge 2 ] && [[ "$2" =~ ^(512|native)$ ]] || usage; size=$2; shift 2 ;;
@@ -52,11 +57,13 @@ done
 [ -f "$input" ] || { printf 'logo-vectorize: no such image %s\n' "$input" >&2; exit 2; }
 [ -d "$(dirname "$dest")" ] || { printf 'logo-vectorize: no such directory %s\n' "$(dirname "$dest")" >&2; exit 2; }
 [ -x "$BENCH/tracers/stable/run.sh" ] || { printf 'logo-vectorize: no stable champion at %s/tracers/stable\n' "$BENCH" >&2; exit 1; }
-runner="$BENCH/tracers/stable/run.sh" hints=''
+runner="$BENCH/tracers/stable/run.sh" hints='' lvauto=''
 if [ -n "$grad$colors$palette" ]; then
   runner="$BENCH/tracers/hints-a4/run.sh"
   [ -x "$runner" ] || { printf 'logo-vectorize: no hints tracer at %s/tracers/hints-a4\n' "$BENCH" >&2; exit 1; }
   hints=" hints=gradient:${grad:-auto},colors:${colors:-auto}${palette:+,palette:$palette}"
+elif [ "$auto" = on ] && [ -x "$BENCH/tracers/hints-a4/run.sh" ]; then
+  runner="$BENCH/tracers/hints-a4/run.sh" hints=' auto=on' lvauto=1
 fi
 
 champion=$(basename "$(cd -P "$BENCH/tracers/stable" && pwd)")
@@ -90,7 +97,7 @@ if [ "$dry" = 1 ]; then
 fi
 
 start=$SECONDS
-LV_GRADIENT=${grad:-auto} LV_COLORS=${colors:-auto} LV_PALETTE=$palette BENCH_IN_SLOT=1 BENCH_SLOT_WAIT=86400 \
+LV_AUTO=$lvauto LV_GRADIENT=${grad:-auto} LV_COLORS=${colors:-auto} LV_PALETTE=$palette BENCH_IN_SLOT=1 BENCH_SLOT_WAIT=86400 \
   nice -n 5 "$runner" "$src" "$work/out.svg" >"$work/log" 2>&1 || true
 [ -s "$work/out.svg" ] || { printf 'logo-vectorize: the tracer produced no SVG; last log lines:\n' >&2; tail -5 "$work/log" >&2; exit 1; }
 "$PY" -I - "$work/out.svg" "$dest" "$w" "$h" <<'EOF'
