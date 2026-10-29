@@ -12587,6 +12587,31 @@
       "reviewed_by": "night fixer harness-speed-test-health-flaky-llm-legs-test-llm-limits-20261029T165030Z-7f33",
       "note": "Six reds in 7 days. 16:16, 16:17, 16:18 and 16:26 (2026-10-29): main checkouts of claude-setup moved under an unchanged llm-legs tree, because the suite runs the real hooks/review-flow-gate.sh and hooks/lib/argv.sh from $PROJECTS/claude-setup (lines 5061, 5332): the tree digest does not cover them, so the doctor reads the later green as the same code; the missing selection was fixed in fd37ae0f (affected). 17:38 (night grok worktree) and 18:10 (drop-verifier worker worktree, 390 s wall) left no failing text, probably the same neighbour or load; the 150 MB wall assert reproduced here as `test 2962 -lt 2500` and is now CPU. Ruled out: the suite's other date +%s bounds (600 s slack). Left: the neighbour dependency stays by design (the suite pins the real gate), see blind spot suite-red-text-lost.",
       "handoff": null
+    },
+    {
+      "id": "regression-fix-harness-speed-suite-audit-review-bench-test-panel-preparation-346b",
+      "title": "Speed fix harness-speed-suite-audit-review-bench-test-panel-preparation-20261012T235429Z-346b measured slower: its kept suite audit was blamed for fixtures it never ran",
+      "match": {
+        "rule": "regression",
+        "ident": "fix/harness-speed-suite-audit-review-bench-test-panel-preparation-20261012T235429Z-346b"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T20:00:00+03:00",
+          "by": "night fixer harness-speed-regression-fix-harness-speed-suite-audit-review-bench-test-panel-preparation-20261012t235429z-346b-20261029T165028Z-1a88",
+          "files": [
+            "llm-legs/share/time_budget.py",
+            "llm-legs/tests/test_time_budget.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night fixer harness-speed-regression-fix-harness-speed-suite-audit-review-bench-test-panel-preparation-20261012t235429z-346b-20261029T165028Z-1a88",
+      "note": "Cause: the job's `kept` rows (test_experiments_registry, test_agy_bare) name a unit whose code the fix never changed, but runtime_change counted the job's fixture helpers (integrity-probe.py, panel-preparation-probe.py) as runtime of every named suite, so unit_proof timed test_experiments_registry (0.1 s CPU-light, 0.03 s user; wall 0.2-0.56 s on rerun = load, 145 files tree, EXPERIMENTS.json empty since 97e8c17) as the fix's. Ruled out: the suite itself (untouched since the audit; whole-tree grep costs ~0.03 s), a real slowdown of the three cut suites (not named by the row). Now a helper is runtime only for a suite whose source names it."
     }
   ],
   "blind_spots": [
