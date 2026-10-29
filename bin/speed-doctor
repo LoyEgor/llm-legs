@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
 import cpu_audit  # noqa: E402
 import fix_commit  # noqa: E402
+import ledger_contract  # noqa: E402
 import spend  # noqa: E402
 import suite_audit  # noqa: E402
 import test_health  # noqa: E402
@@ -105,7 +106,7 @@ METRICS = {"chat.om_per_100_prompts": ("chat", 30), "delegation.pre_cli_s": ("de
            "background.statusline_cpu_ms_per_sh": ("background/statusline", 200),
            "background.merge_kick_cpu_ms": ("background/statusline", 20), "night.wall_h_per_job": ("night", 5)}
 QUALITY = ("equivalent", "risk")
-EVIDENCE_KEYS = H.EVIDENCE_KEYS
+EVIDENCE_KEYS = ledger_contract.EVIDENCE_KEYS
 FORBIDDEN_LEVER = re.compile(r"(?i)\b(models?|opus|sonnet|haiku|fable|flash|gpt[\w.-]*|cheaper|downgrades?|effort|"
                              r"reasoning|xhigh|thinking|think|vendors?)\b")
 FORBIDDEN_COMPONENTS = ("chat/model",)
@@ -1269,7 +1270,7 @@ def judge_digest(ledger):
     return digest.hexdigest()
 
 
-equivalent = H.equivalent
+equivalent = ledger_contract.equivalent
 
 
 def roi_read(state, now):

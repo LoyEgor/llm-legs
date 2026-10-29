@@ -717,6 +717,13 @@ assert [ "$(runs_dir="$WORK/qr"; mkdir -p "$runs_dir"; eval "$(sed -n '/^record_
 jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-harness",
   problems: [{id: "load:host", state: "fixed-pending"}]}' >"$DATA/harness-doc.json"
 printf 'load:host\tfixed\tproj/README\ttests/test_x.sh\n' >"$WORK/ld"
+# A worktree ledger its rerun doctor faults (night 74c1: a ruled-out row with an unlanded last fix) never closes.
+jq '.problems += [{id: "ledger:R9", rule: "ledger_fault", state: "new", fact: "ledger R9 dropped: the last fix has in: null exactly while the status is fixed-pending"}]' \
+  "$DATA/harness-doc.json" >"$WORK/faulted-doc.json"
+cp "$DATA/harness-doc.json" "$WORK/clean-doc.json" && cp "$WORK/faulted-doc.json" "$DATA/harness-doc.json"
+assert_fails fix close "$load" --decisions "$WORK/ld" "load fixed" 2>"$WORK/err"
+assert grep -qF "ledger:R9 (rerun harness doctor): ledger R9 dropped: the last fix has in: null exactly while the status is fixed-pending: the worktree's ledger breaks share/ledger_contract.py" "$WORK/err"
+cp "$WORK/clean-doc.json" "$DATA/harness-doc.json"
 fix close "$load" --decisions "$WORK/ld" "load fixed" >/dev/null 2>"$WORK/err" || fail "a row naming no file blocks close: $(cat "$WORK/err")"
 assert jqe '.decisions == [{id: "load:host", verdict: "fixed", purpose: "proj/README", evidence: "tests/test_x.sh", component: "unverified"}]' "$(record "$load")"
 fix show "$load" >"$WORK/show"

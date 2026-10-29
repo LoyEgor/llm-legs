@@ -2290,40 +2290,15 @@ assert_eq 1 "$(jq '.floors["event:UserPromptSubmit"][0]' "$catchup/days/$(date -
   "a run after a gap longer than the raw reach still records the floors since its last run"
 
 ledger_guard() { # ledger... -> one line per ledger: ok, or the guard it breaks
-python3 - "$ROOT/share" "$ROOT/bin/speed-doctor" "$@" <<'LEDGER'
-import importlib.machinery, importlib.util, json, re, sys
+python3 - "$ROOT/share" "$@" <<'LEDGER'
+import json, sys
 sys.path.insert(0, sys.argv[1])
-from fix_commit import FIX_KEYS
-loader = importlib.machinery.SourceFileLoader("speed_doctor", sys.argv[2])
-speed_doctor = sys.modules["speed_doctor"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("speed_doctor", loader))
-loader.exec_module(speed_doctor)
-equivalent = speed_doctor.equivalent
+import ledger_contract
 
-def guard(path):
-    ledger = json.load(open(path))
-    assert ledger["owner"] == "Harness Doctor" and isinstance(ledger["rows"], list), "owner and rows"
-    fields = {"id", "title", "match", "status", "fixes", "same_cause", "last_reviewed", "reviewed_by", "note", "handoff"}
-    ids = [r["id"] for r in ledger["rows"]]
-    for r in ledger["rows"]:
-        assert set(r) - {"ruled_at", "expected_min_day"} == fields, r["id"]
-        assert isinstance(r.get("expected_min_day", 0), (int, float)), r["id"]
-        assert set(r["same_cause"]) <= set(ids), r["id"]
-        if r["status"] in ("fixed", "fixed-pending"):
-            assert r["fixes"], "a fixed row names its fix: %s" % r["id"]
-        adhoc = r["match"]["rule"] == "opportunity" and r["match"]["ident"].startswith("adhoc/")
-        for i, fix in enumerate(r["fixes"]):
-            assert set(fix) - {"equivalence"} - ({"bench"} if adhoc else set()) == FIX_KEYS and fix["files"], r["id"]
-            assert "equivalence" not in fix or equivalent(fix), r["id"]
-            assert all(re.fullmatch(r"[\w.-]+/.+", f) for f in fix["files"]), r["id"]
-            assert i < len(r["fixes"]) - 1 or (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
-    for b in ledger["blind_spots"]:
-        assert set(b) - {"unmeasurable"} == {"id", "what", "reason", "since", "would_catch_if"}, b
-        assert isinstance(b.get("unmeasurable", "x"), str) and b.get("unmeasurable", "x").strip(), b
-
-for path in sys.argv[3:]:
+for path in sys.argv[2:]:
     try:
-        guard(path)
-        print("ok")
+        faults = ledger_contract.faults(json.load(open(path)))
+        print("broken: %r" % (faults,) if faults else "ok")
     except Exception as error:
         print("broken: %r" % (error,))
 LEDGER
@@ -2343,6 +2318,17 @@ asserts=$((asserts + 1))
 [ "$(guarded 2)" = ok ] || fail "the ledger guard fails a Speed fix carrying its output-equivalence proof"
 asserts=$((asserts + 1))
 [[ "$(guarded 3)" == broken:* ]] || fail "the ledger guard takes an equivalence proof with no result"
+asserts=$((asserts + 1))
+# Night 74c1: two fixers broke the guard where their own `harness-doctor --json` saw no fault; the doctor reads it.
+jq '.rows[0].status = "ruled-out" | .rows += [.rows[0] | .id = "no-handoff" | .status = "fixed-pending" | del(.handoff)]' \
+  "$WORK/refixed.json" > "$WORK/ruled-unlanded.json"
+assert_eq '[["ledger:no-handoff","ledger:refixed"],true,true]' "$(HARNESS_LEDGER="$WORK/ruled-unlanded.json" \
+  HARNESS_DOCTOR_DIR="$WORK/ruled-unlanded" HARNESS_DOCTOR_NOW=$((T + 900)) HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --json |
+  jq -c '[([.problems[] | select(.rule == "ledger_fault") | .id] | sort),
+    (.problems[] | select(.id == "ledger:refixed") | .fact | test("in: null exactly while the status is fixed-pending")),
+    (.problems[] | select(.id == "ledger:no-handoff") | .fact | test("lacks handoff"))]')" \
+  "a ruled-out row whose last fix is unlanded and a row missing a field are ledger faults of the doctor, as of the guard"
+[[ "$(ledger_guard "$WORK/ruled-unlanded.json")" == broken:* ]] || fail "the ledger guard takes a ruled-out row with an unlanded fix"
 asserts=$((asserts + 1))
 
 FIXTURE="$ROOT/tests/fixtures/harness-calibration"

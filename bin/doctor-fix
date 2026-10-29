@@ -1515,6 +1515,11 @@ close_run() { # id --decisions <file> note...
     done < <("${DOCTOR_FIX_CODE_DOCTOR:-$repo_root/bin/code-doctor}" check "$file" \
       $(jq -r "$JQ_BASE"' base // empty | "--base\n\(.)"' "$file") 2>&1)
   fi
+  if [ "$doctor" = harness ] && jq -e '(.worktrees // []) != []' "$file" >/dev/null; then
+    while IFS= read -r line; do
+      [ -z "$line" ] || bad+=("$line: the worktree's ledger breaks share/ledger_contract.py, which the suite guards at landing")
+    done < <(jq -r '.problems[]? | select(.rule == "ledger_fault") | "\(.id) (rerun harness doctor): \(.fact)"' "$doc")
+  fi
   base=$(jq -r "$JQ_BASE"' base // empty' "$file")
   if [ -n "$base" ]; then
     while IFS= read -r wt; do

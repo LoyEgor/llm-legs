@@ -33,7 +33,9 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
 import fix_audit
+import ledger_contract
 import limit_hit
+from ledger_contract import equivalent
 from fix_commit import LANDED_FILE, NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, main_checkout, memo_flush, merge_settled, read_settled, record_settled, siblings_dir, use_memo
 from limiter_hold import hold_dir, wait_dir
 from machine_probe import command as probe_command, host_ticks, spawn_pid, sysctl
@@ -6298,7 +6300,6 @@ CONTRACT = 1
 PROOF_MIN_EXPOSURE = 20
 PROOF_MIN_PREDICTED = 3
 SPEED_RULES = ("regression", "opportunity")
-EVIDENCE_KEYS = ("compared", "data", "result")
 PROOF_SHOW_S = 7 * 86400
 SEEN_GAP_S = 86400
 SEEN_KEEP_S = 30 * 86400
@@ -6531,11 +6532,6 @@ def rate_before(rates, entry, fix_at):
             except re.error:
                 continue
     return sum(found) if found else None
-
-
-def equivalent(fix):
-    proof = fix.get("equivalence") if isinstance(fix, dict) else None
-    return isinstance(proof, dict) and all(str(proof.get(k) or "").strip() for k in EVIDENCE_KEYS)
 
 
 def speed_proof(entry, speed, fix_at):
@@ -7151,7 +7147,7 @@ def collect(write, now):
     state = read_json(os.path.join(folder, "state.json"), {})
     use_memo(os.path.join(folder, LANDED_FILE), write)
     ledger, ledger_raw = load_ledger()
-    faults = ledger_faults(ledger)
+    faults = ledger_faults(ledger) + (ledger_contract.faults(json.loads(ledger_raw)) if ledger is not None and ledger_raw else [])
     faulty = {w for w, _ in faults}
     judging = dict(ledger, rows=[r for r in ledger["rows"] if isinstance(r, dict) and isinstance(r.get("id"), str)
                                      and r["id"] and r["id"] not in faulty]) \
