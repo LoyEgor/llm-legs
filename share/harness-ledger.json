@@ -13362,7 +13362,7 @@
     {
       "id": "transcript-grep-unmetered",
       "what": "Bash calls grepping or finding recursively over every profile's transcripts",
-      "reason": "2026-10-29: fixers grepped ~/.claude-profiles/*/projects to find log-audit quotes (log_audit:unbounded-transcript-grep, ~42 min); the packet now names the skeletons, nothing counts the calls",
+      "reason": "2026-10-29: fixers grepped ~/.claude-profiles/<account>/projects to find log-audit quotes (log_audit:unbounded-transcript-grep, ~42 min); the packet now names the skeletons, nothing counts the calls",
       "since": "2026-10-29",
       "would_catch_if": "the Harness doctor's tool mining counted Bash tool_uses whose grep -r or find walks ~/.claude*/projects, with their wall, per day"
     }
