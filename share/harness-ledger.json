@@ -12381,9 +12381,39 @@
       "note": "Night 20261029T012849Z-5e69: suites 09:59:39-10:45:14Z (46 min; 10-24's took 23), report --post (orchestrator, backgrounded) and a plain report (the supervising chat, auto-backgrounded after 120 s) both started 10:09:39/47 and gave up at 1200 s with suites still live. llm-legs run-all 2381 s wall / 7564 s serial vs 1104 / 3247 on 10-24, every suite ~2.5x (grok_outcomes 73 -> 346 s); load1 82-213 on 10 cores (memlogd machine log) from 33 worker runs and the next night's prep, the wave at nice 10 with Egor at the keyboard: weather, not the suites. Wall 1200 s, cpu ~0 s (a 2 s sleep poll), rest: the suites run itself 2735 s. Fix: report never waits (prints suites running since), a suites run ending after the night finished posts a night-suites verdict block (report-bus); class night-suites no longer journals. Leftover for the owner: WAIT_RED_S still lists night-suites (judge; docs pin it).",
       "handoff": null,
       "ruled_at": null
+    },
+    {
+      "id": "test_hang-llm-legs-test_llm_limits",
+      "title": "test_llm_limits · llm-legs: a CPU-starved run past 840 s failed its heartbeat assert on the suite-start clock",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_llm_limits"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T19:10:00+02:00",
+          "by": "night 20261029T163046Z-74c1 harness-tests-20261029T165037Z-644d",
+          "files": ["tests/test_llm_limits.sh"],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "night 20261029T163046Z-74c1 harness-tests-20261029T165037Z-644d",
+      "note": "Not a block: run 65331 (worker claudeb-1793273550-18790-1321, 11:37-11:53Z) wall 952 s, cpu 39 s (its usual ~38 s), the rest 913 s run-queue wait; its sibling test_llm_limits_refresh in the same run took 925 s at 36 s cpu and passed, test_night_carry in run 90831 924 s at 61 s cpu. Machine saturated (system-doctor ticks 11:36-11:57Z: busy 1.0, kernel 0.43-0.56, swap 10.4-11.1 GB, logo-vectorizer-bench tracers champ84f c52/c53/c59 at 290-800 % cpu): weather. The red was ours: the log's only FAIL is 'a Mac awake one minute read its sleep as a stalled refresh', whose LLM_LIMITS_AWAKE_SINCE was the suite-start now - 60 while llm-limits.sh compares it with the real clock against limit_s 900, so any run past ~840 s failed it, and test_hang counts only red runs. Proof: awake 960 s ago -> stalled:true, 60 s ago -> false. Fix: the big-rollout/heartbeat block re-reads now (its now+1000 resets had the same exposure) and the assert takes date +%s at the call. Ruled out in test_llm_limits_refresh: its now-60 values (:280, :678) are already-expired resets, which aging only keeps expired; it passed at 925 s.",
+      "handoff": null
     }
   ],
   "blind_spots": [
+    {
+      "id": "test-hang-starved-suite",
+      "what": "a red suite run past HANG_USUAL_X its usual whose cpu_s stayed at its usual on a saturated machine, read as a hang instead of starvation",
+      "reason": "2026-10-29: test_llm_limits run 65331 (952 s wall, 39 s cpu, machine busy 1.0) read as 'hung ... ended by hand or failure'; hang_line never looks at cpu_s or system-doctor ticks, so starvation plus any unrelated red reads as a block",
+      "since": "2026-10-29",
+      "would_catch_if": "hang_line split a red over-long run whose cpu_s is within its usual cpu and whose window's ticks read busy >= 0.95 into a starved verdict naming the red's own FAIL line"
+    },
     {
       "id": "delegation-model-time",
       "what": "how much of a delegation slice (reviews, workers) is the delegate's model time versus queue, relay and poll",

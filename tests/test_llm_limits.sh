@@ -755,6 +755,8 @@ while IFS= read -r sourced; do heartbeat_path+=("$ROOT/share/$sourced"); done < 
 if herestring_hits=$(grep -nE '<<<[[:space:]]*"?\$' "${heartbeat_path[@]}"); then
   fail "a here-string feeds data on the heartbeat path; use < <(printf '%s\n' ...): $herestring_hits"
 fi
+# The collector reads the real clock: a suite starved past 840 s (2026-10-29, 952 s) failed on the start-time now.
+now=$(date +%s)
 BIG_HOME="$WORK/home-big-rollout"
 big_rollout="$BIG_HOME/.codex/sessions/2026/07/12/rollout-big.jsonl"
 mkdir -p "${big_rollout%/*}"
@@ -777,7 +779,7 @@ heartbeat_of() {
 }
 [ "$(heartbeat_of 0 | tr '\n' ' ')" = 'true "number" ' ] \
   || fail "a heartbeat state 11 h old did not read as a stalled refresh"
-[ "$(heartbeat_of "$((now - 60))" | tr '\n' ' ')" = 'false "number" ' ] \
+[ "$(heartbeat_of "$(( $(date +%s) - 60 ))" | tr '\n' ' ')" = 'false "number" ' ] \
   || fail "a Mac awake one minute read its sleep as a stalled refresh"
 EL_BIN="$WORK/elevenlabs-bin"
 mkdir -p "$EL_BIN"
