@@ -2354,7 +2354,8 @@ def statusline_fold(state, renders, now):
 
 def fold_starts(state, journal, floors, now):
     """claudeb's start stamps joined to the SessionStart batch of the process it exec'd: `s` rows
-    [s, entry, profile, kind, exec - entry s, SessionStart end - entry s or None, pid]."""
+    [s, entry, profile, kind, exec - entry s, SessionStart end - entry s or None, pid, SessionStart start - entry s
+    or None]; the part before the batch starts is Claude Code's own boot, no hook's."""
     pending = speed_state(state).setdefault("starts", [])
 
     def parse(fields):
@@ -2366,13 +2367,14 @@ def fold_starts(state, journal, floors, now):
     ready = {}
     for floor in floors:
         if floor["cls"] == "event:SessionStart" and floor.get("ppid"):
-            ready.setdefault(str(floor["ppid"]), []).append(floor["t"] + floor["ms"] / 1000.0)
+            ready.setdefault(str(floor["ppid"]), []).append((floor["t"] + floor["ms"] / 1000.0, floor["t"]))
     rows, left = [], []
     for entry, launched, pid, profile, kind in pending:
-        found = [x for x in ready.get(pid, ()) if launched <= x <= launched + START_WAIT_S]
+        found = [x for x in ready.get(pid, ()) if launched <= x[0] <= launched + START_WAIT_S]
         if found or now - launched > START_WAIT_S:
+            first = min(found) if found else None
             rows.append(["s", round(entry, 3), profile, kind, round(launched - entry, 3),
-                         round(min(found) - entry, 3) if found else None, pid])
+                         round(first[0] - entry, 3) if first else None, pid, round(first[1] - entry, 3) if first else None])
         else:
             left.append([entry, launched, pid, profile, kind])
     pending[:] = left

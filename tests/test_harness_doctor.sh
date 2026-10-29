@@ -2773,7 +2773,8 @@ with open(starts, "w") as handle:
 st = {}
 got = m.fold_starts(st, {}, [{"t": T - 897.0, "ms": 2500.0, "cls": "event:SessionStart", "ppid": "4242"},
                              {"t": T - 50.0, "ms": 100.0, "cls": "event:Stop", "ppid": "4444"}], T)
-check([r[2:4] + r[6:] for r in got] == [["locomthebest", "chat", "4242"], ["notcom", "worker", "4343"]]
+check([r[2:4] + r[6:7] for r in got] == [["locomthebest", "chat", "4242"], ["notcom", "worker", "4343"]]
+      and [r[7:] for r in got] == [[2.9], [None]]
       and abs(got[0][1] - (T - 899.9)) < 1e-3 and [r[4] for r in got] == [0.05, 0.05] and got[0][5] == 5.4
       and got[1][5] is None and [p[2] for p in st["speed"]["starts"]] == ["4444"],
       "C11 a start joins its process's SessionStart batch, expires unjoined, or waits: %s" % got)

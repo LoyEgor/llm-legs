@@ -897,6 +897,16 @@ after = speed("speed-start")[0]
 check(abs(after["partition"]["chat"].get("start", 0.0) - before - 400.0 / 60.0 / after["window"]["days"]) < 0.02,
       "a chat start waits until its SessionStart ends, never exec plus ready: %s -> %s"
       % (before, after["partition"]["chat"].get("start")))
+with open(events_file, "a") as handle:
+    for i in range(3):
+        handle.write(json.dumps(["s", Q + 2000 + i, "prof", "chat", 150.0, 400.0, "50%d" % i, 100.0]) + "\n")
+split = speed("speed-start")[0]
+days_n = split["window"]["days"]
+opp = [p for p in split["problems"] if p["id"] == "opportunity:chat/start"]
+check(opp and abs(opp[0]["opportunity"]["om_day"] - (split["partition"]["chat"]["start"] - 300.0 / 60.0 / days_n)) < 0.02
+      and "boot before them" in opp[0]["evidence"][-1]["excerpt"],
+      "chat/start's levers are priced on its SessionStart hooks only, Claude Code's boot before them apart: %s"
+      % (opp and opp[0]["opportunity"]))
 
 stub = os.path.join(work, "speed-stub")
 with open(stub, "w") as handle:

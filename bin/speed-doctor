@@ -1319,9 +1319,14 @@ def collect(write, now):
     old_credit = partition(spans, extra, H.day_start(since), old_hi)[0] if settle and back and old_hi > H.day_start(since) \
         else {}
     starts = [r for r in rows if r[0] == "s" and r[3] == "chat" and r[1] >= lo]
-    start_s = {}
+    start_s, start_hooks = {}, {}
     for r in starts:
-        start_s[H.local_day(r[1])] = start_s.get(H.local_day(r[1]), 0.0) + (r[5] if r[5] is not None else r[4] or 0)
+        secs = r[5] if r[5] is not None else r[4] or 0
+        start_s[H.local_day(r[1])] = start_s.get(H.local_day(r[1]), 0.0) + secs
+        # chat/start's levers act on its SessionStart hooks, never on Claude Code's boot before them; a row
+        # folded before the split (no row[7]) counts whole.
+        hooks = r[5] - r[7] if r[5] is not None and len(r) > 7 and r[7] is not None else secs
+        start_hooks[H.local_day(r[1])] = start_hooks.get(H.local_day(r[1]), 0.0) + max(0.0, hooks)
         sessions.setdefault(("chat", "start"), set()).add(str(r[6]))
     for day, secs in start_s.items():
         credit[(day, "chat", "start")] = secs
@@ -1443,6 +1448,9 @@ def collect(write, now):
                 om = secs / 60.0 / span
                 seen = len([d for d in leaf_days.get((area, leaf), ()) if d > since])
             users = 0
+        whole = om
+        if component == "chat/start":
+            om = sum(s for day, s in start_hooks.items() if not since or day > since) / 60.0 / (span if since else covered)
         if om < LIMITS["worth_om_day"] or (seen < seen_need("seen_days", covered)
                                            and users < seen_need("seen_sessions", covered)):
             continue
@@ -1455,7 +1463,10 @@ def collect(write, now):
                               "exposure": seen, "count": None, "first_seen": None, "last_seen": None, "evidence": [
                                   H.evidence(now, "events d rows · " + key, "%s of %s min/day · %d calls" % (
                                       fmt(om * secs / sum(v[0] for v in split.values())), fmt(om), n))
-                                  for key, (secs, n) in sorted(split.items(), key=lambda kv: -kv[1][0])],
+                                  for key, (secs, n) in sorted(split.items(), key=lambda kv: -kv[1][0])] + ([
+                                  H.evidence(now, "events s rows", "SessionStart hooks %s of %s min/day, boot before them %s"
+                                             % (fmt(om), fmt(whole), fmt(max(0.0, whole - om))))]
+                                  if component == "chat/start" else []),
                               "ledger": None, "group": area, "opportunity": best})
     opportunities += moved_opportunities(component_om, days, now, covered)
     try:
