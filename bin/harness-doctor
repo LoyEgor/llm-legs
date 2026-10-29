@@ -207,8 +207,11 @@ C1_BG_KEEP_S = 2 * 86400
 C1_BOOTS_KEPT = 64
 C1_QUEUE_KEPT = 20
 C1_NOTE_IDS = re.compile(r"<(tool-use-id|task-id)>([^<]+)</")
-C1_SUITE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:bash|sh|python3?|env|nice|timeout\s+\S+)\s+)*"
-                      r"(?:\S*/)?(?:run-all|run-suites\.sh|test_[\w.-]+\.(?:sh|bash|py|lua))(?=\s|$|[;&|)])")
+C1_SUITE = re.compile(r"(?:^|[;&|(\n]|\bdo\b|\bthen\b)\s*(?:\w+=\S*\s+)*"
+                      r"(?:(?:(?:\S*/)?(?:bash|sh|python3?(?:\.\d+)?)|exec|time|uv\s+run|env(?:\s+-u\s*\S+|\s+-i|\s+\w+=\S*)*"
+                      r"|nice(?:\s+-n\s*-?\d+)?|timeout\s+\S+|perl\s+-e\s*(?:'[^']*'|\"[^\"]*\")(?:\s+\d+)?)\s+)*"
+                      r"[\"']?(?:\S*/)?(?:run-all|run-suites\.sh|test_[\w.-]+\.(?:sh|bash|py|lua)"
+                      r"|tests/[\w.{}-]*\$\{?\w+\}?[\w.{}-]*\.(?:sh|bash|py)|(?:-m\s+)?(?:pytest|unittest))[\"']?(?=\s|$|[;&|)])")
 MEDIA_TOOLS = ("media-run", "codex-image", "gemini-image", "grok-image", "image-fanout", "gemini-video", "grok-video",
                "video-chain", "gemini-music", "gemini-sfx", "gemini-listen", "gemini-speech", "suno-music", "suno-speech",
                "chatgpt-web", "gemini-web")

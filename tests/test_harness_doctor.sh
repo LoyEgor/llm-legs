@@ -2588,6 +2588,13 @@ row = by(asked, "t", H)
 check(row[8] == [[H + 10, H + 70]] and row[9].get("ask") == 60.0 and row[9].get("test") == 10.0 and H + 70 in row[7],
       "C1 an owner question is a hole and his answer a prompt; a suite run is its own partition layer: %s" % row)
 check(not m.C1_SUITE.search("sed -n 1,9p tests/test_x.sh"), "C1 a test file read is no suite run")
+spelled = ["for t in a b; do bash tests/$t.sh; done", 'bash "$F/tests/test_x.sh"', "env -u WORKER_RUN_ID bash tests/test_x.sh",
+           "time bash tests/run-all x", "nice -n 10 bash tests/test_x.sh", "perl -e 'alarm 600; exec @ARGV' bash tests/test_x.sh",
+           "python3 -m pytest -q tests/test_x.py", ".venv/bin/python -m unittest discover", "cd x && pytest tests"]
+check([c for c in spelled if not m.C1_SUITE.search(c)] == [], "C1 every spelling of a suite run is a test layer: %s"
+      % [c for c in spelled if not m.C1_SUITE.search(c)])
+check([c for c in ["pip install pytest", "grep -n pytest x", "cat tests/$t.sh", "python3 -c 'import pytest'"]
+       if m.C1_SUITE.search(c)] == [], "C1 a command naming pytest or a suite path without running it is no suite run")
 check(chat("night", [human(H + 500, text="сделай чистку — night run 1"), say(H + 510), done(H + 520), human(H + 530)]) == [],
       "C1 machine-opened chats write no rows")
 

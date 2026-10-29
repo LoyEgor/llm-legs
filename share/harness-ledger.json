@@ -11814,13 +11814,6 @@
       "would_catch_if": "the row's evidence split runs and seconds by kind (direct, suites) and shards"
     },
     {
-      "id": "chat-tools-misfiled-suites",
-      "what": "suite runs a chat spells in forms bin/harness-doctor's C1_SUITE does not match, counted in chat/tools instead of chat/tests",
-      "reason": "2026-10-09 the chat/tools split by command put ~27% of its net seconds (1.36k calls in 8 days) in `for t in ...; do bash tests/$t.sh`, `bash \"$F/tests/test_x.sh\"`, `env -u X bash tests/...`, `time`/`nice -n 10` prefixes, `perl -e 'alarm N; exec @ARGV' bash ...`, pytest and unittest; the tests lever never sees them",
-      "since": "2026-10-09",
-      "would_catch_if": "C1_SUITE matched a test_*.sh path behind quotes, a variable directory or a time/nice/env -u/perl alarm prefix, a tests/$var.sh loop, and pytest/unittest runs"
-    },
-    {
       "id": "stop-ask-unprefixed-reason",
       "what": "which Stop ask hook blocked when its JSON reason lacks the `[hook]` prefix",
       "reason": "stop-dispatch.sh prefixes only exit-2 reasons; a JSON-block ask that forgets its own prefix lands in refusal_rows as unknown-stop-hook (ask-word-reading.sh, 8 asks in 7 days to 2026-10-10)",
