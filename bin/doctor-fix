@@ -911,7 +911,13 @@ if __name__ == "__main__":
 
 py() { DF_ROOT=$repo_root DF_PROJECTS=$projects_dir DF_RUNS=$runs_dir DF_HOME=$HOME DF_DOCS=${DOCTOR_FIX_DOCS:-$repo_root/docs} python3 -c "$PY" "$@"; }
 
-check_doc() { # doctor -> dies unless its document is fresh and speaks contract 1
+refresh_doc() { # doctor -> runs its night-prep refresh, the document rewritten in place
+  local bin="${DOCTOR_FIX_DOCTORS:-$repo_root/bin}/$1-doctor"
+  if [ "$1" = code ]; then "$bin" refresh; else "$bin" --quiet; fi </dev/null >/dev/null 2>&1
+}
+
+check_doc() { # doctor [refreshed] -> dies unless its document is fresh and speaks contract 1
+  # A stale one is refreshed once: block 7 reaches the fixers hours after the night's prep (2026-10-29: llm 3 h, code 9 h).
   local doc facts contract age
   doc=$(doc_path "$1")
   [ -s "$doc" ] || die "no $1 doctor document at $doc. Refresh the doctor first."
@@ -919,6 +925,7 @@ check_doc() { # doctor -> dies unless its document is fresh and speaks contract 
     die "$doc is not a doctor document. Refresh the doctor first."
   IFS=$'\t' read -r contract age <<<"$facts"
   [ "$contract" = 1 ] || die "$doc speaks contract $contract, not 1. Refresh the doctor first."
+  [ "$age" -le "$DOC_MAX_AGE_S" ] || [ -n "${2:-}" ] || { refresh_doc "$1"; check_doc "$1" refreshed; return; }
   [ "$age" -le "$DOC_MAX_AGE_S" ] || {
     limit_hit doctor-fix.doc-age "$DOC_MAX_AGE_S" s skip "the $1 doctor's fix launch: its document was too old" 'bin/doctor-fix:DOC_MAX_AGE_S=' "$age"
     die "the $1 doctor document is $((age / 3600)) h old. Refresh the doctor first."

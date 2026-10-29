@@ -28,7 +28,7 @@ export DOCTORS_DIR="$WORK/doctors" LLM_DOCTOR_DIR="$WORK/llm" HARNESS_DOCTOR_DIR
   LLM_DOCTOR_LEDGER="$WORK/ledgers/llm.json" HARNESS_LEDGER="$WORK/ledgers/harness.json" \
   UPDATER_DOCTOR_LEDGER="$WORK/ledgers/updater.json" HARNESS_SETTINGS="$WORK/settings.json" \
   DOCTOR_FIX_WORKTREE_REPO="$WORK/projects/llm-legs" LLM_DOCTOR_REPOS="$WORK/projects" HARNESS_REPOS_DIR="$WORK/projects" \
-  WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model"
+  WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" DOCTOR_FIX_DOCTORS="$WORK/refresh-bin"
 unset WORKER_RUN_RECORD
 PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
 mkdir -p "$FAKE_BIN" "$DATA" "$HOME" "$WORK/llm" "$WORK/harness" "$WORK/updater" "$WORK/vcu/events" "$WORK/projects" \
@@ -44,6 +44,14 @@ EOF
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$DATA/pick-args"\nprintf "acct-b\\n"\n' >"$FAKE_BIN/worker-pick"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudeb"
 chmod +x "$FAKE_BIN"/*
+# A stale llm document's refresh: logged, the document replaced by $DATA/llm-refresh.json when one is staged.
+mkdir -p "$WORK/refresh-bin"
+cat >"$WORK/refresh-bin/llm-doctor" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"\$DATA/llm-refreshes"
+[ ! -f "\$DATA/llm-refresh.json" ] || cp "\$DATA/llm-refresh.json" "$WORK/llm/latest.json"
+EOF
+chmod +x "$WORK/refresh-bin/llm-doctor"
 
 FIX="$ROOT/bin/doctor-fix"
 fix() { bash "$FIX" "$@"; }
@@ -107,14 +115,20 @@ assert grep -qF 'not 1. Refresh the doctor first.' "$WORK/err"
 doc llm $(($(now) - 3 * 3600)) problems 3 j1
 assert_fails fix launch llm --night nD 2>"$WORK/err"
 assert grep -qF 'is 3 h old. Refresh the doctor first.' "$WORK/err"
+assert [ "$(cat "$DATA/llm-refreshes")" = --quiet ]
 assert [ ! -s "$OPENED" ]
 assert [ -z "$(ls "$RUNS" 2>/dev/null)" ]
 
 # A fresh document with problems makes the night's runs off its base, one per area, each with its worktree and brief;
-# the night's ONE orchestrator chat opens on their lines.
+# the night's ONE orchestrator chat opens on their lines. A stale one is refreshed once first (2026-10-29: block 7
+# came 4 h past the prep, the llm fixers refused all night).
 ddoc llm $(($(now) - 60)) problems 3 j1
+cp "$WORK/llm/latest.json" "$DATA/llm-refresh.json"
+doc llm $(($(now) - 3 * 3600)) problems 3 j1
 main_head=$(git -C "$L" rev-parse HEAD)
 fix launch llm --night nD >"$WORK/out" || fail "launch llm failed"
+rm "$DATA/llm-refresh.json"
+assert [ "$(wc -l <"$DATA/llm-refreshes" | tr -d ' ')" = 2 ]
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 1 ]
 IFS=$'\t' read -r id brief wt <"$WORK/out"
 assert grep -qE '^llm-doctor-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$' <<<"$id"

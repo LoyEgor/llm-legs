@@ -11851,6 +11851,88 @@
       "reviewed_by": "night 20261029T103222Z-1c68 harness-speed-delegation-reviews-20261029T112106Z-79cf",
       "note": "2026-10-29: of the 3 refusals in the 24 h window (29.7 s recovery, 0.5 min/day) two are the door working: 07:37Z a commit in rentalhub-docs without a word, and the retry whose WORD= quote was shortened with an ellipsis, 'WORD= was not found in his last message' (11 s); the third, 03:49Z, was a false catch: the chat's cd into Rentiva-design (a free repository, origin /Volumes/Work/Sites/Rentiva) then git add/commit, followed by `P=$(lsof ...); ... || echo` in the same call, was refused as rentalhub-wired because commit-push-gate.sh rf_git_dirs set `branchy` from any || or & in the whole command, so the cd was not trusted and the commit fell back to the session cwd (Rentiva, wired). Its recovery span was ~1 s (the next call ran at once) but the commit was never redone in that minute. Fixed in claude-setup. Earlier rulings stand: 0.33 s wall, 0.23 s cpu a call (rows speed-time-dead 20261014T021752Z-230d), the rest is the model's next turn. The 7 days hold 15 commit-gate refusals, 13 of them in chat 77a2b895 (Rentiva); only the three of the last 24 h were read for this cause.",
       "handoff": null
+    },
+    {
+      "id": "limit_hit:llm-legs:claudeb.lock-retries",
+      "title": "claudeb.lock-retries, a limit outside limits.json, gave up a claudeb store write 27 times in 16 days",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:claudeb\\.lock\\-retries$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T08:45:00Z",
+          "by": "harness-limits-20261029T053134Z-0aaf, recorded by harness-limits-20261029T112052Z-12f6",
+          "files": [
+            "llm-legs/bin/claudeb"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T112052Z-12f6",
+      "note": "Hits 10-14..10-29 08:04Z: session-accounts.log.lock 20 (8 on 10-29 in the swap-bound stretch of claudeb.lock-stale), locomthebest/notcom .json.lock 7. claudeb's own mkdir loop journaled a name the registry never had. llm-legs@bfb86732 (08:45Z) put claudeb's locks on share/store-lock.sh, whose give-up journals the registered store-lock.retries; no claudeb.lock-retries hit since. Not changed: harvest_session_accounts (bin/claudeb, 5 tries x 0.2 s) gives up behind a fanout's concurrent harvest and loses nothing, its markers stay in session-env for the profile's next launch, so a store-lock.retries hit on session-accounts.log.lock is that deferral (a try-lock would save at most 1 s per contended launch, about 8 s on the worst night). A <account>.json.lock give-up (10 tries, 2 s) drops one limits merge the next refresh tick writes again.",
+      "handoff": null
+    },
+    {
+      "id": "limit_hit:llm-legs:doctor-fix.doc-age",
+      "title": "doctor-fix.doc-age refused the llm and code fixer launches of night 20261029T012849Z-5e69",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:doctor\\-fix\\.doc\\-age$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-29T11:45:00Z",
+          "by": "harness-limits-20261029T112052Z-12f6",
+          "files": [
+            "llm-legs/bin/doctor-fix",
+            "llm-legs/tests/test_doctor_fix.sh",
+            "llm-legs/limits.json"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T112052Z-12f6",
+      "note": "Night 5e69 (pilot doctors legacy vendors) reached block 7 at 05:30Z, 4 h past its prep: the llm document (02:31Z) was 3 h old, the code one 9 h (block 7 was not due at start, so PILOT_DOCTORS_PREP's code-doctor refresh never ran). Both launches refused into block7.failed, which carry never retries: no llm fixer ran that night; the orchestrator refreshed and launched code by hand (05:38-05:47Z). Fix: check_doc refreshes a stale document once with its prep command (code-doctor refresh, the others --quiet) and refuses only if it is still stale; DOCTOR_FIX_DOCTORS points tests at stubs. test_doctor_fix df-day-launch is red on the old code (assert 16). Left as is: a mid-night block 7 still skips system-doctor tidy/explain and code-doctor judge, which feed the next refresh, not tonight's document.",
+      "handoff": null
+    },
+    {
+      "id": "limit_hit:llm-legs:doctor-fix.open-run",
+      "title": "doctor-fix.open-run expired a harness speed run left open since the 2026-10-20 day launches",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:doctor\\-fix\\.open\\-run$"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T112052Z-12f6",
+      "note": "The limit did its job: harness-speed-test-health-idle-llm-legs-test-image-fanout-20261020T114211Z-1ab1 has night null, one of the ~35 day launches of 2026-10-20 that made launch full-night only (test_doctor_fix df-day-launch); its worktree is gone, and claim_run expired it at the area's next claim, 8.7 days on. The open run held nothing meanwhile (speed_held reads runs under 12 h). Five sibling day runs of 10-20 11:41Z and one never-launched run of night 20261014T013750Z-8004 (job left, P3 weekly room) were still open with their worktrees gone; abandoned now with a reason, so none fires this limit later. Seen, not built: cmd_finish marks pending/live jobs left but leaves their doctor-fix run open (1 such run in 15 nights).",
+      "handoff": null
+    },
+    {
+      "id": "limit_hit:llm-legs:night-run.suites-wait",
+      "title": "night-run.suites-wait: two readers of night report 20261029T012849Z-5e69 gave up on its 45 min suites run",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:night\\-run\\.suites\\-wait$"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-29",
+      "reviewed_by": "harness-limits-20261029T112052Z-12f6",
+      "note": "One event, two readers: the orchestrator's report --post (6d7a9b58) and the supervising chat's plain report (233cceb1), started 8 s apart at 10:09Z, each waited 1200 s. The suites ran 09:59-10:45Z: llm-legs 2381 s wall, 7564 s serial at -j 5, against 546-1580 s wall (1912-5074 serial) on 10-12..10-24, in the swap-bound night of claudeb.lock-stale; claude-setup 218 s, review-bench 117 s after it. Nothing lost: .suites.repos holds every verdict, the next night's carry makes the red ones suite jobs, and the red test_hook_deny_names was fixed within the hour (llm-legs@1357abfa). Ruled out as causes: a hung suite (all ended), a missed finish write (finished_at 10:45:14Z). Suite wall under load is the tests audit's (speed-suite-audit runs); a reader not waiting on the suites is a design choice for the night-run owner, not taken here.",
+      "handoff": null
     }
   ],
   "blind_spots": [

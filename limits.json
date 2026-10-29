@@ -162,15 +162,15 @@
   "doctor-fix.doc-age": {
     "value": 7200,
     "unit": "s",
-    "where": "bin/doctor-fix:836",
+    "where": "bin/doctor-fix:39",
     "set_by": "night 100ca1bf",
     "why": "A fix run must act on a doctor document at most 2 h old, or it fixes a stale picture.",
-    "normal": "0 hits; the night refreshes doctors first."
+    "normal": "0 hits; a launch refreshes a stale document once first, so a hit means that refresh failed."
   },
   "doctor-fix.open-run": {
     "value": 43200,
     "unit": "s",
-    "where": "bin/doctor-fix:853",
+    "where": "bin/doctor-fix:40",
     "set_by": "night 100ca1bf",
     "why": "An unclosed fix run older than 12 h is dead and stops holding its area.",
     "normal": "Rare; a crashed fixer chat."
@@ -690,7 +690,7 @@
   "night-run.suites-wait": {
     "value": 1200,
     "unit": "s",
-    "where": "bin/night-run:1431",
+    "where": "bin/night-run:1741",
     "set_by": "chat 7b5fdfa5",
     "why": "The night report waits up to 20 min for its suites run.",
     "normal": "Rare; a hit reports without suite verdicts."
