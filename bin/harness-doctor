@@ -2456,7 +2456,8 @@ def journal_tests(now):
             continue
         root = r.get("repo_root") or r.get("repo")
         base = {"who": "worker" if r.get("worker_run") else "chat", "repo": os.path.basename((root or "").rstrip("/")),
-                "repo_root": root, "pid": r.get("pid"), "kind": r.get("kind"), "_roots": {r.get("repo_root"), r.get("repo")}}
+                "repo_root": root, "pid": r.get("pid"), "kind": r.get("kind"), "_roots": {r.get("repo_root"), r.get("repo")},
+                "caller": r.get("worker_run") or r.get("session"), "head": r.get("head")}
         timed = {name: s["secs"] for name, s in r["suites"].items()
                  if isinstance(s, dict) and isinstance(s.get("secs"), (int, float))}
         if r.get("kind") == "suites":
@@ -4007,6 +4008,14 @@ def cost_line(tests, now):
                  if total > LIMITS["test_day_note_s"] or machine > LIMITS["test_day_s"] else None)
         biggest = max(runs, key=lambda x: x[0])
         first = min(t["end"] - t["secs"] for _, t, _ in runs)
+        # One caller rerunning the suite on one unchanged head (a flake hunt, a profiling loop) reads apart.
+        repeats = {}
+        for secs, t, _ in runs:
+            if t.get("caller") and t.get("head"):
+                group = repeats.setdefault((t["caller"], t["head"]), [0, 0, t])
+                group[0], group[1] = group[0] + 1, group[1] + secs
+        repeat = max(repeats.items(), key=lambda kv: kv[1][1], default=None)
+        repeat = repeat if repeat and repeat[1][0] > 1 else None
         fact = "%s · %s cost %s of wall clock in %d h over %d runs%s" % (
             label, repo, fmt_long(total), window // 3600, len(runs),
             ", %s of machine time over its parts" % fmt_long(machine) if machine > total else "")
@@ -4016,7 +4025,10 @@ def cost_line(tests, now):
             judge=verdict("test_daily_cost", ident, total, LIMITS["test_day_s"], "s", window // 3600, len(runs), level,
                           fact=fact, values=[secs for secs, _, _ in runs], bad=int(bool(level)),
                           evidence=[evidence(first, history_ref(biggest[1], label), "%d runs, %d s in %d h" % (
-                              len(runs), total, window // 3600), biggest[1].get("who") or "")]))))
+                              len(runs), total, window // 3600), biggest[1].get("who") or "")] + ([evidence(
+                              first, history_ref(repeat[1][2], label),
+                              "%d runs, %d s by %s on head %s" % (repeat[1][0], repeat[1][1], repeat[0][0], repeat[0][1][:8]),
+                              repeat[1][2].get("who") or "")] if repeat else [])))))
     ranked.sort(key=lambda x: -x[0])
     rows = [r for i, (_, level, r) in enumerate(ranked) if i < INVENTORY_ROWS or level]
     if bare:

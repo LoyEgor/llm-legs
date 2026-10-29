@@ -12551,13 +12551,6 @@
       "would_catch_if": "C7 census bursts mapped ancestor chains to worker run, night job, chat session or a non-harness root, and label_cpu_s showed those buckets"
     },
     {
-      "id": "test-cost-repeat-runs",
-      "what": "how much of a suite's daily cost is one run id repeating it on one unchanged head (a flake hunt or a profiling loop)",
-      "reason": "test_daily_cost sums every run; 2026-10-07 test_statusline_hooks read red at 48 runs while 23 were one worker on head 8b661c8d and 10 were the fixer's own profiling, found only by grouping runs.jsonl by repo, head and worker_run by hand",
-      "since": "2026-10-08",
-      "would_catch_if": "the row's evidence named the largest (worker_run, head) group with its runs and seconds"
-    },
-    {
       "id": "test-live-collector-reads",
       "what": "suites whose llm-limits.sh calls run with the real HOME and so reach live vendor reads (the ElevenLabs balance) or real key mirrors",
       "reason": "test_llm_limits_render made ~10 live ElevenLabs requests a run unseen until a per-line profile showed 9.5 s waits at 7% CPU; nothing flags a suite that reads the real HOME",
