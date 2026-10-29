@@ -12727,7 +12727,7 @@
           "files": [
             "llm-legs/bin/night-run"
           ],
-          "in": null,
+          "in": "llm-legs@984341a8",
           "regressed_at": null
         }
       ],
@@ -12769,7 +12769,7 @@
           "files": [
             "llm-legs/share/worker-run-texts.sh"
           ],
-          "in": null,
+          "in": "llm-legs@984341a8",
           "regressed_at": null
         }
       ],
@@ -12860,7 +12860,7 @@
             "claude-setup/hooks/review-flow-gate.sh",
             "claude-setup/tests/test_review_flow_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@29236fd",
           "regressed_at": null
         }
       ],
@@ -12886,7 +12886,7 @@
           "files": [
             "llm-legs/bin/logo-vectorize"
           ],
-          "in": null,
+          "in": "llm-legs@5b49ab8d",
           "regressed_at": null
         }
       ],
@@ -12914,7 +12914,7 @@
             "llm-legs/share/suite_select.py",
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@ca025643",
           "regressed_at": null
         }
       ],
@@ -12940,7 +12940,7 @@
           "files": [
             "llm-legs/bin/doctor-fix"
           ],
-          "in": null,
+          "in": "llm-legs@984341a8",
           "regressed_at": null
         }
       ],
