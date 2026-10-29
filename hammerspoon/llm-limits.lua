@@ -1257,7 +1257,9 @@ local function appendSuno(menu, now)
 end
 
 -- How many rows carry "!": the same reads the menu draws them from, for the menubar title's own "!".
--- Cached a minute, since the title updates far more often than any login changes.
+-- A Gemini CLI login is left out: Google asks those accounts for a phone Egor cannot give (2026-10-29),
+-- so their rows keep "login needed" without lighting the menubar. Cached a minute, since the title
+-- updates far more often than any login changes.
 function M.ownerActionCount()
   local now = os.time()
   if owner.countCache and now - owner.countCache.at < 60 then return owner.countCache.count end
@@ -1275,11 +1277,11 @@ function M.ownerActionCount()
         end
       end
       if #blocks == 0 then
-        if vendor.auth_needed == true then count = count + 1 end
+        if vendor.auth_needed == true and entry.key ~= "gemini" then count = count + 1 end
       else
         local media = entry.key == "gemini" and geminiMediaState(roster, now) or {}
         for _, block in ipairs(blocks) do
-          if blockAuthNeeded(entry.key, block) or block.needs_user_entry == true
+          if (entry.key ~= "gemini" and (blockAuthNeeded(entry.key, block) or block.needs_user_entry == true))
               or #owner.accountNeeds(entry.key, block.account, media) > 0 then
             count = count + 1
           end

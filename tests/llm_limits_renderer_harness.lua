@@ -4789,7 +4789,9 @@ end)()
       { account = "charlie", five_hour = bucket(10), weekly = bucket(20) },
       { account = "delta", five_hour = bucket(10), weekly = bucket(20) },
     } },
-    gemini = { available = false },
+    gemini = { available = true, accounts = {
+      { account = "gphone", auth_needed = true, needs_user_entry = true },
+    } },
   } }
   ownerFake.files = {
     [web .. "/accounts/alfa.json"] = { owner_actions = { ["chatgpt-web"] = { at = now,
@@ -4839,7 +4841,7 @@ end)()
   local telegram = accountIndex(menu, "Telegram")
   assert(telegram and titleText(menu[telegram]) == "Telegram  !" and titleText(menu[telegram + 1]) == "        tg  login needed"
       and submenuItem(menu[telegram], "Log in…"), "a refused tg-read session drew no Telegram login row")
-  assert(module.ownerActionCount() == 5, "the menubar count is not the rows with \"!\": " .. tostring(module.ownerActionCount()))
+  assert(module.ownerActionCount() == 5, "the menubar count is not the rows with \"!\" less a Gemini CLI login: " .. tostring(module.ownerActionCount()))
   ownerFake.files[tg .. "/login-needed"] = nil
   ownerFake.files[web .. "/accounts/bravo.json"] = nil
   holdFake.getenv = function(name) return paths[name] or os.getenv(name) end
