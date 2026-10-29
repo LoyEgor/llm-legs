@@ -1,17 +1,20 @@
 """The shape contract of share/harness-ledger.json, one source for the suite's ledger guard, Harness Doctor's
 `ledger:` faults and so `doctor-fix close`, which refuses a harness run whose rerun doctor reports one: a fixer sees
 the break in its own `harness-doctor --json`, never first at landing. Read on the tracked file's own bytes, before
-the settled overlay fills it."""
+the settled overlay fills it. A decision row (a ruled-out one here, a kept or trade one in share/spend-ledger.json)
+carries what it depends on and the date the night re-reads it (`decision_faults`, share/decision_reread.py)."""
 import json
 import re
 
-from fix_commit import FIX_KEYS
+from fix_commit import FIX_KEYS, REREAD_DAYS  # noqa: F401  (REREAD_DAYS: the decision writers' default)
 
 EVIDENCE_KEYS = ("compared", "data", "result")
 OWNER = "Harness Doctor"
 ROW_KEYS = frozenset({"id", "title", "match", "status", "fixes", "same_cause", "last_reviewed", "reviewed_by", "note",
                       "handoff"})
-ROW_OPTIONAL = frozenset({"ruled_at", "expected_min_day"})
+ROW_OPTIONAL = frozenset({"ruled_at", "expected_min_day", "depends_on", "reread_by", "reread_note"})
+DECISIONS = ("kept", "trade", "ruled-out")
+DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 BLIND_KEYS = frozenset({"id", "what", "reason", "since", "would_catch_if"})
 FIX_FILE_RE = re.compile(r"[\w.-]+/.+")
 
@@ -29,8 +32,22 @@ def key_fault(what, have, want, optional=frozenset()):
                                          " has %s" % ", ".join(extra) if extra else "")]
 
 
+def decision(row):
+    """A row a trade-off settled: a component kept, a trade or a ruled-out row (never weather or not-a-bug)."""
+    return (row.get("verdict") or row.get("status")) in DECISIONS
+
+
+def decision_faults(row):
+    if not decision(row):
+        return []
+    faults = [] if str(row.get("depends_on") or "").strip() else ["a %s row says what it depends_on" % (
+        row.get("verdict") or row.get("status"))]
+    return faults + ([] if DATE_RE.fullmatch(str(row.get("reread_by") or "")) else
+                     ["reread_by is the YYYY-MM-DD the night re-reads it: %s" % json.dumps(row.get("reread_by"))])
+
+
 def row_faults(row, ids):
-    faults = key_fault("a row's", row, ROW_KEYS, ROW_OPTIONAL)
+    faults = key_fault("a row's", row, ROW_KEYS, ROW_OPTIONAL) + decision_faults(row)
     if not isinstance(row.get("expected_min_day", 0), (int, float)):
         faults.append("expected_min_day is a number")
     same = row.get("same_cause")

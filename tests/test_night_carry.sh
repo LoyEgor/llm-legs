@@ -284,6 +284,35 @@ WEB: on" ]
 assert grep -qF '## Tool ideas — monthly, harness direction' "$NIGHTS/P2.$ref.brief.md"
 NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >"$WORK/p2b.out" 2>/dev/null || fail "a second carry failed"
 assert [ ! -s "$WORK/p2b.out" ]
+# A decision past its re-read date (a ledger row, a direction's Decisions entry) is re-read: one reread job per file.
+mkdir -p "$P/share" "$P/docs/directions"
+jq -n '{owner: "Harness Doctor", rows: [{id: "fee:a", title: "a", verdict: "kept", zero: "saves 1 %", depends_on: "a stays cheap",
+  reread_by: "2026-01-01"}, {id: "fee:b", verdict: "kept", depends_on: "b", reread_by: "2999-01-01"},
+  {id: "fee:c", verdict: "cut"}]}' >"$P/share/spend-ledger.json"
+printf '# X\n\n## Decisions\n\n- 2026-10-01: keep it. Depends on: the gate stays rare;\n  re-read by 2026-02-01.\n- 2026-10-02: undated.\n' \
+  >"$P/docs/directions/x.md"
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >"$WORK/p2c.out" 2>/dev/null || fail "a reread carry failed"
+d=$(date +%Y-%m-%d)
+assert [ "$(cut -f1 "$WORK/p2c.out" | tr '\n' ' ')$(grep -c '^- ' "$NIGHTS/P2.reread-$d-spend-ledger.brief.md") $(grep -c '^- line 5 · ' "$NIGHTS/P2.reread-$d-x.brief.md")" = \
+  "reread-$d-x reread-$d-spend-ledger 1 1" ]
+{ ! night job P2 set "reread-$d-x" state=blocked-on-egor reason="his word" 2>/dev/null &&
+  night job P2 set "reread-$d-x" state=blocked-on-egor reason="Cost: c. Loss: l. Recommendation: r." >/dev/null; } ||
+  fail "a reread job blocked on Egor takes its trade as Cost:, Loss: and Recommendation: lines, nothing else"
+asserts=$((asserts + 1))
+# Renewing a ledger row moves its date with a one-line reason; a date not after today is refused.
+assert [ "$(python3 - "$ROOT/share" "$P" <<'RENEW'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import decision_reread
+try:
+    decision_reread.renew("share/spend-ledger.json", "fee:a", "2026-01-02", "checked", root=sys.argv[2])
+    late = "taken"
+except SystemExit:
+    late = "refused"
+row = decision_reread.renew("share/spend-ledger.json", "fee:a", "2999-02-02", "still cheap", "a stays under 1 %", root=sys.argv[2])
+print(late, row["reread_by"], row["reread_note"].split(": ", 1)[1], row["depends_on"], decision_reread.due(sys.argv[2]).get("share/spend-ledger.json"))
+RENEW
+)" = "refused 2999-02-02 still cheap a stays under 1 % None" ]
 assert [ "$(python3 "$ROOT/share/night_priority.py" job vendor-watch v | jq -c '[.direction, .priority]')" = '["updater","P2"]' ]
 export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
 fi

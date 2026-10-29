@@ -392,6 +392,14 @@ os.environ["SPEND_LEDGER"] = ledger
 check(bare["verdict"] == "cut" and bare["share"] == 0.0 and bare["sources"] == {} and refused,
       "a cut on a harness job whose next run was bare, and so left the index, is recorded; any other verdict "
       "on a component the index no longer holds is refused: %s" % bare)
+import datetime
+os.environ["SPEND_LEDGER"] = os.path.join(work, "dated-ledger.json")
+dated = spend.record(root, os.path.join(work, "home"), repos, "fee:Hooks", "kept", "fires rarely",
+                     "removal saves 0.4 %; loses every block", "night-x", [], depends_on="hooks stay under 0.5 %")
+os.environ["SPEND_LEDGER"] = ledger
+check(dated["depends_on"] == "hooks stay under 0.5 %" and "depends_on" not in bare and "reread_by" not in bare
+      and dated["reread_by"] == (datetime.date.today() + datetime.timedelta(days=56)).isoformat(),
+      "a kept audit says what it depends on and is re-read 8 weeks on, a cut neither: %s" % dated)
 before_zero = open(ledger).read()
 try:
     spend.record(root, os.path.join(work, "home"), repos, "fee:Hooks", "kept", "", " ", "", [])

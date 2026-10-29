@@ -252,7 +252,7 @@ def restate(problems, rows):
 
 
 def record(root, repos, state, harness_dir, speed_dir, collector_rows, key, verdict, note, zero, by, worktrees,
-           now, local_day):
+           now, local_day, depends_on=None, reread_by=None):
     if verdict not in spend.VERDICTS:
         raise SystemExit("verdict must be one of %s" % ", ".join(spend.VERDICTS))
     zero = spend.zero_option(zero)
@@ -264,4 +264,4 @@ def record(root, repos, state, harness_dir, speed_dir, collector_rows, key, verd
         "id": ROW + key, "title": key, "audited_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "by": by, "cpu_min_day": c["cpu_min_day"], "cpu_s_run": c["cpu_s_run"], "runs_day": c["runs_day"],
         "sources": spend.source_blobs(root, repos, c["sources"], worktrees), "verdict": verdict,
-        "zero": zero, "note": note})
+        "zero": zero, "note": note, **spend.decision_fields(verdict, depends_on, reread_by)})

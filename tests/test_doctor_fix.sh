@@ -1195,6 +1195,11 @@ assert jqe --arg t "$(jq -r .closed_at "$(record "$sid")")" '.rows | keys == ["o
 assert [ "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import fix_commit
 row = fix_commit.load_merged(sys.argv[2], sys.argv[3])["rows"][-1]; print(row["status"], row["ruled_at"])' \
   "$ROOT/share" "$WORK/ledgers/harness.json" "$WORK/harness/ledger-settled.json")" = "ruled-out $(jq -r .closed_at "$(record "$sid")")" ]
+# The ruling carries its evidence as what it depends on and a re-read date, so ledger-sync writes a contract-whole row.
+assert [ "$(python3 -c 'import sys, json; sys.path.insert(0, sys.argv[1]); import fix_commit
+row = fix_commit.load_merged(sys.argv[2], sys.argv[3])["rows"][-1]; print(json.dumps([row["depends_on"], row["reread_by"]], separators=(",", ":")))' \
+  "$ROOT/share" "$WORK/ledgers/harness.json" "$WORK/harness/ledger-settled.json")" = "$(jq -nc --arg e "$(awk -F'\t' '$1 == "opportunity:chat/tools" {print $4}' "$WORK/sd2")" \
+  --arg d "$(python3 -c 'import datetime, sys; print(datetime.date.fromisoformat(sys.argv[1][:10]) + datetime.timedelta(days=56))' "$(jq -r .closed_at "$(record "$sid")")")" '[$e, $d]')" ]
 mv "$WORK/harness-ledger-kept" "$WORK/ledgers/harness.json" && rm "$WORK/harness/ledger-settled.json"
 live() { grep -qF "doctor-fix: note: live model/effort knob changed since launch, $1: $2" "$WORK/err"; }
 assert live "settings model/effort/thinking" "$WORK/settings.json:$(grep -n '"model"' "$WORK/settings.json" | cut -d: -f1): +"

@@ -516,7 +516,7 @@ def restate(problems, rows):
     return out
 
 
-def record(root, journal, key, verdict, note, zero, by, worktrees, now):
+def record(root, journal, key, verdict, note, zero, by, worktrees, now, depends_on=None, reread_by=None):
     if verdict not in spend.VERDICTS:
         raise SystemExit("verdict must be one of %s" % ", ".join(spend.VERDICTS))
     zero = spend.zero_option(zero)
@@ -531,7 +531,7 @@ def record(root, journal, key, verdict, note, zero, by, worktrees, now):
         "by": by, "cpu_run": c["p50"], "wall_run": c["wall_floor"], "cpu_min_day": c["cpu_min_day"],
         "wall_min_day": c["wall_min_day"],
         "sources": spend.source_blobs(root, os.path.dirname(c["top"].rstrip("/")), sources(c["path"]), worktrees),
-        "verdict": verdict, "zero": zero, "note": note})
+        "verdict": verdict, "zero": zero, "note": note, **spend.decision_fields(verdict, depends_on, reread_by)})
 
 
 def samples(journal, lo, hi, timed=False):

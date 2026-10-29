@@ -2330,6 +2330,12 @@ assert_eq '[["ledger:no-handoff","ledger:refixed"],true,true]' "$(HARNESS_LEDGER
   "a ruled-out row whose last fix is unlanded and a row missing a field are ledger faults of the doctor, as of the guard"
 [[ "$(ledger_guard "$WORK/ruled-unlanded.json")" == broken:* ]] || fail "the ledger guard takes a ruled-out row with an unlanded fix"
 asserts=$((asserts + 1))
+# A ruled-out row is a decision: it says what it depends on and the date the night re-reads it (directions README).
+jq '.rows[0] |= (.status = "ruled-out" | .fixes |= .[0:1])' "$WORK/refixed.json" >"$WORK/ruled-bare.json"
+jq '.rows[0] += {depends_on: "the lever lives elsewhere", reread_by: "2026-12-24"}' "$WORK/ruled-bare.json" >"$WORK/ruled-dated.json"
+[[ "$(ledger_guard "$WORK/ruled-bare.json" "$WORK/ruled-dated.json" | tr '\n' ' ')" == "broken: "*"depends_on"*"reread_by"*" ok " ]] ||
+  fail "the ledger guard takes a ruled-out row with no depends_on or reread_by, or refuses one with both"
+asserts=$((asserts + 1))
 
 FIXTURE="$ROOT/tests/fixtures/harness-calibration"
 mkdir -p "$WORK/replay-home/hk"

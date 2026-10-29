@@ -15,6 +15,7 @@ FIX_KEYS = frozenset({"at", "by", "files", "in", "regressed_at"})
 SETTLED_FILE = "ledger-settled.json"
 SETTLED_KEYS = ("in", "regressed_at")
 RULED = "ruled"
+REREAD_DAYS = 56  # a decision row's re-read date at the latest (docs/directions/README.md, Rules, Decisions)
 LANDED_FILE = "fix-landings.json"
 
 _memo = {"path": None, "write": False, "rows": None, "dirty": False}
@@ -81,6 +82,8 @@ def merge_settled(ledger, settled):
         ruled = found.get(RULED) if isinstance(found, dict) else None
         if isinstance(ruled, str) and row.get("status") in ("open", "ruled-out") and str(row.get("ruled_at") or "") < ruled:
             row["status"], row["ruled_at"] = "ruled-out", ruled
+            row.setdefault("depends_on", found.get("depends_on") or "unrecorded")
+            row.setdefault("reread_by", reread_by(ruled))
         fixes = row.get("fixes") if isinstance(found, dict) else None
         if not isinstance(fixes, list) or not fixes:
             continue
@@ -123,11 +126,19 @@ def record_settled(path, rows):
     write_settled(path, settled)
 
 
-def record_ruled(path, ids, at):
-    """A fixer's ruled-out verdict closes each row until the doctor sees it again after `at`."""
+def reread_by(at):
+    """The re-read date REREAD_DAYS after `at` (an ISO stamp or date)."""
+    return (datetime.date.fromisoformat(str(at)[:10]) + datetime.timedelta(days=REREAD_DAYS)).isoformat()
+
+
+def record_ruled(path, ids, at, reasons=None):
+    """A fixer's ruled-out verdict closes each row until the doctor sees it again after `at`; its evidence, in
+    `reasons` by id, is what the ruling depends on when ledger-sync writes it into the tracked row."""
     settled = read_settled(path)
     for row_id in ids:
         settled.setdefault(row_id, {})[RULED] = at
+        if (reasons or {}).get(row_id):
+            settled[row_id]["depends_on"] = reasons[row_id]
     write_settled(path, settled)
 
 

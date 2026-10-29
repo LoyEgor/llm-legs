@@ -7,8 +7,9 @@ import re
 import subprocess
 import time
 
-from fix_commit import main_checkout, memo_get, memo_put
+from fix_commit import main_checkout, memo_get, memo_put, reread_by as reread_date
 import keepalive
+import ledger_contract
 import limit_hit
 
 MENUS = "menus"
@@ -495,7 +496,20 @@ def zero_option(text):
     return str(text).strip()
 
 
-def record(root, home, repos, key, verdict, note, zero, by, worktrees):
+def decision_fields(verdict, depends_on=None, reread_by=None):
+    """What a kept or trade row depends on and the date the night re-reads it (ledger_contract.decision_faults),
+    REREAD_DAYS from today unless given; nothing on a cut."""
+    if verdict not in ledger_contract.DECISIONS:
+        return {}
+    fields = {"depends_on": str(depends_on or "").strip() or "unrecorded",
+              "reread_by": reread_by or reread_date(datetime.date.today())}
+    faults = ledger_contract.decision_faults(dict(fields, verdict=verdict))
+    if faults:
+        raise SystemExit("; ".join(faults))
+    return fields
+
+
+def record(root, home, repos, key, verdict, note, zero, by, worktrees, depends_on=None, reread_by=None):
     if verdict not in VERDICTS:
         raise SystemExit("verdict must be one of %s" % ", ".join(VERDICTS))
     zero = zero_option(zero)
@@ -512,7 +526,8 @@ def record(root, home, repos, key, verdict, note, zero, by, worktrees):
         "id": key, "title": c["label"], "audited_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "by": by, "share": c["basis"],
         "prices": {z: price for z, (_, price) in part_prices(harness_index(payload), key).items()},
-        "sources": source_blobs(root, repos, c["sources"], worktrees), "verdict": verdict, "zero": zero, "note": note})
+        "sources": source_blobs(root, repos, c["sources"], worktrees), "verdict": verdict, "zero": zero, "note": note,
+        **decision_fields(verdict, depends_on, reread_by)})
 
 
 def source_blobs(root, repos, sources, worktrees):
