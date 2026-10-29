@@ -209,6 +209,13 @@ spike, pattern = ({"id": i, "opportunity": {"needs_egor": False, "score": 0.5, "
 check([o["id"] for o in sorted([spike, pattern], key=module.rank_key)] == ["b-pattern", "a-spike"],
       "a pattern seen on several days ranks above a one-day spike of the same score")
 module.time_budget.noise_floor = lambda cls, now: (0.0, 0.0, module.time_budget.NOISE_DAYS)
+cleared = module.select(module.with_time([dict(p, opportunity=dict(p["opportunity"], measure="measured"))
+                                          for p in reversed(backlog)], {}))
+check(cleared[:2] == ["opportunity:chat/tools", "opportunity:delegation/background Bash"]
+      and cleared == [p["id"] for p in backlog if not p["opportunity"]["needs_egor"]
+                      and p["opportunity"]["quality"] == "equivalent" and p["opportunity"]["score"] > 0],
+      "measured rows past their noise: the night takes the biggest recoverable gap first, and every other "
+      "equivalent lever after it: %s" % cleared)
 low = {"id": "low", "rule": "opportunity", "opportunity": {"needs_egor": False, "quality": "equivalent", "score": 0.1, "effort_h": 1.0,
                                     "night_cost_h": 0.0, "hooks": False, "recoverable_min_day": 5.0, "measure": "measured"}}
 zero = {}
