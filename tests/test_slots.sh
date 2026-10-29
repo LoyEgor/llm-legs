@@ -515,7 +515,7 @@ chmod +x "$WORK/fake/bin/night-run"
 jq '.launcher_pid = 4242' "$WORK/run-hs-in/meta.json" >"$WORK/meta.tmp" && mv "$WORK/meta.tmp" "$WORK/run-hs-in/meta.json"
 for r in run run-plain run-hs-in; do bash "$WORK/fake/bin/worker-run" _supervise "$WORK/$r" >/dev/null 2>&1; done
 assert [ "$(grep -v '^admit ' "$WORK/gate-calls")" = 'speed-gate nopen hs-in 4242' ]
-assert [ "$(grep -Ec '^admit nopen hs-in [^ ]+ [0-9]+$' "$WORK/gate-calls")" = 1 ]
+assert [ "$(grep -Ec '^admit nopen hs-in [^ ]+ [0-9]+ [^ ]*$' "$WORK/gate-calls")" = 1 ]
 assert [ "$(head -n 1 "$WORK/gate-calls" | cut -d ' ' -f 1)" = admit ]
 assert [ ! -e "$WORKER_SLOTS_DIR/1" ]
 # A slot taken or refused at once is no wait: slot polling never journals a lock row.
