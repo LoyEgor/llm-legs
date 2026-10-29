@@ -351,7 +351,8 @@ def snapshot(doctor, doc_file, night=None):
         if rule in AUDIT_RULES and os.environ.get("DF_NO_AUDITS"):
             audits.append(str(pid))
             continue
-        if pid in ruled and state != "regressed" and held_since(problem, ruled[pid], now):
+        fixed_at = max([t for t in (epoch(f.get("at")) for f in dicts((rows.get(problem.get("ledger")) or {}).get("fixes"))) if t] or [0])
+        if pid in ruled and (state != "regressed" or ruled[pid][0] > fixed_at > 0) and held_since(problem, ruled[pid], now):
             holds.append({"id": pid, "state": "held", "run": ruled[pid][1]})
             continue
         row = rows.get(problem.get("ledger")) or (rows.get(pid[7:]) if str(pid).startswith("ledger:") else None)
