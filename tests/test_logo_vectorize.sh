@@ -90,6 +90,9 @@ printf '%s|%s|%s|%s|%s\n' "\$LV_GRADIENT" "\$LV_COLORS" "\$LV_PALETTE" "\$BENCH_
 printf '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 384" width="512" height="384"/>' >"\$2"
 EOF
 chmod +x "$WORK/bench/tracers/hints-a7/run.sh"
+mkdir -p "$WORK/bench/tracers/pixel-a3"
+sed "s|$WORK/hints|$WORK/auto-hints|" "$WORK/bench/tracers/hints-a7/run.sh" >"$WORK/bench/tracers/pixel-a3/run.sh"
+chmod +x "$WORK/bench/tracers/pixel-a3/run.sh"
 assert vectorize --in "$in" --dest "$dest" --dry-run --gradient no --colors 6
 assert grep -qx 'champion=champ99 source=1024x768 traced=1024x768 size=native hints=gradient:no,colors:6' "$WORK/out"
 assert test ! -e "$WORK/hints"
@@ -103,8 +106,8 @@ assert vectorize --in "$in" --dest "$dest" --dry-run
 assert grep -qx 'champion=champ99 source=1024x768 traced=1024x768 size=native auto=on' "$WORK/out"
 assert vectorize --in "$in" --dest "$WORK/auto.svg"
 assert grep -Eq " seconds=[0-9]+ auto=on$" "$WORK/out"
-assert test "$(cat "$WORK/hints")" = 'auto|auto||1|1'
-rm "$WORK/hints"
+assert test "$(cat "$WORK/auto-hints")" = 'auto|auto||1|1'
+rm "$WORK/hints" "$WORK/auto-hints"
 assert vectorize --in "$in" --dest "$WORK/plain.svg" --auto no
 assert grep -Eq " seconds=[0-9]+$" "$WORK/out"
 assert test ! -e "$WORK/hints"
