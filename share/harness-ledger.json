@@ -12014,13 +12014,13 @@
       "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-29",
-      "reviewed_by": "harness-limits-20261029T053134Z-0aaf",
-      "note": "The limit did its job: the first hit ever, in worker run claudeb-1793237085-11774-50c4 (Rentiva hero cut-outs), whose own report says ChatGPT Remove BG was rejected because it redrew the car; the worker delivered image-cutout --edge hard instead. A composite over a redrawn subject would show the seam the limit exists to prevent.",
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "harness-limits-20261030T023049Z-16dc",
+      "note": "The limit did its job, twice: 10-29 in worker run claudeb-1793237085-11774-50c4 (Rentiva hero cut-outs; its report says ChatGPT Remove BG redrew the car, image-cutout --edge hard delivered instead), and 10-30T01:09 local on /Volumes/Work/tmp/sunlit2/cars/rogue-A-cut.png (border mean 51.9): looked at, the cut-out redrew the Rogue larger and moved, reflections changed, so a composite onto rogue-A.png would misalign. A composite over a redrawn subject shows the seam the limit exists to prevent.",
       "handoff": null,
-      "ruled_at": "2026-10-29T06:35:26Z",
-      "depends_on": "unrecorded",
-      "reread_by": "2026-12-19"
+      "ruled_at": "2026-10-30T04:50:00Z",
+      "depends_on": "both hits are cut-outs whose subject ChatGPT redrew (seen on rogue-A-cut.png against rogue-A.png)",
+      "reread_by": "2026-12-25"
     },
     {
       "id": "limit_hit:llm-legs:instruction-watch.scan-timeout",
@@ -12674,9 +12674,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-29",
-      "reviewed_by": "harness-limits-20261029T165019Z-1899",
-      "note": "Weather for the timeouts: every ps hit is a tick's ps or ps_children step at 10-17 s (ticks/<day>.jsonl self.steps) inside swap stretches (swap 0.86-0.97, pagein 1.3-10k/s, procs up to 3136), the LaunchAgent at its designed Nice 10 + LowPriorityIO (system-doctor-design), ps -o args reading every process's argv; 0.27 s at rest. The dumpstate orphan census's ps never timed out (max 5.1 s). The du hits (values 11-600 s) are nightly/logstores walks with their own budgets journaled under this name, so the registry's 10 s fits ps/sysctl/diskutil only. Fixed beside it, the loss's harm: a timed-out ps lists nothing, and tick() read that as every process born (births_top launchd 547, geminib 1286 on 10-29) or gone (procs 0, a pids gone row per named script, the next tick's CPU baseline emptied); now those fields are null and the previous process state carries over (tests/test_system_doctor.sh, red on the old code). limits.json where moved to share/machine_probe.py:27.",
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "harness-limits-20261030T023049Z-16dc",
+      "note": "2026-10-30: same weather, 9 hits in 24 h: ps 6 (10-29 04:54-17:15 local, swap stretches), du 3 (budgets 600, 11 and 439 s: the nightly/logstores walks at 04:17-04:52 local, busy ~1.0). Weather for the timeouts: every ps hit is a tick's ps or ps_children step at 10-17 s (ticks/<day>.jsonl self.steps) inside swap stretches (swap 0.86-0.97, pagein 1.3-10k/s, procs up to 3136), the LaunchAgent at its designed Nice 10 + LowPriorityIO (system-doctor-design), ps -o args reading every process's argv; 0.27 s at rest. The dumpstate orphan census's ps never timed out (max 5.1 s). The du hits (values 11-600 s) are nightly/logstores walks with their own budgets journaled under this name, so the registry's 10 s fits ps/sysctl/diskutil only. Fixed beside it, the loss's harm: a timed-out ps lists nothing, and tick() read that as every process born (births_top launchd 547, geminib 1286 on 10-29) or gone (procs 0, a pids gone row per named script, the next tick's CPU baseline emptied); now those fields are null and the previous process state carries over (tests/test_system_doctor.sh, red on the old code). limits.json where moved to share/machine_probe.py:27.",
       "handoff": null,
       "ruled_at": null
     },
@@ -12690,27 +12690,37 @@
       "status": "ruled-out",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-29",
-      "reviewed_by": "harness-limits-20261029T165019Z-1899",
-      "note": "The cap did its job: evict_frames dropped the oldest frames (10-26T16:34-18:32, 35-88 MB each) for newer episodes, a day before rotate_files' 3-day retention would delete them anyway; INCIDENT lines (5, 1, 8, 11 on 10-26..29, avail under 4 GB) stay in the day logs. Episodes are 23-82 MB of 1 Hz ps dumps, so 1 GB holds ~2 days at this pressure. No harness reader opens frames (grep: memlogd only). Measured, not cut: cutting frame lines at 300 chars keeps 60 % of a frame's bytes, little room for the evidence it costs. Cause of the volume is load (memory pressure from the benchmark and chats).",
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "harness-limits-20261030T023049Z-16dc",
+      "note": "2026-10-30: unchanged, 43 drops in 24 h of frames 48-54 h old (10-27T18:22 .. 10-28T02:30) as INCIDENT lines ran 8, 15, 6 on 10-28..30; frames/ holds 1.0 G. The cap did its job: evict_frames dropped the oldest frames (10-26T16:34-18:32, 35-88 MB each) for newer episodes, a day before rotate_files' 3-day retention would delete them anyway; INCIDENT lines (5, 1, 8, 11 on 10-26..29, avail under 4 GB) stay in the day logs. Episodes are 23-82 MB of 1 Hz ps dumps, so 1 GB holds ~2 days at this pressure. No harness reader opens frames (grep: memlogd only). Measured, not cut: cutting frame lines at 300 chars keeps 60 % of a frame's bytes, little room for the evidence it costs. Cause of the volume is load (memory pressure from the benchmark and chats).",
       "handoff": null,
-      "ruled_at": "2026-10-29T17:31:10Z",
-      "depends_on": "unrecorded",
-      "reread_by": "2026-12-22"
+      "ruled_at": "2026-10-30T04:50:00Z",
+      "depends_on": "evicted frames are under a day short of rotate_files' 3-day retention and no reader opens frames",
+      "reread_by": "2026-12-25"
     },
     {
       "id": "limit_hit:llm-legs:store-lock.ownerless-stale",
-      "title": "store-lock broke two ownerless claudeb account-store locks (102 and 115 s old) since claudeb moved onto it",
+      "title": "store-lock broke claudeb account-store locks a killed statusline render left without a pid (6 in 24 h, 89-121 s old)",
       "match": {
         "rule": "limit_hit",
         "ident": "^llm\\-legs:store\\-lock\\.ownerless\\-stale$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-30T04:40:00Z",
+          "by": "harness-limits-20261030T023049Z-16dc",
+          "files": [
+            "llm-legs/bin/statusline.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-29",
-      "reviewed_by": "harness-limits-20261029T165019Z-1899",
-      "note": "New exposure, not a new failure: llm-legs@bfb86732 (10-29 08:45Z) moved claudeb's <account>.json.lock, the busiest locks, onto share/store-lock.sh, so its journal saw them for the first time (before, the same breaks read claudeb.lock-stale, 7 in 24 h). Breaks 12:06:17Z notcom.json.lock (115 s) and 15:46:34Z locomthebest.json.lock (102 s), each by a claudeb revive's usage merge (token-attempts pids 86903, 77623) that waited 2.8 and 3.2 s (waits journal); no store-lock.retries give-up and no other hit touched them, so nothing claimed them in between and nothing was lost beyond those waits. The directory sat 100+ s with no readable pid: a claim stopped between mkdir and its pid write, or a release between rm's unlink and rmdir. Only claudeb writes these locks; no claudeb bash process from before bfb86732 still runs; no killer journaled a kill near 12:04Z or 15:44Z; load was busy 1.0. Creator unattributed: blind spot store-lock-ownerless-creator.",
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "harness-limits-20261030T023049Z-16dc",
+      "note": "Creator found: bin/statusline.sh takes the same <account>.json.lock (snapshot_lock_acquire, a bare mkdir with no pid) around its rate-limit cache merge, and Claude Code aborts a running render on every new trigger (2.1.314: the status line controller's #b() calls abort() on the previous render), so a render killed inside the merge (a jq that a swap-bound machine stalls for seconds) left a pid-less directory; the statusline itself reclaims it only after 120 s, and claudeb's store-lock breaks it as ownerless past 30 s, which is the 89-121 s ages of the 6 breaks on 10-29 (and claudeb.lock-stale's 7 before llm-legs@bfb86732, all at swap 86-93 %). The previous note's 'only claudeb writes these locks' was wrong. Fix: an EXIT trap guarded by rl_lock_held removes the lock when the render dies by SIGTERM/SIGHUP (fixture render, jq stalled under the lock, SIGTERM: lock left on HEAD, released after). Not covered: a SIGKILL, whose orphan still breaks as before; the abort's signal was not confirmed in the bundle.",
       "handoff": null,
       "ruled_at": null
     },
@@ -13156,6 +13166,83 @@
       "handoff": null,
       "depends_on": "image volume per account: gemini-image back-to-back calls (6.5/day) or codex gaps of 60-120 s past chatgpt_web SERVE_IDLE_S (20.4/day) growing several-fold reopens the 1.7 waited min/day replay",
       "reread_by": "2026-12-30"
+    },
+    {
+      "id": "limit_hit:claude-setup:stop-dispatch.budget",
+      "title": "stop-dispatch's 10 s budget ran out once on a stalled machine: the run backstop took 8 s and five notices were skipped",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^claude\\-setup:stop\\-dispatch\\.budget$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "harness-limits-20261030T023049Z-16dc",
+      "note": "Weather (load). One stop, 2026-10-29T19:07:21Z, session 9176d051 (stop journal: all five notices 'budget exhausted', asks skipped-busy): worker-run-backstop.sh, capped by timeout at HOOK_CAP 5 s, took 8 s with no stop-dispatch.backstop-kill journaled, so the process starts themselves stalled (timeout's own launch included); system-doctor ticks 19:03-19:10Z busy 0.95-1.0, pagein 1.8-3.2k/s, the 19:07:48 tick 85 s after the last against its 62 s cadence. The same chat's stops before and after (19:08:22Z) ran every notice. Not changed: the backstop runs alone before the notices by design (stop-dispatch.sh: it and the word notices may sync the same words store), so running it beside them is no fix.",
+      "handoff": null,
+      "ruled_at": null
+    },
+    {
+      "id": "limit_hit:llm-legs:gemini-web.failures-age",
+      "title": "gemini-web's 14-day retention expired failure screenshots and page dumps after a quiet week",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:gemini\\-web\\.failures\\-age$"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "harness-limits-20261030T023049Z-16dc",
+      "note": "The limit did its job: hits 10-15 (2), 10-16 (3), 10-18 (2), 10-21 (2), 10-29 (3, 14, 28 and 10 files), each a sweep deleting failure captures over 14 days old, which is the registry's normal ('daily while media fails; the count is what aged out'). It reads red only through the quiet-week rule: a retention that fires in bursts after a quiet week is red each time; changing that is the owner's judge.",
+      "handoff": null,
+      "ruled_at": "2026-10-30T04:50:00Z",
+      "depends_on": "the hits are retention sweeps of captures over 14 days old, matching limits.json normal",
+      "reread_by": "2026-12-25"
+    },
+    {
+      "id": "limit_hit:llm-legs:image-leg.work-age",
+      "title": "image-leg's 14-day retention began expiring the work store's first files (10-15 lineage and fan-out files)",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:image\\-leg\\.work\\-age$"
+      },
+      "status": "ruled-out",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "harness-limits-20261030T023049Z-16dc",
+      "note": "The limit did its job: first hits ever 10-29 (6) and 10-30 (25), the files of 10-15, the store's oldest (fbf78be7 moved work files there 10-07), crossing find -mtime +14; each image write prunes its own kind, so the 31 hits are 31 writes each finding a few more files aged out (2-70). The sweep deletes what it counts (-print -delete; 36 fan-out and 104 lineage files over the line at 04:40, all of 10-15, wait for the next write of their kind). Lost: an edit of a 15-day-old image starts a new chain, the registry's stated price.",
+      "handoff": null,
+      "ruled_at": "2026-10-30T04:50:00Z",
+      "depends_on": "the hits are image-leg work files over 14 days old pruned on write, matching limits.json normal",
+      "reread_by": "2026-12-25"
+    },
+    {
+      "id": "limit_hit:llm-legs:probe.helper",
+      "title": "harness-doctor's write-class helper passed its 10 s bound on a saturated machine: one $(...) fork per path, 122 paths",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^llm\\-legs:probe\\.helper$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-30T04:45:00Z",
+          "by": "harness-limits-20261030T023049Z-16dc",
+          "files": [
+            "llm-legs/bin/harness-doctor"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "harness-limits-20261030T023049Z-16dc",
+      "note": "Every hit (7 on 10-26/27, 1 on 10-29 19:18 local in run claudeb-1793293372-46080-3b3e) is write_classes, the bash that sources share/instruction-files.sh and printed instruction_write_class through a command substitution per path: 122 forks, 0.4-1.3 s at load 50-77, past 10 s on a swap-bound machine. The function only printf's, so it now prints straight and the NUL after it: byte-identical output on 410 paths plus CLAUDE.md/review-debt-ignore/settings.json/upper-case-extension names, 1.2-1.5 s to 0.05-0.07 s. The other probe.helper site (heredoc mask) never hit.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -13515,13 +13602,6 @@
       "reason": "2026-10-29: night_priority.decide keeps only the admitted run's room; a wait verdict's pool room, held cost and spare live in the hold's why, deleted at hold_clear, and no 5h reading history exists, so night 5e69's double count (room 149 -> ~133 during a 26 min wait while 13 runs stayed reserved in full) was estimated from two harness snapshots",
       "since": "2026-10-29",
       "would_catch_if": "each admit verdict appended {at, ref, five, used, spare, running} to the night file's admission store, and Wait classes split night-admission waits into room the readings lacked and room held twice"
-    },
-    {
-      "id": "store-lock-ownerless-creator",
-      "what": "which process left a store-lock directory with no pid and how it ended (killed mid-claim, stalled between mkdir and the pid write, or a release cut between unlink and rmdir)",
-      "reason": "2026-10-29: two claudeb account locks sat 102-115 s ownerless; store_lock_broke journals only the breaker's view (path, age), and no journal ties a lock directory's birth to a pid, so the creator stayed unattributed",
-      "since": "2026-10-29",
-      "would_catch_if": "the ownerless break journaled the lock directory's birth time and the claudeb starts.tsv / token-attempts rows within 5 s of it, so the creating command and whether a kill hit it read off the hit"
     },
     {
       "id": "covered-tool-turns",
