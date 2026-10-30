@@ -2110,7 +2110,7 @@ jl(os.path.join(repeat_cache, "runs.jsonl"),
      "started_at": T - 9000 + i * 1000, "ended_at": T - 8400 + i * 1000, "suites": {"test_flaky.sh": {"rc": 0, "secs": 600}}}
     for i in range(3)]
    + [{"kind": "direct", "pid": 70, "repo_root": "/r/llm-legs", "session": "s2", "head": "aaaa1111" + "0" * 32,
-       "started_at": T - 2000, "ended_at": T - 1000, "suites": {"test_flaky.sh": {"rc": 0, "secs": 1000}}}])
+       "started_at": T - 2000, "ended_at": T - 1000, "suites": {"test_flaky.sh": {"rc": 0, "secs": 1000, "tree_s": 4}}}])
 jl(os.path.join(repeat_cache, "test-history.jsonl"), [])
 os.environ.update(STATUSLINE_CACHE_DIR=repeat_cache, RUN_SUITES_JOURNAL=os.path.join(repeat_cache, "runs.jsonl"))
 try:
@@ -2120,9 +2120,9 @@ finally:
     os.environ.pop("RUN_SUITES_JOURNAL")
 part, lead, cost = cost_judges(repeated, "tests:cost")
 flaky = cost.get("llm-legs:test_flaky", {})
-check(flaky.get("value") == 2800 and [e["excerpt"] for e in flaky.get("evidence", [])[1:]]
+check(flaky.get("value") == 2804 and [e["excerpt"] for e in flaky.get("evidence", [])[1:]]
       == ["3 runs, 1800 s by claudeb-9 on head 8b661c8d"] and len({e["at"] for e in flaky["evidence"]}) == 1,
-      "daily cost: the evidence names the largest group of one caller's runs on one head, a flake hunt read apart: %s" % flaky)
+      "daily cost: a direct run's tree hash counts in its seconds, the evidence names the largest group of one caller's runs on one head, a flake hunt read apart: %s" % flaky)
 for key, value in saved_env.items():
     if value is None:
         os.environ.pop(key, None)

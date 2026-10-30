@@ -2469,8 +2469,11 @@ def journal_tests(now):
             rows.append(dict(base, label="suites", end=r["ended_at"], secs=r["ended_at"] - r["started_at"],
                              suite_secs=timed, scope=scope, partial=scope != "full", scoped=True))
         else:
-            rows.extend(dict(base, label=SUITE_EXT.sub("", name), end=r["started_at"] + secs, secs=secs)
-                        for name, secs in timed.items())
+            # A direct run's caller also waits for the journal's tree hash, timed apart as tree_s.
+            tree = {name: s["tree_s"] for name, s in r["suites"].items()
+                    if name in timed and isinstance(s.get("tree_s"), (int, float))}
+            rows.extend(dict(base, label=SUITE_EXT.sub("", name), end=r["started_at"] + secs + tree.get(name, 0),
+                             secs=secs + tree.get(name, 0)) for name, secs in timed.items())
     return rows
 
 

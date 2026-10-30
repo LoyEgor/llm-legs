@@ -13883,13 +13883,6 @@
       "would_catch_if": "the queue line's usual were taken over days of the same kind (night-heavy against night-heavy) or its row carried the night's concurrent runs beside the held-slot count"
     },
     {
-      "id": "suite-journal-tree-hash-after-ended",
-      "what": "the wall and CPU a direct suite run spends on its journal's tree hash",
-      "reason": "tests/lib/suite-journal.sh suite_journal_end runs suite_journal_content (git ls-files plus a python3 hashing every tracked file, 0.27 s at load ~100 on 2026-10-13) after `ended` and cpu_s are taken, so each direct run's secs and cpu_s omit it; on a 0.8 s suite (test_doctors_menu) that is about a third unmeasured. The hash itself has a reader (share/test_health.py repeat detection), so it stays (review round 20261013T001026Z-0576a82, haiku-high#2 finding 2)",
-      "since": "2026-10-13",
-      "would_catch_if": "the direct-run journal row carried the hash's own elapsed seconds, or the Speed block priced per-run journal overhead from a timed sample"
-    },
-    {
       "id": "instruction-hook-spawns",
       "what": "processes one instruction-watch check or bloat-gate decision starts (suite audits 2026-10-13: the tripwire suite spawns 678 awk, 359 jq, 180 date per run, the bloat suite ~150 gate runs of ~60 command substitutions each)",
       "reason": "suite wall of test_instruction_gate_tripwire/bloat is the hooks under test, which run before every Edit/Write and after every tool call; gate_journal and the wc|tr pairs are cut, the awk/jq pipelines of instruction-watch.sh and share/instruction-files.sh are not. Ruled out as not worth it: a stat-keyed digest cache for suite_journal_content (about 90 ms a direct run, mostly python start and git ls-files) and a bash JSON builder for the harness's jq payloads (needs a byte-identical escaper to be safe)",

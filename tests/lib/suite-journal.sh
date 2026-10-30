@@ -317,7 +317,8 @@ suite_journal_queued=$suite_journal_began suite_journal_slot='' suite_journal_he
 suite_journal_end() { # exit-code -> returns it
   [ -z "${suite_journal_done:-}" ] && [ "${BASHPID:-$$}" = "$$" ] || return "$1"
   suite_journal_done=1
-  local rc=$1 flags=$- name=${suite_journal_test##*/} ended secs cpu began queued complete=true owner=''
+  local rc=$1 flags=$- name=${suite_journal_test##*/} ended secs cpu began queued complete=true owner='' tree tree_end
+  local members=${suite_shard_ran:+\"shards\":$suite_shard_ran}
   set +eu
   # store_lock_release's owner check, inline: sourcing slots.sh here costs a fork and three files.
   [ -z "$suite_journal_slot" ] || { read -r owner <"$suite_journal_slot/pid" && [ "$owner" = "$$" ] &&
@@ -338,9 +339,16 @@ suite_journal_end() { # exit-code -> returns it
   [ -z "$suite_journal_signal" ] || { rc=$(( 128 + suite_journal_signal )); complete=false; }
   suite_journal_digest "$name"
   suite_journal_secs secs "$(( ended - suite_journal_began ))"
-  suite_journal_suites=''
-  suite_journal_suite "$name" "$rc" "$secs" "$cpu" '' "${suite_shard_ran:+\"shards\":$suite_shard_ran}"
+  # The tree hash runs after `ended` and cpu_s are taken: its own seconds ride beside them as tree_s.
+  suite_journal_ms tree
   suite_journal_content "$suite_journal_repo" "$suite_journal_began"
+  suite_journal_ms tree_end
+  if [ -n "$tree" ] && [ -n "$tree_end" ]; then
+    suite_journal_secs tree "$(( tree_end - tree ))"
+    members="${members:+$members,}\"tree_s\":$tree"
+  fi
+  suite_journal_suites=''
+  suite_journal_suite "$name" "$rc" "$secs" "$cpu" '' "$members"
   suite_journal_secs began "$suite_journal_began"
   suite_journal_secs ended "$ended"
   suite_journal_secs queued "$suite_journal_queued"
