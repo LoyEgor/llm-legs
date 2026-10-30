@@ -24,9 +24,7 @@ REAL_MAGICK=$(command -v magick) || fail "magick is required for this suite"
 UV_CACHE_DIR=${UV_CACHE_DIR:-$(uv cache dir 2>/dev/null)}
 export UV_CACHE_DIR
 unset PYTHONDONTWRITEBYTECODE
-# Bytecode is keyed on source mtime and size, so one prefix outside WORK serves every shard and run.
-export PYTHONPYCACHEPREFIX="${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/pycache"
-export HOME="$WORK/home"
+export HOME="$WORK/home" PYTHONPYCACHEPREFIX="$WORK/pycache"
 export CHATGPT_WEB_DIR="$WORK/home/.chatgpt-web" GEMINI_WEB_DIR="$WORK/home/.gemini-web"
 export GEMINI_WEB_CHROME="$WORK/no-chrome.app"
 # The faked pages drive one job's own browser; the account server (CHATGPT_WEB_SHARED) runs only live.
