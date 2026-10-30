@@ -643,7 +643,7 @@ case "$class" in
     ;;
   *)
     if [ -n "$landed_bytes" ]; then
-      reason="Instruction gate: this landing grows $hit by $landed_bytes B that no gate priced where it was written (a Codex, Gemini or Grok worker, or a copy script, passes no hook)$cost. $(instruction_standing_rule) Cut the growth on the branch and land again, or state the byte delta, the weekly token cost with monthly context and what the change SAVES, ask him, and wait. With his OK the IDENTICAL command, byte for byte, passes on retry."
+      reason="Instruction gate: this landing grows $hit by $landed_bytes B that no gate priced where it was written (a Codex, Gemini or Grok worker, or a copy script, passes no hook)$cost. $(instruction_standing_rule) Cut the growth on the branch and land again; only if the growth is genuinely needed, state the byte delta, the weekly token cost with monthly context and what the change SAVES, ask him, and wait. With his OK the IDENTICAL command, byte for byte, passes on retry."
     elif [ -n "$span" ]; then
       reason="Instruction gate: this command ADDS to $hit rather than replacing it$cost. Egor's autonomy span covers reshaping these files, never growing them: while it stands, a write that leaves the file no larger passes here unasked, and growth of an instruction file waits for him. Rewrite the whole file smaller if the change is a net cut; otherwise keep the addition for his next turn and say so in one line. The tripwire measures the bytes either way and puts back growth this session produced."
     else
