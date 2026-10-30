@@ -1158,6 +1158,40 @@
    "same_cause": [],
    "status": "fixed-pending",
    "title": "claude-setup/commands/trash.md:10 (instruction, data) claims: Then run `~/.claude/hooks/session-trash.sh list`, list the trashed chats in short Russian lines (…"
+  },
+  {
+   "fixes": [
+    {
+     "at": "2026-10-30T04:35:13+02:00",
+     "by": "code-code-20261030T023129Z-2f4c",
+     "files": [
+      "hammerspoon/tests/test_launchd_plist.sh"
+     ],
+     "in": null,
+     "regressed_at": null,
+     "yield": {
+      "lines_removed": 0,
+      "suite_s_saved": 0,
+      "tokens_cut": 0
+     }
+    }
+   ],
+   "group": "promise",
+   "handoff": null,
+   "id": "cause:llm-legs/docs/DIAGNOSTICS.md#promise:5c3faeebd16b",
+   "last_reviewed": null,
+   "match": {
+    "cause": "cause:llm-legs/docs/DIAGNOSTICS.md#promise:5c3faeebd16b",
+    "identity": {
+     "sketch": [],
+     "touch": []
+    }
+   },
+   "note": "hammerspoon tests/test_launchd_plist.sh asserts KeepAlive and RunAtLoad true and the wrapper's one exec line (red with KeepAlive false); ProgramArguments[0], Label and log stay in llm-legs tests/test_consistency.sh row aa, not duplicated. A test-only fix leaves the promise evidence (claim + bound code) unchanged, so check refused it and a landed row would read regressed: check takes a run's test naming the bound code for an untested verdict, apply_ledger keeps a fixed untested row while its test exists and the verdict predates the fix.",
+   "reviewed_by": null,
+   "same_cause": [],
+   "status": "fixed-pending",
+   "title": "llm-legs/docs/DIAGNOSTICS.md:81 (read by review-bench/CLAUDE.md, safety) claims: `com.egor.hammerspoon` — INSTALLED (plist `launchd/com.egor.hammerspoon.plist`…"
   }
  ]
 }

@@ -378,6 +378,15 @@ printf 'user_curl_refresh() {\n  curl -fsS "https://example.invalid/refresh" -o 
 "$CD" check "$C/record-y.json" --base refs/night/n1/base >"$WORK/check.out"
 assert test "$(grep -c 'recorded fixed by this run' "$WORK/check.out")" = 0
 cp "$C/refresh.saved" "$WT/lib/refresh.sh"
+# An untested promise's fix is a test, its units unchanged: the re-check takes a test of the run naming its code.
+cp "$CODE_DOCTOR_DIR/verdicts.json" "$C/verdicts.saved"
+jq '.["cause:alpha/lib/refresh.sh#robot_curl_refresh"].kind = "untested"' "$C/verdicts.saved" >"$CODE_DOCTOR_DIR/verdicts.json"
+"$CD" check "$C/record-y.json" --base refs/night/n1/base >"$WORK/check.out"
+assert grep -qF 'robot_curl_refresh: recorded fixed by this run, but no test it changed names its code (' "$WORK/check.out"
+mkdir -p "$WT/tests" && printf '. "$(dirname "$0")/../lib/refresh.sh"\n' >"$WT/tests/test_refresh.sh"
+"$CD" check "$C/record-y.json" --base refs/night/n1/base >"$WORK/check.out"
+assert test "$(grep -c 'recorded fixed by this run' "$WORK/check.out")" = 0
+rm "$WT/tests/test_refresh.sh" && mv "$C/verdicts.saved" "$CODE_DOCTOR_DIR/verdicts.json"
 
 # A run whose worktree is gone proves nothing; a day run (no worktree) is checked in the main checkouts since its launch.
 jq --arg w "$C/no-such-worktree" '.worktrees = [$w]' "$C/record.json" >"$C/record-gone.json"
@@ -951,6 +960,14 @@ assert len(cd.load_ledger()["rows"]) == 2
 span = {"file": "a/f", "unit": "a/f", "digest": "d"}
 assert cd.check_run({"problems": [{"id": "cause:y", "units": [span]}], "launched_at": "2026-10-08T00:00:00Z"},
                     None) == []
+top = cd.state_dir()
+cd.os.makedirs(cd.os.path.join(top, "tests"), exist_ok=True)
+open(cd.os.path.join(top, "tests", "test_x.sh"), "w").close()
+row = {"fixes": [{"at": "2026-10-30T00:00:00Z", "files": ["a/lib/x.sh", "a/tests/test_x.sh"]}]}
+assert cd.fix_test_present({"last_seen": "2026-10-29T00:00:00+02:00"}, row, {"a": {"top": top}})
+assert not cd.fix_test_present({"last_seen": "2026-10-31T00:00:00Z"}, row, {"a": {"top": top}})
+assert not cd.fix_test_present({"last_seen": "2026-10-29T00:00:00Z"}, {"fixes": [dict(row["fixes"][0], files=["a/tests/test_gone.sh"])]},
+                               {"a": {"top": top}})
 assert cd.file_lang("bin/tool", "#!/usr/bin/env sh\n") == "bash"
 assert cd.file_lang("bin/tool", "#!/usr/bin/env -S perl -w\n") == "undeclared:perl"
 PY

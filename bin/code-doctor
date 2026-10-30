@@ -3040,6 +3040,20 @@ def settle_registrations(night):
     return done
 
 
+def fix_test_present(problem, row, indexes):
+    """An untested promise's fix is its test: while a test file of the row's last fix exists, the fix stands though the
+    claim and its code, the promise evidence, are unchanged; a verdict judged after the fix stands instead."""
+    fix = (row.get("fixes") or [{}])[-1] or {}
+    if (iso_epoch(problem.get("last_seen")) or 0) > (iso_epoch(fix.get("at")) or 0):
+        return False
+    for fid in fix.get("files") or ():
+        repo, _, rel = fid.partition("/")
+        top = (indexes.get(repo) or {}).get("top")
+        if top and TEST_PART.search(rel) and os.path.isfile(os.path.join(top, rel)):
+            return True
+    return False
+
+
 def apply_ledger(problems, candidates, ledger, indexes):
     rows = [r for r in ledger.get("rows") or () if isinstance(r, dict)]
     faulty = {rid for rid, _ in ledger_faults(ledger)}
@@ -3070,6 +3084,8 @@ def apply_ledger(problems, candidates, ledger, indexes):
             problem["ledger"] = problem["id"] = row.get("id")
             if status == "fixed-pending":
                 problem["state"] = "fixed-pending"
+            elif status == "fixed" and problem.get("kind") == "untested" and fix_test_present(problem, row, indexes):
+                continue
             elif status == "fixed":
                 problem["state"] = "regressed"
             else:
@@ -3659,7 +3675,7 @@ def check_run(record, base):
     day = {} if record.get("worktrees") else day_trees(record, tops)
     if not record.get("worktrees") and not (record.get("launched_at") or record.get("created_at")):
         errors.append("the run records no launch time: nothing bounds its changes in the main checkouts")
-    tree_of, runs, unowned = {}, {}, []
+    tree_of, runs, unowned, tests_changed = {}, {}, [], []
     for tree in record.get("worktrees") or sorted(day):
         if not os.path.isdir(tree):
             errors.append("%s: the run's worktree is gone, nothing proves its changes: they land through a new Code fixer run" % tree)
@@ -3687,6 +3703,12 @@ def check_run(record, base):
                 else:
                     deletion_proof(fid, fid, owners, True)
                 continue
+            if TEST_PART.search(rel):
+                try:
+                    with open(os.path.join(tree, rel), encoding="utf-8", errors="replace") as handle:
+                        tests_changed.append(handle.read())
+                except OSError:
+                    pass
             if not any(span["unit"] == fid for _, problem in deleted_ok.get(fid, ()) for span in problem.get("units") or ()):
                 for name in removed_symbols(tree, tree_base or "HEAD", rel):
                     unit = "%s#%s" % (fid, name)
@@ -3722,7 +3744,12 @@ def check_run(record, base):
         if fixed and record.get("id") and all(
                 unit_digest_at(tree_of.get(span["file"].split("/", 1)[0]) or tops.get(span["file"].split("/", 1)[0]) or "",
                                None, span) == span["digest"] for span in problem["units"]):
-            errors.append("%s: recorded fixed by this run, but the re-check reads every unit as judged" % pid)
+            bound = [s["file"].split("/", 1)[1] for s in problem["units"] if "#promise:" not in s["unit"]]
+            if (verdicts.get(problem.get("cause") or pid) or {}).get("kind") != "untested":
+                errors.append("%s: recorded fixed by this run, but the re-check reads every unit as judged" % pid)
+            elif not any(rel in text for text in tests_changed for rel in bound):
+                errors.append("%s: recorded fixed by this run, but no test it changed names its code (%s)"
+                              % (pid, ", ".join(bound) or "none bound"))
     return errors
 
 
