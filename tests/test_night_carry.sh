@@ -288,8 +288,13 @@ STRONG: yes
 WEB: on" ]
 assert grep -qF '## Tool ideas — monthly, harness direction' "$NIGHTS/P2.$ref.brief.md"
 assert grep -qF "MD-GUARD: in \`$pwt\` write the markdown" "$NIGHTS/P2.$ref.brief.md"
-NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >"$WORK/p2b.out" 2>/dev/null || fail "a second carry failed"
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >"$WORK/p2b.out" 2>"$WORK/p2b.err" || fail "a second carry failed"
 assert [ ! -s "$WORK/p2b.out" ]
+# A job no worker took yet is named on every carry: an empty stdout closed a night over two pending rereads (10-30).
+assert grep -qxF "night-run: $ref carried earlier, no worker yet: $NIGHTS/P2.$ref.brief.md" "$WORK/p2b.err"
+mkdir -p "$HOME/.cache/claude-worker-runs/r1" && jq -n --arg w "$pwt" '{workdir: $w}' >"$HOME/.cache/claude-worker-runs/r1/meta.json"
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >/dev/null 2>"$WORK/p2b.err" || fail "a carry after the worker started failed"
+assert_fails grep -qF "$ref carried earlier" "$WORK/p2b.err"
 # A decision past its re-read date (a ledger row, a direction's Decisions entry) is re-read: one reread job per file.
 mkdir -p "$P/share" "$P/docs/directions"
 jq -n '{owner: "Harness Doctor", rows: [{id: "fee:a", title: "a", verdict: "kept", zero: "saves 1 %", depends_on: "a stays cheap",

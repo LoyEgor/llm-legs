@@ -156,7 +156,7 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   night ran to an end within its days, in the llm-legs sweep repository from share/briefs/<kind>.md, and one reread
   job per llm-legs ledger or direction file holding a decision past its re-read date (share/decision_reread.py); each
   gets its night worktree and a brief; prints
-  <ref>\t<brief>\t<worktree>. A handoff or reread job blocked-on-egor needs the trade in reason= as Cost:,
+  <ref>\t<brief>\t<worktree>, and on stderr each earlier pending job no worker run took yet. A handoff or reread job blocked-on-egor needs the trade in reason= as Cost:,
   Loss: and Recommendation:
   A pilot night (start records PILOT as .pilot and says `pilot <direction>` and PILOT_RULES in the prompt, plus PILOT_DOCTORS once doctors.md has none left and PILOT_VENDORS once no direction before vendors has a goal) carries only Egor's
   answered trades and one goal job at a time: the first `### goal <slug>:` section under `## Goals` of
@@ -1196,7 +1196,7 @@ carry_fixer() { # id doctor flags -> the doctor's fixers launched once a night (
 }
 
 cmd_carry() {
-  local id=${1:-} kind slug repo what log ref branch wt err brief path top root
+  local id=${1:-} kind slug repo what log ref branch wt err brief path top root printed=' ' taken
   [ -n "$id" ] && [ $# -eq 1 ] || usage
   known_night "$id"
   jq -e '.pilot' "$(night_file "$id")" >/dev/null || carry_owner_chats "$id"
@@ -1234,6 +1234,7 @@ cmd_carry() {
       continue
     fi
     printf '%s\t%s\t%s\n' "$ref" "$brief" "$wt"
+    printed+="$ref "
   done < <(carry_list "$id")
   while IFS=$'\t' read -r ref path; do
     [ ! -e "$nights_dir/$id.$ref.brief.md" ] || continue
@@ -1245,7 +1246,17 @@ cmd_carry() {
       continue
     fi
     printf '%s\t%s\t%s\n' "$ref" "$brief" "$wt"
+    printed+="$ref "
   done < <(jq -r '.jobs[] | select(.kind == "trade" and .state == "pending") | [.ref, (.from.path // "")] | @tsv' "$(night_file "$id")")
+  # An earlier carry's line no worker took is never printed again, so "carry until it prints nothing" closed a night over
+  # two pending reread jobs (2026-10-30): each is named until a worker run has its worktree.
+  taken=$(grep -lF -- "/night-$id-" "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"/*/meta.json 2>/dev/null |
+    xargs jq -r '.workdir // empty' 2>/dev/null)
+  while IFS= read -r ref; do
+    [[ $printed != *" $ref "* ]] && [[ $'\n'$taken$'\n' != *"/night-$id-$ref"$'\n'* ]] &&
+      [ -e "$nights_dir/$id.$ref.brief.md" ] || continue
+    printf 'night-run: %s carried earlier, no worker yet: %s\n' "$ref" "$nights_dir/$id.$ref.brief.md" >&2
+  done < <(jq -r '.jobs[] | select(.state == "pending") | .ref' "$(night_file "$id")")
 }
 
 cmd_suites() {
