@@ -287,6 +287,7 @@ assert [ "$(head -3 "$NIGHTS/P2.$ref.brief.md")" = "ROUND: none
 STRONG: yes
 WEB: on" ]
 assert grep -qF '## Tool ideas — monthly, harness direction' "$NIGHTS/P2.$ref.brief.md"
+assert grep -qF "MD-GUARD: in \`$pwt\` write the markdown" "$NIGHTS/P2.$ref.brief.md"
 NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >"$WORK/p2b.out" 2>/dev/null || fail "a second carry failed"
 assert [ ! -s "$WORK/p2b.out" ]
 # A decision past its re-read date (a ledger row, a direction's Decisions entry) is re-read: one reread job per file.
@@ -348,6 +349,8 @@ assert jqe '[.jobs[] | [.kind, .ref, .state, .priority]] == [["goal", "goal-gate
 assert [ "$(head -2 "$b")" = "ROUND: none
 STRONG: yes" ]
 assert grep -qxF "ADD-DIR: $C/.claude/worktrees/night-G1-goal-gates" "$b"
+# Its own guard lets it write its Done row, where worker-run's would have it hand the row back.
+assert grep -qxF "MD-GUARD: in \`$L/.claude/worktrees/night-G1-goal-gates\` write the markdown this brief asks for yourself; CLAUDE.md, SKILL.md, memory and anything under ~/.claude only as exact text under MD-PROPOSAL in your RETURN." "$b"
 assert grep -qxF '### goal gates: one parser' "$b"
 assert grep -qxF 'In claude-setup hooks/lib.' "$b"
 assert_fails grep -qF 'goal stop-hooks: capped' "$b"

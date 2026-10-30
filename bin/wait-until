@@ -52,12 +52,14 @@ check() {
       done
       what="no process matches $1" ;;
     files)
-      local list
+      local list path n=0
       shopt -s nullglob
       # shellcheck disable=SC2206
       list=($1)
       shopt -u nullglob
-      [ "${#list[@]}" -ge "$2" ] && what="${#list[@]} paths match $1" ;;
+      # A pattern without a wildcard stays itself under nullglob, so only a path that exists counts.
+      for path in ${list[@]+"${list[@]}"}; do [ -e "$path" ] && n=$((n + 1)); done
+      [ "$n" -ge "$2" ] && what="$n paths match $1" ;;
     log) [ -r "$1" ] && grep -Eq -- "$2" "$1" && what="$1 matches $2" ;;
   esac
 }

@@ -35,6 +35,10 @@ touch "$WORK/out/a.png"
 ( sleep 1; touch "$WORK/out/b.png" ) &
 out=$("$W" --max 20 files "$WORK/out/*.png" 2); assert [ $? -eq 0 ]
 assert like "$out" "met: 2 paths match "*
+# A plain path is waited for, not counted while it is absent (night 5921: `files <flag> 1` met at 0 s).
+"$W" --max 1 files "$WORK/out/finished" 1 >/dev/null; assert [ $? -eq 1 ]
+touch "$WORK/out/finished"
+"$W" --max 1 files "$WORK/out/finished" 1 >/dev/null; assert [ $? -eq 0 ]
 
 # log: absent file waits, a late line ends it, an existing one counts.
 "$W" --max 1 log "$WORK/run.log" 'DONE' >/dev/null; assert [ $? -eq 1 ]
