@@ -98,7 +98,7 @@ CANDIDATE_ROWS = 5
 USE_DAYS, RECENT_DAYS = 30, 7
 # Near-unused: under one model call a week. 30 days to 2026-10-29, night calls out, the 50 indexed commands and skills
 # older than the window ranked by calls: 0 1 1 3 3 4 4 | 7 8 8 10 ...; the floor (4.3) sits in the one gap of the tail.
-# A tool no model called in its last RECENT_DAYS is flagged too (`recent`): a doctrine retired it (llm-reset-redeem).
+# A tool no model called in its last RECENT_DAYS is flagged too (`recent`): a doctrine retired it (the resets ban).
 NEAR_UNUSED = 1.0 / 7
 USES_V = 2
 UNUSED = "🗑"
