@@ -14002,13 +14002,6 @@
       "would_catch_if": "test_health.usual scaled each minutes line by the window's median per-suite wall/CPU rise over the usual days (robust to one suite's own sleeps), and test_test_health pinned a saturated window inside the band and a single-suite slowdown still red"
     },
     {
-      "id": "resume-refusal-rework-unpriced",
-      "what": "the rework a refused cold resume causes: the fresh worker's tokens and wall re-deriving what the refused session knew",
-      "reason": "2026-10-29: refuse_stale_resume's saving was priced (9864be9d: 2.2 % of Claude spend, 199k re-written per cold resume), its cost never was; the log audit quotes ~2h50m and ~2h of re-derivation in the pixel-art chat, and no record links a RESUME_REFUSED to the run started in its place",
-      "since": "2026-10-29",
-      "would_catch_if": "worker-run recorded the refused session id in the meta of the next run started from the same launcher and workdir, and llm-doctor priced that run's tokens and wall against the refused resume's cache write"
-    },
-    {
       "id": "hook-cost-by-payload-size",
       "what": "a hook whose cost grows with the bytes of the call's payload (tool_input or tool_response), not with the transcript",
       "reason": "2026-10-29 (fixer harness-hooks-20261029T112048Z-00f0): context-nudge's 0.4 ms CPU a payload KiB read as hook_grows_size only because image-heavy transcripts are both big and carry big tool responses; 20 hooks read stdin by bash `read -d ''`, one byte a syscall, and limits-triage-nudge, word-spend, pr-ready-mattermost and memory-prune hook do it on PostToolUse",

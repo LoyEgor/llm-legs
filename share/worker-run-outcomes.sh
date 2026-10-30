@@ -9,10 +9,15 @@ outcome_record() { # outcome [directory]
     return 0
   fi
   mkdir -p "${log%/*}" 2>/dev/null || return 0
+  # A refused resume carries what llm-doctor pairs with the run started in its place.
   jq -cn --arg outcome "$1" --arg vendor "${vendor:-}" --arg account "${account:-${explicit_account:-}}" \
     --arg model "${model:-${effective:-}}" --arg role "${role:-}" --arg light "${light:-}" \
+    --arg resume "${RESUME_REFUSED_TOKENS:+${resume:-}}" --arg tokens "${RESUME_REFUSED_TOKENS:-}" \
+    --arg launcher "${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}" --arg workdir "${workdir:-}" \
     '{ts: (now | floor), outcome: $outcome, vendor: $vendor, account: $account, model: $model,
-      role: $role, light: $light}' 2>/dev/null >>"$log" || :
+      role: $role, light: $light}
+     + if $resume == "" then {} else {resume: $resume, resume_tokens: ($tokens | tonumber),
+                                      launcher: $launcher, workdir: $workdir} end' 2>/dev/null >>"$log" || :
 }
 
 outcome_line() (

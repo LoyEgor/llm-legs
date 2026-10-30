@@ -246,7 +246,7 @@ refuse_stale_resume() {
   else
     return 0
   fi
-  outcome_line RESUME_REFUSED
+  RESUME_REFUSED_TOKENS=$tokens outcome_line RESUME_REFUSED
   fail "RESUME $resume refused: $why. Start a fresh worker instead: read what the session left (\`worker-run report <its run>\`: the result and any queued messages) and write a brief with what it found, what is left and the same --workdir. Nothing was launched and no account was spent."
 }
 

@@ -128,6 +128,10 @@ refused_resume() { # vendor session reason
 }
 # Idle past the 1h cache: the whole context would be written again.
 refused_resume claudeb claude-cold 'idle .*~151k context again'
+# llm-doctor pairs the refusal with the run its launcher starts in its place.
+assert test "$(tail -n1 "$WORKER_RUN_DIR/prelaunch.jsonl" | jq -c '[.outcome, .resume, .resume_tokens, .launcher, .workdir]')" = \
+  "$(jq -cn --arg l "${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}" --arg w "$(cd "$WORK/workdir" && pwd -P)" \
+    '["RESUME_REFUSED", "claude-cold", 150502, $l, $w]')"
 # Warm, but at 151k near compaction.
 touch "$claude_transcript"
 refused_resume claudeb claude-cold 'its context is ~151k, near compaction'

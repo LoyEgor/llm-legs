@@ -54,6 +54,8 @@ REBOOT_SLACK_S = 300
 # No heartbeat dates a supervisor's death: a run silent this long before the boot died on its own.
 REBOOT_QUIET_S = 3600
 NO_EXIT_S = 6 * 3600
+# A refused resume's replacement: the launcher's next fresh run in the same workdir within this.
+RESUME_PAIR_S = 3600
 _REBOOTS = []
 TREND_MIN = 3
 PROOF_MIN = 10
@@ -73,7 +75,7 @@ LEDGER_STATUSES = ("open", "fixed-pending", "fixed", "not-a-bug", "weather")
 DISMISSALS = ("not-a-bug", "weather")
 FIXED_STATUSES = ("fixed-pending", "fixed")
 COUNTED = ("new", "open", "regressed")
-HEALTH_RULES = ("debt",)
+HEALTH_RULES = ("debt", "resume")
 FIX_IN_RE = re.compile(r"^([\w.-]+)@([0-9a-f]{7,40})$")
 LIMIT_NAMES = ("SLOW_FACTOR", "SLOW_MIN_LEGS", "SLOW_BASE_N", "SLOW_FLOOR_S", "SLOW_SIZE_RATIO", "SLOW_BASE_D",
                "NO_EXIT_S", "REBOOT_SLACK_S", "REBOOT_QUIET_S", "TREND_MIN", "PROOF_MIN", "RECOVERED_MIN",
@@ -2340,6 +2342,71 @@ def debt_health(now):
     return health_row("debt", items, notes, seen)
 
 
+def avoided_write(vendor, model, tokens, at):
+    """Opus-eq of the context a refused resume would have written again; None when token-map cannot price it."""
+    try:
+        import night_spend
+        day = time.strftime("%Y-%m-%d", time.localtime(at))
+        if vendor == "claudeb":
+            return sum(night_spend.claude_eq(model, day, cache_1h=tokens).values())
+        return sum(night_spend.vendor_eq(vendor, model, fresh=tokens).values())
+    except (SystemExit, Exception):
+        return None
+
+
+def resume_health(window_cutoff, now):
+    """Each refused resume against the run started in its place (its launcher's next fresh run in the same
+    workdir within RESUME_PAIR_S): a vendor whose replacements spent more Opus-eq than the writes its refusals
+    avoided is a resume-rework problem, the refusal's price never weighed against its saving (9864be9d)."""
+    items, notes = {}, []
+    refused = [row for row in read_jsonl(os.path.join(runs_dir(), "prelaunch.jsonl"))
+               if row.get("outcome") == "RESUME_REFUSED" and row.get("launcher") and row.get("workdir")
+               and isinstance(row.get("resume_tokens"), int) and isinstance(row.get("ts"), (int, float))
+               and window_cutoff <= row["ts"] <= now]
+    if not refused:
+        return health_row("resume", items, notes, 0)
+    try:
+        names = sorted(name for name in os.listdir(runs_dir()) if WORKER_ID_RE.match(name))
+    except OSError:
+        names = []
+    totals, taken = {}, set()
+    for row in sorted(refused, key=lambda item: item["ts"]):
+        for name in names:
+            started = int(WORKER_ID_RE.match(name).group(1))
+            if name in taken or not row["ts"] <= started <= row["ts"] + RESUME_PAIR_S:
+                continue
+            run_dir = os.path.join(runs_dir(), name)
+            if (read_text(os.path.join(run_dir, "launcher")) or "").strip() != row["launcher"]:
+                continue
+            meta = read_json(os.path.join(run_dir, "meta.json")) or {}
+            if meta.get("workdir") != row["workdir"] or meta.get("resume"):
+                continue
+            taken.add(name)
+            vendor = str(row.get("vendor") or "")
+            spent, ended = as_int(read_text(os.path.join(run_dir, "tokens"))), mtime_of(os.path.join(run_dir, "exit_code"))
+            avoided = avoided_write(vendor, str(row.get("model") or ""), row["resume_tokens"], row["ts"])
+            total = totals.setdefault(vendor, {"pairs": 0, "spent": 0, "avoided": 0, "wall": 0, "open": 0})
+            total["pairs"] += 1
+            if spent is None or ended is None or avoided is None:
+                total["open"] += 1
+                break
+            total["spent"] += spent
+            total["avoided"] += avoided
+            total["wall"] += max(0, ended - started)
+            if spent > avoided:
+                add_item(items, "%s resume %s refused at %dk: %s spent %dk Opus-eq in %d min against %dk avoided" % (
+                    vendor, row.get("resume"), row["resume_tokens"] // 1000, name, spent // 1000,
+                    (ended - started) // 60, avoided // 1000), row["ts"], session=row["launcher"],
+                    rule="resume-rework", key=vendor, value=spent - avoided, ref="prelaunch:%s/%s" % (
+                        event_stamp(row["ts"]), row.get("account") or "-"), excerpt=name, start=started)
+            break
+    for vendor, total in sorted(totals.items()):
+        notes.append("%s: %d refused resume%s paired, replacements %dk Opus-eq in %d min against %dk avoided%s" % (
+            vendor, total["pairs"], "" if total["pairs"] == 1 else "s", total["spent"] // 1000, total["wall"] // 60,
+            total["avoided"] // 1000, " · %d still running or unpriced" % total["open"] if total["open"] else ""))
+    return health_row("resume", items, notes, sum(total["pairs"] for total in totals.values()))
+
+
 def git_out(root, *args):
     try:
         done = subprocess.run(["git", "-C", root] + list(args), capture_output=True, text=True, timeout=10)
@@ -2480,7 +2547,7 @@ def collect(window_h, now, write_daily=False):
     name_chats([incident for block in blocks for problem in block["problems"] for incident in problem["incidents"]])
     found = machinery(ledger, now, window_cutoff)
     blocks[0]["machinery"] = found
-    health = [debt_health(now)]
+    health = [debt_health(now), resume_health(window_cutoff, now)]
     problems = leg_problems(ledger, legs, window_cutoff, window_h, now) + machinery_problems(found, window_h)
     for row in health:
         problems.extend(health_problems(row, ledger, window_h))

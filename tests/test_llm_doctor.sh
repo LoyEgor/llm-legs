@@ -287,7 +287,7 @@ blocks = {block["block"]: block for block in doc["blocks"]}
 assert [block["block"] for block in doc["blocks"]] == ["reviewers", "workers", "light", "image"]
 assert doc["not_measurable"] == ["worker false-green reports", "weakened tests"]
 health = {row["name"]: row for row in doc["health"]}
-assert [row["name"] for row in doc["health"]] == ["debt"]
+assert [row["name"] for row in doc["health"]] == ["debt", "resume"]
 assert health["debt"]["items"] == [] and health["debt"]["count"] == 0 and health["debt"]["notes"] == [], health["debt"]
 
 def problems(block):
@@ -831,6 +831,36 @@ with open(os.path.join(unit, "runs", "prelaunch.jsonl"), "w") as handle:
                                  "account": "", "model": "m", "role": "workers", "light": ""}) + "\n")
 prelaunch = {row["at"]: row["class"] for row in doctor.prelaunch_legs(now - 86400, now)[0]}
 assert prelaunch == {now - 1000: "off", now - 1100: "failed"}, prelaunch
+# A refused resume is priced against the run its launcher started in its place: same launcher and workdir, fresh,
+# within the hour; a run from another chat, another workdir or a resume is not its replacement.
+def run(name, launcher, workdir, tokens, resume=None):
+    path = os.path.join(unit, "runs", name)
+    os.makedirs(path)
+    for key, text in (("launcher", launcher + "\n"), ("tokens", "%d\n" % tokens), ("exit_code", "0\n")):
+        with open(os.path.join(path, key), "w") as handle:
+            handle.write(text)
+    json.dump({"workdir": workdir, "resume": resume}, open(os.path.join(path, "meta.json"), "w"))
+    os.utime(os.path.join(path, "exit_code"), (now - 100, now - 100))
+run("claudeb-%d-1-aa" % (now - 2900), "chat-a", "/w/other", 900000)
+run("claudeb-%d-2-bb" % (now - 2800), "chat-b", "/w/repo", 900000)
+run("claudeb-%d-3-cc" % (now - 2700), "chat-a", "/w/repo", 900000, resume="old")
+run("claudeb-%d-4-dd" % (now - 2600), "chat-a", "/w/repo", 500000)
+run("claudeb-%d-5-ee" % (now - 1600), "chat-a", "/w/repo", 100000)
+with open(os.path.join(unit, "runs", "prelaunch.jsonl"), "a") as handle:
+    for offset, session in ((3000, "s-cold"), (2000, "s-warm")):
+        handle.write(json.dumps({"ts": now - offset, "outcome": "RESUME_REFUSED", "vendor": "claudeb", "account": "acct",
+                                 "model": "opus", "role": "workers", "light": "", "resume": session,
+                                 "resume_tokens": 200000, "launcher": "chat-a", "workdir": "/w/repo"}) + "\n")
+doctor.avoided_write = lambda vendor, model, tokens, at: 2 * tokens
+resume = doctor.resume_health(now - 86400, now)
+assert resume["exposure"] == 2 and [item["label"].split(": ")[1] for item in resume["items"]] == \
+    ["claudeb-%d-4-dd spent 500k Opus-eq in 41 min against 400k avoided" % (now - 2600)], resume
+assert resume["notes"] == ["claudeb: 2 refused resumes paired, replacements 600k Opus-eq in 66 min against 800k avoided"], \
+    resume["notes"]
+assert [rule["rule"] + ":" + rule["key"] for rule in resume["rules"]] == ["resume-rework:claudeb"], resume["rules"]
+for name in os.listdir(os.path.join(unit, "runs")):
+    if name.startswith("claudeb-") and name.split("-")[-1] in ("aa", "bb", "cc", "dd", "ee"):
+        shutil.rmtree(os.path.join(unit, "runs", name))
 with open(os.path.join(unit, "legs.jsonl"), "w") as handle:
     for offset, rc, account, err in ((500, 4, "spare", "grok-image: account refused by the worker pool"),
                                      (600, 4, "main", "grok-image: account refused by the worker pool"),
