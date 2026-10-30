@@ -99,24 +99,6 @@ in all 88 samples); 10-20's 63 fixers, CPU-bound, fan-out's; chats testing while
 exists); chat compaction 19.6 min/day, a spend trade; worker compaction 3.6 min/day; API retries 7; model-written
 scripts, beside the index.
 
-### goal walled-resume: a walled worker's rescue continues its session
-
-Class: usage walls 10-09…22, claudeb 1,054 worker-min (75/day), codex 117. `reroute_walled` (`bin/worker-run`,
-10-05) restarts a walled claudeb run fresh, redoing the walled attempt; the 07-25 rotation cut's rescue was `RESUME
-<session>` on a worker-pick account; every profile's `projects` links `~/.claude/projects` (its "one profile"
-comment is wrong).
-- Change: a claudeb rescue resumes the walled session on the picked account (one reroute; `REROUTE:` and the
-  browser, `.resume`, explicit-account refusals stay); of the stale-RESUME refusal only `RESUME_CONTEXT_CAP` (150k)
-  stays, past it the rescue starts fresh; `run_split` counts its relaunch gap.
-- First step: the 10-19 rescues (walled 9,505–9,520 s; 2,740, 8,354, 8,424 s) repeat the walled sessions' calls, a
-  finished session resumed on another account answers, and the walled ones (≈2.6 h, cache missed there) resume under
-  the cap and the fresh rescues' 2.7–6.9M tokens; any fails, stop.
-- Proof, old → new: run dirs start 10-14; 10-14…22, 4 rerouted claudeb runs walled ≥ 10 min: 516 min, fresh rescues
-  338, redo ≤ 338 (≈38 worker-min/day); 10-09…13's 9 runs (288 min) have no recorded source. New, 14 days after
-  landing: each rescue under the cap keeps the walled session id, its walled minutes only relaunch gaps.
-- Must not get worse: rescues succeed (old rate unconfirmed); rescue tokens a walled run at or under the fresh
-  rescues' (tokenmap, counted first); codex walls untouched.
-
 ### goal shards-at-load: a load spike no longer runs a sharded suite whole
 
 Class: `suite_shard_wanted` shards only while `slot_room` finds room, so a run started in a load spike waits a
@@ -191,6 +173,7 @@ read …`, which `C1_MACHINE` (`bin/harness-doctor`) misses: 4 chats, 279 turn-s
 | 10-23 | goal shared-asserts: `fail`, `assert`, `assert_fails` from `tests/lib/suite-journal.sh` to line-2 sources; 133 copies behaving as the lib's go, variants stay | llm-legs helper-copy lines 382 → 182 (less one 333 → 145); touched suites' PASS counts = HEAD's, 3 sampled mutations red; tests −188 lines; 7-day read: suites added defining their own (class command), llm-legs 13 of 23 → target 0 | 5e084b8d |
 | 10-30 | goal fixture-path stopped at its First step: a held path counts only bare or under a root (`$ROOT/`, `{root}/`, `$1/`, `%s/`, `../`, `$(…)/`, `root .. "/`) | live `select()`, main 10-15…29 (569 commits, 14-d median walls, a commit waits on its slowest suite): 44.9 → 44.0 min/day, 3.8 by the dig's static subtraction (→ 41.1); under 5 before any truncation run. The dig's 7.2 missed that a file left with no own suite refills through `importers()` (breakages.md, 26 commits: 1 → 8 suites by a docstring and a printf) and that test_doctor_fix holds most paths as bare data strings (`purpose: "bin/llm-doctor"`) | no commit |
 | 10-30 | goal warm-chrome stopped at its First step: a call's Chrome kept up to 120 s for its account's next | legs.jsonl 10-22…29, a call starting ≤ 120 s after its account's last ended, saving `page` − `lock` − 1 s (a served page, 10-30: 0.5–1.5 s); a fan-out waits max over accounts of chain end − chain saving, a lone call whole: codex 65.6 calls/day, 9.7 leg-min → 2.2 waited; gemini 6.5, 3.9 → 1.2; class 3.4 waited min/day, under 5 before any change. Since 4eb25d60 (10-30) chatgpt-web's account server keeps codex's browser 60 s: left 60–120 s codex gaps and gemini, 1.7 | no commit |
+| 10-30 | goal walled-resume stopped at its First step: a claudeb rescue resumes the walled session | 10-19's 3 pairs (sessions from worker-attempts.jsonl, transcripts in `~/.claude/projects`; 10-14's pruned): the fresh rescues repeat 29 of 1,311 calls by exact input, all Reads, 0 of 149 edits, 0 Bash; first edit at 8.7, 3.0, 6.9 min, so a resume saves ≤ 3 worker-min/day over 10-14…22, not 38 (the dig took the walled attempts' 516 min as redo; the CONTINUATION note already continues from the files); walled contexts end at 128.7k, 168.6k, 168.9k, 2 of 3 past the 150k cap, ≈1 min/day left; under 5 before any change; cross-account resume not tried | no commit |
 
 ## Open
 

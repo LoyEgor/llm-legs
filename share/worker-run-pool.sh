@@ -106,7 +106,8 @@ record_run_wall() {
 reroute_walled() {
   # At most ONE reroute per run (Egor, 2026-10-05): each rescue is a fresh session rereading the whole
   # context, and a chain of them burnt a pool for hours unseen; the second wall hands the choice back
-  # to the launching chat. A resumed session never moves: it lives inside one profile.
+  # to the launching chat. The rescue starts fresh, never resuming: a resume saves under 3 worker-min/day
+  # (lost-time.md Done 10-30), though every profile links the same projects tree.
   local directory="$1" vendor="$2" walled tag
   # The research leg reads the quota out of the answer stream and the agy log too, which
   # has_limit_signature deliberately never scans; its own verdict is the wall for that run.
