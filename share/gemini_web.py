@@ -339,9 +339,12 @@ def write_meta(account: str, **fields) -> dict:
     meta = {**read_meta(account), **fields}
     path = meta_path(account)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(meta, indent=1))
-    tmp.replace(path)
+    # One temp file per writer: parallel runs on one account shared "<name>.tmp", and the first rename
+    # left the second without its file (FileNotFoundError ended that run).
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f"{path.stem}.", suffix=".tmp")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(meta, indent=1))
+    os.replace(tmp, path)
     return meta
 
 
