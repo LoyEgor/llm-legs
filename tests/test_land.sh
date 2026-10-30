@@ -128,6 +128,7 @@ lock="$WORK/g/.git/land-feat+g.lock"; mkdir "$lock"
 sleep 60 & holder=$!; echo "$holder" >"$lock/pid"
 land feat/g --repo "$WORK/g"; assert test $? = 3
 assert test "$(subjects g | head -1)" = init
+assert grep -q "pid $holder, [0-9]* s, sleep 60: bin/wait-until pid $holder" "$WORK/out"
 kill "$holder"; wait "$holder" 2>/dev/null
 assert land feat/g --repo "$WORK/g"
 assert test "$(subjects g | head -1)" = 'g: g'
@@ -225,6 +226,7 @@ reset_stub; repo u; wt=$(tree u feat/u); change "$wt" u u 'u: u'; change "$WORK/
 printf 'test_u.sh\n' >"$STUB/u.overlap"
 printf '#!/usr/bin/env bash\ngit -C "%s" checkout -q -b other\n' "$WORK/u" >"$STUB/hook"; chmod +x "$STUB/hook"
 land feat/u --repo "$WORK/u"; assert test $? = 3
+assert grep -q 'is on the branch other: land again once it is back on main' "$WORK/out"
 assert test "$(git -C "$WORK/u" log -1 --format=%s other)" = 'u: main v'
 assert git -C "$WORK/u" show-ref -q --verify refs/heads/feat/u
 git -C "$WORK/u" checkout -q main
@@ -236,5 +238,118 @@ export GIT_TRACE="$WORK/trace"
 assert land feat/w --repo "$WORK/w"
 unset GIT_TRACE
 assert test "$(grep -c 'git merge-base' "$WORK/trace")" -le 1
+
+# Exit 3 tells the orchestrator what to wait for.
+assert grep -q 'wait-until pid <n>' "$ROOT/docs/fix-orchestrator.md"
+
+# A branch named with --repo lands only there, never on a namesake another session holds where land runs from.
+reset_stub; repo x1; repo x2; wx1=$(tree x1 feat/z); wx2=$(tree x2 feat/z)
+change "$wx1" z z 'x1: other session'; change "$wx2" z z 'x2: z'
+(cd "$WORK/x1" && "$LAND" feat/z --repo "$WORK/x2") >"$WORK/out" 2>&1
+assert test "$(subjects x2 | head -1)" = 'x2: z'
+assert test "$(subjects x1 | head -1)" = init
+assert test -d "$wx1"
+
+# Repositories go in sorted order, wherever land runs from: two lands of one branch take its locks in one order.
+reset_stub; repo y1; repo y2; wy1=$(tree y1 night/n4/y); wy2=$(tree y2 night/n4/y)
+change "$wy1" y y 'y1: y'; change "$wy2" y y 'y2: y'
+(cd "$WORK/y2" && "$LAND" night/n4/y) >"$WORK/out" 2>&1
+assert grep -q '^commits=y1:[0-9a-f]\{12\},y2:[0-9a-f]\{12\}$' "$WORK/out"
+
+# A stop after one repository landed: its commits= still prints, its worktree stays for its siblings' suites until
+# all have landed, and the rerun reports it again and tears it down.
+reset_stub; repo r1; repo r2; wr1=$(tree r1 night/n5/r); wr2=$(tree r2 night/n5/r)
+change "$wr1" r r 'r1: r'; change "$wr2" r r 'r2: r'; printf 'test_r2.sh\n' >"$STUB/r2.covering"
+printf '#!/usr/bin/env bash\ngit -C "%s" checkout -q -b other\n' "$WORK/r2" >"$STUB/hook"; chmod +x "$STUB/hook"
+land night/n5/r; assert test $? = 3
+assert grep -q '^commits=r1:[0-9a-f]\{12\}$' "$WORK/out"
+assert test -d "$wr1"
+git -C "$WORK/r2" checkout -q main
+assert land night/n5/r
+assert grep -q '^commits=r1:[0-9a-f]\{12\},r2:[0-9a-f]\{12\}$' "$WORK/out"
+assert test ! -d "$wr1"
+assert_fails git -C "$WORK/r1" show-ref -q --verify refs/heads/night/n5/r
+
+# A land killed after its fast-forward and the worktree's removal: the rerun reports the landing, deletes the branch.
+reset_stub; repo v; wt=$(tree v feat/v); change "$wt" v v 'v: v'
+git -C "$WORK/v" update-ref refs/land/feat/v main; git -C "$WORK/v" merge -q --ff-only feat/v
+git -C "$WORK/v" worktree remove "$wt"
+assert land feat/v --repo "$WORK/v"
+assert grep -qx "commits=v:$(git -C "$WORK/v" rev-parse --short=12 main)" "$WORK/out"
+assert_fails git -C "$WORK/v" show-ref -q --verify refs/heads/feat/v
+
+# A worktree left detached mid-rebase: without a land's mark the rebase is the worker's; with it, a killed land's,
+# aborted, and the branch lands.
+reset_stub; repo z; wt=$(tree z feat/zr); change "$wt" file mine 'z: mine'
+git -C "$WORK/z" checkout -q -b side; change "$WORK/z" file theirs 'z: side'; git -C "$WORK/z" checkout -q main
+git -C "$wt" rebase -q side >/dev/null 2>&1
+land feat/zr --repo "$WORK/z"; assert test $? = 1
+assert grep -q 'a rebase of feat/zr is in progress' "$WORK/out"
+git -C "$WORK/z" update-ref refs/land/feat/zr main
+assert land feat/zr --repo "$WORK/z"
+assert test "$(subjects z | head -1)" = 'z: mine'
+
+# The worker committing while the suites run: its untested commit never lands.
+reset_stub; repo t; wt=$(tree t feat/t); change "$wt" t t 't: t'; change "$WORK/t" u u 't: main u'
+printf 'test_t.sh\n' >"$STUB/t.overlap"
+printf '#!/usr/bin/env bash\ncd "%s" && printf late >late && git add late && git commit -qm "t: untested"\n' "$wt" >"$STUB/hook"
+chmod +x "$STUB/hook"
+land feat/t --repo "$WORK/t"; assert test $? = 3
+assert test -z "$(subjects t | grep untested)"
+
+# A commit in the main checkout right after the fast-forward is never reported as the landing.
+reset_stub; repo l; wt=$(tree l feat/l); change "$wt" l l 'l: l'; tip=$(git -C "$wt" rev-parse HEAD)
+mkdir -p "$WORK/lhooks"; git -C "$WORK/l" config core.hooksPath "$WORK/lhooks"
+printf '#!/usr/bin/env bash\nprintf m >m && git add m && git commit -qm "l: after"\n' >"$WORK/lhooks/post-merge"
+chmod +x "$WORK/lhooks/post-merge"
+assert land feat/l --repo "$WORK/l"
+assert grep -qx "commits=l:${tip:0:12}" "$WORK/out"
+
+# A new file the worker never added goes back to the worker too.
+reset_stub; repo nf; wt=$(tree nf feat/nf); change "$wt" n n 'nf: n'; printf 'new\n' >"$wt/stray"
+assert_fails land feat/nf --repo "$WORK/nf"
+assert grep -q 'uncommitted work.*stray' "$WORK/out"
+
+# A rebase git refuses with no conflict (the worktree's index.lock) is no conflict: exit 3, naming the lock's age.
+reset_stub; repo il; wt=$(tree il feat/il); change "$wt" i i 'il: i'; change "$WORK/il" j j 'il: main j'
+ilock=$(git -C "$wt" rev-parse --path-format=absolute --git-path index.lock); : >"$ilock"
+land feat/il --repo "$WORK/il"; assert test $? = 3
+assert grep -q 'index.lock, [0-9]* s old' "$WORK/out"
+rm -f "$ilock"
+
+# The main checkout's leftover index.lock: exit 3 naming its age, never git's advice to delete it.
+reset_stub; repo ix; wt=$(tree ix feat/ix); change "$wt" x x 'ix: x'; : >"$WORK/ix/.git/index.lock"
+land feat/ix --repo "$WORK/ix"; assert test $? = 3
+assert grep -q "index.lock, [0-9]* s old" "$WORK/out"
+assert_fails grep -q 'remove the file' "$WORK/out"
+rm -f "$WORK/ix/.git/index.lock"
+
+# Main moving under every pass: exit 3 with the commits it gained.
+reset_stub; repo ch; wt=$(tree ch feat/ch); change "$wt" c c 'ch: c'; change "$WORK/ch" d d 'ch: main d'
+printf 'test_ch.sh\n' >"$STUB/ch.overlap"
+printf '#!/usr/bin/env bash\ncp "$0" "$STUB/hook"; cd "%s" && echo x >>churn && git add churn && git commit -qm "ch: churn"\n' \
+  "$WORK/ch" >"$STUB/hook"; chmod +x "$STUB/hook"
+land feat/ch --repo "$WORK/ch"; assert test $? = 3
+assert grep -q 'main gained 5 commits' "$WORK/out"
+
+# The main checkout's uncommitted edit of a file the branch changes stops land before the suites, not after them.
+reset_stub; repo dw; wt=$(tree dw feat/dw); change "$wt" file branch 'dw: file'; change "$WORK/dw" e e 'dw: main e'
+printf 'test_dw.sh\n' >"$STUB/dw.overlap"; printf 'wip\n' >"$WORK/dw/file"
+land feat/dw --repo "$WORK/dw"; assert test $? = 3
+assert test -z "$(ran)"
+assert grep -q 'uncommitted edits to file' "$WORK/out"
+git -C "$WORK/dw" checkout -q -- file
+
+# A land killed during its suites (the background Bash cap): the rerun ends the orphaned run-all and selects from the
+# base the killed rebase started from, not from the main it rebased onto.
+reset_stub; repo kk; wt=$(tree kk feat/kk); change "$wt" k k 'kk: k'; change "$WORK/kk" m m 'kk: main m'
+b0=$(git -C "$WORK/kk" rev-parse main~1); printf 'test_kk.sh\n' >"$STUB/kk.overlap"
+printf '#!/usr/bin/env bash\necho $PPID >"$STUB/orphan"; kill -9 $(ps -o ppid= -p $PPID); sleep 20\n' >"$STUB/hook"
+chmod +x "$STUB/hook"
+{ land feat/kk --repo "$WORK/kk"; } 2>/dev/null
+assert land feat/kk --repo "$WORK/kk"
+assert test "$(grep '^kk --overlap' "$STUB/calls" | tail -1)" = "kk --overlap $b0"
+assert test -z "$(ps -o pid= -p "$(cat "$STUB/orphan")")"
+assert_fails git -C "$WORK/kk" show-ref -q --verify refs/land/feat/kk
 
 printf 'PASS: %s asserts; land selects, runs in the worktree, retries a moved main and keeps everything it cannot land\n' "$asserts"

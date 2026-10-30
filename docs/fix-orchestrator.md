@@ -27,9 +27,13 @@ the repositories.
    branch lands in every sweep repository holding it; another names each `ADD-DIR:` repository with
    `--repo <dir>`. It rebases past the press snapshot, runs in each worktree a night branch's covering suites
    or otherwise only those main's new commits share with the branch, reruns a red one once alone (green
-   prints `flaky`), fast-forwards main and drops worktree and branch; main moving under it repeats its pass.
-   Exit 0: its `commits=` line is the merged line's. Exit 1 (conflict, red twice, uncommitted work, a selection
-   error): step 3. Exit 3 (another land holds the branch, the main checkout refuses): land it again later.
+   prints `flaky`), fast-forwards main to the tested commit and, once every repository has, drops worktrees
+   and branch; main moving under it repeats its pass. Exit 0: its `commits=` line is the merged line's. Exit 1
+   (conflict, red twice, uncommitted work, a selection error): step 3. Exit 3 (another land holds the branch,
+   the main checkout refuses, main kept moving): its line names what to wait for, the holder's
+   `bin/wait-until pid <n>` to run as a background Bash, an index.lock's age, the branch the main checkout
+   is on; land again once that clears, never on a timer. A `commits=` line after exit 1 or 3 is what landed
+   before the stop; the rerun reports it again. A rerun after a killed land resumes it.
 5. A worker the watchdog killed (`KILLED: idle|silent|deadline`): `doctor-fix abandon <ref>`, its branch
    unlanded.
 
