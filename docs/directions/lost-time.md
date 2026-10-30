@@ -103,6 +103,33 @@ scripts, beside the index.
 
 Waiting for 1's read (2026-11-05): on 10-30 Egor ran only the dig's two speed goals ahead of it (`## Goals`); these join `## Goals` after the read, `walled-resume` (≈38 worker-min/day) first.
 
+### goal shards-at-load: a load spike no longer runs a sharded suite whole
+
+Class: `suite_shard_wanted` shards only while `slot_room` finds room, so a run started in a load spike waits a
+`# shards:` suite whole. runs.jsonl 10-16…29: such a suite the run's slowest, 9.9 runs/day, 28.7 waited min/day over
+the runner-up (`test_doctor_fix` 9.5, `test_review_flow_gate` 3.9, `test_night_run` 3.7, `test_night_carry` 3.5);
+all 69 of 10-27…30 started at ≥ 4,240 MB available (memlogd), so load, not memory. Gain 20.4 min/day at sharded/whole
+0.5 (11.7 at 0.75). Row `dig-shards-off-at-load-spike`.
+- Change: only memory (pressure level or available MB) keeps a suite whole, as for `wait` suites.
+- First step: `test_doctor_fix`, one tree, `RUN_SUITES_SHARDS=on` against `off`, three interleaved pairs while
+  `slot_room` prints a `load` reason; sharded/whole over 0.9 (5.0 min/day) stops it.
+- Proof: 7 days after landing, the same measure: shardable whole poles from load 0, their excess ≤ 8.3 min/day;
+  memlogd available MB in sharded spike runs never under the guard.
+- Files: `tests/lib/suite-journal.sh` (`suite_shard_wanted`), `share/run-suites.sh`.
+
+### goal jobs-by-room: a run's -j grows with room
+
+Class: `share/run-suites.sh` fixes `-j` at cores/2 (5); the run slots are already F–M by `slot_room`. runs.jsonl
+10-16…29: runs of over 5 jobs wait 87.0 min/day past their slowest suite (33.6 runs/day) at a median 2.16 cores used.
+A list-scheduling replay (new wall ≥ slowest suite, Σ CPU / 10 cores) of runs no other run overlapped (18.2/day):
+19.9 min/day at `-j 8`, 25.5 at 10. Row `dig-run-suites-jobs-fixed`.
+- Change: `-j` cores/2 always, up to 8 while `slot_room` finds room.
+- First step: the 12-suite set `aa474225` (10-30) on one tree, `-j 5` against `-j 8`, three interleaved pairs with
+  room; under 17 s saved a run (5 min/day) stops it.
+- Proof: 7 days after landing, wall past the slowest suite per lone >5-job run against 10-16…29's, ≥ 5 min/day
+  lower; run-suites queue (29.7 min/day) no higher; available MB never under the guard.
+- Files: `share/run-suites.sh`, `share/slots.sh`.
+
 ### goal walled-resume: a walled worker's rescue continues its session
 
 Class: usage walls 10-09…22, claudeb 1,054 worker-min (75/day), codex 117. `reroute_walled` (`bin/worker-run`,

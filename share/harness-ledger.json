@@ -13684,6 +13684,38 @@
       "reviewed_by": "night 20261030T012330Z-5867 hub",
       "note": "2026-10-30 (night 20261030T012330Z-5867): the docs/fix-orchestrator.md step 4 sequence (merge-base/night ref, tests/affected --overlap before the rebase, rebase per ADD-DIR repo, run-all, ff-merge, teardown, nr job set merged) is retyped by each hub: 74c1 (10-29) picked red suites with grep -oE test_ and reran ~40 green suites, 26.8 min (row regression-test-health-retests-night-reruns); 5867 (10-30) computed --overlap after the rebase and selected nothing, then fell back to the full covering set (deep-search landing 97 suites, 946 s wall against its overlap); 74c1 also left a stale lock (log_audit:night-landing-serialization-and-retry). Candidate: one `nr land <ref>` doing step 4 as written, red/green on a fixture night; proof: hub landing wall per branch and suites run per landing, old against new.",
       "handoff": null
+    },
+    {
+      "id": "dig-shards-off-at-load-spike",
+      "title": "run-suites runs a `# shards:` suite whole when slot_room fails at the run's start, and the run then waits the whole suite as its long pole",
+      "match": {
+        "rule": "dig",
+        "ident": "dig/shards-off-at-load-spike"
+      },
+      "status": "open",
+      "expected_min_day": 20.4,
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "dig redo 2026-10-30 (by hand)",
+      "note": "2026-10-30 dig redo (lens: work done serially that could run at once). share/run-suites.sh shards a suite only while suite_shard_wanted's slot_room finds room (`wait` suites aside), so a run started in a load spike runs it as one job. Critical path: ~/.cache/run-suites/runs.jsonl 10-16..29 (865 runs, raw_decode), per run the slowest suite's secs less the runner-up's when the slowest is a suite journaled sharded elsewhere (45 suites) but here without `shards`: 9.9 runs/day, 28.7 waited min/day (test_doctor_fix 9.45, test_review_flow_gate 3.86, test_night_run 3.68, test_night_carry 3.54, test_statusline_hooks 2.05); whole runs read wall/CPU 2.3-4.2 against 0.5-1.07 sharded (test_doctor_fix median 312 s whole, 90 s sharded, CPU 117/115 s). The cause is load, not memory: all 69 such poles 10-27..30 started at 4,240-10,036 MB available (memlogd day logs), over chat-load's 2,048 MB guard plus a slot's need. Estimate: per run min(excess over the runner-up, wall x (1 - sharded/whole)): 20.4 min/day at a ratio of 0.5, 11.7 at 0.75, 5.0 at 0.9. Proof, fixed now: First step, test_doctor_fix on one tree, RUN_SUITES_SHARDS=on against off, three interleaved pairs while slot_room prints a `load` reason; sharded/whole over 0.9 stops it. Then the same runs.jsonl measure over the 7 days after landing: shardable whole-pole excess 28.7 -> 0 by memory-free room, waited pole excess of those runs <= 8.3 min/day; memlogd available MB during sharded spike runs never under the guard; PASS counts equal.",
+      "handoff": null
+    },
+    {
+      "id": "dig-run-suites-jobs-fixed",
+      "title": "run-suites runs at most -j cores/2 (5) jobs whatever the room, so a run of more jobs alone on the machine queues them at a median 2.2 cores used",
+      "match": {
+        "rule": "dig",
+        "ident": "dig/run-suites-jobs-fixed"
+      },
+      "status": "open",
+      "expected_min_day": 19.9,
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "dig redo 2026-10-30 (by hand)",
+      "note": "2026-10-30 dig redo (lens: work done serially that could run at once). share/run-suites.sh sets jobs=$(slots_from_cores 2 2) with no room arm, while the run slots themselves are F-M by slot_room. Critical path: ~/.cache/run-suites/runs.jsonl 10-16..29 (865 runs), a run's wall (ended_at - started_at) less its slowest suite's secs: 91.4 min/day, 87.0 of it in the 33.6 runs/day holding more jobs (suites x shards) than j=5; those runs use median 2.16 cores (sum cpu_s / wall, p90 3.35), so their jobs wait on processes and sleeps, not cores. Estimate: list-scheduling replay of each such run's jobs longest first (a shard taken at its suite's journaled max wall; the replay at 5 reads 0.87 of the real wall), new wall = max(slowest suite, sum cpu_s / 10 cores, wall x sim(J)/sim(5)): runs no other run-suites run overlapped (18.2/day) 19.9 min/day at -j 8, 25.5 at -j 10; with overlapped runs 47.7 at -j 8, an upper bound. Proof, fixed now: First step, one recorded >5-job named set (the 12-suite aa474225 of 10-30, llm-legs) on one tree, -j 5 against -j 8, three interleaved pairs while slot_room finds room; -j 8 saving under 17 s a run (5 min/day at 18.2 runs/day) stops it. Then, over the 7 days after landing, the wall beyond the slowest suite of >5-job runs no other run overlapped, per run, against 10-16..29's at equal job counts: lower by the First step's per-run saving, >= 5 waited min/day; memlogd available MB during raised runs never under the guard; run-suites queue (29.7 min/day) no higher.",
+      "handoff": null
     }
   ],
   "blind_spots": [
