@@ -4979,7 +4979,7 @@
         "rule": "opportunity",
         "ident": "delegation/reviews"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-29T08:45:00+02:00",
@@ -4990,7 +4990,7 @@
             "llm-legs/tests/test_night_carry.sh",
             "llm-legs/tests/test_run_suites_shards.sh"
           ],
-          "in": null,
+          "in": "llm-legs@b34b0b44",
           "regressed_at": null,
           "equivalence": {
             "compared": "slot_room's verdict on the same machine readings before and after: the pressure veto moves from level > 1 to level >= 4 (image-fanout's line since llm-legs@39e352a8), the available-MB floor (chat-load guard + 1500) and the load-over-base rule untouched",
@@ -12722,7 +12722,7 @@
         "rule": "limit_hit",
         "ident": "^llm\\-legs:memlogd\\.frames\\-cap$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T05:55:00Z",
@@ -12730,7 +12730,7 @@
           "files": [
             "llm-legs/bin/memlogd"
           ],
-          "in": null,
+          "in": "llm-legs@b484fabd",
           "regressed_at": null
         }
       ],
@@ -13268,7 +13268,7 @@
         "rule": "limit_hit",
         "ident": "^llm\\-legs:probe\\.helper$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T04:45:00Z",
@@ -13276,7 +13276,7 @@
           "files": [
             "llm-legs/bin/harness-doctor"
           ],
-          "in": null,
+          "in": "llm-legs@f48225c1",
           "regressed_at": null
         }
       ],
@@ -13699,7 +13699,7 @@
         "rule": "dig",
         "ident": "dig/shards-off-at-load-spike"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "expected_min_day": 20.4,
       "fixes": [
         {
@@ -13709,7 +13709,7 @@
             "llm-legs/tests/lib/suite-journal.sh",
             "llm-legs/share/run-suites.sh"
           ],
-          "in": null,
+          "in": "llm-legs@da088e91",
           "regressed_at": null
         }
       ],
@@ -13761,7 +13761,8 @@
       "note": "Ruled out 2026-10-30 (fixer harness-hooks-20261030T052113Z-4c23): spawn latency on a saturated machine, not the hook. Two single-hook cuts, no sibling cut: WAkG6Tw9MJ 05:01:11Z (pixel-forge Write, 5289 ms) has a hook-time row starting 11.900, ending 11.901, cpu 18 ms, i.e. its first line ran 5.28 s after the 06.62 tool_use while its siblings instruction-bloat-gate and worker-pin-gate (same ppid 53668) started at +0.4 and +1.3 s, and no hook of any session started from 07.885 to 10.969; 6CdtbdL35b 02:36:21Z (llm-legs worker Edit, 6972 ms, cancelled 2 s past the timeout) left no hook-time row, while other sessions' hooks of that window ran 1.6-7.0 s wall on 50-250 ms CPU. Samples busy 0.998-1.0, kernel 0.19-0.40, load average 34-48 on 10 CPUs. Both payloads name neither skills nor commands and exit at the first screen: 10-12 ms a run replayed at load 40. Untried: a settings `if` filter (Edit(**/skills/**), Edit(**/commands/**)) would skip the spawn on nearly every edit, but ~/.claude/settings.json is in no repository; not verified that 2.1.314 honours `if` on a PreToolUse path. Blind spot hook-cut-call-stall.",
       "handoff": null,
       "depends_on": "the gate's body runs in ~10 ms on an edit naming neither skills nor commands; a cut whose hook-time row shows the body itself near 5 s reopens it",
-      "reread_by": "2026-12-18"
+      "reread_by": "2026-12-18",
+      "ruled_at": "2026-10-30T05:32:38Z"
     },
     {
       "id": "log_audit:wait-until-gone-self-match",
@@ -13770,7 +13771,7 @@
         "rule": "log_audit",
         "ident": "wait-until-gone-self-match"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T05:37:04Z",
@@ -13779,7 +13780,7 @@
             "llm-legs/bin/wait-until",
             "llm-legs/tests/test_wait_until.sh"
           ],
-          "in": null,
+          "in": "llm-legs@672225a9",
           "regressed_at": null
         }
       ],
@@ -13799,7 +13800,7 @@
         "rule": "log_audit",
         "ident": "night-reread-jobs-missed-and-duplicated"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T05:37:04Z",
@@ -13808,7 +13809,7 @@
             "llm-legs/bin/night-run",
             "llm-legs/tests/test_night_carry.sh"
           ],
-          "in": null,
+          "in": "llm-legs@056cb291",
           "regressed_at": null
         }
       ],
@@ -13826,7 +13827,7 @@
         "rule": "log_audit",
         "ident": "night-branch-suite-runs"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T05:37:04Z",
@@ -13834,7 +13835,7 @@
           "files": [
             "llm-legs/bin/night-run"
           ],
-          "in": null,
+          "in": "llm-legs@056cb291",
           "regressed_at": null
         }
       ],
@@ -13854,7 +13855,7 @@
         "rule": "log_audit",
         "ident": "dig-estimates-overstated-goals-die"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T05:37:04Z",
@@ -13862,7 +13863,7 @@
           "files": [
             "llm-legs/share/briefs/dig.md"
           ],
-          "in": null,
+          "in": "llm-legs@0f188d4a",
           "regressed_at": null
         }
       ],
@@ -13915,7 +13916,7 @@
       "reviewed_by": "harness-doctor-20261030T052054Z-4436",
       "note": "2026-10-30 (run 4436): ruled out: worker-run is not silent: the refusal prints 'worker-run: RESUME <id> refused: ...' and OUTCOME: RESUME_REFUSED and exits 4 (share/worker-run-vendors.sh:249-250); the first call piped it through `sed -n '/^RUN:/p;/^STATUS/,$p' | tail -40`, which drops both lines and returns tail's 0 (output file: 22 bytes, empty). The 10-min gap 05:02-05:12 was the chat's own foreground landing of deep-search. Same pattern as the reread carry: a grep filter hid the line.",
       "handoff": null,
-      "ruled_at": "2026-10-30T05:37:04Z",
+      "ruled_at": "2026-10-30T05:40:06Z",
       "depends_on": "worker-run's refusal printing its line and OUTCOME and exiting 4 (share/worker-run-vendors.sh:249-250)",
       "reread_by": "2026-12-25"
     },
@@ -13933,7 +13934,7 @@
       "reviewed_by": "harness-doctor-20261030T052054Z-4436",
       "note": "2026-10-30 (run 4436): ruled out: a Rentiva worker's method under its chat's brief (fresh worktree + pnpm install per bisect step, full e2e reruns while iterating); Rentiva is not a sweep repository and no harness component is involved.",
       "handoff": null,
-      "ruled_at": "2026-10-30T05:37:04Z",
+      "ruled_at": "2026-10-30T05:40:06Z",
       "depends_on": "Rentiva staying outside the sweep repositories and its bisect method staying its brief's",
       "reread_by": "2026-12-25"
     },
