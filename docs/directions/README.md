@@ -19,7 +19,7 @@ Blocks (the numbers are names, 2026-10-20; the order is State):
 |---|---|---|---|
 | 0 | Always on | none: nightly prep (vendor CLIs, log audit, doctors), monthly directions refresh | runs |
 | 1 | [Breakages](breakages.md) | new distinct problems (doctors' day journal) per 100 units of work, 7 days against the 7 before; repeats 0 | landed 10-25; read 11-05, 7 d after Doctors lands |
-| 2 | [Tests and lost time](lost-time.md) | Lost time index; test legacy lines watched | the dig's 2 speed goals from 10-30 (Egor), the rest first after 1's read |
+| 2 | [Tests and lost time](lost-time.md) | Lost time index; test legacy lines watched | speed goals from 10-30 (Egor «Скорость сейчас»), chat-owned after 1's read |
 | 3 | [System](system.md) | own background CPU-min/day, hooks included; SSD and swap written watched | after 4 |
 | 4 | [Spend](spend.md) | Fee index of workers, reviewers and background; Doctors' share watched | after 2 |
 | 5 | [Legacy](legacy.md) | legacy lines standing in the four sweep repositories, code only; net lines watched | independent |

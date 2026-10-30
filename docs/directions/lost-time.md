@@ -99,9 +99,23 @@ in all 88 samples); 10-20's 63 fixers, CPU-bound, fan-out's; chats testing while
 exists); chat compaction 19.6 min/day, a spend trade; worker compaction 3.6 min/day; API retries 7; model-written
 scripts, beside the index.
 
-## Held goals
+### goal walled-resume: a walled worker's rescue continues its session
 
-Waiting for 1's read (2026-11-05): on 10-30 Egor ran only the dig's two speed goals ahead of it (`## Goals`); these join `## Goals` after the read, `walled-resume` (≈38 worker-min/day) first.
+Class: usage walls 10-09…22, claudeb 1,054 worker-min (75/day), codex 117. `reroute_walled` (`bin/worker-run`,
+10-05) restarts a walled claudeb run fresh, redoing the walled attempt; the 07-25 rotation cut's rescue was `RESUME
+<session>` on a worker-pick account; every profile's `projects` links `~/.claude/projects` (its "one profile"
+comment is wrong).
+- Change: a claudeb rescue resumes the walled session on the picked account (one reroute; `REROUTE:` and the
+  browser, `.resume`, explicit-account refusals stay); of the stale-RESUME refusal only `RESUME_CONTEXT_CAP` (150k)
+  stays, past it the rescue starts fresh; `run_split` counts its relaunch gap.
+- First step: the 10-19 rescues (walled 9,505–9,520 s; 2,740, 8,354, 8,424 s) repeat the walled sessions' calls, a
+  finished session resumed on another account answers, and the walled ones (≈2.6 h, cache missed there) resume under
+  the cap and the fresh rescues' 2.7–6.9M tokens; any fails, stop.
+- Proof, old → new: run dirs start 10-14; 10-14…22, 4 rerouted claudeb runs walled ≥ 10 min: 516 min, fresh rescues
+  338, redo ≤ 338 (≈38 worker-min/day); 10-09…13's 9 runs (288 min) have no recorded source. New, 14 days after
+  landing: each rescue under the cap keeps the walled session id, its walled minutes only relaunch gaps.
+- Must not get worse: rescues succeed (old rate unconfirmed); rescue tokens a walled run at or under the fresh
+  rescues' (tokenmap, counted first); codex walls untouched.
 
 ### goal shards-at-load: a load spike no longer runs a sharded suite whole
 
@@ -130,23 +144,9 @@ A list-scheduling replay (new wall ≥ slowest suite, Σ CPU / 10 cores) of runs
   lower; run-suites queue (29.7 min/day) no higher; available MB never under the guard.
 - Files: `share/run-suites.sh`, `share/slots.sh`.
 
-### goal walled-resume: a walled worker's rescue continues its session
+## Held goals
 
-Class: usage walls 10-09…22, claudeb 1,054 worker-min (75/day), codex 117. `reroute_walled` (`bin/worker-run`,
-10-05) restarts a walled claudeb run fresh, redoing the walled attempt; the 07-25 rotation cut's rescue was `RESUME
-<session>` on a worker-pick account; every profile's `projects` links `~/.claude/projects` (its "one profile"
-comment is wrong).
-- Change: a claudeb rescue resumes the walled session on the picked account (one reroute; `REROUTE:` and the
-  browser, `.resume`, explicit-account refusals stay); of the stale-RESUME refusal only `RESUME_CONTEXT_CAP` (150k)
-  stays, past it the rescue starts fresh; `run_split` counts its relaunch gap.
-- First step: the 10-19 rescues (walled 9,505–9,520 s; 2,740, 8,354, 8,424 s) repeat the walled sessions' calls, a
-  finished session resumed on another account answers, and the walled ones (≈2.6 h, cache missed there) resume under
-  the cap and the fresh rescues' 2.7–6.9M tokens; any fails, stop.
-- Proof, old → new: run dirs start 10-14; 10-14…22, 4 rerouted claudeb runs walled ≥ 10 min: 516 min, fresh rescues
-  338, redo ≤ 338 (≈38 worker-min/day); 10-09…13's 9 runs (288 min) have no recorded source. New, 14 days after
-  landing: each rescue under the cap keeps the walled session id, its walled minutes only relaunch gaps.
-- Must not get worse: rescues succeed (old rate unconfirmed); rescue tokens a walled run at or under the fresh
-  rescues' (tokenmap, counted first); codex walls untouched.
+Waiting for 1's read (2026-11-05); the speed goals above started early on Egor's 10-30 word «Скорость сейчас».
 
 ### goal chat-owned: the chat stratum counts only Egor's own turns
 
