@@ -48,6 +48,9 @@ PIPE = re.compile(r"\b(?:jq|awk)\b")
 NOT_A_SCRIPT = re.compile(r"git commit[^\n]*<<|^\s*cat\s*>>?\s*\S+\s*<<|gh (?:pr|issue) (?:create|comment|edit)[^\n]*<<"
                           r"|\bworker-run\b[^\n]*<<|\breport-bus\b[^\n]*<<")
 WRITES = r"(?:write_text|json\.dump\(|\.write\(|open\([^)]*['\"][wa]|\bsponge\b|>\s*\S*\.json\b)"
+# A recursive grep, rg, ag or find whose path walks every transcript: a profiles root, one profile or a projects dir.
+TRANSCRIPT_ROOT = r"\.claude(?:-profiles(?:/[^/\s'\"]+)?/?(?=[\s'\")]|$)|[\w-]*/(?:[^/\s'\"]+/)?projects/?(?=[\s'\")]|$))"
+TRANSCRIPT_WALK = re.compile(r"(?:\bgrep\s+(?:\S+\s+)*?-[a-zA-Z]*[rR]|\b(?:rg|ag|find)\s)[^|;&\n]*?" + TRANSCRIPT_ROOT)
 # (key, job, covered_by, pattern): first match wins; covered_by names the tool that already does the job.
 CLUSTERS = (
     ("file-edit", "edit a file by string replace", "the Edit tool",
@@ -63,7 +66,7 @@ CLUSTERS = (
     ("tokenmap", "query token-map spend", None, r"tokenmap|spend-(?:7d|24h|3d)\.json|\.sqlite3?\b"),
     ("transcript-scan", "scan chat transcripts", None,
      r"projects/[^\s'\"]*\.jsonl|\.claude/projects|tool_use|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-     r"\.jsonl|rollout-[\w-]+\.jsonl"),
+     r"\.jsonl|rollout-[\w-]+\.jsonl|" + TRANSCRIPT_WALK.pattern),
     ("logo-verdict", "append a judge verdict to a logo-bench verdicts.csv", None,
      r"verdicts\.csv[\s\S]*(?:open\([^)]*['\"]a|writerow|\.write\()|>>\s*\S*verdicts\.csv"),
     ("logo-bench", "read logo-bench lane results and verdicts", None,
@@ -271,8 +274,8 @@ def epoch(text):
 
 
 def adhoc(cmd):
-    return bool(ADHOC.search(cmd) or cmd.count("|") >= 3 and PIPE.search(cmd) and len(cmd) > 150) \
-        and not NOT_A_SCRIPT.search(cmd)
+    return bool(ADHOC.search(cmd) or cmd.count("|") >= 3 and PIPE.search(cmd) and len(cmd) > 150
+                or ".claude" in cmd and TRANSCRIPT_WALK.search(cmd)) and not NOT_A_SCRIPT.search(cmd)
 
 
 def cluster(cmd):

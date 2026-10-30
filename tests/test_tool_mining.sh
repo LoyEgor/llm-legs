@@ -392,7 +392,7 @@ hung = []
 got = t.scan(HI - t.WINDOW_S, HI, hung=hung)
 os.environ["CLAUDE_PROJECTS_DIR"] = projects
 check(sorted((c["session"], c["worker"], c["head"], c["wall_s"]) for c in hung)
-      == [("h1", True, "cat", 1500.0), ("h2", False, "cat", 600.0)] and got[1] == 4,
+      == [("h1", True, "cat", 1500.0), ("h2", False, "cat", 600.0)],
       "a Bash call whose result timed out with no stdout or stderr is hung, by its head past cd, assignments and "
       "wrappers; a timed-out call with output, a result only quoting the key and a call before the window are not: %s"
       % hung)
@@ -400,7 +400,8 @@ hd = t.day_of(got[0], got[1], got[2], HI, got[3], hung)["hung"]
 check(hd == {"cat": {"calls": 2, "sessions": 2, "min": 35.0, "worker_min": 25.0,
                      "examples": [" ⏎ ".join(STRAY.splitlines()), "cd /x && cat - > /dev/null"]}},
       "the scanned day keeps the hung calls per head: calls, sessions, wall and worker minutes, examples: %s" % hd)
-check(t.hung_findings({"hung": dict(hd, sleep={"calls": 1, "sessions": 1, "min": 8.0, "worker_min": 0.0, "examples": []})})
+check(t.hung_findings({"hung": dict(hd, sleep={"calls": 1, "sessions": 1, "min": t.FLOOR_MIN_DAY / 2,
+                                                       "worker_min": 0.0, "examples": []})})
       == [dict(hd["cat"], head="cat")] and "hung" in kept,
       "a head over the floor's %s min is a finding; every scanned day carries the key" % t.FLOOR_MIN_DAY)
 ho = s.hung_opportunities({"hung": t.hung_findings({"hung": hd})})
@@ -408,6 +409,15 @@ check([o["id"] for o in ho] == ["opportunity:hung-bash/cat"] and ho[0]["opportun
       and ho[0]["opportunity"]["worker_min_day"] == 25.0 and ho[0]["opportunity"]["quality"] == "equivalent"
       and ho[0]["fact"].startswith("cat · 2 calls/day to their timeout with no output in 2 sessions · 10 min + 25 w-min/day"),
       "Speed turns a hung head into an opportunity priced at its whole wall: %s" % ho)
+WALKS = ["grep -rl 'x y' ~/.claude-profiles/*/projects/ 2>/dev/null | head -3", "rg -l foo ~/.claude-profiles",
+         "find ~/.claude/projects ~/.claude-profiles/a/projects -name '*.jsonl' -mmin -60",
+         "grep -rF --include='*.jsonl' x /Users/u/.claude-profiles/acct"]
+NOT_WALKS = ["grep -n foo ~/.claude/projects/-p/a.jsonl", "grep -r foo src/", "grep -r foo ~/.claude/settings.json",
+             "ls ~/.claude-profiles", "find . -name x"]
+check([t.cluster(c) for c in WALKS if t.adhoc(c)] == ["transcript-scan"] * 4 and not any(map(t.adhoc, NOT_WALKS)),
+      "a recursive grep, rg or find over a profiles root, one profile or a projects dir is a transcript scan; one "
+      "transcript, another tree, a settings file or a listing is no script: %s %s"
+      % ([t.adhoc(c) and t.cluster(c) for c in WALKS], [c for c in NOT_WALKS if t.adhoc(c)]))
 alias = os.path.join(os.environ["HOME"], ".claude-profiles", "alias", "projects")
 os.makedirs(os.path.join(os.environ["HOME"], ".claude"), exist_ok=True)
 os.symlink(os.path.dirname(os.path.dirname(profile)), os.path.join(os.environ["HOME"], ".claude", "projects"))

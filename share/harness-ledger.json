@@ -14434,13 +14434,6 @@
       "reason": "2026-10-29: the BRIEF_PREAMBLE skip clause was ambiguous (log_audit:night-branch-suites-run-despite-skip, ~48 min at 1c68), and nothing counts what fixers still run once it reads plainly",
       "since": "2026-10-29",
       "would_catch_if": "the Harness doctor summed ~/.cache/run-suites/runs.jsonl rows whose worker_run is a doctor-fix or night job and whose repo is a .claude/worktrees/night-* worktree, per night, beside the landing's own runs"
-    },
-    {
-      "id": "transcript-grep-unmetered",
-      "what": "Bash calls grepping or finding recursively over every profile's transcripts",
-      "reason": "2026-10-29: fixers grepped ~/.claude-profiles/<account>/projects to find log-audit quotes (log_audit:unbounded-transcript-grep, ~42 min); the packet now names the skeletons, nothing counts the calls",
-      "since": "2026-10-29",
-      "would_catch_if": "the Harness doctor's tool mining counted Bash tool_uses whose grep -r or find walks ~/.claude*/projects, with their wall, per day"
     }
   ]
 }
