@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [ -x "$modern_bash" ] && exec "$modern_bash" "$0" "$@"
+  done
+fi
 {
 # land <branch> [--repo <dir>]...: docs/fix-orchestrator.md step 4 as one command (Egor 2026-10-30, after three night
 # hubs each retyped it with a bug of its own). Each repository holding the branch (a night's: every sweep repository;
@@ -149,5 +154,5 @@ while [ ${#repos[@]} -gt 0 ]; do
   repos=(${left[@]+"${left[@]}"}) trees=(${left_trees[@]+"${left_trees[@]}"})
 done
 [ ${#flaky[@]} -eq 0 ] || printf 'flaky %s\n' "${flaky[@]}"
-IFS=,; printf 'commits=%s\n' "${landed[*]}"
+IFS=,; printf 'commits=%s\n' "${landed[*]-}"
 exit; }
