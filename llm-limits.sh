@@ -113,11 +113,25 @@ tz_colon() {
   printf '%s:%s\n' "${1%??}" "${1#"${1%??}"}"
 }
 
+# Bash 5's printf reads the clock with no date process (two dozen a collect); an epoch it could read
+# otherwise (signed, a leading zero, past 12 digits) keeps date's reading.
 local_iso() {
+  local text
+  if [ "${BASH_VERSINFO[0]}" -ge 5 ]; then
+    printf -v text '%(%Y-%m-%dT%H:%M:%S%z)T' -1
+    tz_colon "$text"
+    return
+  fi
   tz_colon "$(date '+%Y-%m-%dT%H:%M:%S%z')"
 }
 
 epoch_iso() {
+  local text
+  if [ "${BASH_VERSINFO[0]}" -ge 5 ] && [[ "$1" =~ ^[1-9][0-9]{0,11}$ ]]; then
+    printf -v text '%(%Y-%m-%dT%H:%M:%S%z)T' "$1"
+    tz_colon "$text"
+    return
+  fi
   tz_colon "$(date -r "$1" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date -d "@$1" '+%Y-%m-%dT%H:%M:%S%z')"
 }
 
@@ -656,25 +670,39 @@ account_profile_dir() {
 # newly added account lands at the end instead of wherever the alphabet drops it. An account whose
 # directory has no readable birth time sorts last, by name.
 account_order() {
-  local vendor=$1 name candidate index rank birth
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    rank=''
-    index=0
-    while IFS= read -r candidate; do
-      if [ "$candidate" = "$name" ]; then rank=$index; break; fi
-      index=$((index + 1))
-    done < <(account_priority_names "$vendor")
-    if [ -n "$rank" ]; then
-      printf '0\t%s\t%s\n' "$rank" "$name"
-      continue
-    fi
-    birth=$(stat -f %B "$(account_profile_dir "$vendor" "$name")" 2>/dev/null || true)
-    case "$birth" in
-      ''|*[!0-9]*) printf '2\t0\t%s\n' "$name" ;;
-      *) printf '1\t%s\t%s\n' "$birth" "$name" ;;
-    esac
-  done | LC_ALL=C sort -t$'\t' -k1,1n -k2,2n -k3,3 | cut -f3
+  local vendor=$1 priority name candidate index rank birth line i births='' names=() dirs=()
+  priority=$(account_priority_names "$vendor")
+  {
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      rank=''
+      index=0
+      while IFS= read -r candidate; do
+        if [ "$candidate" = "$name" ]; then rank=$index; break; fi
+        index=$((index + 1))
+      done <<<"$priority"
+      if [ -n "$rank" ]; then
+        printf '0\t%s\t%s\n' "$rank" "$name"
+        continue
+      fi
+      names+=("$name")
+      dirs+=("$(account_profile_dir "$vendor" "$name")")
+    done
+    # One stat for every directory: a directory it cannot read prints no line and sorts last.
+    [ "${#dirs[@]}" -eq 0 ] || births=$(stat -f '%B %N' "${dirs[@]}" 2>/dev/null)
+    i=0
+    while [ "$i" -lt "${#names[@]}" ]; do
+      birth=''
+      while IFS= read -r line; do
+        if [ "${line#* }" = "${dirs[$i]}" ]; then birth=${line%% *}; break; fi
+      done <<<"$births"
+      case "$birth" in
+        ''|*[!0-9]*) printf '2\t0\t%s\n' "${names[$i]}" ;;
+        *) printf '1\t%s\t%s\n' "$birth" "${names[$i]}" ;;
+      esac
+      i=$((i + 1))
+    done
+  } | LC_ALL=C sort -t$'\t' -k1,1n -k2,2n -k3,3 | cut -f3
 }
 
 # The same order as a JSON array, for the jq filters that assemble each vendor's accounts.

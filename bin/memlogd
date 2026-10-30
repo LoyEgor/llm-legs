@@ -31,6 +31,7 @@ script_path=$(resolve_script)
 repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 
 log_dir="${MEMLOGD_DIR:-$HOME/Library/Logs/memlogd}"
+frames="$log_dir/frames"
 quiet_interval="${MEMLOGD_QUIET_INTERVAL:-15}"
 incident_interval="${MEMLOGD_INCIDENT_INTERVAL:-1}"
 enter_avail_mb="${MEMLOGD_ENTER_AVAIL_MB:-4096}"
@@ -198,14 +199,13 @@ machine_tick() { # now swap vm_text room
     probe_at=$now
     probe=" probe_ms=$(contention_probe_ms)"
   fi
-  mkdir -p "$log_dir/machine"
+  [ -d "$log_dir/machine" ] || mkdir -p "$log_dir/machine"
   printf '%s load1=%s ncpu=%s swap_mb=%s swap_room_mb=%s swapin_pages_s=%s thermal=%s boot=%s%s\n' \
     "$now" "$load1" "$ncpu" "$swap" "$room" "$rate" "$thermal" "$boot_id" "$probe" >>"$log_dir/machine/$today.log"
 }
 
 log_path() { printf '%s/%s.log\n' "$log_dir" "$1"; }
 
-frames_dir() { printf '%s/frames\n' "$log_dir"; }
 
 frames_stamp() { date -r "$1" +%Y-%m-%dT%H%M%S; }
 
@@ -223,8 +223,8 @@ file_bytes() { stat -f %z "$1" 2>/dev/null || printf '0\n'; }
 # jump file being written) is never a victim: a freeze in progress is exactly the evidence kept.
 evict_frames() {
   local keep="${1##*/}" cap=$((max_frames_mb * 1048576)) listing total=0 mtime size name
-  mkdir -p "$(frames_dir)"
-  listing=$(stat -f '%m %z %N' "$(frames_dir)"/*.log "$(frames_dir)"/*.log.gz 2>/dev/null | sort -n)
+  [ -d "$frames" ] || mkdir -p "$frames"
+  listing=$(stat -f '%m %z %N' "$frames"/*.log "$frames"/*.log.gz 2>/dev/null | sort -n)
   while read -r mtime size name; do
     [ -n "$name" ] || continue
     total=$((total + size))
@@ -242,7 +242,7 @@ evict_frames() {
 
 write_frame() {
   local dest="$1" kind="$2" now="$3" avail="$4" swap="$5" node_count="$6" node_rss="$7"
-  mkdir -p "$(dirname "$dest")"
+  [ -d "${dest%/*}" ] || mkdir -p "${dest%/*}"
   evict_frames "$dest"
   {
     printf '%s %s avail_mb=%s swap_used_mb=%s node_count=%s node_rss_mb=%s\n' \
@@ -296,7 +296,7 @@ rotate_files() {
     [[ "${base%.log}" < "$cutoff" ]] || continue
     rm -f "$file" && gone=$((gone + 1))
   done
-  for file in "$(frames_dir)"/*.log "$(frames_dir)"/*.log.gz; do
+  for file in "$frames"/*.log "$frames"/*.log.gz; do
     [ -f "$file" ] || continue
     base=${file##*/}
     # Retention reads the day out of the name, and an incident older than the window is still
@@ -384,8 +384,8 @@ run_loop() {
       episode_start=$now
       last_frame_at=""
       stamp=$(frames_stamp "$now")
-      mkdir -p "$(frames_dir)"
-      episode_frames="$(frames_dir)/$stamp.log"
+      [ -d "$frames" ] || mkdir -p "$frames"
+      episode_frames="$frames/$stamp.log"
       episode_capped=0
       append "INCIDENT $now avail_mb=$avail swap_used_mb=$swap frames=$stamp.log"
       flush
@@ -437,8 +437,8 @@ run_loop() {
         if [ $((node_count - prev_node_count)) -ge "$jump_nodes" ] || \
            [ $((node_rss - prev_node_rss)) -ge "$jump_rss_mb" ]; then
           stamp=$(frames_stamp "$now")
-          jump_file="$(frames_dir)/jump-$stamp.log"
-          mkdir -p "$(frames_dir)"
+          jump_file="$frames/jump-$stamp.log"
+          [ -d "$frames" ] || mkdir -p "$frames"
           append "JUMP $now node_count=$node_count node_rss_mb=$node_rss frames=jump-$stamp.log"
           flush
           write_frame "$jump_file" jump "$now" "$avail" "$swap" "$node_count" "$node_rss"
