@@ -2424,7 +2424,7 @@
     "detail": "no 'Add photos & files' chooser in the composer"
    },
    "title": "A ChatGPT web leg failed whole on the missing Add photos & files chooser",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-20T15:05:00+03:00",
@@ -2441,7 +2441,7 @@
      "files": [
       "llm-legs/share/chatgpt_web.py"
      ],
-     "in": null,
+     "in": "llm-legs@eb258ad1",
      "regressed_at": null
     }
    ],
@@ -2588,7 +2588,7 @@
     "detail": "^exit 127$"
    },
    "title": "a vendor CLI launched while vendor-cli-update's npm install -g had deleted the package it was replacing found no executable and exited 127",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-30T04:40:00+02:00",
@@ -2597,7 +2597,7 @@
       "llm-legs/bin/vendor-cli-update",
       "llm-legs/tests/test_vendor_cli_update.sh"
      ],
-     "in": null,
+     "in": "llm-legs@8cadcacf",
      "regressed_at": null
     }
    ],

@@ -3409,7 +3409,7 @@
         "rule": "hook-error",
         "ident": "notice-chat-names\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T07:25:00+03:00",
@@ -3437,7 +3437,7 @@
             "claude-setup/hooks/stop-dispatch.sh",
             "claude-setup/tests/test_stop_dispatch.sh"
           ],
-          "in": null,
+          "in": "claude-setup@019af5f",
           "regressed_at": null
         }
       ],
@@ -3747,7 +3747,7 @@
             "llm-legs/share/worker-run-texts.sh"
           ],
           "in": "llm-legs@b10a6855",
-          "regressed_at": null
+          "regressed_at": "2026-10-29T23:02:44+02:00"
         }
       ],
       "same_cause": [],
@@ -10134,7 +10134,7 @@
         "rule": "hook-error",
         "ident": "notice-connections\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T02:45:00Z",
@@ -10143,7 +10143,7 @@
             "claude-setup/hooks/stop-dispatch.sh",
             "claude-setup/tests/test_stop_dispatch.sh"
           ],
-          "in": null,
+          "in": "claude-setup@019af5f",
           "regressed_at": null
         }
       ],
@@ -10415,7 +10415,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_doctors_menu"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-14T07:58:48+03:00",
@@ -10434,7 +10434,7 @@
             "hammerspoon/config_reload.lua",
             "hammerspoon/tests/test_config_reload.lua"
           ],
-          "in": null,
+          "in": "hammerspoon@28680d3",
           "regressed_at": null
         }
       ],
@@ -10937,7 +10937,7 @@
         "rule": "hook-error",
         "ident": "notice-word-attested\\.sh"
       },
-      "status": "open",
+      "status": "ruled-out",
       "fixes": [],
       "same_cause": [
         "hook-error-notice-connections-kill",
@@ -10946,7 +10946,10 @@
       "last_reviewed": "2026-10-20",
       "reviewed_by": "night fixer harness-stop-hooks-20261020T114218Z-20c9",
       "note": "2026-10-30 (night fixer harness-stop-hooks-20261030T023055Z-1825): 2026-10-29 19:07:21Z/9176d051 journalled all five notices `budget exhausted`, none ran: the backstop part, run alone first, took 7.9 s wall on 72 ms CPU (exit 0, so ~3 s of it was process starts outside timeout's clock) in a stall (system tick 19:06:23-19:07:48Z busy 0.946, kernel 0.488, births_s 2130, swap 4.0-4.4 GB; other chats' gates 1-5.5 s on 0.05-0.19 s CPU) and left the 10 s budget empty. claude-setup@c22636f starts the notices with no lib/words.sh in their body (chat-names, connections, reports) beside the backstop. The word notices (word-attested, word-journal) still wait for it: its hold syncs the words store they read, and a torn last.json/turn/last.txt read mislabels a journal row; so a backstop stalled that long still skips those two, delayed to the next stop (attest records and last.json survive it). Replay of the shape (budget 5, a 4.6 s backstop): the old dispatcher skips all three fixture notices, the new one delivers the two non-word ones in the same wall. Earlier: 2026-10-29 (night fixers harness-stop-hooks-20261029T053345Z-3c5c, -112136Z-7c71, -165034Z-4f39: no change to the hook or the parallel notice dispatch since, 7bf0fc0e touched only the busy-hold and 44ced7f6 only report-bus's duplicate line; no kill of it since 10-22): quiet in the window, and the cause stands (in the 15:24:13Z/233cceb1 stall other chats' gates ran 1-4.4 s on 7-70 ms CPU while this stop's notices ran 0.3-0.9 s) (the stall of 2026-10-28 20:43:16Z/77a2b895, where this hook ran 0.38 s for 24 ms CPU). Nothing of the hook to cut. One kill, 2026-10-20 10:06:08Z/4037a0e4, the hook's first: 17 ms CPU in 5.04 s, beside chat-names and connections killed in the same stop. Same stall as hook-error-notice-connections-kill: killed parts spent 12-28 ms CPU in 5 s (folded hook-time), and every parallel notice of the stop ran 3.5-5 s on <=0.2 CPU-s (10-20 10:06Z/4037a0e4: chat-names, connections, word-attested killed, word-journal 4.25 s on 154 ms). Its usual run is 30 ms (jq over the attest records only).",
-      "handoff": null
+      "handoff": null,
+      "ruled_at": "2026-10-30T02:45:54Z",
+      "depends_on": "share/harness-ledger.json hook-error-notice-word-attested-stall note 2026-10-30: never ran at 19:07:21Z, the backstop took 7.9 s on 72 ms CPU in a stall (busy 0.946, births_s 2130); word notices stay after the backstop's words-store sync by design",
+      "reread_by": "2026-12-25"
     },
     {
       "id": "menu-build-automation",
@@ -13282,7 +13285,7 @@
         "rule": "hook-error",
         "ident": "notice-reports\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T02:45:00Z",
@@ -13291,7 +13294,7 @@
             "claude-setup/hooks/stop-dispatch.sh",
             "claude-setup/tests/test_stop_dispatch.sh"
           ],
-          "in": null,
+          "in": "claude-setup@019af5f",
           "regressed_at": null
         }
       ],
@@ -13312,7 +13315,7 @@
         "rule": "fix_audit",
         "ident": "20261020T114620Z-b68f5d6/F6"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T02:45:00Z",
@@ -13320,7 +13323,7 @@
           "files": [
             "llm-legs/tests/test_chatgpt_web.sh"
           ],
-          "in": null,
+          "in": "llm-legs@d5b6a129",
           "regressed_at": null
         }
       ],
@@ -13338,7 +13341,7 @@
         "rule": "log_audit",
         "ident": "affected-suite-selection-gaps"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T02:45:00Z",
@@ -13347,7 +13350,7 @@
             "llm-legs/tests/test_vendor_fingerprint.sh",
             "llm-legs/tests/test_night_run.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6564c009",
           "regressed_at": null
         }
       ],
@@ -13392,7 +13395,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, chat conduct: the Rentiva chat measured with curl after Egor named the browser MCP and said so only when asked; no hook, gate or launcher took part.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "chat conduct with no component: a hook or gate taking part in tool choice would change it",
       "reread_by": "2026-12-25"
     },
@@ -13412,7 +13415,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, works as specified: claude-setup 9d4d0aa (00:51 local, Egor's request at 00:46) makes one commit word a 60-minute batch from his word in rentalhub; it expired at 02:02 because the chat waited 76 min on its own README question, the cause fixed in log_audit:instruction-write-gate-readme-wait. Before 9d4d0aa one word was one commit and its push by design (arbostar keeps it). Pausing the clock while a chat waits would loosen his door: his call, not built on one incident.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "claude-setup 9d4d0aa's batch counted from Egor's word, his spec; a repeat with no chat-side wait would change it",
       "reread_by": "2026-12-25"
     },
@@ -13432,7 +13435,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, logo-vectorizer-bench lane research protocol (results/lanes/coord/s/cverdict.py, docs/lanes/CLOSURE.md), outside the sweep repositories; class of log_audit:dev-green-new-loss-class-on-unseen-files.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "the adoption protocol living in logo-vectorizer-bench, outside the sweep repositories",
       "reread_by": "2026-12-25"
     },
@@ -13443,7 +13446,7 @@
         "rule": "log_audit",
         "ident": "instruction-write-gate-readme-wait"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T02:45:00Z",
@@ -13451,7 +13454,7 @@
           "files": [
             "llm-legs/bin/instruction-write-gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@3e8be49f",
           "regressed_at": null
         }
       ],
@@ -13478,7 +13481,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, brief scope: worker claudeb-1793299091-17284-58eb ended on its own (outcome DONE, exit 0, 143 min, no watchdog kill) and reported 'Partially done' on four targets (s09, s13, s15, s16) of a research brief; splitting the brief is the pixel-forge chat's choice, class of log_audit:one-worker-241-images.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "the run ending on its own (DONE, exit 0); a watchdog or cap kill would change it",
       "reread_by": "2026-12-25"
     },
@@ -13498,7 +13501,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, by design and conduct: night 74c1's record shows the full suites 19:25:29-20:00:24Z (35 of the 40 min, 4 repos, 282 suites) and finished_at 20:11:37Z; docs/night-run.md section 7 runs that suite detached and neither report nor finish waits on it, so the Updater doctor chat's 'Жду' was its own wait.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "docs/night-run.md section 7: finish and report never wait on the detached full suites",
       "reread_by": "2026-12-25"
     },
@@ -13518,7 +13521,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, chat conduct: docs/fix-orchestrator.md:27-40 lands one branch at a time and makes a refused ff-merge repeat step 4 (rebase, overlap suites only); the pilot orchestrator landed through its own /tmp land.sh with a lock dir, rmdir-ed its stale lock and added the documented retry only at 20:59. Memory no-landing-wrapper: no landing wrapper without a measured incident in the documented flow; class of log_audit:night-landing-reruns-whole-queue.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "docs/fix-orchestrator.md step 4 (serial landing, refused merge repeats it) and memory no-landing-wrapper",
       "reread_by": "2026-12-25"
     },
@@ -13536,7 +13539,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, worker conduct: a pixel-forge lines worker judged s16 from a sparse zoom; the by-eye rule is memory visual-verify-image-claims and the brief is the pixel-forge chat's.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "worker conduct under a pixel-forge brief; no harness component judges image verdicts",
       "reread_by": "2026-12-25"
     },
@@ -13556,7 +13559,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, logo-vectorizer-bench lane conduct (the colcheck proof kept running after the scan settled); class of log_audit:bench-lane-reruns-full-grid.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "the proof sweep being logo-vectorizer-bench lane tooling",
       "reread_by": "2026-12-25"
     },
@@ -13576,7 +13579,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, the cause of log_audit:bench-slot-queue-wait: logo-vectorizer-bench bench/throttle.py class order, FIFO, no preemption by design; the unjournaled waits and the 'all busy, 4 of 8 slots open' message (QUIET_JOBS) are items 1-2 of the open handoff docs/handoffs/2026-10-05-logo-bench-throttle-hold.md.",
       "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md",
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "logo-vectorizer-bench bench/throttle.py's FIFO class order and the open handoff 2026-10-05-logo-bench-throttle-hold",
       "reread_by": "2026-12-25"
     },
@@ -13596,7 +13599,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, logo-vectorizer-bench lane tooling (results/lanes/speed98/jobs/pairs3.txt, tools/pair.py); class of log_audit:bench-lane-reruns-full-grid.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "the pair runner being logo-vectorizer-bench lane tooling",
       "reread_by": "2026-12-25"
     },
@@ -13616,7 +13619,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out, pre-fix: every quote (19:01-20:16 +02:00 on 10-29) predates 2469e06a's landing at 21:16 +02:00, which moved the night-branch no-suite clause into TESTS (row log_audit:night-branch-suites-run-despite-skip, fixed-pending); repeats after it reopen that row.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "every quote predating 2469e06a; a quote after 2026-10-29 21:16 +02:00 reopens night-branch-suites-run-despite-skip",
       "reread_by": "2026-12-25"
     },
@@ -13634,7 +13637,7 @@
       "reviewed_by": "harness-doctor-20261030T023027Z-543f",
       "note": "2026-10-30 (run 543f): ruled out: bin/wait-until gone excludes its ancestry (probed 2026-10-30: three calls whose pattern held only their own argv met after 0 s); the 19:28 '8 min' was a Monitor expiring after 10 min with no event (19:28-19:38), not wait-until. The stray cat is a model-written 'cat > /dev/null;' prefix (4 calls in 3 chats, 2 lost their heredoc and hung to the claudeb worker's 25-min BASH_DEFAULT_TIMEOUT_MS = MAX, 6f032e70); unwatched tasks and ANSI greps are conduct. Blind spot bash-call-hung-to-cap.",
       "handoff": null,
-      "ruled_at": "2026-10-30T02:45:00Z",
+      "ruled_at": "2026-10-30T02:48:08Z",
       "depends_on": "bin/wait-until's ancestry exclusion (probed) and the stray cat being model-written",
       "reread_by": "2026-12-25"
     },
@@ -13645,7 +13648,7 @@
         "rule": "test_hang",
         "ident": "llm-legs:test_worker_run_entry"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-30T04:50:00+02:00",
@@ -13653,7 +13656,7 @@
           "files": [
             "llm-legs/tests/test_worker_run_entry.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6b1938d0",
           "regressed_at": null
         }
       ],
