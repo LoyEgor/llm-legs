@@ -12722,16 +12722,23 @@
         "rule": "limit_hit",
         "ident": "^llm\\-legs:memlogd\\.frames\\-cap$"
       },
-      "status": "ruled-out",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-30T05:55:00Z",
+          "by": "harness-limits-20261030T052117Z-25f1",
+          "files": [
+            "llm-legs/bin/memlogd"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-30",
-      "reviewed_by": "harness-limits-20261030T023049Z-16dc",
-      "note": "2026-10-30: unchanged, 43 drops in 24 h of frames 48-54 h old (10-27T18:22 .. 10-28T02:30) as INCIDENT lines ran 8, 15, 6 on 10-28..30; frames/ holds 1.0 G. The cap did its job: evict_frames dropped the oldest frames (10-26T16:34-18:32, 35-88 MB each) for newer episodes, a day before rotate_files' 3-day retention would delete them anyway; INCIDENT lines (5, 1, 8, 11 on 10-26..29, avail under 4 GB) stay in the day logs. Episodes are 23-82 MB of 1 Hz ps dumps, so 1 GB holds ~2 days at this pressure. No harness reader opens frames (grep: memlogd only). Measured, not cut: cutting frame lines at 300 chars keeps 60 % of a frame's bytes, little room for the evidence it costs. Cause of the volume is load (memory pressure from the benchmark and chats).",
-      "handoff": null,
-      "ruled_at": "2026-10-30T04:50:00Z",
-      "depends_on": "evicted frames are under a day short of rotate_files' 3-day retention and no reader opens frames",
-      "reread_by": "2026-12-25"
+      "reviewed_by": "harness-limits-20261030T052117Z-25f1",
+      "note": "Third launch after two ruled-outs (1899, 16dc): each new eviction reopens a ruled-out row, so the shared cause is the cap missing retention's goal, not one eviction. rotate_files promises 3 days of episodes (limits.json memlogd.retention), but at 7-15 INCIDENTs a day (avail under 4096 MB) frames of 10-77 MB each filled the 1 GB cap in ~40 h. Fix: memlogd gzips an episode's frames file when it RECOVERS (ps dumps 6.3x smaller, 52 MB -> 8.2 MB in 0.6 CPU-s), and evict_frames/rotate_files count and expire *.log.gz; the cap and retention values are unchanged. Not packed: jump-*.log (~0.7 MB each, 3 % of bytes) and an episode cut by a daemon restart. Readers: none in code (grep), humans use zgrep. Ruled out again: raising the cap (Egor's value) and cutting frame lines at 300 chars (keeps 60 % of bytes).",
+      "handoff": null
     },
     {
       "id": "limit_hit:llm-legs:store-lock.ownerless-stale",
@@ -14061,6 +14068,36 @@
       "note": "2026-10-30 (run 4436): handoff to the pixel-art chat: the batch was the judge's own hand-written crop loop under /tmp/judge-opus; the shared crop helper of log_audit:pixel-judges-write-own-tooling removes it. Background-task completion already notifies the worker (Claude Code task-notification); the idle was the worker's choice to wait. Not a sweep repository.",
       "handoff": "docs/handoffs/2026-10-29-pixel-forge-own-tools.md",
       "ruled_at": null
+    },
+    {
+      "id": "limit_hit:token-map:db.busy",
+      "title": "tokenmap spend (night start, 7d source) died at connect's 120 s busy wait behind the 05:00 scan's 100-file write batch",
+      "match": {
+        "rule": "limit_hit",
+        "ident": "^token\\-map:db\\.busy$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-30T05:55:00Z",
+          "by": "harness-limits-20261030T052117Z-25f1",
+          "files": [
+            "token-map/tokenmap/db.py",
+            "token-map/tokenmap/ingest.py",
+            "token-map/tokenmap/codex.py",
+            "token-map/tokenmap/grok.py",
+            "token-map/tokenmap/gemini.py",
+            "token-map/tokenmap/benches.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "harness-limits-20261030T052117Z-25f1",
+      "note": "Night 20261030T041048Z-5921 started 04:10:48Z inside the com.tokenmap-scand scan (03:00Z, nice 19); its detached `tokenmap spend --range 7d --write` died at db.connect's schema stamp at 04:12:56Z (log nights/<id>.spend-7d.log). files.scanned_at shows the claude ingest reading ~8 transcripts a minute (432 in 73 min, one 12.7k-line file 98 s) and ingest commits every 100 files, so one write transaction held the lock ~10 min across 06:10:56-06:12:56 local. Fix: db.batch commits a scanner's batch at its file count or once BATCH_SECONDS (10 s) passed since the last commit, in all five scanners; worst case now 10 s plus one file. Test test_cli.test_a_slow_scan_batch_releases_the_write_lock_after_batch_seconds, red on HEAD. Not fixed here: the scan itself still takes hours (system-ledger job-cost:com.tokenmap-scand; 10-30's ran 2.5 h+, in tracking.refresh at 05:40Z); zones.apply, doctor_runs.apply and restore_indexes are single statements/transactions not bounded by this.",
+      "handoff": null
     }
   ],
   "blind_spots": [

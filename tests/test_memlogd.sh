@@ -406,7 +406,7 @@ assert grep -qE '^INCIDENT [0-9]{10} avail_mb=2000 swap_used_mb=9000 frames=[^ ]
 # Swap never moved, and the markers still carry it as data.
 assert grep -qE '^RECOVERED [0-9]{10} avail_mb=6000 swap_used_mb=9000$' "$swap_exit_log"
 assert_fails grep -q '^PS-BEGIN ' "$swap_exit_log"
-assert test "$(grep -c '^PS-BEGIN ' "$(frames_from "$swap_exit_log")")" -eq 2
+assert test "$(gzip -dc "$(frames_from "$swap_exit_log").gz" | grep -c '^PS-BEGIN ')" -eq 2
 assert grep -q ' quiet avail_mb=6000 swap_used_mb=9000 ' "$swap_exit_log"
 
 # --- a probe that breaks mid-incident is unknown, never a reason to stay latched -------------------
@@ -435,7 +435,9 @@ assert run_memlogd "$RECOVER_DIR" MEMLOGD_MAX_TICKS=3 MEMLOGD_RECOVER_SECONDS=0
 recover_log=$(log_file "$RECOVER_DIR")
 assert grep -qE '^RECOVERED [0-9]{10} avail_mb=6000 swap_used_mb=1024$' "$recover_log"
 assert_fails grep -q '^PS-BEGIN ' "$recover_log"
-assert test "$(grep -c '^PS-BEGIN ' "$(frames_from "$recover_log")")" -eq 2
+# A closed episode's frames are packed: the cap holds the whole retention window of them.
+assert_fails test -e "$(frames_from "$recover_log")"
+assert test "$(gzip -dc "$(frames_from "$recover_log").gz" | grep -c '^PS-BEGIN ')" -eq 2
 assert grep -q ' quiet avail_mb=6000 ' "$recover_log"
 # Pressure between the enter and exit thresholds is not enough to re-open a closed incident.
 assert test "$(grep -c '^INCIDENT ' "$recover_log")" -eq 1
@@ -504,6 +506,7 @@ printf '%s\n' "$quiet_line" >"$SHORT_DIR/$short_drop.log"
 printf 'keep\n' >"$SHORT_DIR/frames/${short_keep}T000000.log"
 printf 'drop\n' >"$SHORT_DIR/frames/${short_drop}T000000.log"
 printf 'drop\n' >"$SHORT_DIR/frames/jump-${short_drop}T010000.log"
+printf 'drop\n' >"$SHORT_DIR/frames/${short_drop}T020000.log.gz"
 probes 8192 1024
 assert run_memlogd "$SHORT_DIR" MEMLOGD_MAX_TICKS=1 MEMLOGD_RETENTION_DAYS=5
 assert test -f "$SHORT_DIR/$short_keep.log"
@@ -511,11 +514,12 @@ assert_fails test -e "$SHORT_DIR/$short_drop.log"
 assert test -f "$SHORT_DIR/frames/${short_keep}T000000.log"
 assert_fails test -e "$SHORT_DIR/frames/${short_drop}T000000.log"
 assert_fails test -e "$SHORT_DIR/frames/jump-${short_drop}T010000.log"
+assert_fails test -e "$SHORT_DIR/frames/${short_drop}T020000.log.gz"
 
 # --- frames budget: oldest-first eviction, never the live episode ---------------------------------
 EVICT_DIR="$WORK/evict"
 mkdir -p "$EVICT_DIR/frames"
-evict_old="$EVICT_DIR/frames/2020-01-01T000000.log"
+evict_old="$EVICT_DIR/frames/2020-01-01T000000.log.gz"
 evict_newer="$EVICT_DIR/frames/2020-01-02T000000.log"
 dd if=/dev/zero bs=1048576 count=1 2>/dev/null | tr '\0' 'x' >"$evict_old"
 dd if=/dev/zero bs=1048576 count=1 2>/dev/null | tr '\0' 'x' >"$evict_newer"

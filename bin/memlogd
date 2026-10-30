@@ -224,7 +224,7 @@ file_bytes() { stat -f %z "$1" 2>/dev/null || printf '0\n'; }
 evict_frames() {
   local keep="${1##*/}" cap=$((max_frames_mb * 1048576)) listing total=0 mtime size name
   mkdir -p "$(frames_dir)"
-  listing=$(stat -f '%m %z %N' "$(frames_dir)"/*.log 2>/dev/null | sort -n)
+  listing=$(stat -f '%m %z %N' "$(frames_dir)"/*.log "$(frames_dir)"/*.log.gz 2>/dev/null | sort -n)
   while read -r mtime size name; do
     [ -n "$name" ] || continue
     total=$((total + size))
@@ -296,7 +296,7 @@ rotate_files() {
     [[ "${base%.log}" < "$cutoff" ]] || continue
     rm -f "$file" && gone=$((gone + 1))
   done
-  for file in "$(frames_dir)"/*.log; do
+  for file in "$(frames_dir)"/*.log "$(frames_dir)"/*.log.gz; do
     [ -f "$file" ] || continue
     base=${file##*/}
     # Retention reads the day out of the name, and an incident older than the window is still
@@ -415,6 +415,8 @@ run_loop() {
         if [ $((now - recover_since)) -ge "$recover_seconds" ]; then
           state=quiet
           recover_since=0
+          # ps dumps shrink ~6x: uncompressed, 10 episodes a day filled the frames cap in 2 of the 3 retention days.
+          [ ! -f "$episode_frames" ] || gzip -q -- "$episode_frames" 2>/dev/null || :
           episode_frames=""
           episode_start=0
           episode_capped=0
