@@ -727,7 +727,7 @@ rl_merge() {
 
 rl_from_cache=""
 rl_mtime=""
-rl_written=""
+rl_written="" rl_lock_held=""
 # The rate-limit cache is per ACCOUNT and shared by every chat on it, so the spend a merge was
 # last accepted at is remembered per session instead — and a render with no session to remember
 # through passes no cost at all, or it would claim liveness on every idle replay forever.
@@ -772,7 +772,11 @@ elif [ -n "$rl_json" ]; then
   snapshot_lock="$rl_target.lock"
   # The cache read must sit under the same lock as the write: a concurrent
   # claudeb merge landing between them would be clobbered by this render.
+  # Claude Code aborts a running render on every new trigger: the pid-less lock it held would
+  # stall claudeb's store-lock until its 30 s ownerless grace (store-lock.ownerless-stale).
+  trap '[ -z "$rl_lock_held" ] || rmdir "$snapshot_lock" 2>/dev/null' EXIT
   if snapshot_lock_acquire "$snapshot_lock"; then
+    rl_lock_held=1
     rl_merge "$rl_target"
     # Skipping the no-op rewrite matters: readers fall back to file mtime for
     # staleness, and a fresh mtime would disguise old data as live.
@@ -787,6 +791,7 @@ elif [ -n "$rl_json" ]; then
       fi
       rl_written=1
     fi
+    rl_lock_held=''
     rmdir "$snapshot_lock" 2>/dev/null
   else
     rl_merge "$rl_target"
