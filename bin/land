@@ -66,14 +66,15 @@ for dir in ${candidates[@]+"${candidates[@]}"}; do
 done
 [ ${#repos[@]} -gt 0 ] || stop 1 "no repository holds the branch $branch"
 
-base_of() { # worktree -> the commit its branch grew from: a night's press snapshot it still holds, else its merge-base
-  local n best='' count least=''
-  while IFS= read -r n; do
-    git -C "$1" merge-base --is-ancestor "$n" HEAD && ! git -C "$1" merge-base --is-ancestor "$n" main || continue
-    count=$(git -C "$1" rev-list --count "$n..HEAD")
-    [ -n "$least" ] && [ "$count" -ge "$least" ] || { best=$n least=$count; }
-  done < <(git -C "$1" for-each-ref --format='%(objectname)' 'refs/night/*/base')
-  [ -n "$best" ] && printf '%s\n' "$best" || git -C "$1" merge-base main HEAD
+base_of() { # worktree main -> the commit its branch grew from: the newest press snapshot off main it holds, else its
+  # merge-base. A snapshot is a night's ref, or by night-run's subject the copy of an older night's one that an adopted
+  # leftover's rebase onto this night's replayed (no ref names it). Two git calls, however many nights left a ref.
+  local refs snap
+  refs=$(git -C "$1" for-each-ref --format='%(objectname)' 'refs/night/*/base' | tr '\n' ' ')
+  snap=$(git -C "$1" log --topo-order --format='%H%x09%s' "$2..HEAD" | awk -F '\t' -v refs="$refs" '
+    BEGIN { n = split(refs, r, " "); for (i = 1; i <= n; i++) ref[r[i]] }
+    $1 in ref || $2 ~ /^night [^ ]+ base: the checkout as pressed$/ { print $1; exit }')
+  [ -n "$snap" ] && printf '%s\n' "$snap" || git -C "$1" merge-base "$2" HEAD
 }
 
 run_suites() { # worktree suite... -> 0 when every suite is green, a red one green alone is flaky
@@ -99,15 +100,18 @@ flaky=() landed=() attempt=0
 while [ ${#repos[@]} -gt 0 ]; do
   attempt=$((attempt + 1))
   [ "$attempt" -le 5 ] || stop 3 "main moved under every attempt; land $branch again"
-  bases=() selected=()
+  ontos=() bases=() selected=()
   for i in "${!repos[@]}"; do
     wt=${trees[$i]}
-    base=$(base_of "$wt") || stop 1 "no base for $branch in $wt"
-    bases+=("$base")
+    # The main this pass selects for is the one it rebases onto: a lander moving main in between fails the ff, and the
+    # next pass selects the suites its commits share.
+    onto=$(git -C "$wt" rev-parse refs/heads/main) && base=$(base_of "$wt" "$onto") || stop 1 "no base for $branch in $wt"
+    ontos+=("$onto") bases+=("$base")
     if [ ! -x "$wt/tests/affected" ]; then suites=''
-    # A night worker runs no suites (its branch leaves them to the landing): the first pass runs every covering one.
+    # A night worker runs no suites (its branch leaves them to the landing): the first pass runs every covering one,
+    # the slow layer too, which tests/affected drops for a worker run's own selection.
     elif [ "$attempt" -eq 1 ] && [[ $branch == night/* ]]; then
-      suites=$(git -C "$wt" diff --name-only "$base...HEAD" | tr '\n' '\0' | xargs -0 bash "$wt/tests/affected") ||
+      suites=$(git -C "$wt" diff --name-only "$base...HEAD" | tr '\n' '\0' | WORKER_RUN_ID= xargs -0 bash "$wt/tests/affected") ||
         stop 1 "suite selection failed in $wt"
     else
       suites=$(bash "$wt/tests/affected" --overlap "$base") || stop 1 "suite selection failed in $wt"
@@ -116,7 +120,7 @@ while [ ${#repos[@]} -gt 0 ]; do
   done
   # Every repository first: a suite reads a sibling's same-branch worktree, still on old code until it is rebased.
   for i in "${!repos[@]}"; do
-    git -C "${trees[$i]}" rebase -q --onto main "${bases[$i]}" >/dev/null 2>&1 || {
+    git -C "${trees[$i]}" rebase -q --onto "${ontos[$i]}" "${bases[$i]}" >/dev/null 2>&1 || {
       git -C "${trees[$i]}" rebase --abort 2>/dev/null
       stop 1 "rebasing $branch onto main conflicts in ${repos[$i]}: back to the worker"
     }
@@ -130,6 +134,8 @@ while [ ${#repos[@]} -gt 0 ]; do
   left=() left_trees=()
   for i in "${!repos[@]}"; do
     root=${repos[$i]} wt=${trees[$i]} merged='' own=$(git -C "$root" rev-list --count "main..$branch")
+    # Checked again: a fast-forward goes into whatever the checkout holds, and the suites took minutes.
+    [ "$(git -C "$root" symbolic-ref -q --short HEAD)" = main ] || stop 3 "the main checkout $root left main"
     for try in 1 2 3; do
       if out=$(git -C "$root" merge -q --ff-only "$branch" 2>&1); then merged=1; break; fi
       case $out in *index.lock*) sleep 1 ;; *) break ;; esac
@@ -146,9 +152,7 @@ while [ ${#repos[@]} -gt 0 ]; do
       printf 'landed %s@%s\n' "${root##*/}" "$(git -C "$root" rev-parse --short=12 HEAD)"
     fi
     git -C "$root" worktree remove "$wt" 2>/dev/null || printf 'land: kept %s (untracked files)\n' "$wt" >&2
-    if git -C "$root" show-ref -q --verify "refs/remotes/origin/$branch"; then
-      git -C "$root" push -q origin --delete "$branch" 2>/dev/null || printf 'land: origin kept %s\n' "$branch" >&2
-    fi
+    # Origin is the autopush hook's: it deletes in the background the branches it pushed, never a namesake.
     [ ! -d "$wt" ] && git -C "$root" branch -q -D "$branch"
   done
   repos=(${left[@]+"${left[@]}"}) trees=(${left_trees[@]+"${left_trees[@]}"})

@@ -15,12 +15,15 @@ mkdir -p "$HOME" "$STUB"
 printf '[user]\n\tname = t\n\temail = t@t\n[core]\n\thooksPath = /dev/null\n[init]\n\tdefaultBranch = main\n' >"$GIT_CONFIG_GLOBAL"
 LAND="$ROOT/bin/land"
 
-# Stubs: affected prints <repo>.overlap or <repo>.covering as paths in its own tests dir; run-all journals one row,
-# a suite red while its red.<suite> count lasts, and runs $STUB/hook once if present.
+# Stubs: affected prints <repo>.overlap or <repo>.covering as paths in its own tests dir, notes a worker run's id and
+# runs $STUB/ahook once if present; run-all journals one row, a suite red while its red.<suite> count lasts, and runs
+# $STUB/hook once if present.
 cat >"$WORK/affected" <<'EOF'
 #!/usr/bin/env bash
 d=$(cd "$(dirname "$0")" && pwd -P) n=$(cat "$(dirname "$0")/name")
 echo "$n $*" >>"$STUB/calls"
+[ -z "${WORKER_RUN_ID:-}" ] || echo "$n $WORKER_RUN_ID" >>"$STUB/worker"
+if [ -x "$STUB/ahook" ]; then mv "$STUB/ahook" "$STUB/ahook.ran"; "$STUB/ahook.ran" "$n"; fi
 if [ "${1:-}" = --overlap ]; then f="$STUB/$n.overlap"; else f="$STUB/$n.covering"; fi
 [ ! -r "$f" ] || sed "s|^|$d/|" "$f"
 EOF
@@ -177,5 +180,61 @@ reset_stub; repo k; w1=$(tree k feat/k1); w2=$(tree k feat/k2); change "$w1" k1 
 wait
 assert test "$(cat "$WORK/k1.rc")$(cat "$WORK/k2.rc")" = 00
 assert test "$(subjects k | sort | tr '\n' ,)" = 'init,k: k1,k: k2,'
+
+# An older night's leftover, adopted and rebased onto this night's snapshot as its brief says, holds a copy of the old
+# snapshot no ref names: neither lands. night-run's snapshot subject is the one land knows a copy by.
+snap() { # repo night -> refs/night/<night>/base: pressed work on main, committed the way night-run's snapshot is
+  local s="$WORK/wt/$1-snap-$2"
+  git -C "$WORK/$1" worktree add -q --detach "$s" main && change "$s" "wip.$2" "$2" "night $2 base: the checkout as pressed" &&
+    git -C "$WORK/$1" update-ref "refs/night/$2/base" "$(git -C "$s" rev-parse HEAD)" && git -C "$WORK/$1" worktree remove "$s"
+}
+assert grep -qF '"night $2 base: the checkout as pressed"' "$ROOT/bin/night-run"
+reset_stub; repo n; snap n o1; old=$(tree n night/o1/x refs/night/o1/base); change "$old" x x 'n: x'
+change "$WORK/n" y y 'n: main y'; snap n o2
+wt=$(tree n night/o2/leftover-x night/o1/x); git -C "$wt" rebase -q refs/night/o2/base
+assert land night/o2/leftover-x
+assert test "$(subjects n | tr '\n' ,)" = 'n: x,n: main y,init,'
+
+# Main moving between the selection and the rebase (another lander): its commit never lands untested, the next pass
+# selects the suites it shares with the branch.
+reset_stub; repo p; wt=$(tree p feat/p); change "$wt" p p 'p: p'; change "$WORK/p" q q 'p: main q'
+printf '#!/usr/bin/env bash\ncd "%s" && printf r >r && git add r && git commit -qm "p: other lander"\n' "$WORK/p" >"$STUB/ahook"
+chmod +x "$STUB/ahook"
+assert land feat/p --repo "$WORK/p"
+assert test "$(subjects p | head -3 | tr '\n' ,)" = 'p: p,p: other lander,p: main q,'
+assert test "$(grep -c '^p --overlap' "$STUB/calls")" = 2
+
+# A land from inside a worker run selects a night branch's covering suites as no worker's: the slow layer stays in.
+reset_stub; repo q; wt=$(tree q night/n3/q); change "$wt" q q 'q: q'; printf 'test_q.sh\n' >"$STUB/q.covering"
+export WORKER_RUN_ID=w1
+assert land night/n3/q
+unset WORKER_RUN_ID
+assert test "$(ran)" = "q $wt/tests test_q.sh"
+assert test ! -e "$STUB/worker"
+
+# A namesake on origin is never land's to delete: the autopush hook deletes only the branches it pushed.
+reset_stub; repo o; git clone -q --bare "$WORK/o" "$WORK/o.git"; git -C "$WORK/o" remote add origin "$WORK/o.git"
+git -C "$WORK/o.git" branch feat/o main; git -C "$WORK/o" fetch -q origin
+wt=$(tree o feat/o); change "$wt" o o 'o: o'
+assert land feat/o --repo "$WORK/o"
+assert test "$(subjects o | head -1)" = 'o: o'
+assert git -C "$WORK/o.git" show-ref -q --verify refs/heads/feat/o
+
+# The main checkout switched off main while the suites ran: exit 3, the other branch untouched, the branch kept.
+reset_stub; repo u; wt=$(tree u feat/u); change "$wt" u u 'u: u'; change "$WORK/u" v v 'u: main v'
+printf 'test_u.sh\n' >"$STUB/u.overlap"
+printf '#!/usr/bin/env bash\ngit -C "%s" checkout -q -b other\n' "$WORK/u" >"$STUB/hook"; chmod +x "$STUB/hook"
+land feat/u --repo "$WORK/u"; assert test $? = 3
+assert test "$(git -C "$WORK/u" log -1 --format=%s other)" = 'u: main v'
+assert git -C "$WORK/u" show-ref -q --verify refs/heads/feat/u
+git -C "$WORK/u" checkout -q main
+
+# The base costs the same few git calls however many nights left a snapshot ref (one is added every night).
+reset_stub; repo w; for n in 1 2 3 4 5 6; do git -C "$WORK/w" update-ref "refs/night/w$n/base" main; done
+wt=$(tree w feat/w); change "$wt" w w 'w: w'
+export GIT_TRACE="$WORK/trace"
+assert land feat/w --repo "$WORK/w"
+unset GIT_TRACE
+assert test "$(grep -c 'git merge-base' "$WORK/trace")" -le 1
 
 printf 'PASS: %s asserts; land selects, runs in the worktree, retries a moved main and keeps everything it cannot land\n' "$asserts"
