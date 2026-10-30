@@ -256,6 +256,11 @@ NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-single" new_night N3s
 NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-single" night carry N3s >"$WORK/n3s.out" 2>/dev/null || fail "carry of a lone live handoff failed"
 assert [ "$(cut -f1,3 "$WORK/n3s.out")" = "owner-chat-beta-chat	message Beta Chat" ]
 assert jqe --arg p "$S/docs/handoffs/2026-10-09-single.md" '[.jobs[] | [.kind, .via, .handoffs]] == [["owner-chat", "message", [$p]]]' "$NIGHTS/N3s.json"
+# A pilot night delivers owner chats' handoffs too (Egor 2026-10-30: two pilot nights left logo-bench's handoff undelivered).
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-single" new_night N3p
+jq '.pilot = "lost-time"' "$NIGHTS/N3p.json" >"$WORK/n3p.json" && mv "$WORK/n3p.json" "$NIGHTS/N3p.json"
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-single" night carry N3p >"$WORK/n3p.out" 2>/dev/null
+assert [ "$(grep '^owner-chat-' "$WORK/n3p.out" | cut -f1,3)" = "owner-chat-beta-chat	message Beta Chat" ]
 # A split handoff waits for its owner chat: with none found it never becomes a night job (the night never splits a file).
 printf '# Split or remove `tests/big.sh`\n\nStatus: open\nFile: repo `tests/big.sh`\n\n## Decision: split, remove or keep\n' \
   >"$S/docs/handoffs/2026-10-10-split-big.md"

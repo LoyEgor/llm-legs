@@ -1199,7 +1199,7 @@ cmd_carry() {
   local id=${1:-} kind slug repo what log ref branch wt err brief path top root printed=' ' taken
   [ -n "$id" ] && [ $# -eq 1 ] || usage
   known_night "$id"
-  jq -e '.pilot' "$(night_file "$id")" >/dev/null || carry_owner_chats "$id"
+  carry_owner_chats "$id"
   while IFS=$'\t' read -r kind slug repo what log; do
     ref="$kind-$slug"
     [ "$kind" != fixer ] || { carry_fixer "$id" "$slug" "${what#"doctor-fix launch $slug"}"; continue; }
