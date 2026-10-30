@@ -14441,13 +14441,6 @@
       "reason": "2026-10-29: fixers grepped ~/.claude-profiles/<account>/projects to find log-audit quotes (log_audit:unbounded-transcript-grep, ~42 min); the packet now names the skeletons, nothing counts the calls",
       "since": "2026-10-29",
       "would_catch_if": "the Harness doctor's tool mining counted Bash tool_uses whose grep -r or find walks ~/.claude*/projects, with their wall, per day"
-    },
-    {
-      "id": "bash-call-hung-to-cap",
-      "what": "foreground Bash calls that sat idle until their timeout (a command waiting on stdin, a lost heredoc)",
-      "reason": "2026-10-30: two pixel-forge workers' 'cat > /dev/null;' calls lost their heredoc and hung 25 min each to the claudeb worker cap (log_audit:unbounded-waits-hung-commands); only a log-audit reading saw them",
-      "since": "2026-10-30",
-      "would_catch_if": "the Harness doctor's tool mining counted Bash tool_uses that ended at their timeout with no output, with their wall, per day and per command head"
     }
   ]
 }

@@ -8,6 +8,8 @@ minutes and Opus-eq tokens, before the fix against after: the cluster's residual
 earlier cluster took that match this one's pattern), the tool's own calls (its bench's `command`) and the hint's
 always-loaded bytes once a session. A fix lands only with a bench (`bench_faults`). Adoption (`adoption`): each
 model-facing tool's calls a day over USE_DAYS; one with a hint and no call is unused, Speed's `opportunity:tool/...`.
+Hung calls (`hung_findings`): Claude Code Bash calls that sat to their timeout with no output (a stdin read, a lost
+heredoc), their wall per command head a day, Speed's `opportunity:hung-bash/<head>` over the floor.
 A cluster recurring in fewer than FLOOR_PROJECTS projects is that project's job (`home`): its tool and hint go there.
 
   tool_mining.py [--to T] [--calls]   T in epoch seconds; --calls prints each matched call
@@ -104,6 +106,12 @@ MSG = re.compile(rb'"message":\{[^{]*?"id":"(msg_\w+)"')
 RESULT = re.compile(rb'"tool_use_id":"(\w+)"')
 CWD = re.compile(rb'"cwd":"([^"]+)"')
 REPOS = {}
+# An empty-output result's toolUseResult is short, so its key sits in the line's tail.
+TIMED_OUT, TIMED_OUT_TAIL_B = b'"timedOutAfterMs"', 2048
+SEGMENT = re.compile(r"&&|\|\||[;\n]")
+SET_UP = re.compile(r"^\s*(?:cd\b|[A-Za-z_]\w*=(?:\$\([^)]*\)|\S)*\s*$)")
+HEAD = re.compile(r"^\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|env|command|exec|time|nohup|timeout\s+\S+"
+                  r"|nice(?:\s+-n\s*-?\d+)?)\s+)*([^\s;&|()<>]+)")
 CODEX_CMD = re.compile(r"""exec_command\(\{\s*cmd:\s*("(?:[^"\\]|\\.)*")""")
 
 
@@ -289,6 +297,13 @@ def text_b(content):
         if isinstance(content, list) else 0
 
 
+def head(cmd):
+    """A command's first program past its leading cd's and bare assignments, its own assignments and wrappers, by
+    basename."""
+    found = next((HEAD.match(s) for s in SEGMENT.split(cmd) if s.strip() and not SET_UP.match(s)), None)
+    return os.path.basename(found.group(1)) if found else ""
+
+
 def kept(cmd, tools, at, session, worker, out, script=False):
     """The call of a benched tool (`tool`: its target) or an ad-hoc call, appended to `out`; None for any other."""
     tool = next((target for target, rule in tools.items() if rule.search(cmd)), None)
@@ -306,15 +321,17 @@ def count(uses, at, keys):
         uses[time_budget.local_day(at)][key] += 1
 
 
-def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None):
+def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hung=None):
     """Ad-hoc and benched-tool Bash calls of one Claude Code transcript: {session, worker, ts, cmd, exec_s, out_b}. A
     tool_use block written right after another block of the same message adds (chars, seconds) to the write rate.
     A script file written into a scratch place (a `cat >` heredoc or the Write tool) is ad hoc in the first Bash call
     naming its path outside that heredoc, its text that call's. `uses` counts per local day the `names` commands a Bash
     call runs, Skill calls and, apart (`slash/`), the user's slash commands. A call's project is the repository of the
-    session's launch cwd (`project`), the transcript's project directory without one."""
+    session's launch cwd (`project`), the transcript's project directory without one. `hung` gets each Bash call whose
+    result says it timed out (toolUseResult.timedOutAfterMs) with no stdout or stderr: {session, worker, head, cmd,
+    wall_s}."""
     session = os.path.splitext(os.path.basename(path))[0]
-    worker, pending, prev, written = "/subagents/" in path, {}, b"", {}
+    worker, pending, prev, written, bashes = "/subagents/" in path, {}, b"", {}, {}
     where = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(path))) if worker else os.path.dirname(path))
     launched = False
     try:
@@ -365,6 +382,8 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None):
                             rate[0] += len(cmd)
                             rate[1] += at - start
                     if at and lo <= at < hi:
+                        if hung is not None:
+                            bashes[block.get("id")] = (at, cmd)
                         rate[2] += 1
                         rate[3][session] = where
                         if uses is not None:
@@ -373,17 +392,27 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None):
                         if call:
                             call["project"] = where
                             pending[block.get("id")] = call
-            elif pending and b'"tool_use_id"' in line:
-                ids = [i for i in (f.group(1).decode() for f in RESULT.finditer(line)) if i in pending]
-                if not ids:
+            elif (pending or bashes and TIMED_OUT in line[-TIMED_OUT_TAIL_B:]) and b'"tool_use_id"' in line:
+                found = [f.group(1).decode() for f in RESULT.finditer(line)]
+                ids = [i for i in found if i in pending]
+                timed = [i for i in found if i in bashes] if bashes and TIMED_OUT in line[-TIMED_OUT_TAIL_B:] else []
+                if not ids and not timed:
                     prev = line
                     continue
                 stamp = TS.search(line)
                 end = epoch(stamp.group(1).decode()) if stamp else None
                 try:
-                    blocks = (json.loads(line).get("message") or {}).get("content")
+                    record = json.loads(line)
+                    blocks = (record.get("message") or {}).get("content")
                 except (ValueError, AttributeError):
-                    blocks = None
+                    record, blocks = {}, None
+                result = record.get("toolUseResult") if isinstance(record, dict) else None
+                if timed and end and isinstance(result, dict) and isinstance(result.get("timedOutAfterMs"), (int, float)) \
+                        and not str(result.get("stdout") or "").strip() and not str(result.get("stderr") or "").strip():
+                    for ident in timed:
+                        start, cmd = bashes.pop(ident)
+                        hung.append({"session": session, "worker": worker, "head": head(cmd), "cmd": cmd,
+                                     "wall_s": max(0.0, end - start)})
                 sizes = {b.get("tool_use_id"): text_b(b.get("content")) for b in blocks if isinstance(b, dict)} \
                     if isinstance(blocks, list) else {}
                 for ident in ids:
@@ -460,14 +489,14 @@ class Dropped(list):
         pass
 
 
-def scan(lo, hi, tools=None, names=None, uses=None, keep=True):
+def scan(lo, hi, tools=None, names=None, uses=None, keep=True, hung=None):
     """(ad-hoc and benched-tool calls in [lo, hi), all Bash calls in it, write rate in chars a second or None, the
     sessions that made a Bash call per project); `tools` maps a target to the pattern of its tool's calls; `uses` (day -> Counter)
-    gets the model-facing tools' calls; `keep` False drops the calls themselves."""
+    gets the model-facing tools' calls; `keep` False drops the calls themselves; `hung` gets the hung Claude Code calls."""
     calls, rate = [] if keep else Dropped(), [0, 0.0, 0, {}]
     for root in projects_roots():
         for path in files(root, "*/*.jsonl", lo) + files(root, "*/*/subagents/*.jsonl", lo):
-            claude_calls(path, lo, hi, calls, rate, tools, names, uses)
+            claude_calls(path, lo, hi, calls, rate, tools, names, uses, hung)
     for path in files(codex_dir(), "*/sessions/*/*/*/rollout-*.jsonl", lo):
         codex_calls(path, lo, hi, calls, rate, tools, names, uses)
     return calls, rate[2], (rate[0] / rate[1] if rate[1] else None), collections.Counter(rate[3].values())
@@ -479,11 +508,12 @@ def part(group):
             "out_b": sum(c.get("out_b") or 0 for c in group)}
 
 
-def day_of(calls, bash, chars_s, hi, sessions=None):
+def day_of(calls, bash, chars_s, hi, sessions=None, hung=()):
     """One scanned window's numbers per cluster: calls, sessions, sessions per project, minutes (the scripts' writing plus calls times the
     median exec, as an edit and its suite run often share one call), worker minutes, the writing part, two examples,
     characters and output bytes; per cluster its substitutes (`shadow`: ad-hoc calls an earlier cluster took that
-    match its pattern) and per benched target its tool's calls (`tools`); the day's sessions, also per project."""
+    match its pattern) and per benched target its tool's calls (`tools`); the day's sessions, also per project; the
+    hung calls per command head (`hung`: calls, sessions, min, worker_min, two examples)."""
     out = {"bash_calls": bash, "chars_s": round(chars_s, 1) if chars_s else None, "to_s": int(hi), "clusters": {},
            "sessions": sum((sessions or {}).values()), "projects": dict(sessions or {}), "shadow": {}, "tools": {}}
     grouped, shadow, tools = (collections.defaultdict(list) for _ in range(3))
@@ -508,6 +538,15 @@ def day_of(calls, bash, chars_s, hi, sessions=None):
                                     min=round(sum(write) + len(group) * median / 60.0, 2),
                                     worker_min=round(sum(worker), 2), write_min=round(sum(write), 2),
                                     examples=[" ⏎ ".join(c.splitlines())[:200] for c in shown])
+    heads = collections.defaultdict(list)
+    for call in hung:
+        heads[call["head"]].append(call)
+    out["hung"] = {key: {"calls": len(group), "sessions": len({c["session"] for c in group}),
+                         "min": round(sum(c["wall_s"] for c in group) / 60.0, 2),
+                         "worker_min": round(sum(c["wall_s"] for c in group if c["worker"]) / 60.0, 2),
+                         "examples": [" ⏎ ".join(c["cmd"].splitlines())[:200]
+                                      for c in sorted(group, key=lambda c: -c["wall_s"])[:2]]}
+                   for key, group in heads.items()}
     out["shadow"] = {key: part(group) for key, group in shadow.items()}
     out["tools"] = {target: part(group) for target, group in tools.items()}
     return out
@@ -655,6 +694,12 @@ def findings(day, history, since=lambda target: None, bench=lambda target: None)
                         "days": sum(1 for d in recent if key in d["clusters"]), "examples": c["examples"],
                         **({"net": nets[target]} if target in nets else {})})
     return nets, sorted(out, key=lambda f: (-f["write_min_day"], f["key"]))
+
+
+def hung_findings(day):
+    """The command heads whose hung calls cost the floor's minutes on the scanned day, most minutes first."""
+    return sorted((dict(c, head=key) for key, c in (day.get("hung") or {}).items() if c["min"] >= FLOOR_MIN_DAY),
+                  key=lambda f: (-f["min"], f["head"]))
 
 
 def tool_rules(bench):
@@ -813,13 +858,13 @@ def collect(now, write=False, since=lambda target: None, bench=lambda target: No
     history = cache.get("history") or {}
     hi = time_budget.day_bounds(time_budget.local_day(now))[0]
     day = time_budget.local_day(hi - 1)
-    fresh = not {"shadow", "uses"} <= set(history.get(day) or {})
+    fresh = not {"shadow", "uses", "hung"} <= set(history.get(day) or {})
     if fresh:
         cache["facing"] = facing(now)
         names = command_re([k[4:] for k in cache["facing"] if k.startswith("bin/")])
-        uses = collections.defaultdict(collections.Counter)
-        calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi, tool_rules(bench), names, uses)
-        history[day] = dict(day_of(calls, bash, chars_s, hi, sessions), uses=dict(uses.get(day) or {}))
+        uses, hung = collections.defaultdict(collections.Counter), []
+        calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi, tool_rules(bench), names, uses, hung=hung)
+        history[day] = dict(day_of(calls, bash, chars_s, hi, sessions, hung), uses=dict(uses.get(day) or {}))
         cache["scan_s"] = round(time.monotonic() - started, 2)
         if write and not cache.get("uses_from"):
             cache["uses_from"] = backfill(history, day, names)
@@ -837,7 +882,7 @@ def collect(now, write=False, since=lambda target: None, bench=lambda target: No
     nets, found = findings(history[day], history, since, bench)
     return {"day": day, "scan_s": cache.get("scan_s"), "bash_calls": history[day]["bash_calls"],
             "chars_s": history[day]["chars_s"], "floor_min_day": FLOOR_MIN_DAY, "findings": found, "net": nets,
-            "tools": tools, "unused": [dict(tools[k], key=k) for k in marks["unused"]]}
+            "tools": tools, "unused": [dict(tools[k], key=k) for k in marks["unused"]], "hung": hung_findings(history[day])}
 
 
 def main(argv):

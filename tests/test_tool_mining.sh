@@ -367,6 +367,47 @@ os.environ["CLAUDE_PROJECTS_DIR"] = projects
 check([c["project"] for c in got[0]] == [REPO] * 3 and got[3] == {REPO: 2},
       "a session's project is its launch cwd's repository, a worktree's main checkout, a later cd aside: %s %s" % (
           [c["project"] for c in got[0]], got[3]))
+STRAY = "cd /tmp/pf; cat > /dev/null; python3 -I - a <<'EOF'\nprint(1)\nEOF"
+
+
+def timed(at, ident, stdout="", ms=1500000, text="moved to the background"):
+    row = result(at, ident)
+    row["message"]["content"][0]["content"] = text
+    row["toolUseResult"] = dict({"stdout": stdout, "stderr": "", "interrupted": False},
+                                **({"timedOutAfterMs": ms} if ms is not None else {}))
+    return row
+
+
+transcript(os.path.join(work, "projects4", "-h", "h1.jsonl"), [
+    {"type": "user", "timestamp": iso(T0), "message": {"content": "go\n\nRUN-TOKEN: claudeb-1-2-ab"}},
+    bash(T0 + 1, STRAY, "msg_H1", "toolu_h1"), timed(T0 + 1501, "toolu_h1"),
+    bash(T0 + 1600, "FOO=1 timeout 9 tests/run-all x", "msg_H2", "toolu_h2"), timed(T0 + 3100, "toolu_h2", stdout="PASS 3"),
+    bash(T0 + 3200, "grep -n timedOutAfterMs a.jsonl", "msg_H3", "toolu_h3"),
+    timed(T0 + 3201, "toolu_h3", stdout="", ms=None, text='"timedOutAfterMs": 1500000'),
+    bash(HI - 2 * 86400, STRAY, "msg_H4", "toolu_h4"), timed(HI - 2 * 86400 + 1500, "toolu_h4")])
+transcript(os.path.join(work, "projects4", "-h", "h2.jsonl"), [
+    bash(T0 + 10, "cd /x && cat - > /dev/null", "msg_H5", "toolu_h5"), timed(T0 + 610, "toolu_h5", ms=600000)])
+os.environ["CLAUDE_PROJECTS_DIR"] = os.path.join(work, "projects4")
+hung = []
+got = t.scan(HI - t.WINDOW_S, HI, hung=hung)
+os.environ["CLAUDE_PROJECTS_DIR"] = projects
+check(sorted((c["session"], c["worker"], c["head"], c["wall_s"]) for c in hung)
+      == [("h1", True, "cat", 1500.0), ("h2", False, "cat", 600.0)] and got[1] == 4,
+      "a Bash call whose result timed out with no stdout or stderr is hung, by its head past cd, assignments and "
+      "wrappers; a timed-out call with output, a result only quoting the key and a call before the window are not: %s"
+      % hung)
+hd = t.day_of(got[0], got[1], got[2], HI, got[3], hung)["hung"]
+check(hd == {"cat": {"calls": 2, "sessions": 2, "min": 35.0, "worker_min": 25.0,
+                     "examples": [" ⏎ ".join(STRAY.splitlines()), "cd /x && cat - > /dev/null"]}},
+      "the scanned day keeps the hung calls per head: calls, sessions, wall and worker minutes, examples: %s" % hd)
+check(t.hung_findings({"hung": dict(hd, sleep={"calls": 1, "sessions": 1, "min": 8.0, "worker_min": 0.0, "examples": []})})
+      == [dict(hd["cat"], head="cat")] and "hung" in kept,
+      "a head over the floor's %s min is a finding; every scanned day carries the key" % t.FLOOR_MIN_DAY)
+ho = s.hung_opportunities({"hung": t.hung_findings({"hung": hd})})
+check([o["id"] for o in ho] == ["opportunity:hung-bash/cat"] and ho[0]["opportunity"]["recoverable_min_day"] == 35.0
+      and ho[0]["opportunity"]["worker_min_day"] == 25.0 and ho[0]["opportunity"]["quality"] == "equivalent"
+      and ho[0]["fact"].startswith("cat · 2 calls/day to their timeout with no output in 2 sessions · 10 min + 25 w-min/day"),
+      "Speed turns a hung head into an opportunity priced at its whole wall: %s" % ho)
 alias = os.path.join(os.environ["HOME"], ".claude-profiles", "alias", "projects")
 os.makedirs(os.path.join(os.environ["HOME"], ".claude"), exist_ok=True)
 os.symlink(os.path.dirname(os.path.dirname(profile)), os.path.join(os.environ["HOME"], ".claude", "projects"))

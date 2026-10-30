@@ -189,12 +189,15 @@ ADHOC_WHAT = {"tool": "model-written scripts · build one command for the job: %
 UNUSED_LEVER = {"component": "tool", "lever": "delete the tool and its hint; a tool other code or Egor runs keeps its "
                 "file, only the hint goes", "effort": "S", "confidence": "measured", "saving": 1.0, "night_cost_h": 0.0,
                 "proof": "elimination", "quality": "equivalent"}
+HUNG_LEVER = {"component": "hung-bash", "lever": "the call cannot sit to its timeout: stdin closed, a heredoc that "
+              "reaches the command, a wait that ends with its job", "effort": "S", "confidence": "measured",
+              "saving": 1.0, "night_cost_h": 0.0, "proof": "elimination", "quality": "equivalent"}
 PHASE_JOB = re.compile(r"-\d+-\d+$")
 PHASE_LEVERS = {k: {"component": "media/" + k, "lever": v, "effort": "M", "confidence": "measured", "saving": 1.0,
                     "night_cost_h": 0.0, "proof": "media", "quality": "equivalent"} for k, v in {
     "reopen": "one browser for the whole run: the run's repeated browser phase is the relaunch it waits on",
     "serial": "a job's runs at once within the memory room, never one after another"}.items()}
-validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER, UNUSED_LEVER] + list(TIME_LEVERS.values())
+validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER, UNUSED_LEVER, HUNG_LEVER] + list(TIME_LEVERS.values())
                 + list(TEST_HEALTH_LEVERS.values()) + list(ADHOC_LEVERS.values()) + list(PHASE_LEVERS.values()))
 
 
@@ -1210,6 +1213,21 @@ def unused_opportunities(adhoc):
     return out
 
 
+def hung_opportunities(adhoc):
+    """Tool mining's hung Bash calls (share/tool_mining.py `hung_findings`): calls that sat to their timeout with no
+    output, priced at their wall per command head; a call that cannot hang saves it all."""
+    out = []
+    for f in adhoc.get("hung") or ():
+        o = target_opportunity("hung-bash/" + f["head"], f["min"], dict(HUNG_LEVER, component="hung-bash/" + f["head"]),
+                               f["calls"], seen_days=1)
+        o["opportunity"].update(worker_min_day=f["worker_min"], calls_day=f["calls"], sessions=f["sessions"],
+                                examples=f["examples"], what="hung Bash calls · %s · %s" % (f["head"], HUNG_LEVER["lever"]))
+        o["fact"] = "%s · %d calls/day to their timeout with no output in %d sessions · %s · %s" % (
+            f["head"], f["calls"], f["sessions"], per_day(f["min"], f["worker_min"]), HUNG_LEVER["lever"])
+        out.append(o)
+    return out
+
+
 def parked(ledger, target):
     row = H.ledger_row(ledger, "opportunity", target) or {}
     return row.get("status") == "ruled-out" or bool(row.get("handoff"))
@@ -1642,7 +1660,7 @@ def collect(write, now):
                                     parked=lambda target: parked(ledger, target))
     except Exception as exc:
         adhoc = {"status": "error", "head": H.error_line(exc), "findings": [], "net": {}}
-    opportunities += adhoc_opportunities(adhoc) + unused_opportunities(adhoc)
+    opportunities += adhoc_opportunities(adhoc) + unused_opportunities(adhoc) + hung_opportunities(adhoc)
     phases = media_phases(lo, now)
     opportunities += phase_opportunities(phases)
     problems += adhoc_regressions(adhoc, ledger, now)
