@@ -13708,9 +13708,9 @@
         "rule": "dig",
         "ident": "dig/run-suites-jobs-fixed"
       },
-      "status": "open",
+      "status": "fixed-pending",
       "expected_min_day": 19.9,
-      "fixes": [],
+      "fixes": [{"at": "2026-10-30T07:20:00+02:00", "by": "night 20261030T041048Z-5921 goal-jobs-by-room", "files": ["llm-legs/share/run-suites.sh", "llm-legs/share/slots.sh"], "in": null, "regressed_at": null}],
       "same_cause": [],
       "last_reviewed": "2026-10-30",
       "reviewed_by": "dig redo 2026-10-30 (by hand)",
