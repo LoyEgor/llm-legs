@@ -246,6 +246,73 @@ const far = new IntersectionObserver((es) => es.forEach((e) => !e.isIntersecting
   { rootMargin: "300% 0px" });
 export function lazy(el) { near.observe(el); far.observe(el); return el; }
 
+// Every picture on every page opens full screen on a click, so no page ever leaves one too small to
+// read: the wheel or a pinch zooms at the pointer, a drag pans, a double click toggles fit and 1:1,
+// ← → step through the page's pictures, Esc, ✕ or a click beside the picture closes. A module with
+// its own zoom marks its root data-own-zoom and keeps its pictures out.
+const zoomable = () => [...document.querySelectorAll("main img")].filter((im) => !im.closest("[data-own-zoom]"));
+let Z = null;
+function zoomOpen(from) {
+  if (!Z) {
+    const img = h("img", { alt: "", draggable: false }), pos = h("span", { class: "zpos" });
+    const el = h("div", { class: "zoom", role: "dialog", "aria-modal": "true" }, img,
+      h("div", { class: "zbar" }, pos, h("span", { class: "mute" }, "колесо — зум · тащи · двойной клик — 1:1 · ← → · Esc"),
+        h("button", { onclick: zoomClose, title: "Esc" }, "✕")));
+    Z = { el, img, pos, pts: new Map(), s: 1, x: 0, y: 0 };
+    const at = (s, px, py) => { s = Math.min(Math.max(s, Z.fit / 2), 8); Z.x = px - (px - Z.x) * s / Z.s; Z.y = py - (py - Z.y) * s / Z.s; Z.s = s; zoomPaint(); };
+    Z.at = at;
+    el.addEventListener("wheel", (e) => { e.preventDefault(); at(Z.s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY); }, { passive: false });
+    el.addEventListener("pointerdown", (e) => { if (e.target.closest(".zbar")) return; el.setPointerCapture(e.pointerId); Z.pts.set(e.pointerId, [e.clientX, e.clientY]); Z.moved = 0; });
+    el.addEventListener("pointermove", (e) => {
+      const p = Z.pts.get(e.pointerId); if (!p) return;
+      const all = [...Z.pts.values()], d0 = all.length === 2 ? Math.hypot(all[0][0] - all[1][0], all[0][1] - all[1][1]) : 0;
+      Z.pts.set(e.pointerId, [e.clientX, e.clientY]); Z.moved += Math.abs(e.clientX - p[0]) + Math.abs(e.clientY - p[1]);
+      if (all.length === 2) {
+        const [a, b] = [...Z.pts.values()], d1 = Math.hypot(a[0] - b[0], a[1] - b[1]);
+        if (d0) at(Z.s * d1 / d0, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+      } else { Z.x += e.clientX - p[0]; Z.y += e.clientY - p[1]; zoomPaint(); }
+    });
+    const up = (e) => {
+      if (!Z.pts.delete(e.pointerId) || Z.moved > 4 || e.type !== "pointerup") return;
+      const r = img.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) zoomClose();
+    };
+    el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+    el.addEventListener("dblclick", (e) => at(Math.abs(Z.s - Z.fit) < 1e-3 ? Math.max(1, Z.fit * 2) : Z.fit, e.clientX, e.clientY));
+    img.addEventListener("load", zoomFit);
+    document.addEventListener("keydown", (e) => {
+      if (!Z.el.isConnected) return;
+      const step = { ArrowLeft: -1, ArrowRight: 1 }[e.code];
+      if (e.code === "Escape") zoomClose(); else if (step) zoomShow(Z.i + step);
+      else if (e.code === "Equal" || e.code === "Minus") at(Z.s * (e.code === "Equal" ? 1.5 : 1 / 1.5), innerWidth / 2, innerHeight / 2);
+      else if (e.code === "Digit0") zoomFit(); else return;
+      e.preventDefault(); e.stopImmediatePropagation();
+    }, true);
+  }
+  Z.list = zoomable();
+  document.body.append(Z.el); document.body.style.overflow = "hidden";
+  zoomShow(Math.max(0, Z.list.indexOf(from)));
+}
+function zoomShow(i) {
+  const n = Z.list.length; Z.i = (i + n) % n;
+  const im = Z.list[Z.i];
+  Z.pos.textContent = n > 1 ? `${Z.i + 1} / ${n}` : "";
+  Z.img.src = im.currentSrc || im.getAttribute("src") || im.dataset.src;
+  if (Z.img.complete && Z.img.naturalWidth) zoomFit();
+}
+function zoomFit() {
+  const w = Z.img.naturalWidth, hh = Z.img.naturalHeight, W = innerWidth, H = innerHeight - 44;
+  if (!w) return;
+  Z.fit = Z.s = Math.min(W / w, H / hh); Z.x = (W - w * Z.s) / 2; Z.y = (H - hh * Z.s) / 2; zoomPaint();
+}
+function zoomPaint() { Z.img.style.transform = `translate(${Z.x}px,${Z.y}px) scale(${Z.s})`; }
+function zoomClose() { Z.el.remove(); Z.pts.clear(); document.body.style.overflow = ""; }
+function onZoomClick(e) {
+  const im = e.target.closest && e.target.closest("main img");
+  if (!im || im.closest("[data-own-zoom]")) return;
+  e.preventDefault(); zoomOpen(im);
+}
+
 export async function start(s, r) {
   spec = s; pid = s.pid; render = r; BOX = "pages-outbox:" + pid;
   try { queue = JSON.parse(localStorage.getItem(BOX) || "[]"); } catch (e) { queue = []; }
@@ -260,4 +327,5 @@ export async function start(s, r) {
   addEventListener("pagehide", flushAll);
   document.addEventListener("visibilitychange", () => (document.visibilityState === "visible" ? poll() : flushAll()));
   document.addEventListener("keydown", onKey);
+  document.addEventListener("click", onZoomClick);
 }

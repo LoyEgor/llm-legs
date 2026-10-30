@@ -212,6 +212,7 @@ try {
   await page.click(".gc:nth-child(2)");
   await ready(page);
   check("grid opens an item without a vote widget", (await strong(page)).startsWith("2") && !(await page.$(".votes")));
+  check("compare keeps its own zoom: no shell full-screen over it", (await page.$(".zoom")) === null);
   await page.keyboard.press("Escape");
   check("Esc returns to the grid", !!(await page.$(".grid")));
   await page.close();
@@ -290,6 +291,16 @@ try {
     return [first, a.paused, b.paused];
   });
   check("starting one clip pauses the other", JSON.stringify(play) === "[true,true,false]", JSON.stringify(play));
+  await page.waitForFunction(() => document.querySelector('.card[data-id="c13"] img')?.naturalWidth);
+  await page.click('.card[data-id="c13"] img');
+  const z0 = await page.waitForFunction(() => document.querySelector(".zoom>img")?.naturalWidth && document.querySelector(".zoom>img").style.transform, null, { timeout: 3000 }).catch(() => null);
+  check("a click on a card picture opens it full screen", z0 !== null);
+  const scale = () => page.$eval(".zoom>img", (im) => +/scale\(([\d.]+)\)/.exec(im.style.transform)[1]);
+  const s0 = await scale();
+  await page.mouse.move(700, 400); await page.mouse.wheel(0, -400); await page.waitForTimeout(100);
+  check("the wheel zooms the full-screen picture", (await scale()) > s0 * 1.3, JSON.stringify([s0, await scale()]));
+  await page.keyboard.press("Escape");
+  check("Esc closes it", (await page.$(".zoom")) === null);
   await page.evaluate(() => scrollTo(0, 0));
   await shot(page, "cards.png");
   await page.close();

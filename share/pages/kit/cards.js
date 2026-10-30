@@ -6,7 +6,7 @@
 import { h, get, save, textBox, onState, doneWhen, firstOpen, keys, lazy, num } from "/kit/shell.js";
 
 const CSS = `
-.cards{max-width:820px;margin:0 auto}
+.cards{max-width:1440px;margin:0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px 10px 56px;margin:10px 0;position:relative}
 .card>.n{position:absolute;left:14px;top:12px;font:700 20px/1 system-ui;font-variant-numeric:tabular-nums}
 .card.done>.n{color:var(--on)}

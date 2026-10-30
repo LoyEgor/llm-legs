@@ -22,6 +22,11 @@ textarea{resize:vertical;min-height:40px}
 .sg{color:var(--mute);font-size:13px;border:1px dashed var(--line);border-radius:6px;padding:2px 8px}
 .sg::before{content:"машина: "}
 .err{color:var(--err)}
+main img{cursor:zoom-in}[data-own-zoom] img{cursor:inherit}
+.zoom{position:fixed;inset:0;z-index:50;background:rgba(12,12,14,.94);overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab}
+.zoom>img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;-webkit-user-drag:none}
+.zbar{position:absolute;left:0;right:0;bottom:0;height:44px;display:flex;gap:16px;align-items:center;padding:0 12px;background:rgba(12,12,14,.8);color:#f2f2f2;cursor:auto}
+.zbar .mute{color:#a3a3aa;margin-right:auto}.zpos{font-variant-numeric:tabular-nums}
 </style></head><body>
 <header><h1 id="title"></h1><span id="intro"></span><span id="count"></span><span id="cap" hidden>на сегодня хватит</span><span id="status"></span></header>
 <main id="app"></main>

@@ -42,6 +42,7 @@ const hot = new Map(), inked = new WeakSet();
 export function render(spec) {
   S = spec;
   ids = S.items.map((it) => it.id);
+  app.dataset.ownZoom = ""; // the loupes are this module's zoom, so the shell's stays out
   if (!document.getElementById("cmp-css")) document.head.append(h("style", { id: "cmp-css" }, CSS));
   const view = S.mode === "view";
   doneWhen(view ? null : (id) => get(id, "choice") != null);
