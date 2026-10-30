@@ -13666,6 +13666,24 @@
       "reviewed_by": "night 20261030T012330Z-5867 harness-tests-20261030T023059Z-7fe1",
       "note": "Not a block: run 35849 (worker claudeb-1793284438-11496-6d91, 2026-10-29 14:41-15:20Z) shards wall 703/615/386/295 s, cpu 24/30/33/38 s (a pass: ~50 s and ~32 s a shard), the rest 650 s at most run-queue wait. Harness samples in the window: busy 0.999-1.0, kernel 0.48-0.57, the 5-min sampler itself 15 min apart; this run's suites drew 1.8 cores, and the rest of the machine was other load (weather). The red was ours: shard 2's only FAIL, test_worker_run_entry.sh:185 'test 0 = 4': the duplicate-run case started its first run on STUB_SLEEP=60, and a starved second start reached the check after that stub had exited, so nothing was live to refuse; test_hang counts only red runs. Fix: the first run waits on start_gated's gate, opened after the asserts. Proof: the old case with the second start delayed 65 s fails the same assert, the new one passes 11 asserts. The other reds of run 35849 (test_worker_run_files, lifecycle, rounds, test_llm_limits_refresh 1174 s) are not this row's. Same class as test_hang-llm-legs-test_llm_limits: a wall-clock window inside a fixture fails under starvation, a class candidate for docs/directions/breakages.md.",
       "handoff": null
+    },
+    {
+      "id": "dig-night-hub-land-script",
+      "title": "every night hub writes its own /tmp land.sh for fix-orchestrator step 4, and each one has its own bug",
+      "match": {
+        "rule": "dig",
+        "ident": "dig/night-hub-land-script"
+      },
+      "status": "open",
+      "expected_min_day": 5,
+      "fixes": [],
+      "same_cause": [
+        "regression-test-health-retests-night-reruns"
+      ],
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "night 20261030T012330Z-5867 hub",
+      "note": "2026-10-30 (night 20261030T012330Z-5867): the docs/fix-orchestrator.md step 4 sequence (merge-base/night ref, tests/affected --overlap before the rebase, rebase per ADD-DIR repo, run-all, ff-merge, teardown, nr job set merged) is retyped by each hub: 74c1 (10-29) picked red suites with grep -oE test_ and reran ~40 green suites, 26.8 min (row regression-test-health-retests-night-reruns); 5867 (10-30) computed --overlap after the rebase and selected nothing, then fell back to the full covering set (deep-search landing 97 suites, 946 s wall against its overlap); 74c1 also left a stale lock (log_audit:night-landing-serialization-and-retry). Candidate: one `nr land <ref>` doing step 4 as written, red/green on a fixture night; proof: hub landing wall per branch and suites run per landing, old against new.",
+      "handoff": null
     }
   ],
   "blind_spots": [
