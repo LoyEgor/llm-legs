@@ -167,7 +167,7 @@ def _web(label: str) -> list:
     return [
         Entries(f"{label} browser profile", lambda: root() / "profiles"),
         Entries(f"{label} account meta", lambda: root() / "accounts", r"{name}\.json"),
-        Entries(f"{label} account lock", lambda: root() / "locks", r"{name}\.lock"),
+        Entries(f"{label} account lock", lambda: root() / "locks", r"{name}(\.serve|\.full|\.slot-[0-9]+)?\.lock"),
         JsonNames(f"{label} wall", root, "walls.json"),
     ]
 
@@ -177,6 +177,7 @@ def stores(vendor: str) -> list:
     table = {
         "claude": _shared("claudeb"),
         "codex": _shared("codex") + _web("chatgpt-web") + [
+            Entries("chatgpt-web account server socket", lambda: _web_roots()["chatgpt-web"] / "locks", r"{name}\.sock"),
             Entries("fast-mode setting", lambda: _paths("codex")["pool"] / "fast-mode"),
             Entries("gateway login", lambda: Path(gateway_auth.gateway_accounts_dir())),
             Entries("statusline quota kick", lambda: _dir("STATUSLINE_CACHE_DIR", "~/.cache/claude-statusline"),

@@ -2628,6 +2628,13 @@
    "reason": "review-bench judge.judge_pass keeps only panel.failure_reason(stderr) as the judge's reason, so the opus judge of round 20261009T111707Z-4e0053c, SIGTERMed (exit 143) mid-thinking with no stall, no memlogd KILLED line and its panel exiting 0, was stored as the bare word `bad output` (from `no result event`), which judge_leg cannot classify.",
    "since": "2026-10-10",
    "would_catch_if": "the judge record kept its stderr tail and the received signal's sender, and judge_leg read a signal exit (130/143) the way classify_bench reads a cell's"
+  },
+  {
+   "id": "web-route-account-logs",
+   "what": "Per-account files under the web routes' logs/ are neither purged by `<vendor>b remove` nor seen by the remnant check",
+   "reason": "share/account_stores.py _web lists profiles, accounts, locks and walls only; ~/.chatgpt-web/logs and ~/.gemini-web/logs keep <account>-chrome.log, -chrome.sh, -chrome-cdp.sh, -host.log and -serve.log, and burkhartor's are still there off the codex roster. Found 2026-10-30 by llm-doctor-20261030T022954Z-78ec while fixing the serve/slot/full lock names (4eb25d60) that read as 30 false codex remnants.",
+   "since": "2026-10-30",
+   "would_catch_if": "_web held an Entries over root()/logs matching {name}-(chrome|chrome-cdp|host|serve)\\.(log|sh), with tests/test_account_purge.sh's fill helper able to build a name from a non-optional alternation"
   }
  ]
 }

@@ -38,7 +38,7 @@ for store in a.stores(vendor):
         continue
     for name in names:
         if isinstance(store, a.Entries):
-            path = store.folder() / re.sub(r"\(.*\)\?$", "", store.regex.pattern[1:-1].replace(
+            path = store.folder() / re.sub(r"\((?:[^()]|\([^()]*\))*\)\?", "", store.regex.pattern[1:-1].replace(
                 f"(?P<name>{a.NAME})", name)).replace("\\", "")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.mkdir() if store.label.endswith("profile") or store.label == "gateway login" else path.touch()
@@ -101,6 +101,14 @@ assert test "$(python3 "$ROOT/share/account_stores.py" remnants)" = \
   "$(printf 'codex\tghost\tstatusline quota kick')"
 assert python3 "$ROOT/share/account_stores.py" purge codex ghost >/dev/null
 assert test ! -e "$kicks/codex-quota-kick-ghost.lock"
+
+# The account server's lock files and socket (chatgpt-web serve) belong to their account, never name one.
+locks="$HOME/.chatgpt-web/locks"
+touch "$locks/kept.serve.lock" "$locks/kept.full.lock" "$locks/kept.slot-1.lock" "$locks/ghost.slot-2.lock" "$locks/ghost.sock"
+assert test "$(python3 "$ROOT/share/account_stores.py" remnants)" = \
+  "$(printf 'codex\tghost\tchatgpt-web account lock, chatgpt-web account server socket')"
+assert python3 "$ROOT/share/account_stores.py" purge codex ghost >/dev/null
+assert test ! -e "$locks/ghost.slot-2.lock" -a ! -e "$locks/ghost.sock" -a -e "$locks/kept.slot-1.lock"
 
 # A failed pool path read or pool rewrite is an error line and exit 1, never a traceback.
 fail_bash() { printf 'case "$BASH_EXECUTION_STRING" in *%s*) exit 3 ;; esac\n' "$1" >"$WORK/bash-env"; }
