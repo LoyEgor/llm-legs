@@ -30,6 +30,9 @@ SHORT_ID = 8
 # Chat names live in the transcript as their own tiny events: one he typed ("custom-title") and one
 # the model guessed ("ai-title").
 NAME_PATTERNS = ('"custom-title"', '"ai-title"')
+# The bytes both patterns share: a block of a transcript without them holds no name.
+TITLE_MARK = b'-title"'
+READ_CHUNK = 4 << 20
 NAME_LINE_MAX = 8 * 1024
 ARGV_ROOM = 128 * 1024
 # A worker, bench or subagent run is not a chat: it was launched BY one to carry out an errand.
@@ -43,6 +46,7 @@ SESSION_OK = re.compile(r"^[A-Za-z0-9._-]+$")
 SESSION_PREFIX = re.compile(r"^[0-9a-fA-F]{8,}$")
 ROOTS_ENV = "CHAT_NAME_ROOTS"
 CACHE_ENV = "CHAT_NAMES_CACHE"
+LAUNCHERS_CACHE_ENV = "WORKER_LAUNCHERS_CACHE"
 CACHE_VERSION = 1
 # A launcher that is itself a worker of another chat is a nested spawn; the walk stops well before
 # a run record that names itself could spin here.
@@ -84,17 +88,72 @@ def worker_run_launchers():
         directories = sorted(worker_run_root().iterdir())
     except OSError:
         return {}
+    store = launchers_cache_path()
+    cached = _read_launchers(store) if store else {}
+    rows = {}
     for directory in directories:
+        # Two reads per run were 0.09 s over 2400 runs, 0.7 s off a cold disk (2026-10-30); a stat
+        # is a tenth of that. worker-run writes `launcher` before the run starts and only appends to
+        # `worker-session` after, so the second file's (size, mtime) dates the whole pair.
         try:
-            launcher = (directory / "launcher").read_text().strip()
-            workers = (directory / "worker-session").read_text().split()
-        except (OSError, ValueError):
+            info = (directory / "worker-session").stat()
+        except OSError:
             continue
+        stamp = [info.st_size, info.st_mtime_ns]
+        row = cached.get(directory.name)
+        if not (isinstance(row, list) and len(row) == 4 and row[:2] == stamp):
+            try:
+                row = stamp + [(directory / "launcher").read_text().strip(),
+                               (directory / "worker-session").read_text().split()]
+            except (OSError, ValueError):
+                continue
+        rows[directory.name] = row
+        launcher, workers = row[2], row[3]
         if not launcher:
             continue
         for worker in workers:
             mapping.setdefault(worker, set()).add(launcher)
+    if store and rows != cached:
+        _write_json(store, {"version": CACHE_VERSION, "rows": rows})
     return mapping
+
+
+def launchers_cache_path():
+    """Where the run records' pairs are kept: named, or his own store's; a store a fixture points
+    WORKER_RUN_DIR at gets none, since the cache is keyed by run directory name alone."""
+    override = os.environ.get(LAUNCHERS_CACHE_ENV)
+    if override:
+        return Path(override)
+    if os.environ.get("WORKER_RUN_DIR"):
+        return None
+    return Path.home() / ".cache" / "claude" / "worker-launchers.json"
+
+
+def _read_launchers(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    rows = data.get("rows") if isinstance(data, dict) and data.get("version") == CACHE_VERSION else None
+    return rows if isinstance(rows, dict) else {}
+
+
+def _write_json(path, data):
+    """Best effort, whole or not at all: a reader that cannot write its cache is slow, never wrong."""
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        os.makedirs(path.parent or ".", exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
 
 
 def worker_session_launchers():
@@ -147,6 +206,22 @@ def clean_name(text):
     return " ".join(str(text).split())[:NAME_MAX]
 
 
+def note_title(found, payload):
+    """Fold one transcript line into `found` (`{"custom": …, "ai": …}`) where it is a chat-name
+    event, reporting whether it was one. The last name of each kind wins."""
+    try:
+        entry = json.loads(payload.decode("utf-8", "replace"))
+    except ValueError:
+        return False
+    key = {"custom-title": "custom", "ai-title": "ai"}.get(entry.get("type"))
+    if not key:
+        return False
+    text = entry.get("customTitle") if key == "custom" else entry.get("aiTitle")
+    if isinstance(text, str) and text.strip():
+        found[key] = clean_name(text)
+    return True
+
+
 def note_name(names, raw):
     """Record one chat-name event, reporting whether the line was one.
 
@@ -156,18 +231,44 @@ def note_name(names, raw):
     path, payload = split_hit(raw)
     if payload is None:
         return False
-    try:
-        entry = json.loads(payload.decode("utf-8", "replace"))
-    except ValueError:
+    found = dict(names.get(path) or {"custom": None, "ai": None})
+    if not note_title(found, payload):
         return False
-    key = {"custom-title": "custom", "ai-title": "ai"}.get(entry.get("type"))
-    if not key:
-        return False
-    text = entry.get("customTitle") if key == "custom" else entry.get("aiTitle")
-    if not isinstance(text, str) or not text.strip():
-        return True
-    names.setdefault(path, {"custom": None, "ai": None})[key] = clean_name(text)
+    if any(found.values()):
+        names[path] = found
     return True
+
+
+def names_from(path, start, found=None):
+    """`(names, end)`: `found` updated with the chat-name events of `path` from byte `start` to its
+    last whole line, and the offset just past that line.
+
+    A transcript only grows, so a caller keeping both reads each byte once instead of the whole
+    file on every listing (a week of his chats is 3.8 GB, 2026-10-30). None where `start` opens no
+    line — the file was cut or rewritten under the offset — which only a whole read answers.
+    """
+    found = dict(found or {"custom": None, "ai": None})
+    try:
+        with open(path, "rb") as handle:
+            if start:
+                handle.seek(start - 1)
+                if handle.read(1) != b"\n":
+                    return None
+            end, tail = start, b""
+            while True:
+                chunk = handle.read(READ_CHUNK)
+                if not chunk:
+                    break
+                block = tail + chunk
+                cut = block.rfind(b"\n") + 1
+                if block.find(TITLE_MARK, 0, cut) >= 0:
+                    for raw in block[:cut].split(b"\n"):
+                        if len(raw) < NAME_LINE_MAX and TITLE_MARK in raw:
+                            note_title(found, raw)
+                end, tail = end + cut, block[cut:]
+    except OSError:
+        return None
+    return found, end
 
 
 def names_by_path(root=None, paths=None, strict=False):
@@ -378,22 +479,8 @@ def _cache():
 def flush_cache():
     """Best effort: a resolver that cannot write its cache is slow, never wrong."""
     state = _cache()
-    if not state["dirty"]:
-        return
-    path = cache_path()
-    tmp = f"{path}.tmp.{os.getpid()}"
-    try:
-        os.makedirs(path.parent or ".", exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump({"version": CACHE_VERSION, "rows": state["rows"]}, handle,
-                      ensure_ascii=False)
-        os.replace(tmp, path)
+    if state["dirty"] and _write_json(cache_path(), {"version": CACHE_VERSION, "rows": state["rows"]}):
         state["dirty"].clear()
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
 
 
 atexit.register(flush_cache)

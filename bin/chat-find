@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
 import chat_resume  # noqa: E402
 from chat_names import (  # noqa: E402
-    HEADLESS_VIA, NAME_LINE_MAX, NAME_PATTERNS, chat_name, names_by_path, note_name,
+    HEADLESS_VIA, NAME_LINE_MAX, NAME_PATTERNS, chat_name, names_by_path, names_from, note_name,
     project_label, searcher, split_hit, store_names, worker_run_launchers,
 )
 
@@ -40,6 +40,9 @@ MAX_HITS_PER_FILE = 200
 CACHE = os.environ.get("CHAT_FIND_CACHE") or os.path.expanduser(
     "~/.claude-profiles/.claudeb/chat-recent-cache.json")
 CACHE_VERSION = 5
+# A cache row's own fields, never listed: its (size, mtime) key, and the names its transcript
+# records with the offset they were read to.
+PRIVATE = ("key", "names", "named")
 HOT_DAYS = 7
 # A transcript can end with megabytes of tool output after the last word spoken,
 # so the backward scan grows until it finds speech instead of trusting one window.
@@ -502,7 +505,7 @@ def measured(path, key):
             "spoke": facts["spoke"], "uuid": facts["uuid"], "ttl": facts["ttl"]}
 
 
-def scan_recent(root, days, cache_path, agents=False):
+def scan_recent(root, days, cache_path, agents=False, limit=None):
     """Every chat whose last real message falls in the window, newest first.
 
     File mtime is an upper bound on that message — a transcript is only written
@@ -546,15 +549,23 @@ def scan_recent(root, days, cache_path, agents=False):
             key = "%d:%r" % (info.st_size, info.st_mtime)
             row = seen.get(path)
             if not isinstance(row, dict) or row.get("key") != key:
-                row = measured(path, key)
+                fresh = measured(path, key)
+                # The names read so far still stand: the transcript only grew past them.
+                if isinstance(row, dict) and isinstance(row.get("named"), int):
+                    fresh.update(names=row.get("names"), named=row["named"])
+                row = fresh
             seen[path] = row
             when = row.get("at")
             if not when or (horizon and when < horizon):
                 continue
             if not agents and row.get("via") == HEADLESS_VIA:
                 continue
-            listed = {field: value for field, value in row.items() if field != "key"}
+            listed = {field: value for field, value in row.items() if field not in PRIVATE}
             rows.append(dict(listed, path=path, session=name[: -len(".jsonl")]))
+    rows.sort(key=lambda row: row["at"], reverse=True)
+    if limit:
+        rows = rows[:limit]
+    name_rows(rows, seen, root)
     if cache_path:
         new_hot = {path: row for path, row in seen.items() if modified(row) >= cutoff}
         if not wide and len(new_hot) < len(seen):
@@ -569,8 +580,33 @@ def scan_recent(root, days, cache_path, agents=False):
                      if path in walked or os.path.exists(path)}
             if after != before:
                 save_cache(target, after)
-    rows.sort(key=lambda row: row["at"], reverse=True)
     return rows
+
+
+def name_rows(rows, seen, root):
+    """Each listed row's `title`, the name its own transcript records, kept on its cache row with
+    the offset it was read to. A grown transcript is read from that offset on; only one never read
+    (or cut under it) goes to the matcher whole, all of them in one pass."""
+    whole = []
+    for row in rows:
+        cached = seen[row["path"]]
+        size = int(cached["key"].split(":", 1)[0])
+        named = cached.get("named")
+        got = (cached.get("names"), named) if named == size else \
+            names_from(row["path"], named, cached.get("names")) if isinstance(named, int) and named < size else None
+        if not got:
+            whole.append(row)
+            continue
+        cached["names"], cached["named"] = got
+        row["title"] = (got[0] or {}).get("custom") or (got[0] or {}).get("ai")
+    found = names_by_path(root, [row["path"] for row in whole], strict=True) if whole else {}
+    for row in whole:
+        names = (found or {}).get(row["path"]) or {"custom": None, "ai": None}
+        row["title"] = names.get("custom") or names.get("ai")
+        # A matcher that failed read nothing: no offset is kept, so the next listing asks again.
+        if found is not None:
+            cached = seen[row["path"]]
+            cached["names"], cached["named"] = names, int(cached["key"].split(":", 1)[0])
 
 
 def short_model(name):
@@ -585,14 +621,10 @@ def report_recent(args):
     # points at) gets no cache unless one is named: the shared cache is keyed by
     # path alone and must not mix corpora.
     cache_path = args.cache or (CACHE if args.root == HIS_CORPUS else None)
-    rows = scan_recent(args.root, args.days, cache_path, args.agents)
-    if args.limit:
-        rows = rows[: args.limit]
-    names = names_by_path(args.root, [row["path"] for row in rows])
+    rows = scan_recent(args.root, args.days, cache_path, args.agents, args.limit)
     launchers, store = worker_run_launchers(), store_names()
     for row in rows:
-        title = names.get(row["path"]) or {}
-        row["name"] = chat_name(row["session"], title.get("custom") or title.get("ai"),
+        row["name"] = chat_name(row["session"], row.pop("title", None),
                                 headless=row.get("via") == HEADLESS_VIA, launchers=launchers,
                                 store=store)
     if args.json:

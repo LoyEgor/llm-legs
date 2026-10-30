@@ -41,6 +41,8 @@ printf 'v2 1785996700 alona 0 3600 anthropic.ccr.astra reply-1 872000 1785996700
   > "$TRACKS/cache-ttl-track-gw1"
 # Never his real gateway store: the picker reads stamps out of it.
 export CLAUDEGPT_HOME="$WORK/claudegpt"
+# Never his real Speed journal: every launch the picker sees writes a chats-start line.
+export SPEED_DOCTOR_DIR="$WORK/speed"
 mkdir -p "$CLAUDEGPT_HOME/accounts" "$CLAUDEGPT_HOME/sessions"
 # A Claude chat once reopened through claudegpt keeps that launch's stamp for good.
 printf 'v1 borodatch astra\n' > "$CLAUDEGPT_HOME/sessions/6ebc3bbe-66ec-498e-9f3d-736e61eed0ba"
@@ -753,8 +755,18 @@ print("idle-quiet:", len(frames) <= 6)
 PYFAST
 
 OUT=$(FAST_STATE=$(mktemp -d "$FAST/state.XXXX") FAST_PEER=1 PATH="$FAST/bin:$PATH" \
-  python3 "$FAST/probe.py" "$SCRIPT" "$FAST" gamma) \
+  SPEED_DOCTOR_DIR="$FAST/speed" python3 "$FAST/probe.py" "$SCRIPT" "$FAST" gamma) \
   || fail "startup probe failed"
+# The launch leaves the Speed doctor one line: its own start, then the first paint, the first rows
+# and the account order in that order, the rows and the window it showed, the load per CPU.
+JOURNAL=$(cat "$FAST"/speed/chats-start/*.tsv 2>/dev/null)
+assert test "$(wc -l <<<"$JOURNAL" | tr -d ' ')" = 1
+assert python3 -c '
+import sys
+start, paint, rows, rank, count, days, load = sys.argv[1].split("\t")
+assert int(start) <= int(paint) <= int(rows) and int(rank) >= int(paint), sys.argv[1]
+assert (count, days) == ("3", "7") and float(load) >= 0, sys.argv[1]
+' "$JOURNAL"
 
 echo "$OUT" | grep '^timing:'
 assert has_line 'quit: None' "$OUT"

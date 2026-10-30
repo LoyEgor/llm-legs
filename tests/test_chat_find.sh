@@ -445,6 +445,30 @@ recent --days 1
 assert test "$RC" -eq 0
 assert test "$(cached_rows "$HOTC" '"обрезано \ud83d"')" = 0
 
+# --- a name is read once: a listing reads only what a transcript appended -------
+# A week of his chats is 3.8 GB, and every listing used to match all of it for the names. After
+# one listing each row keeps its names and the offset they were read to, so a matcher that fails
+# from here on is never asked about a transcript already read, and a rename still shows.
+recent
+mkdir -p "$WORK/no-rg"
+printf '#!/bin/sh\necho "$*" >>"%s/rg-calls"\nexit 2\n' "$WORK" >"$WORK/no-rg/rg"
+chmod +x "$WORK/no-rg/rg"
+emit "$NAMED" "{'type':'custom-title','customTitle':'Оверлей: третье имя','sessionId':'77777777-7777-7777-7777-777777777777'}"
+OUT=$(PATH="$WORK/no-rg:$PATH" "$SCRIPT" --root "$WORK/projects" --cache "$WORK/cache.json" --recent 2>&1); RC=$?
+assert test "$RC" -eq 0
+assert grep -q '^  77777777-7777-7777-7777-777777777777  Оверлей: третье имя$' <<<"$OUT"
+assert grep -q '^  88888888-8888-8888-8888-888888888888  Machine guess about гадание$' <<<"$OUT"
+assert test ! -e "$WORK/rg-calls"
+# A transcript rewritten shorter than the offset is read whole again.
+python3 - "$NAMED" <<'PY'
+import sys
+lines = [line for line in open(sys.argv[1], encoding="utf-8").read().splitlines() if "-title" not in line]
+lines.append('{"type":"custom-title","customTitle":"Короче","sessionId":"77777777-7777-7777-7777-777777777777"}')
+open(sys.argv[1], "w", encoding="utf-8").write("\n".join(lines) + "\n")
+PY
+recent
+assert grep -q '^  77777777-7777-7777-7777-777777777777  Короче$' <<<"$OUT"
+
 # --- a chat closed right after /compact ends on what was said before it ---------
 COMPACTED="$CORPUS/19191919-1919-1919-1919-191919191919.jsonl"
 said "$COMPACTED" 2026-02-12T13:00:00.000Z user 'последнее слово до сжатия'

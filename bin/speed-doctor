@@ -91,6 +91,10 @@ LEVERS = [
      "lever": "Better Terminal callbacks off Hammerspoon's main thread: the slowest bt:<callback> spans in the hs journal",
      "effort": "M", "confidence": "measured", "saving": 0.5, "night_cost_h": 0.0, "proof": "tail",
      "quality": "equivalent"},
+    {"component": "background/chats start",
+     "lever": "chats first rows off per-launch reads: what chat-find, the run records or a poll tick re-read each launch",
+     "effort": "S", "confidence": "measured", "saving": 0.5, "night_cost_h": 0.0, "proof": "latency",
+     "quality": "equivalent"},
 ]
 SLICE_LEVER = {"effort": "M", "confidence": "unmeasured", "saving": 0.3, "night_cost_h": 0.0, "proof": "tail",
                "quality": "equivalent"}
@@ -104,7 +108,12 @@ LOCAL_LEAVES = ("hooks", "tests", "media", "tools", "residual", "start")
 METRICS = {"chat.om_per_100_prompts": ("chat", 30), "delegation.pre_cli_s": ("delegation/workers", 10),
            "media.fix_ms_per_frame": ("delegation/media", 3), "media.door_s_per_image": ("delegation/media", 5),
            "background.statusline_cpu_ms_per_sh": ("background/statusline", 200),
-           "background.merge_kick_cpu_ms": ("background/statusline", 20), "night.wall_h_per_job": ("night", 5)}
+           "background.merge_kick_cpu_ms": ("background/statusline", 20), "night.wall_h_per_job": ("night", 5),
+           "background.chats_rows_s": ("background/chats start", 3)}
+# A contract ceiling is red over its value on both judged days whatever its baseline and its minutes: `chats` to
+# its first rows is a wait of seconds a few times a day, under the OM floor however slow, and Egor asked the night
+# to hear of it (2026-10-30). 0.18-0.3 s live after the per-launch reads went, 0.7-2.6 s before.
+CEILINGS = {"background.chats_rows_s": 0.5}
 QUALITY = ("equivalent", "risk")
 EVIDENCE_KEYS = ledger_contract.EVIDENCE_KEYS
 FORBIDDEN_LEVER = re.compile(r"(?i)\b(models?|opus|sonnet|haiku|fable|flash|gpt[\w.-]*|cheaper|downgrades?|effort|"
@@ -448,13 +457,23 @@ def probe_days(lo):
 
 def prune_journals(now):
     cutoff = H.local_day(now - JOURNAL_DAYS * 86400)
-    for sub in ("hs", "merge-kick", "statusline-probes", "presence", "backfill"):
+    for sub in ("hs", "merge-kick", "statusline-probes", "presence", "backfill", "chats-start"):
         for path in glob.glob(os.path.join(state_dir(), sub, "????-??-??.*")):
             if os.path.basename(path)[:10] < cutoff:
                 try:
                     os.unlink(path)
                 except OSError:
                     pass
+
+
+def chats_starts(lo):
+    """(start, seconds to the first rows) of each `chats` launch from lo on, off its chats-start journal; None where
+    he left before any row showed."""
+    out = []
+    for f in tsv_days(os.path.join(state_dir(), "chats-start"), lo):
+        if len(f) >= 3 and f[0].isdigit() and int(f[0]) / 1e6 >= lo:
+            out.append((int(f[0]) / 1e6, (int(f[2]) - int(f[0])) / 1e6 if f[2].isdigit() else None))
+    return out
 
 
 def presence_minutes(lo):
@@ -852,7 +871,7 @@ def media_view(rows, lo, covered):
     return out
 
 
-def day_values(day, credit, prompts, statusline_day, kicks_day, runs, night, media=()):
+def day_values(day, credit, prompts, statusline_day, kicks_day, runs, night, media=(), picks=()):
     """Unit metrics of one closed day, keyed metric|ident|band, with their exposure; a caller may pass only the day's rows."""
     out = {}
     chat_min = sum(v for (d, area, _), v in credit.items() if d == day and area == "chat") / 60.0
@@ -874,6 +893,9 @@ def day_values(day, credit, prompts, statusline_day, kicks_day, runs, night, med
         out["background.merge_kick_cpu_ms|all|-"] = [round(sum(kicks_day), 1), len(kicks_day)]
     if night and night.get("jobs_done") and H.local_day(night["started"]) == day:
         out["night.wall_h_per_job|all|-"] = [round(night["wall_h"] / night["jobs_done"], 3), night["jobs_done"]]
+    waits = [secs for at, secs in picks if secs is not None and H.local_day(at) == day]
+    if waits:
+        out["background.chats_rows_s|all|-"] = [round(H.median(waits), 3), len(waits)]
     for command, unit, scale, metric in MEDIA_POST:
         by_band = {}
         for r in media:
@@ -915,6 +937,17 @@ def judge_regressions(days, today, component_om):
             continue
         component, exposure_min = METRICS[metric]
         past = [days[d]["values"][key][0] for d in history if key in (days[d].get("values") or {})]
+        ceiling = CEILINGS.get(metric)
+        if ceiling is not None:
+            seen = [(days[d].get("values") or {}).get(key) for d in judged]
+            if len(judged) == LIMITS["regression_days"] and all(v and v[1] >= exposure_min and v[0] > ceiling for v in seen):
+                out.append({"key": key, "component": component, "value": seen[-1][0], "limit": ceiling,
+                            "exposure": seen[-1][1], "days": judged, "om_day": round(component_om(component), 2),
+                            "levers": [l["lever"] for l in shown_levers(LEVERS) if l["component"] == component],
+                            "ceiling": True})
+            if past:
+                baselines[key] = {"median": H.median(past), "days": len(past)}
+            continue
         if not past:
             continue
         base = H.median(past)
@@ -1519,6 +1552,15 @@ def collect(write, now):
         credit[(day, "chat", "start")] = secs
     days = speed_days(lo, now)
     background = background_view(days, lo, now, collector_rows, covered)
+    picks = chats_starts(lo)
+    waits = [secs for _, secs in picks if secs is not None]
+    background["chats"] = {"launches_day": round(len(picks) / covered, 2),
+                           "rows_p50_s": round(H.median(waits), 2) if waits else None,
+                           "rows_p95_s": round(H.percentile(waits, 0.95), 2) if waits else None}
+    for at, secs in picks:
+        if secs is not None:
+            key = (H.local_day(at), "background", "chats start")
+            credit[key] = credit.get(key, 0.0) + secs
     if background["hs"]["lag_min_day"] or background["hs"]["bt_min_day"]:
         spans = [(int(f[0]) / 1e6, int(f[1]) / 1e6, f[2]) for f in tsv_days(os.path.join(state_dir(), "hs"), lo)
                  if len(f) >= 3 and f[0].isdigit() and f[1].isdigit() and int(f[0]) / 1e6 >= lo]
@@ -1592,7 +1634,8 @@ def collect(write, now):
             computed.add(day)
             stored[day] = {"day": day, "values": day_values(day, old_credit if day in old_days else credit, prompts,
                                                             (days.get(day) or {}).get("statusline"), kicks.get(day),
-                                                            runs_by_day.get(day, ()), last, media_by_day.get(day, ()))}
+                                                            runs_by_day.get(day, ()), last, media_by_day.get(day, ()),
+                                                            picks)}
     regressions, baselines = judge_regressions(stored, today, component_om)
 
     problems = []

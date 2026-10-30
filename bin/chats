@@ -41,6 +41,11 @@ WINDOWS = (7, 30, 120, 0)
 # conversation itself off the right edge.
 CAPS = (22, 12, 10)
 FOOTER = ("claudeb", "gpt")
+# What he waits for after typing `chats`, one line a launch for the Speed doctor (C10 background
+# journals): the first paint, the first rows, the account order landing. Filled by run().
+SPEED_DIR = os.environ.get("SPEED_DOCTOR_DIR") or os.path.expanduser("~/.cache/speed-doctor")
+MARKS = {"began": time.time(), "paint": None, "rows": None, "rank": None, "count": 0, "days": None,
+         "written": False}
 USAGE = ("usage: chats --open-command SESSION [--timeout SECONDS]\n"
          "usage: chats [--days N | --all] [--print]\n"
          "  ↑↓ chat · ←→ account (one ring over both lines) · shift+↑↓ line\n"
@@ -114,6 +119,30 @@ class Job:
         self.thread.join()
         self.thread, result, self.result = None, self.result, None
         return result
+
+
+def journal_start():
+    """`<start_us> <paint_us> <rows_us> <rank_us> <rows> <days> <load>` into chats-start/<day>.tsv,
+    once a launch, '-' for what never landed. The start is the process's own, so the interpreter's
+    start counts as waiting too; load is the 1-min load average per CPU when the line is written."""
+    if MARKS["written"]:
+        return
+    MARKS["written"] = True
+    try:
+        import machine_probe
+        info = machine_probe.proc_info(os.getpid())
+        start = info[2] if info and info[2] else MARKS["began"]
+        stamp = lambda at: "%d" % (at * 1e6) if at else "-"
+        days = MARKS["days"]
+        line = "\t".join((stamp(start), stamp(MARKS["paint"]), stamp(MARKS["rows"]), stamp(MARKS["rank"]),
+                          str(MARKS["count"]), "%g" % days if days else "all",
+                          "%.2f" % (os.getloadavg()[0] / (os.cpu_count() or 1))))
+        folder = os.path.join(SPEED_DIR, "chats-start")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, time.strftime("%Y-%m-%d", time.localtime(start)) + ".tsv"), "a") as handle:
+            handle.write(line + "\n")
+    except Exception:
+        pass
 
 
 def profiles():
@@ -545,7 +574,6 @@ def run(screen, chats, names, used, profile, level, windows):
         curses.use_default_colors()
     except curses.error:
         pass
-    screen.timeout(100)
     view = {"cursor": 0, "top": 0, "now": time.time()}
     needle, note, scrolled, landed, opening = "", "", False, None, None
     listing, ranked = Job(), Job()
@@ -580,6 +608,7 @@ def run(screen, chats, names, used, profile, level, windows):
                 listing.start(fetcher(windows[pending]))
         if ranked.landed():
             boards, shown = ranked.take(), None
+            MARKS["rank"] = MARKS["rank"] or time.time()
         rows = [row for row in chats if matches(row, needle)]
         # The bar is the ranking of the bucket the landed chat spends, so a Fable chat and an
         # Opus chat are each offered the account freest for their own model.
@@ -627,8 +656,16 @@ def run(screen, chats, names, used, profile, level, windows):
         view["top"] = max(0, min(view["top"], max(0, len(rows) - height)))
         draw(screen, rows, view, names, profile, needle, used, note)
         note = ""
-        # The 100ms timeout exists only to notice a landed load; repainting on every
-        # empty tick would redraw an idle picker ten times a second for nothing.
+        MARKS["paint"] = MARKS["paint"] or time.time()
+        if ready and not MARKS["rows"]:
+            MARKS.update(rows=time.time(), count=len(chats), days=windows[level])
+        if MARKS["rows"] and MARKS["rank"]:
+            journal_start()
+        # The timeout exists only to notice a landed load; repainting on every empty
+        # tick would redraw an idle picker ten times a second for nothing. While a load
+        # is in flight it ticks every 10 ms: at 100 ms the wait for the tick was a third
+        # of the time to the first rows (2026-10-30).
+        screen.timeout(10 if listing.thread or ranked.thread else 100)
         key = None
         if opening is not None and rows and rows[view["cursor"]].get("session") == opening:
             key = curses.KEY_ENTER
@@ -848,6 +885,8 @@ def main():
         chosen = curses.wrapper(run, None, None, None, None, 0, windows)
     except KeyboardInterrupt:
         return
+    finally:
+        journal_start()
     if not chosen:
         return
     (vendor, account), row, cwd = chosen

@@ -655,6 +655,15 @@ history.update({d: {"values": {key: [20.0, 100], bare: [20.0, 100]}} for d in ("
 check([(r["key"], bool(r["levers"])) for r in module.judge_regressions(history, "2026-10-02", lambda c: 10.0)[0]]
       == [(key, True), (bare, False)],
       "a regression whose component no lever names is still judged, its levers empty, so its fixer finds the cause first")
+picked = "background.chats_rows_s|all|-"
+slow = {d: {"values": {picked: [0.9, 5]}} for d in ("2026-09-30", "2026-10-01")}
+check([(r["key"], r["ceiling"], r["limit"], bool(r["levers"]))
+       for r in module.judge_regressions(slow, "2026-10-02", lambda c: 0.0)[0]] == [(picked, True, 0.5, True)],
+      "`chats` over its 0.5 s ceiling on both judged days is a regression with no baseline, under the OM floor")
+check(module.judge_regressions(dict(slow, **{"2026-10-01": {"values": {picked: [0.3, 5]}}}), "2026-10-02",
+                               lambda c: 0.0)[0] == []
+      and module.judge_regressions({d: {"values": {picked: [0.9, 2]}} for d in slow}, "2026-10-02", lambda c: 0.0)[0] == [],
+      "one day under the ceiling, or fewer than three launches a day, leaves it quiet")
 
 harness = {"status": "problems", "as_of_s": HI, "problem_count": 3, "blind_spots": [], "periods": {}, "extras": [],
            "title": "Harness doctor: 3 problems", "footer": "as of 21:50",
@@ -881,6 +890,18 @@ with open(os.path.join(kick_dir, "merge-kick", "2026-10-01.tsv"), "w") as handle
 os.environ["SPEED_DOCTOR_DIR"] = kick_dir
 check(module.background_view({}, mid, mid + 86400, [], 1.0)["merge_kick"]["runs_day"] == 1.0,
       "merge-kick rows before the window's start on its first day are not counted")
+os.makedirs(os.path.join(kick_dir, "chats-start"))
+base_us = int(mid) * 10 ** 6
+with open(os.path.join(kick_dir, "chats-start", "2026-10-01.tsv"), "w") as handle:
+    handle.write("".join("%d\t%d\t%s\t-\t50\t7\t0.40\n" % (base_us + at, base_us + at + 50000, rows) for at, rows in (
+        (-600 * 10 ** 6, "%d" % (base_us - 590 * 10 ** 6)), (10 ** 7, "%d" % (base_us + 10 ** 7 + 200000)),
+        (2 * 10 ** 7, "%d" % (base_us + 2 * 10 ** 7 + 400000)), (3 * 10 ** 7, "-"))))
+picks = module.chats_starts(mid)
+check(picks == [(mid + 10, 0.2), (mid + 20, 0.4), (mid + 30, None)]
+      and module.day_values("2026-10-01", {}, {}, None, None, [], None, (), picks)
+      == {"background.chats_rows_s|all|-": [0.3, 2]},
+      "each `chats` launch inside the window waits from its start to its first rows, one he left early waits for "
+      "none, and the day's value is their median: %s" % picks)
 os.makedirs(os.path.join(kick_dir, "statusline-probes"))
 with open(os.path.join(kick_dir, "statusline-probes", "2026-10-01.tsv"), "w") as handle:
     handle.write("".join("%d\t9\t%s\t%s\n" % (t * 1e6, cpu, kind) for t, cpu, kind in (

@@ -130,6 +130,39 @@ print(len(mapping), mapping.get("44444444-4444-4444-4444-444444444444"),
 PY
 )" = "1 11111111-1111-1111-1111-111111111111 False"
 
+# --- the walk keeps each run's pair and rereads only a run whose session file moved ---
+LAUNCHERS="$WORK/cache/worker-launchers.json"
+walk() {  # walk <worker session>... — each one's launcher, '-' for none
+  WORKER_LAUNCHERS_CACHE="$LAUNCHERS" python3 -S - "$ROOT/share/chat_names.py" "$@" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("chat_names", sys.argv[1])
+cn = importlib.util.module_from_spec(importlib.util.spec_from_loader("chat_names", loader))
+loader.exec_module(cn)
+mapping = cn.worker_session_launchers()
+print(" ".join(mapping.get(session, "-") for session in sys.argv[2:]))
+PY
+}
+assert test "$(walk "$WORKER" late-worker)" = "$CHAT -"
+assert grep -Fq '20260101T0900Z-shell' "$LAUNCHERS"
+# A resumed run appends its id to the record the walk already kept, and a swept run leaves.
+printf 'late-worker\n' >>"$WORKER_RUN_DIR/20260101T0900Z-shell/worker-session"
+mv "$WORKER_RUN_DIR/20260101T1110Z-second" "$WORK/swept"
+assert test "$(walk "$WORKER" late-worker "$SHARED")" = "$CHAT $CHAT $CHAT"
+assert test -z "$(grep -o '20260101T1110Z-second' "$LAUNCHERS")"
+mv "$WORK/swept" "$WORKER_RUN_DIR/20260101T1110Z-second"
+assert test "$(walk "$SHARED")" = "-"
+# A store a fixture points WORKER_RUN_DIR at keeps no cache unless one is named.
+rm -f "$LAUNCHERS"
+assert test "$(python3 -S - "$ROOT/share/chat_names.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("chat_names", sys.argv[1])
+cn = importlib.util.module_from_spec(importlib.util.spec_from_loader("chat_names", loader))
+loader.exec_module(cn)
+print(cn.launchers_cache_path(), len(cn.worker_run_launchers()))
+PY
+)" = "None 3"
+assert test ! -e "$LAUNCHERS"
+
 # --- the cache answers the same and yields to a rename -----------------------
 assert test -f "$CHAT_NAMES_CACHE"
 assert grep -Fq 'make review bench and commit push more simple' "$CHAT_NAMES_CACHE"
