@@ -16,6 +16,12 @@ slots_from_cores() { # divisor floor [ceiling] -> cores / divisor, clamped
 run_suites_slots() { printf '%s-4\n' "$(slots_from_cores 3 2 4)"; }
 # A direct run is one suite against a fan-out's -j cores/2: twice the runs, the rest above the floor only with room.
 run_suites_direct_slots() { printf '%s-8\n' "$(slots_from_cores 3 2 4)"; }
+# A run's -j: cores/2 always, up to 8 while slot_room finds room.
+run_suites_jobs() {
+  local floor
+  floor=$(slots_from_cores 2 2)
+  printf '%s-%s\n' "$floor" $((floor > 8 ? floor : 8))
+}
 worker_slots() {
   local max
   max=$(($(slots_from_cores 1 2) * 4))

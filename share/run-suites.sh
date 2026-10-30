@@ -42,7 +42,7 @@ Exit 1 if any suite failed, with the last 30 lines of each failure.
   --run-all     set by every tests/run-all: inside a worker or a chat (CLAUDE_CODE_SESSION_ID) a run
                 naming no suite and no --changed is refused (exit 3); the full run is the night's
   --full        a chat's full run anyway, only on Egor's explicit word; never inside a worker
-  -j <n>        parallel jobs (default: cores / 2, minimum 2)
+  -j <n>        parallel jobs (default: cores / 2, minimum 2, up to 8 while slot_room finds room)
   --changed     only the suites tests/affected selects (share/suite_select.py) for a path in
                 `git diff --name-only HEAD`, an untracked file or a commit of this branch since main:
                 each file's own suites and those with a catch on it; a suite only naming a file is
@@ -149,7 +149,9 @@ fi
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/processes.sh"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/run-liveness.sh"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/limit-hit.sh"
-[ "$jobs" -ne 0 ] || jobs=$(slots_from_cores 2 2)
+jobs_max=$jobs
+[ "$jobs" -ne 0 ] || { jobs=$(run_suites_jobs); jobs_max=${jobs#*-} jobs=${jobs%-*}; }
+jobs_peak=$jobs
 
 # Each suite's last passing duration, keyed by the main checkout so a worktree shares it: the wave
 # starts the longest first, since alphabetical order left the slowest suite starting last.
@@ -323,7 +325,7 @@ if printf '%s\n' ${suites[@]+"${suites[@]}"} | grep -q '\.py$'; then
     fail "no python with pytest: tried $repo/.venv/bin/python, python3 and python3.X on PATH"
 fi
 
-# Machine-wide, at most RUN_SUITES_SLOTS runs at once: each already fans out -j cores/2 suites, so
+# Machine-wide, at most RUN_SUITES_SLOTS runs at once: each already fans out -j cores/2 suites or more, so
 # cores/3 (2 to 4) always run and up to 4, the count measured freeze-safe, while slot_room finds room.
 # A nested run (a suite testing this runner) inherits its parent's slot.
 own_slot=''
@@ -425,7 +427,7 @@ journal_run() {
   suite_journal_ms began "$run_suites_began"; suite_journal_secs began "$began"
   suite_journal_ms ended; [ -n "$ended" ] || suite_journal_ms ended "$(date +%s)"; suite_journal_secs ended "$ended"
   suite_journal_row suites "$$" "$queued" "$began" "$ended" "$repo" "$times_key" "$suite_journal_head" "${scope:-}" \
-    "$run_worker" "$run_session" "$jobs" "$run_slot" "$run_signal" "$complete" "${slow_skipped:-}" "$reason" "$stopped"
+    "$run_worker" "$run_session" "$jobs_peak" "$run_slot" "$run_signal" "$complete" "${slow_skipped:-}" "$reason" "$stopped"
   suite_journal_append "$run_journal"
 }
 run_signal='' run_finished='' owner_watch=''
@@ -658,7 +660,9 @@ done
 
 tail_jobs=0
 for entry in ${tail_wave[@]+"${tail_wave[@]}"}; do tail_jobs=$((tail_jobs + ${shards[${entry##*/}]:-1})); done
-printf 'run-suites: %s suites, %s jobs, -j %s, logs under %s\n' "${#suites[@]}" "$(( ${#wave_jobs[@]} + tail_jobs ))" "$jobs" "$logdir"
+jobs_shown=$jobs
+[ "$jobs_max" -le "$jobs" ] || jobs_shown+=-$jobs_max
+printf 'run-suites: %s suites, %s jobs, -j %s, logs under %s\n' "${#suites[@]}" "$(( ${#wave_jobs[@]} + tail_jobs ))" "$jobs_shown" "$logdir"
 if [ "${#tail_wave[@]}" -gt 0 ] && unattended; then
   printf 'run-suites: %s wall-clock suite(s) stay at nice %s; the wave is nice 10 while someone is at the keyboard\n' \
     "${#tail_wave[@]}" "$(ps -o nice= -p $$ | tr -d '[:space:]')"
@@ -670,8 +674,16 @@ if [ -n "$owner_record" ]; then
 fi
 wall_start=$(date +%s)
 running=0
+# Past -j, one more job only while slot_room finds room, judged again as each job ends; the journal's j is the most reached.
+job_room() {
+  while [ "$running" -ge "$jobs_max" ] || { [ "$running" -ge "$jobs" ] && ! slot_room >/dev/null; }; do
+    wait -n 2>/dev/null || :
+    running=$((running - 1))
+  done
+  [ "$running" -lt "$jobs_peak" ] || jobs_peak=$((running + 1))
+}
 for entry in ${wave_jobs[@]+"${wave_jobs[@]}"}; do
-  while [ "$running" -ge "$jobs" ]; do wait -n 2>/dev/null || :; running=$((running - 1)); done
+  job_room
   shard=''
   [[ $entry != *$'\t'* ]] || shard=${entry#*$'\t'}
   run_one "${entry%%$'\t'*}" "$shard" &
