@@ -75,6 +75,82 @@ try {
   check("audio Range answers 206", (await tab.evaluate(async () => (await fetch(document.querySelector("audio").src, { headers: { Range: "bytes=0-99" } })).status)) === 206);
   await tab.click('.card[data-id="c11"] .row[data-f="heard"] button[data-v="1"]');
   check("cards vote reaches the store", await until(() => page(["state", "seams", "--all"]).includes("c11 heard=1 by=egor"), 4000));
+  // Pictures in text: every way a picture reaches a field, read back by the chat as a path.
+  const origin = `http://127.0.0.1:${port}`, note = '.card[data-id="c11"] > textarea', files = path.join(env.PAGES_DIR, crd, "files");
+  const conv = (fmt, ext) => { const out = path.join(tmp, `a.${ext}`); return spawnSync("/usr/bin/sips", ["-s", "format", fmt, F.a, "--out", out]).status === 0 ? out : null; };
+  const jpg = conv("jpeg", "jpg"), tiff = conv("tiff", "tiff"), b64 = (p) => fs.readFileSync(p).toString("base64");
+  const send = (data, kind = "paste", sel = note) => tab.evaluate(({ sel, data, kind }) => {
+    const el = document.querySelector(sel), dt = new DataTransfer();
+    el.focus();
+    for (const f of data.files || []) dt.items.add(new File([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))], f.name, { type: f.type }));
+    for (const [t, v] of Object.entries(data.text || {})) dt.setData(t, v);
+    const e = kind === "paste" ? new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })
+      : new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true });
+    el.dispatchEvent(e);
+    return e.defaultPrevented;
+  }, { sel, data, kind });
+  const value = () => tab.$eval(note, (el) => el.value);
+  const stored = () => (fs.existsSync(files) ? fs.readdirSync(files).filter((n) => n.startsWith("img")).sort() : []);
+  await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+  await tab.click(note);
+  await tab.keyboard.type("на куст", { delay: 20 });
+  await tab.$eval(note, (el) => el.setSelectionRange(3, 3));
+  await tab.evaluate(async (b) => navigator.clipboard.write([new ClipboardItem({
+    "image/png": new Blob([Uint8Array.from(atob(b), (c) => c.charCodeAt(0))], { type: "image/png" }),
+    "text/html": new Blob(['<meta charset=utf-8><img src="https://example.test/a.png">'], { type: "text/html" }) })]), b64(F.a));
+  await tab.keyboard.press("ControlOrMeta+V");
+  check("a keyboard paste of a copied picture puts its name at the caret", await until(async () => (await value()) === "на [img1.png] куст"), await value());
+  const ihdr = (p) => { const b = fs.readFileSync(p); return b.subarray(1, 4).toString() === "PNG" && [b.readUInt32BE(16), b.readUInt32BE(20)].join("x"); };
+  check("the pasted picture is stored whole", await until(() => stored().includes("img1.png")) && ihdr(path.join(files, "img1.png")) === "480x240");
+  check("page state prints the named picture's path", await until(() => page(["state", "seams", "--all"]).includes(`img1.png=${path.join(files, "img1.png")}`), 4000), page(["state", "seams", "--all"]));
+  check("the field shows the picture under it", await until(() => tab.$eval('.card[data-id="c11"] > .att img', (im) => im.naturalWidth > 0).catch(() => false)));
+  await tab.keyboard.press("End");
+  check("a file copied in Finder is attached, its file name is not typed",
+    (await send({ files: [{ b64: b64(jpg), name: "photo.jpg", type: "image/jpeg" }], text: { "text/plain": "photo.jpg" } }))
+    && await until(async () => (await value()).endsWith(" [img2.jpg]")), await value());
+  const before = await value();
+  check("a Finder copy without its file says how to bring it, attaches nothing",
+    (await send({ files: [{ b64: b64(F.b), name: "image.png", type: "image/png" }], text: { "text/plain": "IMG_0042.HEIC" } }))
+    && await until(() => tab.$eval('.card[data-id="c11"] .atm', (m) => m.classList.contains("err") && /Finder/.test(m.textContent)))
+    && (await value()) === before && stored().length === 2);
+  check("words with a picture inside paste as words",
+    !(await send({ files: [{ b64: b64(F.b), name: "image.png", type: "image/png" }], text: { "text/html": "<p>hello <img src='https://example.test/b.png'></p>", "text/plain": "hello" } }))
+    && stored().length === 2);
+  check("plain text pastes as text", !(await send({ text: { "text/plain": "просто текст" } })));
+  await send({ text: { "text/html": `<img src="data:image/png;base64,${b64(F.b)}">` } });
+  check("a picture the clipboard holds only as a data: link is stored", await until(async () => (await value()).includes("[img3.png]")) && stored().includes("img3.png"));
+  await send({ text: { "text/html": `<meta charset=utf-8><img src="${origin}/p/${cmp}/m/0?v=1">` } });
+  check("a picture the clipboard holds only as a web link is fetched by the server", await until(async () => (await value()).includes("[img4.png]")), await value());
+  if (tiff) {
+    await send({ files: [{ b64: b64(tiff), name: "shot.tiff", type: "image/tiff" }] }, "drop");
+    check("a dropped TIFF becomes a PNG the browser and the model read", await until(async () => (await value()).includes("[img5.png]")) && ihdr(path.join(files, "img5.png")) === "480x240");
+  }
+  await send({ files: [{ b64: b64(path.join(files, "img1.png")), name: "image.png", type: "image/png" }] });
+  check("the same picture again keeps its first name", await until(async () => (await value()).match(/\[img1\.png\]/g)?.length === 2) && !stored().includes("img6.png"), await value());
+  const chips = stored().length;
+  await tab.$eval(note, (el) => { el.focus(); el.select(); });
+  await tab.keyboard.press("Backspace");
+  check("a name deleted from the text leaves its picture dimmed under the field",
+    await until(() => tab.$$eval('.card[data-id="c11"] > .att .atc.off', (c) => c.length)) === chips);
+  await tab.click('.card[data-id="c11"] > .att button:text-is("img2.jpg")');
+  check("its name button puts the name back", await until(async () => (await value()) === "[img2.jpg]") &&
+    await tab.$$eval('.card[data-id="c11"] > .att .atc:not(.off)', (c) => c.length) === 1, await value());
+  check("page state names only the pictures the text still names", await until(() => {
+    const st = page(["state", "seams", "--all"]); return st.includes("img2.jpg=") && !st.includes("img1.png="); }, 4000));
+  await tab.reload();
+  check("after a reload the field still shows every picture pasted into it",
+    await until(() => tab.$$eval('.card[data-id="c11"] > .att .atc', (c) => c.length).catch(() => 0)) === chips);
+  await tab.click('.card[data-id="c11"] > .att img');
+  check("a click on a picture opens it full screen among the field's pictures only",
+    await until(() => tab.$eval(".zoom .zpos", (z) => z.textContent).catch(() => "")) === `1 / ${chips}` &&
+    (await tab.$eval(".zoom > img", (im) => im.src)).endsWith("/f/img1.png"));
+  await tab.keyboard.press("Escape");
+  await tab.goto(`${origin}/p/${cmp}/`);
+  await tab.waitForSelector(".side textarea");
+  await send({ files: [{ b64: b64(F.b), name: "image.png", type: "image/png" }] }, "paste", ".side textarea");
+  check("compare's note takes pictures too, numbered per page", await until(() => tab.$eval(".side textarea", (el) => el.value.endsWith("[img1.png]"))));
+  await tab.goto(`${origin}/p/${crd}/`);
+  await tab.waitForSelector(note);
   const index = await (await fetch(`http://127.0.0.1:${port}/`)).text();
   check("index lists both pages under the chat name", index.includes("e2e chat") && index.includes(cmp) && index.includes(crd));
   const events = path.join(env.PAGES_DIR, ".events.jsonl");

@@ -106,6 +106,22 @@ assert test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: text/pla
 assert test "$(post '{"op": "x1", "item": "p01", "fields": {"note": "n"}}' -H 'Origin: http://evil.example')" = 403
 assert test "$(post '{"op": "x2", "item": "p01", "fields": {"note": "n"}}' -H "Origin: http://127.0.0.1:$port")" = 200
 
+# Pasted pictures: only the upload route takes image bytes, only a picture is kept, a file name never escapes.
+up() { curl -s -o "$WORK/body" -w '%{http_code}' --data-binary "@$1" "${@:2}" "$base/p/$pid/upload?item=p01&field=note"; }
+printf '\x89PNG\r\n\x1a\nrest' >"$WORK/pic.png"
+assert test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: image/png' --data-binary "@$WORK/pic.png" "$base/p/$pid/patch")" = 403
+assert test "$(up "$WORK/pic.png" -H 'Content-Type: text/plain')" = 403
+assert test "$(up "$WORK/pic.png" -H 'Content-Type: image/png' -H 'Origin: http://evil.example')" = 403
+assert test "$(up "$WORK/a.png" -H 'Content-Type: image/png')" = 415
+assert test "$(up "$WORK/pic.png" -H 'Content-Type: image/png')" = 200
+assert test "$(jq -r .name "$WORK/body")" = img1.png
+assert test "$(up "$WORK/pic.png" -H 'Content-Type: image/png'; jq -r .name "$WORK/body")" = 200img1.png
+assert test "$(get "$base/p/$pid/files"; jq -c '.[0]' "$WORK/body")" = '200{"name":"img1.png","item":"p01","field":"note"}'
+assert test "$(get "$base/p/$pid/f/img1.png"; cmp -s "$WORK/body" "$WORK/pic.png" && echo same)" = 200same
+for bad in "f/..%2Fmeta.json" "f/img1.png%2F..%2F..%2Fmeta.json" "f/meta.json" "f/img2.png"; do
+  assert test "$(get "$base/p/$pid/$bad")$bad" = "404$bad"
+done
+
 # Path confinement: bad pids 404 before any join, the kit never serves outside itself.
 for bad in "/p/..%2F..%2Fetc/spec" "/p/../m/0" "/p/%2e%2e/m/0""/p/CALIB/spec" "/kit/../secret.txt" "/kit/%2e%2e/secret.txt" \
   "/p/$pid/m/3" "/p/$pid/m/-1" "/p/$pid/m/x"; do

@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import string
+import subprocess
 import time
 
 PID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -400,3 +401,106 @@ def all_pages():
     except OSError:
         return []
     return [p for p in names if page_dir(p)]
+
+
+# Pictures Egor pastes or drops into a text field: <page>/files/img<N>.<ext>, numbered per page, named in his text
+# as [img<N>.<ext>]; files/index.json keeps which item and field each came from, so the field shows it after a reload.
+FILE_RE = re.compile(r"^img[1-9][0-9]{0,4}\.(png|jpg|gif|webp)$")
+TOKEN_RE = re.compile(r"\[(img[1-9][0-9]{0,4}\.(?:png|jpg|gif|webp))\]")
+FILES_CAP = 50 << 20
+
+
+def sniff(data):
+    """The extension a browser and a model both read, "convert" for an image only sips can turn into PNG, else None."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[:4] in (b"II*\x00", b"MM\x00*") or data[:2] == b"BM" or (
+            data[4:8] == b"ftyp" and data[8:12] in (b"heic", b"heix", b"hevc", b"heim", b"mif1", b"msf1", b"avif")):
+        return "convert"
+    return None
+
+
+def to_png(data, folder):
+    temporary = os.path.join(folder, ".in.%s" % secrets.token_hex(6))
+    out = temporary + ".png"
+    try:
+        with open(temporary, "wb") as handle:
+            handle.write(data)
+        done = subprocess.run(["/usr/bin/sips", "-s", "format", "png", temporary, "--out", out],
+                              capture_output=True, timeout=60)
+        with open(out, "rb") as handle:
+            converted = handle.read() if done.returncode == 0 else b""
+    except (OSError, subprocess.SubprocessError):
+        converted = b""
+    finally:
+        for path in (temporary, out):
+            if os.path.exists(path):
+                os.remove(path)
+    if sniff(converted) != "png":
+        raise Refused("picture format not readable")
+    return converted
+
+
+def add_file(pid, data, item=None, field=None):
+    """Store one pasted picture; the same bytes again get their first name back. -> name"""
+    if not data or len(data) > FILES_CAP:
+        raise Refused("picture empty or over %d MB" % (FILES_CAP >> 20))
+    folder = os.path.join(root(), pid, "files")
+    os.makedirs(folder, exist_ok=True)
+    ext = sniff(data)
+    if ext is None:
+        raise Refused("not a picture")
+    if ext == "convert":
+        data, ext = to_png(data, folder), "png"
+    digest = hashlib.sha256(data).hexdigest()
+    fd = os.open(os.path.join(folder, ".lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        index = read_json(os.path.join(folder, "index.json"), {}) or {}
+        for name, entry in index.items():
+            if entry.get("sha256") == digest and os.path.isfile(os.path.join(folder, name)):
+                return name
+        n = 1 + max([int(re.sub(r"\D", "", name.split(".")[0])) for name in index] or [0])
+        name = "img%d.%s" % (n, ext)
+        with open(os.path.join(folder, name + ".tmp"), "wb") as handle:
+            handle.write(data)
+        os.replace(os.path.join(folder, name + ".tmp"), os.path.join(folder, name))
+        index[name] = {"sha256": digest, "item": item, "field": field, "at": now()}
+        write_json(os.path.join(folder, "index.json"), index)
+        return name
+    finally:
+        os.close(fd)
+
+
+def files(pid):
+    """[{name, item, field}] of the page's pasted pictures, in paste order."""
+    index = read_json(os.path.join(root(), pid, "files", "index.json"), {}) or {}
+    return [{"name": name, "item": e.get("item"), "field": e.get("field")} for name, e in index.items()
+            if FILE_RE.match(name)]
+
+
+def file_path(pid, name):
+    if not isinstance(name, str) or not FILE_RE.match(name):
+        return None
+    path = os.path.join(root(), pid, "files", name)
+    return path if os.path.isfile(path) else None
+
+
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, (dict, list)):
+        for v in value.values() if isinstance(value, dict) else value:
+            yield from strings(v)
+
+
+def named_files(pid, value):
+    """(name, absolute path) of every stored picture a value's text names, first mention first."""
+    seen = dict.fromkeys(name for text in strings(value) for name in TOKEN_RE.findall(text))
+    return [(name, path) for name in seen for path in [file_path(pid, name)] if path]

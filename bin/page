@@ -34,6 +34,7 @@ AGENT_PLIST = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LABEL)
 CHUNK = 1 << 20
 OPEN_RANGE_CAP = 8 << 20
 MAX_PATCH = 64 << 10
+UPLOAD_TYPES = ("image/", "application/octet-stream")
 BUILTIN_MODULES = {"compare": "N variants of an item side by side: synced loupes, blind vote, pairwise, view grid",
                    "cards": "numbered cards with choice/multi/scale/text fields and native image/audio/video"}
 
@@ -94,7 +95,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"pages": 1, "schema": 1, "pid": os.getpid(), "dir": store.root()})
         if path.startswith("/kit/"):
             return self.kit_file(path[5:])
-        m = re.fullmatch(r"/p/([^/]+)/(spec|state|m/[^/]*|)", path)
+        m = re.fullmatch(r"/p/([^/]+)/(spec|state|files|m/[^/]*|f/[^/]*|)", path)
         if not m or not store.page_dir(m.group(1)):
             return self.reply(404, b"not found\n")
         pid, sub = m.groups()
@@ -104,6 +105,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, store.served_spec(pid))
         if sub == "state":
             return self.send_json(200, store.state(pid))
+        if sub == "files":
+            return self.send_json(200, store.files(pid))
+        if sub.startswith("f/"):
+            found = store.file_path(pid, sub[2:])
+            return self.send_file(found) if found else self.reply(404, b"not found\n")
         return self.media(pid, sub[2:])
 
     def kit_file(self, name):
@@ -121,8 +127,11 @@ class Handler(BaseHTTPRequestHandler):
         entries = store.meta(pid).get("media", [])
         if not n.isdigit() or int(n) >= len(entries):
             return self.reply(404, b"not found\n")
+        self.send_file(entries[int(n)]["path"])
+
+    def send_file(self, path):
         try:
-            handle = open(entries[int(n)]["path"], "rb")
+            handle = open(path, "rb")
         except OSError:
             return self.reply(404, b"media gone\n")
         with handle:
@@ -156,17 +165,22 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.host_ok():
             return self.reply(403, b"host refused\n")
-        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+        ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        path, _, query = self.path.partition("?")
+        upload = re.fullmatch(r"/p/[^/]+/upload", path) is not None
+        if ctype != "application/json" and not (upload and ctype.startswith(UPLOAD_TYPES)):
             return self.reply(403, b"content type refused\n")
         origin = self.headers.get("Origin")
         if origin is not None and origin != "http://" + self.headers["Host"]:
             return self.reply(403, b"origin refused\n")
-        m = re.fullmatch(r"/p/([^/]+)/(patch|error)", self.path)
+        m = re.fullmatch(r"/p/([^/]+)/(patch|error|upload)", path)
         if not m or not store.page_dir(m.group(1)):
             return self.reply(404, b"not found\n")
         pid = m.group(1)
         if m.group(2) == "error":
             return self.browser_error(pid)
+        if upload:
+            return self.upload(pid, ctype, urllib.parse.parse_qs(query))
         try:
             length = int(self.headers.get("Content-Length") or 0)
             patch = json.loads(self.rfile.read(length)) if 0 < length <= MAX_PATCH else None
@@ -180,6 +194,35 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(409, b"item not in the current spec\n")
         rev, dup = store.append(pid, item, fields, "egor", op, patch.get("spec_rev"))
         self.send_json(200, {"rev": rev, "spec_rev": doc.get("rev", 1), "dup": dup})
+
+    def upload(self, pid, ctype, query):
+        """A pasted or dropped picture: its bytes, or {"url"} of one the clipboard only linked. -> {name, url}"""
+        length = int(self.headers.get("Content-Length") or 0)
+        if not 0 < length <= store.FILES_CAP + MAX_PATCH:
+            return self.reply(413, b"picture empty or too big\n")
+        body = self.rfile.read(length)
+        if ctype == "application/json":
+            try:
+                link = json.loads(body)["url"]
+                assert isinstance(link, str) and re.match(r"https?://", link)
+            except (ValueError, KeyError, TypeError, AssertionError):
+                return self.reply(400, b"expected {\"url\": \"http(s)://...\"}\n")
+            try:
+                local = urllib.parse.urlsplit(link).hostname in ("127.0.0.1", "localhost")
+                opener = urllib.request.build_opener(*[urllib.request.ProxyHandler({})] if local else [])
+                request = urllib.request.Request(link, headers={"User-Agent": "Mozilla/5.0 pages"})
+                with opener.open(request, timeout=20) as answer:
+                    body = answer.read(store.FILES_CAP + 1)
+            except Exception as error:
+                return self.reply(502, ("fetch failed: %s\n" % error).encode())
+        item, field = (query.get(k, [None])[0] for k in ("item", "field"))
+        if item not in store.item_ids(store.spec(pid)) or not store.ID_RE.match(field or ""):
+            item = field = None
+        try:
+            name = store.add_file(pid, body, item, field)
+        except store.Refused as error:
+            return self.reply(415, ("%s\n" % error).encode())
+        self.send_json(200, {"name": name, "url": "/p/%s/f/%s" % (pid, name)})
 
     def browser_error(self, pid):
         try:
@@ -321,6 +364,7 @@ def cmd_state(args):
             elif field == "tags" and isinstance(v, dict):
                 v = {("%s(%s)" % (k, blind[k]) if k in blind else k): t for k, t in v.items()}
             words.append("%s=%s" % (field, show(v)))
+            words += ["%s=%s" % pair for pair in store.named_files(pid, entry["v"])]
             if field in suggest:
                 words.append("suggest=%s" % show(suggest[field]))
             want = expected.get(field) if isinstance(expected, dict) else expected if field == "choice" else None

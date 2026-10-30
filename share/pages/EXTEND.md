@@ -15,6 +15,8 @@ Read this only when `page help <module>` has no key for what your page needs. Ev
   `kit/shell.js`. Saving (outbox, retries, flush), polling, keys, notes, skip, sitting cap and lazy
   media are the shell's: a module never does its own fetch or localStorage. A need the shell lacks
   is a shell export, so the next module gets it too.
+- A text field is `textBox`: pictures pasted or dropped into it, their names in the text and their
+  paths in `page state` come with it.
 - `kit/<module>.md` is what `page help <module>` prints and the only doc a page-making chat reads.
   - Its first line is `# <module>: <one line>` (the `page help` list).
   - Then the spec keys with their defaults, the fields written and one example.

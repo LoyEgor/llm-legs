@@ -8,8 +8,9 @@ on an incompatible change.
 - **Address:** `http://127.0.0.1:${PAGES_PORT:-4791}`. Loopback only; store root
   `${PAGES_DIR:-~/Pages}`.
 - **Host check:** the `Host` header must be `127.0.0.1:<port>` or `localhost:<port>`, else 403.
-- **POST** also requires `Content-Type: application/json` and, when an `Origin` header is present, an
-  origin equal to the page's own; else 403.
+- **POST** also requires `Content-Type: application/json` (the upload route also takes `image/*` and
+  `application/octet-stream`) and, when an `Origin` header is present, an origin equal to the page's
+  own; else 403.
 
 ## Routes
 | Route | Answer |
@@ -22,6 +23,9 @@ on an incompatible change.
 | `GET /p/<pid>/state` | the state (below), `Cache-Control: no-cache` |
 | `POST /p/<pid>/patch` | applies one patch (below) |
 | `POST /p/<pid>/error` | `{msg, src, line}`, a kit error the loader reports (≤ 3 per load) → `.events.jsonl`; 204 |
+| `POST /p/<pid>/upload?item=&field=` | a pasted or dropped picture's bytes, or `{"url"}` the server fetches → `{name, url}`; 415 for anything not a picture (below) |
+| `GET /p/<pid>/files` | `[{name, item, field}]`: the page's pictures and the text field each was pasted into |
+| `GET /p/<pid>/f/<name>` | one picture, `name` = `img<N>.(png\|jpg\|gif\|webp)`, else 404 |
 | `GET /p/<pid>/m/<n>?v=<mtime_ns>` | media `n` from `meta.media`; Range/206 streamed in 1 MB chunks, an open-ended range capped at 8 MB; `ETag`, `Cache-Control: private, max-age=31536000, immutable` |
 
 `pid` matches `^[a-z0-9][a-z0-9-]{0,63}$`; anything else is 404 before any path join.
@@ -55,6 +59,13 @@ POST /p/<pid>/patch
   and an `op` seen before answers `dup: true` without appending.
 - An item id that is not in the current spec gets 409.
 
+## Pictures in text
+Every text field of every page takes a pasted or dropped picture (the shell's, no module wires it):
+the server stores it as `files/img<N>.<ext>`, numbered per page; TIFF, HEIC, BMP and AVIF become PNG
+through `sips`, the same bytes again keep their first name, `files/index.json` keeps the item and field.
+The field gets the short name `[img<N>.<ext>]` at the caret, so a value's text says which picture a
+word is about; `page state` follows such a field with `img<N>.<ext>=<absolute path>`.
+
 ## Log line (`log.jsonl`)
 `{"op","at","by":"egor"|"chat","item","fields","spec_rev"}`. State is the last value per
 (item, field) in file order; a torn trailing line is skipped.
@@ -75,7 +86,7 @@ extending one: `EXTEND.md`. The server knows only:
 |---|---|
 | `page help [module]` | one line per module, or that module's example spec |
 | `page new <module> --slug S --title T [--replace ITEM]... [--no-open] < spec.json` | creates the page, or updates the caller's own page with that slug; prints URL and pid |
-| `page state <slug\|pid> [--all]` | items changed since this session last read, one line each: `id field=value … by=…`; then totals `answered/total`, `rev` |
+| `page state <slug\|pid> [--all]` | items changed since this session last read, one line each: `id field=value … by=…`, a picture the text names as `img3.png=<path>` to Read; then totals `answered/total`, `rev` |
 | `page set <slug\|pid> <item> field=value…` | writes a field as `by: chat` |
 | `page list [--all]` | this chat's pages, or every page |
 | `page open <slug\|pid>` | opens the page in Dia |

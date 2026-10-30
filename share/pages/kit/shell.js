@@ -13,6 +13,7 @@
 //   lazy(el)                     el's data-src loads near the viewport and is released far away
 //   num(item, i), h(tag, props, ...kids)   the shown number; a DOM element
 // render, onState, doneWhen and keys replace their previous value, so a re-render is idempotent.
+// Every text field on every page takes pictures (the picture section below): no module wires them.
 // Every gesture goes to the localStorage outbox `pages-outbox:<pid>` before it is sent and leaves it
 // only on 200 (dup included) or 409 (item gone); sends are FIFO, one in flight, so a field's last
 // gesture is the one the server keeps.
@@ -115,6 +116,7 @@ export function textBox(id, field, props) {
   el.addEventListener("input", () => saveText(id, field, el.value));
   el.addEventListener("blur", () => commit(id + "\t" + field));
   boxes.add(el);
+  requestAnimationFrame(() => strip(el));
   return el;
 }
 
@@ -183,8 +185,10 @@ function merge(s) {
   if (!changed.size) return;
   for (const el of boxes) {
     if (!el.isConnected) boxes.delete(el);
-    else if (changed.has(el.dataset.item) && el !== document.activeElement)
+    else if (changed.has(el.dataset.item) && el !== document.activeElement) {
       el.value = get(el.dataset.item, el.dataset.field) ?? "";
+      strip(el);
+    }
   }
   if (stateCb) stateCb(changed);
   paint();
@@ -250,7 +254,9 @@ export function lazy(el) { near.observe(el); far.observe(el); return el; }
 // read: the wheel or a pinch zooms at the pointer, a drag pans, a double click toggles fit and 1:1,
 // ← → step through the page's pictures, Esc, ✕ or a click beside the picture closes. A module with
 // its own zoom marks its root data-own-zoom and keeps its pictures out.
-const zoomable = () => [...document.querySelectorAll("main img")].filter((im) => !im.closest("[data-own-zoom]"));
+// A field's pictures step among themselves, apart from the page's own.
+const zoomable = (from) => from && from.closest(".att") ? [...from.closest(".att").querySelectorAll("img")]
+  : [...document.querySelectorAll("main img")].filter((im) => !im.closest("[data-own-zoom],.att"));
 let Z = null;
 function zoomOpen(from) {
   if (!Z) {
@@ -289,7 +295,7 @@ function zoomOpen(from) {
       e.preventDefault(); e.stopImmediatePropagation();
     }, true);
   }
-  Z.list = zoomable();
+  Z.list = zoomable(from);
   document.body.append(Z.el); document.body.style.overflow = "hidden";
   zoomShow(Math.max(0, Z.list.indexOf(from)));
 }
@@ -309,15 +315,148 @@ function zoomPaint() { Z.img.style.transform = `translate(${Z.x}px,${Z.y}px) sca
 function zoomClose() { Z.el.remove(); Z.pts.clear(); document.body.style.overflow = ""; }
 function onZoomClick(e) {
   const im = e.target.closest && e.target.closest("main img");
-  if (!im || im.closest("[data-own-zoom]")) return;
+  if (!im || (im.closest("[data-own-zoom]") && !im.closest(".att"))) return;
   e.preventDefault(); zoomOpen(im);
+}
+
+// Pictures in text. A picture pasted or dropped into any text field (a screenshot, an image copied in a
+// browser or an app, an image file copied in Finder or dragged in) is stored by the server and its short
+// name, [img3.png], goes in at the caret, so Egor writes «on [img1.png] the bush slides» and the chat's
+// `page state` prints img1.png=<absolute path> beside the text. Under the field a strip shows its
+// pictures: a click opens one full screen, its name button puts the name back at the caret, and a
+// picture whose name is no longer in the text is dimmed. Text-only clipboards paste as text.
+const FIELD = "textarea,input[type=text],input:not([type])";
+const TOKEN = /\[(img[1-9][0-9]{0,4}\.(?:png|jpg|gif|webp))\]/g;
+const strips = new WeakMap();
+let known = new Map();   // name -> {item, field}: every picture of the page
+const textField = (t) => (t && t.closest ? t.closest(FIELD) : null);
+const order = (a, b) => parseInt(a.slice(3)) - parseInt(b.slice(3));
+
+async function loadFiles() {
+  try {
+    const r = await fetch(`/p/${pid}/files`, { cache: "no-store" });
+    if (r.ok) known = new Map((await r.json()).map((f) => [f.name, f]));
+  } catch (e) { /* no pictures shown until a paste */ }
+}
+
+function slot(el) {
+  let s = strips.get(el);
+  if (!s) strips.set(el, s = { box: h("div", { class: "att" }), msg: h("span", { class: "atm" }), chips: new Map() });
+  if (!s.box.isConnected) el.after(s.box);
+  return s;
+}
+
+function strip(el) {
+  if (!el.isConnected) return;
+  const inText = new Set([...(el.value || "").matchAll(TOKEN)].map((m) => m[1]).filter((n) => known.has(n)));
+  const mine = el.dataset.item ? [...known].filter(([, f]) => f.item === el.dataset.item && f.field === el.dataset.field).map(([n]) => n) : [];
+  if (!strips.has(el) && !mine.length && !inText.size) return;
+  const s = slot(el);
+  for (const name of [...mine, ...inText]) if (!s.chips.has(name)) s.chips.set(name, h("span", { class: "atc" },
+    h("img", { src: `/p/${pid}/f/${name}`, alt: name, title: "открыть" }),
+    h("button", { type: "button", title: "вставить имя в текст", onmousedown: (e) => e.preventDefault(),
+      onclick: () => put(el, `[${name}]`) }, name)));
+  s.chips.forEach((c, name) => { c.classList.toggle("off", !inText.has(name)); c.title = inText.has(name) ? "" : "имени нет в тексте"; });
+  s.box.replaceChildren(...[...s.chips.keys()].sort(order).map((n) => s.chips.get(n)), s.msg);
+  s.box.hidden = !s.chips.size && !s.msg.textContent;
+}
+
+function say(el, text, bad) {
+  const s = slot(el);
+  s.msg.textContent = text;
+  s.msg.classList.toggle("err", !!bad);
+  strip(el);
+}
+
+// Text at [start, end), one space from its neighbours, through the browser's own editing so ⌘Z undoes
+// it and the field's input listener saves it.
+function put(el, text, start = el.selectionStart ?? el.value.length, end = el.selectionEnd ?? start) {
+  const before = el.value.slice(0, start), after = el.value.slice(end);
+  if (before && !/\s$/.test(before)) text = " " + text;
+  if (after && !/^\s/.test(after)) text += " ";
+  el.focus();
+  el.setSelectionRange(start, end);
+  if (!document.execCommand("insertText", false, text)) {
+    el.setRangeText(text, start, end, "end");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+}
+
+// What a clipboard or a drop holds: {files} or {urls} of pictures, {finder} for a Finder copy whose files
+// the browser did not hand over, null for text. A file Finder copied comes with its name as the text; a
+// rich selection with words in it stays text even when it carries pictures.
+function pictures(dt) {
+  const plain = dt.getData("text/plain") || "", html = dt.getData("text/html") || "";
+  const files = [];
+  for (const f of [...(dt.files || []), ...[...(dt.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile())])
+    if (f && /^image\//.test(f.type) && f.type !== "image/svg+xml"
+        && !files.some((g) => g.name === f.name && g.size === f.size && g.lastModified === f.lastModified)) files.push(f);
+  const names = plain.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const finder = files.filter((f) => names.includes(f.name));
+  if (finder.length) return { files: finder };
+  const doc = html ? new DOMParser().parseFromString(html, "text/html") : null;
+  const words = (doc ? doc.body.textContent : plain).trim().replace(/^https?:\/\/\S+$/, "");
+  if (files.length && names.length && names.every((n) => /^[^/\\]+\.[A-Za-z0-9]{2,5}$/.test(n)) && !doc) return { finder: true };
+  if (files.length) return words ? null : { files };
+  const urls = doc && !words ? [...doc.querySelectorAll("img[src]")].map((i) => i.getAttribute("src")).filter((u) => /^(https?|data):/.test(u)) : [];
+  return urls.length ? { urls } : null;
+}
+
+async function upload(el, body, type) {
+  const q = el.dataset.item ? `?item=${encodeURIComponent(el.dataset.item)}&field=${encodeURIComponent(el.dataset.field || "")}` : "";
+  try {
+    const r = await fetch(`/p/${pid}/upload${q}`, { method: "POST", headers: { "Content-Type": type }, body });
+    if (!r.ok) return null;
+    const { name } = await r.json();
+    if (!known.has(name)) known.set(name, { item: el.dataset.item || null, field: el.dataset.field || null });
+    return name;
+  } catch (e) { return null; }
+}
+
+async function attach(el, got, start, end) {
+  if (got.finder) return say(el, "файл из Finder так не вставляется — перетащи его в поле мышкой", true);
+  const was = el.value, names = [];
+  say(el, "сохраняю картинку…");
+  for (const f of got.files || []) names.push(await upload(el, f, f.type || "application/octet-stream"));
+  for (const u of got.urls || []) {
+    let blob = null;
+    if (u.startsWith("data:")) try { blob = await (await fetch(u)).blob(); } catch (e) { /* not a picture */ }
+    names.push(blob ? await upload(el, blob, blob.type || "application/octet-stream")
+      : await upload(el, JSON.stringify({ url: u }), "application/json"));
+  }
+  const ok = [...new Set(names.filter(Boolean))];
+  say(el, ok.length < names.length ? (ok.length ? "не все картинки сохранились" : "картинка не сохранилась") : "", ok.length < names.length);
+  if (!ok.length) return;
+  if (el.value !== was) start = end = el.selectionEnd;
+  put(el, ok.map((n) => `[${n}]`).join(" "), start, end);
+  strip(el);
+}
+
+function onPaste(e) {
+  const el = textField(e.target), got = el && e.clipboardData && pictures(e.clipboardData);
+  if (!got) return;
+  e.preventDefault();
+  attach(el, got, el.selectionStart, el.selectionEnd);
+}
+
+const carriesFiles = (dt) => dt && [...(dt.types || [])].includes("Files");
+function onDragOver(e) {
+  if (!carriesFiles(e.dataTransfer)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = textField(e.target) ? "copy" : "none";
+}
+// A file dropped anywhere else would navigate away from the page; it is refused instead.
+function onDrop(e) {
+  const el = textField(e.target), got = el && pictures(e.dataTransfer);
+  if (got) { e.preventDefault(); return attach(el, got, el.selectionStart, el.selectionEnd); }
+  if (carriesFiles(e.dataTransfer)) e.preventDefault();
 }
 
 export async function start(s, r) {
   spec = s; pid = s.pid; render = r; BOX = "pages-outbox:" + pid;
   try { queue = JSON.parse(localStorage.getItem(BOX) || "[]"); } catch (e) { queue = []; }
   header();
-  await loadState();
+  await Promise.all([loadState(), loadFiles()]);
   render(spec, false);
   paint();
   pump();
@@ -328,4 +467,8 @@ export async function start(s, r) {
   document.addEventListener("visibilitychange", () => (document.visibilityState === "visible" ? poll() : flushAll()));
   document.addEventListener("keydown", onKey);
   document.addEventListener("click", onZoomClick);
+  document.addEventListener("paste", onPaste, true);
+  document.addEventListener("dragover", onDragOver, true);
+  document.addEventListener("drop", onDrop, true);
+  document.addEventListener("input", (e) => { const el = textField(e.target); if (el) strip(el); }, true);
 }

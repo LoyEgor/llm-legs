@@ -27,6 +27,11 @@ main img{cursor:zoom-in}[data-own-zoom] img{cursor:inherit}
 .zoom>img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;-webkit-user-drag:none}
 .zbar{position:absolute;left:0;right:0;bottom:0;height:44px;display:flex;gap:16px;align-items:center;padding:0 12px;background:rgba(12,12,14,.8);color:#f2f2f2;cursor:auto}
 .zbar .mute{color:#a3a3aa;margin-right:auto}.zpos{font-variant-numeric:tabular-nums}
+.att{display:flex;flex-wrap:wrap;gap:6px;align-items:flex-end;margin:4px 0 0}.att[hidden]{display:none}
+.att .atc{display:inline-flex;flex-direction:column;align-items:center;gap:2px}
+.att .atc img{display:block;height:56px;width:auto;max-width:160px;min-height:0;margin:0;object-fit:cover;border:1px solid var(--line);border-radius:6px;background:var(--card)}
+.att .atc button{font-size:12px;padding:1px 6px;border-radius:6px}.att .atc.off{opacity:.45}
+.atm{color:var(--mute);font-size:13px}.atm.err{color:var(--err)}
 </style></head><body>
 <header><h1 id="title"></h1><span id="intro"></span><span id="count"></span><span id="cap" hidden>на сегодня хватит</span><span id="status"></span></header>
 <main id="app"></main>
