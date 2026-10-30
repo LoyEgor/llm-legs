@@ -7,7 +7,9 @@ Clusters over the floor become Speed's `adhoc/<key>` opportunities: a new tool p
 minutes and Opus-eq tokens, before the fix against after: the cluster's residual calls, substitutes (ad-hoc calls an
 earlier cluster took that match this one's pattern), the tool's own calls (its bench's `command`) and the hint's
 always-loaded bytes once a session. A fix lands only with a bench (`bench_faults`). Adoption (`adoption`): each
-model-facing tool's calls a day over USE_DAYS; one with a hint and no call is unused, Speed's `opportunity:tool/...`.
+command and skill of the tool index (share/tool_index.py, what `tools` searches) and its model calls a day over
+USE_DAYS, night automation's left out; one under NEAR_UNUSED a day, or with none in its last RECENT_DAYS, is near-unused
+with its likely cause (`cause`), Speed's `opportunity:tool/...`: a review that deletes it or fixes the cause.
 Hung calls (`hung_findings`): Claude Code Bash calls that sat to their timeout with no output (a stdin read, a lost
 heredoc), their wall per command head a day, Speed's `opportunity:hung-bash/<head>` over the floor.
 A cluster recurring in fewer than FLOOR_PROJECTS projects is that project's job (`home`): its tool and hint go there.
@@ -34,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chat_names  # noqa: E402
 import handoffs  # noqa: E402
 import time_budget  # noqa: E402
+import tool_index  # noqa: E402
 
 WINDOW_S = 86400
 HOUR_S = 3600
@@ -92,15 +95,19 @@ CLUSTERS = (
 CATCH_ALL = ("json-other", "text-other")
 ROW_SKIP = ("file-edit", "file-read")
 CANDIDATE_ROWS = 5
-USE_DAYS = 30
+USE_DAYS, RECENT_DAYS = 30, 7
+# Near-unused: under one model call a week. 30 days to 2026-10-29, night calls out, the 50 indexed commands and skills
+# older than the window ranked by calls: 0 1 1 3 3 4 4 | 7 8 8 10 ...; the floor (4.3) sits in the one gap of the tail.
+# A tool no model called in its last RECENT_DAYS is flagged too (`recent`): a doctrine retired it (llm-reset-redeem).
+NEAR_UNUSED = 1.0 / 7
+USES_V = 2
 UNUSED = "🗑"
 HINT_OFF = "○"
 NO_TOOL = "–"
 COMMAND = (r"(?:^|[;&|(`\n]|\$\()\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|env|command|exec|time|nohup|timeout\s+\S+"
-           r"|nice(?:\s+-n\s*-?\d+)?)\s+)*(?:[\w.~/-]*/)?(%s)(?![\w.-])")
+           r"|nice(?:\s+-n\s*-?\d+)?)\s+)*(?:[\w.~/-]*/)?(%s)(?![\w./-])")
 BACKTICK = re.compile(r"`([^`\n]+)`")
 SLASH = re.compile(r"<command-name>/?([\w:.-]+)</command-name>")
-FRONT = re.compile(r"\A---\n(.*?)\n---", re.S)
 HEREDOC = re.compile(r"""(?ms)^[ \t]*cat\s*>\s*(['"]?)(\S+?)\1\s*<<-?\s*['"]?(\w+)['"]?[^\n]*\n(.*?)\n[ \t]*\3[ \t]*$""")
 SCRATCH = re.compile(r"^(?:(?:/private)?/tmp/|/var/folders/|\$\{?TMPDIR\}?/|~/\.cache/|/Users/[^/]+/\.cache/)|/scratchpad/")
 SCRATCH_WRITE = re.compile(rb'"file_path":"(?:(?:/private)?/tmp/|/var/folders/|/Users/[^/"]+/\.cache/|[^"]*/scratchpad/)')
@@ -114,6 +121,8 @@ CWD = re.compile(rb'"cwd":"([^"]+)"')
 REPOS = {}
 # An empty-output result's toolUseResult is short, so its key sits in the line's tail.
 TIMED_OUT, TIMED_OUT_TAIL_B = b'"timedOutAfterMs"', 2048
+IS_ERROR = b'"is_error":true'
+ON_DEMAND = re.compile(r"skills-on-demand/([\w:-]+)/SKILL\.md")
 SEGMENT = re.compile(r"&&|\|\||[;\n]")
 SET_UP = re.compile(r"^\s*(?:cd\b|[A-Za-z_]\w*=(?:\$\([^)]*\)|\S)*\s*$)")
 HEAD = re.compile(r"^\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|env|command|exec|time|nohup|timeout\s+\S+"
@@ -165,12 +174,15 @@ def cache_path():
                         "tool-mining.json")
 
 
-def bin_dir():
-    return time_budget.env_path("TOOL_BIN_DIR", ".local", "bin")
-
-
 def claude_dir():
-    return time_budget.env_path("TOOL_CLAUDE_DIR", ".claude")
+    return tool_index.claude_dir()
+
+
+def hint_texts():
+    """The texts a session reads only when they fire: Claude Code's hooks and the worker preamble."""
+    hooks = glob.glob(os.path.join(claude_dir(), "hooks", "**", "*"), recursive=True)
+    return sorted(p for p in hooks if os.path.isfile(p)) + [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker-run-texts.sh")]
 
 
 def command_re(names):
@@ -181,26 +193,17 @@ def used(cmd, names):
     return {m.group(1) for m in names.finditer(cmd)} if names else set()
 
 
+def on_demand(text):
+    """The on-demand skills whose SKILL.md a Read or Bash call reads: a model's use of the skill."""
+    return sorted({"skill/" + m for m in ON_DEMAND.findall(text)})
+
+
 def read(path):
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             return handle.read()
     except OSError:
         return ""
-
-
-def front(path):
-    try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            head = FRONT.match(handle.read(8192))
-    except OSError:
-        return None
-    out = {}
-    for line in head.group(1).splitlines() if head else ():
-        key, sep, value = line.partition(":")
-        if sep and not line[:1].isspace():
-            out[key.strip()] = value.strip().strip("\"'")
-    return out
 
 
 def born(repo, paths):
@@ -220,26 +223,23 @@ def born(repo, paths):
 
 
 def facing(now):
-    """Every model-facing tool with a hint, {kind/name: {path, hint_b, hint_in, born}}: a ~/.local/bin command into a
-    sweep repository that a backticked command in an always-loaded CLAUDE.md starts (a line naming several splits its
-    bytes), and a skill or command a model may invoke, its name and description in every session's skill list.
-    `hint_in` splits the bytes by who loads them: "*" every session, a repository path its sessions. `born` is the
-    commit that added its file, `now` while uncommitted."""
+    """Every model-facing tool of the tool index (share/tool_index.py, what `tools` searches), {kind/name: {path,
+    hint_b, hint_in, hinted, born}}: each command, and each skill a model may invoke or read on demand. Its hint bytes:
+    the always-loaded CLAUDE.md lines whose backticked command starts it (a line naming several splits its bytes), a
+    listed skill's name and description in every session's skill list. `hint_in` splits the bytes by who loads them:
+    "*" every session, a repository path its sessions. `hinted`: some text tells models of it, those bytes or a hook's
+    or worker preamble's (HINT_TEXTS). `born` is the commit that added its file, `now` while uncommitted."""
     repos = [os.path.realpath(r) for r in handoffs.sweep_repos()]
     owner = lambda path: next((r for r in repos if path.startswith(r + os.sep)), None)
     tools = {}
-    for entry in sorted(os.listdir(bin_dir())) if os.path.isdir(bin_dir()) else ():
-        path = os.path.realpath(os.path.join(bin_dir(), entry))
-        if owner(path) and os.path.isfile(path):
-            tools["bin/" + entry] = {"path": path, "hint_b": 0.0, "hint_in": collections.Counter()}
-    skills = glob.glob(os.path.join(claude_dir(), "skills", "*", "SKILL.md"))
-    for path in sorted(skills + glob.glob(os.path.join(claude_dir(), "commands", "*.md"))):
-        meta, real = front(path), os.path.realpath(path)
-        if meta is None or not owner(real) or meta.get("disable-model-invocation") == "true":
-            continue
-        name = meta.get("name") or os.path.basename(os.path.dirname(path) if path in skills else path[:-3])
-        hint_b = float(len(("- %s: %s" % (name, meta.get("description") or "")).encode()))
-        tools["skill/" + name] = {"path": real, "hint_b": hint_b, "hint_in": {"*": hint_b}}
+    for key, entry in tool_index.index().items():
+        if entry["kind"] == "bin" and owner(entry["path"]):
+            tools[key] = {"path": entry["path"], "hint_b": 0.0, "hint_in": collections.Counter()}
+        elif entry["kind"] == "skill" and owner(entry["path"]) and (entry["listed"] or entry.get("demand")):
+            tools[key] = {"path": entry["path"], "hint_b": float(entry["list_b"]),
+                          "hint_in": {"*": float(entry["list_b"])} if entry["list_b"] else {}}
+        if entry.get("broken") and key in tools:
+            tools[key]["broken"] = True
     names = command_re([k[4:] for k in tools if k.startswith("bin/")])
     for where, path in [("*", os.path.join(claude_dir(), "CLAUDE.md"))] + [(r, os.path.join(r, "CLAUDE.md")) for r in repos]:
         try:
@@ -252,8 +252,10 @@ def facing(now):
             for n in named:
                 tools["bin/" + n]["hint_b"] += len(line.encode()) / len(named)
                 tools["bin/" + n]["hint_in"][where] += len(line.encode()) / len(named)
-    out = {k: dict(v, hint_b=round(v["hint_b"]), hint_in={w: round(b) for w, b in v["hint_in"].items()}, born=int(now))
-           for k, v in tools.items() if v["hint_b"]}
+    texts = "\n".join(read(p) for p in hint_texts())
+    out = {k: dict(v, hint_b=round(v["hint_b"]), hint_in={w: round(b) for w, b in v["hint_in"].items()}, born=int(now),
+                   hinted=bool(v["hint_b"]) or bool(k.startswith("bin/") and used(texts, command_re([k[4:]]))))
+           for k, v in tools.items()}
     for repo in repos:
         mine = {os.path.relpath(v["path"], repo): v for v in out.values() if owner(v["path"]) == repo}
         for rel, at in born(repo, mine).items() if mine else ():
@@ -375,12 +377,14 @@ def count(uses, at, keys):
         uses[time_budget.local_day(at)][key] += 1
 
 
-def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hung=None, chains=None):
+def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hung=None, chains=None, night=()):
     """Ad-hoc and benched-tool Bash calls of one Claude Code transcript: {session, worker, ts, cmd, exec_s, out_b}. A
     tool_use block written right after another block of the same message adds (chars, seconds) to the write rate.
     A script file written into a scratch place (a `cat >` heredoc or the Write tool) is ad hoc in the first Bash call
     naming its path outside that heredoc, its text that call's. `uses` counts per local day the `names` commands a Bash
-    call runs, Skill calls and, apart (`slash/`), the user's slash commands. A call's project is the repository of the
+    call runs (`err/` too where its result is an error), Skill calls, reads of an on-demand skill's SKILL.md and, apart
+    (`slash/`), the user's slash commands; a session `night` holds (its id's first 8 characters, a subagent's by its
+    parent's) is automation and counts none. A call's project is the repository of the
     session's launch cwd (`project`), the transcript's project directory without one. `hung` gets each Bash call whose
     result says it timed out (toolUseResult.timedOutAfterMs) with no stdout or stderr: {session, worker, head, cmd,
     wall_s}. `chains` gets every other Bash call that runs an acting head (`heads`), its exec from its result's
@@ -388,7 +392,9 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
     session = os.path.splitext(os.path.basename(path))[0]
     worker, pending, prev, written, bashes, chained = "/subagents/" in path, {}, b"", {}, {}, {}
     where = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(path))) if worker else os.path.dirname(path))
-    launched = False
+    launched, counted = False, {}
+    if uses is not None and (os.path.basename(os.path.dirname(os.path.dirname(path))) if worker else session)[:8] in night:
+        uses = None
     try:
         handle = open(path, "rb")
     except OSError:
@@ -397,7 +403,8 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
         for n, line in enumerate(handle):
             if n < 40 and b"RUN-TOKEN: " in line:
                 worker = True
-            if b'"tool_use"' in line and (b'"name":"Bash"' in line or uses is not None and b'"name":"Skill"' in line
+            if b'"tool_use"' in line and (b'"name":"Bash"' in line or uses is not None and (
+                    b'"name":"Skill"' in line or b'"name":"Read"' in line and b"skills-on-demand/" in line)
                                           or b'"name":"Write"' in line and SCRATCH_WRITE.search(line)):
                 try:
                     record = json.loads(line)
@@ -413,6 +420,8 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
                         continue
                     if block.get("name") == "Skill" and uses is not None and at and lo <= at < hi:
                         count(uses, at, ["skill/" + str((block.get("input") or {}).get("skill") or "").lstrip("/")])
+                    if block.get("name") == "Read" and uses is not None and at and lo <= at < hi:
+                        count(uses, at, on_demand(str((block.get("input") or {}).get("file_path") or "")))
                     if block.get("name") == "Write":
                         target = str((block.get("input") or {}).get("file_path") or "")
                         if SCRATCH.search(target) and SCRIPT.search(target):
@@ -442,7 +451,10 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
                         rate[2] += 1
                         rate[3][session] = where
                         if uses is not None:
-                            count(uses, at, ["bin/" + n for n in used(cmd, names)])
+                            keys = ["bin/" + n for n in used(cmd, names)] + on_demand(cmd)
+                            count(uses, at, keys)
+                            if keys:
+                                counted[block.get("id")] = (at, keys)
                         call = kept("\n".join([cmd] + bodies), tools or {}, at, session, worker, out, bool(runs))
                         if call:
                             call["project"] = where
@@ -453,8 +465,13 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
                                 chained[block.get("id")] = {"session": session, "worker": worker, "ts": at, "cmd": cmd,
                                                             "exec_s": 0.0, "out_b": 0, "heads": acts, "project": where}
                                 chains.append(chained[block.get("id")])
-            elif (pending or chained or bashes and TIMED_OUT in line[-TIMED_OUT_TAIL_B:]) and b'"tool_use_id"' in line:
+            elif (pending or chained or counted or bashes and TIMED_OUT in line[-TIMED_OUT_TAIL_B:]) \
+                    and b'"tool_use_id"' in line:
                 found = [f.group(1).decode() for f in RESULT.finditer(line)]
+                for ident in (i for i in found if i in counted):
+                    at, keys = counted.pop(ident)
+                    if IS_ERROR in line:
+                        count(uses, at, ["err/" + k for k in keys])
                 links = [i for i in found if i in chained]
                 if links:
                     stamp = TS.search(line)
@@ -502,11 +519,12 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
             prev = line
 
 
-def codex_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, chains=None):
+def codex_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, chains=None, night=()):
     """Ad-hoc and benched-tool commands of one codex rollout's exec calls, the others running an acting head into
-    `chains`; codex runs only as a worker, in its session's cwd."""
+    `chains`; codex runs only as a worker, in its session's cwd; a `night` worker's calls are no use."""
     session = os.path.basename(path)[-42:-6]
     pending, where = {}, "codex"
+    uses = None if session[:8] in night else uses
     try:
         handle = open(path, "rb")
     except OSError:
@@ -563,17 +581,30 @@ class Dropped(list):
         pass
 
 
+def night_sessions():
+    """Night automation's sessions by their ids' first 8 characters: each night's hub sessions (`night_agents`) and
+    every worker run one of them launched, a worker's own launches too."""
+    out = set(time_budget.night_agents(0, time.time())[0])
+    launchers = chat_names.worker_run_launchers()
+    while True:
+        more = {w[:8] for w, owners in launchers.items() if any(o[:8] in out for o in owners)} - out
+        if not more:
+            return frozenset(out)
+        out |= more
+
+
 def scan(lo, hi, tools=None, names=None, uses=None, keep=True, hung=None, chains=None):
     """(ad-hoc and benched-tool calls in [lo, hi), all Bash calls in it, write rate in chars a second or None, the
     sessions that made a Bash call per project); `tools` maps a target to the pattern of its tool's calls; `uses` (day -> Counter)
-    gets the model-facing tools' calls; `keep` False drops the calls themselves; `hung` gets the hung Claude Code calls;
-    `chains` the other calls running an acting head."""
+    gets the model-facing tools' calls, night automation's (`night_sessions`) left out; `keep` False drops the calls
+    themselves; `hung` gets the hung Claude Code calls; `chains` the other calls running an acting head."""
     calls, rate = [] if keep else Dropped(), [0, 0.0, 0, {}]
+    night = night_sessions() if uses is not None else frozenset()
     for root in projects_roots():
         for path in files(root, "*/*.jsonl", lo) + files(root, "*/*/subagents/*.jsonl", lo):
-            claude_calls(path, lo, hi, calls, rate, tools, names, uses, hung, chains)
+            claude_calls(path, lo, hi, calls, rate, tools, names, uses, hung, chains, night)
     for path in files(codex_dir(), "*/sessions/*/*/*/rollout-*.jsonl", lo):
-        codex_calls(path, lo, hi, calls, rate, tools, names, uses, chains)
+        codex_calls(path, lo, hi, calls, rate, tools, names, uses, chains, night)
     return calls, rate[2], (rate[0] / rate[1] if rate[1] else None), collections.Counter(rate[3].values())
 
 
@@ -948,15 +979,26 @@ def elsewhere(name, path):
     return any(word.search(read(f)) for f in files)
 
 
+def cause(tool, calls, errors):
+    """The likely cause of a near-unused tool: `access` where its link is missing or most of its calls fail,
+    `unknown` where no text tells models of it, else `obsolete`."""
+    if tool.get("broken") or calls and errors * 2 >= calls:
+        return "access"
+    return "obsolete" if tool.get("hinted") else "unknown"
+
+
 def adoption(history, day, tools, now):
     """Each model-facing tool's calls a day over the USE_DAYS days to `day` its history covers (a skill's typed slash
-    uses apart: they need no hint), its age and hint; `unused` when the window is whole, the tool is older than it and
-    no model call ran it. Its hint, read once by each session that loads it (`hint_in`), is priced in Opus-eq tokens and
-    as minutes at the write rate (an output character is OUTPUT_EQ input ones)."""
-    seen = [history[d]["uses"] for d in window(day, USE_DAYS) if "uses" in (history.get(d) or {})]
-    calls = collections.Counter()
-    for u in seen:
-        calls.update(u)
+    uses apart: they need no hint), its age and hint; `unused` (near-unused) when the window is whole, the tool is
+    older than it and its model calls stay under NEAR_UNUSED a day or none ran in its last RECENT_DAYS (a doctrine
+    retired it), with its likely `cause`. Its hint, read once by each session that loads it (`hint_in`), is priced in
+    Opus-eq tokens and as minutes at the write rate (an output character is OUTPUT_EQ input ones)."""
+    days = [d for d in window(day, USE_DAYS) if "uses" in (history.get(d) or {})]
+    seen = [history[d]["uses"] for d in days]
+    calls, recent = collections.Counter(), collections.Counter()
+    for d in days:
+        calls.update(history[d]["uses"])
+        recent.update(history[d]["uses"] if d >= window(day, RECENT_DAYS)[0] else {})
     last = history.get(day) or {}
     rate, projects = last.get("chars_s"), dict(last.get("projects") or {}, **{"*": last.get("sessions") or 0})
     out = {}
@@ -970,7 +1012,10 @@ def adoption(history, day, tools, now):
                     "hint_sessions": round(loads / tool["hint_b"]) if tool["hint_b"] else 0,
                     "hint_tok_day": round(loads / CHARS_PER_TOKEN),
                     "hint_min_day": round(loads / (OUTPUT_EQ * rate) / 60.0, 2) if rate else None,
-                    "unused": len(seen) >= USE_DAYS and age >= USE_DAYS and not calls[key]}
+                    "calls": calls[key], "recent": recent[key], "recent_days": RECENT_DAYS,
+                    "unused": len(seen) >= USE_DAYS and age >= USE_DAYS
+                    and (calls[key] < NEAR_UNUSED * len(seen) or not recent[key])}
+        out[key]["cause"] = cause(tool, calls[key], calls["err/" + key]) if out[key]["unused"] else None
     return out
 
 
@@ -1071,7 +1116,8 @@ def collect(now, write=False, since=lambda target: None, bench=lambda target: No
     history = cache.get("history") or {}
     hi = time_budget.day_bounds(time_budget.local_day(now))[0]
     day = time_budget.local_day(hi - 1)
-    fresh = not {"shadow", "uses", "hung", "chain_s"} <= set(history.get(day) or {})
+    fresh = not {"shadow", "uses", "hung", "chain_s"} <= set(history.get(day) or {}) \
+        or write and cache.get("uses_v") != USES_V
     if fresh:
         cache["facing"] = facing(now)
         names = command_re([k[4:] for k in cache["facing"] if k.startswith("bin/")])
@@ -1083,8 +1129,8 @@ def collect(now, write=False, since=lambda target: None, bench=lambda target: No
         history[day] = dict(day_of(calls, bash, chars_s, hi, sessions, hung, chains, track),
                             uses=dict(uses.get(day) or {}))
         cache["scan_s"] = round(time.monotonic() - started, 2)
-        if write and not cache.get("uses_from"):
-            cache["uses_from"] = backfill(history, day, names)
+        if write and cache.get("uses_v") != USES_V:
+            cache["uses_from"], cache["uses_v"] = backfill(history, day, names), USES_V
         cache["history"] = {d: v for d, v in history.items() if d >= time_budget.local_day(hi - HISTORY_D * 86400)}
     tools = adoption(history, day, cache.get("facing") or {}, now)
     known = [k for k, _, _ in jobs(history.values())]

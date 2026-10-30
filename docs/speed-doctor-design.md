@@ -169,12 +169,16 @@ the hint alone where `covered_by` names a tool. A harness tool only for a job re
 outside the night's (Egor, 2026-10-14: no tools for one chat's need). A fix lands only with a bench (`bench_faults`). Proof (`net`): job min
 and tokens per 1000 Bash calls both below before; worse in either: `regression:adhoc/<key>`. A lever in a repository
 outside the night's is a handoff to its owner chat (`close` accepts one citing that repository), never an open row.
-Adoption (Egor, 2026-10-14: tools are judged by use, not script volume): per model-facing tool with a hint (`facing`:
-a ~/.local/bin command a backticked CLAUDE.md command names, a model-invocable skill) its Bash/Skill calls a day, kept
-per day (`uses`, backfilled once over 30 days, ~30 s); typed slash uses apart, they need no hint. Hint and no model call
-in 30 whole days, older than 30 days: `opportunity:tool/<kind>/<name>`, priced at the hint's bytes once per session loading it (an
-output char = `OUTPUT_EQ` input ones at the write rate); the fix deletes tool and hint, or only the hint where other
-code or Egor runs it. Menu (`menu_row`): repeated jobs (the night's target: built tools as tool | residual min/day,
+Adoption (Egor, 2026-10-14: tools are judged by use, not script volume; 2026-10-30: over the `tools` index, near-unused
+counts): per command and skill of the tool index (`facing` over `share/tool_index.py`: README entries, every
+~/.local/bin link into a sweep repository, listed and on-demand skills) its Bash/Skill calls and on-demand SKILL.md reads
+a day, failed ones apart (`err/`), kept per day (`uses`, backfilled over 30 days whenever `USES_V` moves, ~2 min); typed
+slash uses apart, they need no hint; a night hub's sessions and every worker they launched are automation, no use.
+Under one model call a week (`NEAR_UNUSED`, the gap in the 30-day tail) or none in the last 7 days, older than 30 days:
+`opportunity:tool/<kind>/<name>` with its likely cause (`access`: link missing or most calls failed; `unknown`: no
+CLAUDE.md line, skill listing, hook or preamble names it; `obsolete`), priced at the hint's bytes once per session
+loading it (an output char = `OUTPUT_EQ` input ones at the write rate); the fixer reviews it by that cause, then deletes
+tool and hint (only the hint where other code or Egor runs it) or fixes the cause. Menu (`menu_row`): repeated jobs (the night's target: built tools as tool | residual min/day,
 unbuilt clusters over the floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row), unused
 tools as 0 | ○ where the fix keeps the file (a skill, a bin tool other code, a LaunchAgent, Hammerspoon or Egor's
 shell history runs: `elsewhere`), 0 | 🗑 where it deletes it.

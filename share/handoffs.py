@@ -25,6 +25,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import limit_hit  # noqa: E402
+import tool_index  # noqa: E402
 
 STALE_S = 60 * 3600
 HEAD_LINES = 20
@@ -52,7 +53,7 @@ def repo_list(path):
 
 
 def sweep_repos():
-    return repo_list(os.environ.get("NIGHT_RUN_SWEEP_REPOS") or os.path.expanduser("~/.claude/sweep-repos"))
+    return repo_list(tool_index.sweep_list())
 
 
 def helper_repos():

@@ -321,11 +321,11 @@ hist[day0].update(sessions=10, chars_s=10.0, projects={REPO: 4, "/y": 6})
 tools = {"bin/foo": dict(tools["bin/foo"], born=NOW - 40 * 86400), "skill/s": dict(tools["skill/s"], born=NOW - 40 * 86400),
          "skill/c": dict(tools["skill/c"], born=NOW - 20 * 86400), "bin/bar": dict(tools["bin/bar"], born=NOW - 20 * 86400)}
 got = t.adoption(hist, day0, tools, NOW)
-check([k for k, v in got.items() if v["unused"]] == ["skill/s"] and got["bin/foo"]["calls_day"] == round(1 / 30.0, 2)
+check([k for k, v in got.items() if v["unused"]] == ["bin/foo", "skill/s"] and got["bin/foo"]["calls_day"] == round(1 / 30.0, 2)
       and got["skill/s"]["hint_tok_day"] == round(9 * 10 / t.CHARS_PER_TOKEN)
       and got["skill/s"]["hint_min_day"] == round(9 * 10 / (t.OUTPUT_EQ * 10.0) / 60.0, 2),
-      "a tool with a hint and no call in %d whole days is unused once older than them; its hint priced once a session: "
-      "%s" % (t.USE_DAYS, got))
+      "a tool with a hint and no call, or one call, in %d whole days is (near-)unused once older than them; its hint "
+      "priced once a session: %s" % (t.USE_DAYS, got))
 check(got["bin/bar"]["hint_tok_day"] == round(11 * 4 / t.CHARS_PER_TOKEN) and got["bin/bar"]["hint_sessions"] == 4,
       "a repository's hint is charged to its sessions only: %s" % got["bin/bar"])
 hist.pop(t.window(day0, t.USE_DAYS)[0])
@@ -569,6 +569,154 @@ brief = open(os.path.join(root, "bin", "doctor-fix")).read()
 check("one naming no tool gets one command that does the whole chain" in brief
       and "is a bypass of that tool" in brief and "extend or fix the tool itself" in brief,
       "the fixer brief: an uncovered chain gets one command, a covered one the bypassed tool extended or fixed")
+
+# The tool index (share/tool_index.py, bin/tools) and the near-unused check over it.
+ix = os.path.join(work, "ix")
+repo2, bins2, claude2 = (os.path.join(ix, n) for n in ("repo", "bin", "claude"))
+README2 = ("# r\n\n## Scripts\n\n- `bin/land` → `~/.local/bin/land` — `<branch> [--repo <dir>]...` lands a worktree's branch onto main.\n"
+           "- `bin/lost` → `~/.local/bin/lost` — a tool whose link went\n  missing long ago.\n"
+           "- `bin/statusline.sh` → `~/.claude/statusline.sh` — the statusline, no model tool.\n\n"
+           "- `bin/waiter` — `[--max SEC] pid N` waits for a job to end.\n")
+for rel, text in (("README.md", README2), ("CLAUDE.md", "Land with `land <branch>`.\n"),
+                  ("bin/land", "#!/bin/sh\n# land: a doc line the README entry wins over.\n"), ("bin/lost", "#!/bin/sh\n"),
+                  ("bin/waiter", "#!/bin/sh\n"), ("bin/statusline.sh", "#!/bin/sh\n"),
+                  ("bin/quiet", "#!/usr/bin/env bash\n# shellcheck disable=SC2034\n# quiet: crops an image to its content box.\n"),
+                  ("bin/hooked", "#!/usr/bin/env python3\n\"\"\"Hooked: prints a page of results. More text.\"\"\"\n"),
+                  ("share/crop_box.py", "# /// script\n# requires-python = \">=3.11\"\n# ///\n\"\"\"Crop an image to its subject box.\"\"\"\n"),
+                  ("share/lib.sh", "#!/usr/bin/env bash\n# Sourced by the tools: a lock helper.\n"), ("share/rows.json", "{}\n"),
+                  ("skills/s2/SKILL.md", "---\nname: s2\ndescription: read a doctor's problems\n---\n"),
+                  ("commands/typed.md", "---\ndescription: find a past chat\ndisable-model-invocation: true\n---\n"),
+                  ("skills-on-demand/typed/SKILL.md", "---\nname: typed\ndescription: the body\n---\n"),
+                  ("skills-on-demand/od/SKILL.md", "---\nname: od\ndescription: \"an on-demand skill\"\n---\n"),
+                  ("hooks/h.sh", "echo 'run `hooked --all` for it'\n")):
+    os.makedirs(os.path.dirname(os.path.join(repo2, rel)), exist_ok=True)
+    open(os.path.join(repo2, rel), "w").write(text)
+subprocess.run(["git", "-C", repo2, "init", "-q"], check=True)
+subprocess.run(["git", "-C", repo2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "."], check=True)
+subprocess.run(["git", "-C", repo2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"], check=True,
+               env=dict(os.environ, GIT_AUTHOR_DATE="@1700000000 +0000", GIT_COMMITTER_DATE="@1700000000 +0000"))
+os.makedirs(bins2)
+os.makedirs(claude2)
+for name in ("land", "quiet", "hooked"):
+    os.symlink(os.path.join(repo2, "bin", name), os.path.join(bins2, name))
+for name in ("skills", "commands", "hooks"):
+    os.symlink(os.path.join(repo2, name), os.path.join(claude2, name))
+open(os.path.join(claude2, "CLAUDE.md"), "w").write("# rules\n")
+open(os.path.join(ix, "sweep"), "w").write(repo2 + "\n")
+os.environ.update({"TOOL_BIN_DIR": bins2, "TOOL_CLAUDE_DIR": claude2, "NIGHT_RUN_SWEEP_REPOS": os.path.join(ix, "sweep"),
+                   "TOOLS_INDEX_CACHE": os.path.join(ix, "cache", "index.json")})
+ti, R2 = t.tool_index, os.path.realpath(repo2)
+idx = ti.index()
+check(sorted(idx) == ["bin/hooked", "bin/land", "bin/lost", "bin/quiet", "bin/waiter", "share/crop_box.py", "share/lib.sh",
+                      "skill/od", "skill/s2", "skill/typed"]
+      and idx["bin/land"]["job"] == "lands a worktree's branch onto main." and idx["bin/land"]["call"] == "land <branch> [--repo <dir>]..."
+      and idx["bin/lost"]["job"] == "a tool whose link went missing long ago." and idx["bin/lost"].get("broken")
+      and idx["bin/quiet"]["job"] == "crops an image to its content box" and idx["bin/hooked"]["job"] == "prints a page of results"
+      and idx["bin/waiter"]["call"] == R2 + "/bin/waiter [--max SEC] pid N" and not idx["bin/waiter"]["linked"]
+      and idx["share/crop_box.py"] == dict(idx["share/crop_box.py"], job="Crop an image to its subject box",
+                                            call="import crop_box  # " + R2 + "/share")
+      and idx["share/lib.sh"]["job"] == "Sourced by the tools: a lock helper"
+      and idx["skill/s2"]["call"] == "Skill s2" and idx["skill/s2"]["list_b"] == len("- s2: read a doctor's problems")
+      and idx["skill/typed"]["job"] == "find a past chat"
+      and idx["skill/typed"]["call"] == "Read " + R2 + "/skills-on-demand/typed/SKILL.md"
+      and idx["skill/od"]["call"] == "Read " + R2 + "/skills-on-demand/od/SKILL.md" and not idx["skill/od"]["listed"],
+      "the tool index is derived: README entries (linked, link missing, unlinked; a backticked opening span the call), "
+      "every ~/.local/bin link into a sweep repository (its first doc line), share modules' first doc line, listed, "
+      "typed-only and on-demand skills; a link outside ~/.local/bin and data files stay out: %s" % idx)
+saved_build = ti.build
+ti.build = lambda: (_ for _ in ()).throw(AssertionError("rebuilt"))
+cached = ti.index()
+os.utime(os.path.join(repo2, "bin", "quiet"), (NOW + 5, NOW + 5))
+try:
+    ti.index()
+    stale = True
+except AssertionError:
+    stale = False
+ti.build = saved_build
+check(cached == idx and not stale and ti.index() == idx,
+      "the index answers from its cache while every source keeps its mtime, rebuilds when one moves")
+tools_bin = os.path.join(root, "bin", "tools")
+run = lambda *a: subprocess.run([tools_bin] + list(a), capture_output=True, text=True)
+landed, cropped, none, families = run("land", "a", "branch"), run("crop", "an", "image"), run("zzz"), run()
+check(landed.stdout.splitlines() == ["land — lands a worktree's branch onto main. — land <branch> [--repo <dir>]..."]
+      and cropped.stdout.splitlines()[:2] == ["crop_box.py — Crop an image to its subject box — import crop_box  # " + R2 + "/share",
+                                              "quiet — crops an image to its content box — quiet"]
+      and none.returncode == 1 and families.stdout.splitlines() == [
+          "other bin (5): hooked land lost quiet waiter", "other share (2): crop_box.py lib.sh", "other skill (3): od s2 typed"],
+      "tools <words> prints the best matches, name — job — how to call, within half the best score; no words: a line "
+      "per family: %s" % [landed.stdout, cropped.stdout, none.returncode, families.stdout])
+
+face = t.facing(NOW)
+check(sorted(face) == ["bin/hooked", "bin/land", "bin/lost", "bin/quiet", "bin/waiter", "skill/od", "skill/s2", "skill/typed"]
+      and {k for k, v in face.items() if v["hinted"]} == {"bin/hooked", "bin/land", "skill/s2"}
+      and face["bin/land"]["hint_in"] == {R2: len("Land with `land <branch>`.\n")} and face["bin/lost"].get("broken"),
+      "the unused check runs over the index's commands and skills, hinted or not; `hinted` by a CLAUDE.md line, the "
+      "skill list or a hook's text: %s" % face)
+check(t.used("results/quiet/run.sh x && cd quiet/ && quiet", t.command_re(["quiet"])) == {"quiet"}
+      and not t.used("results/quiet/run.sh", t.command_re(["quiet"])),
+      "a directory of a tool's name is no call of it")
+
+doctors, runs2 = os.path.join(ix, "doctors"), os.path.join(ix, "runs")
+os.makedirs(os.path.join(doctors, "nights"))
+HUB, WORKER = "n1n1n1n1-0000-0000-0000-000000000000", "w2w2w2w2-0000-0000-0000-000000000000"
+stamp = lambda at: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at))
+json.dump({"id": "x", "session": HUB, "started_at": stamp(T0 - 60), "finished_at": stamp(T0 + 600)},
+          open(os.path.join(doctors, "nights", "x.json"), "w"))
+os.makedirs(os.path.join(runs2, "claude-1-1"))
+open(os.path.join(runs2, "claude-1-1", "launcher"), "w").write(HUB + "\n")
+open(os.path.join(runs2, "claude-1-1", "worker-session"), "w").write(WORKER + "\n")
+os.environ.update({"DOCTORS_DIR": doctors, "WORKER_RUN_DIR": runs2})
+ERR = lambda at, ident: {"type": "user", "timestamp": iso(at), "message": {"content": [
+    {"type": "tool_result", "tool_use_id": ident, "content": "no", "is_error": True}]}}
+READ = {"type": "assistant", "timestamp": iso(T0 + 4), "message": {"id": "msg_D", "content": [
+    {"type": "tool_use", "id": "toolu_d", "name": "Read", "input": {"file_path": R2 + "/skills-on-demand/od/SKILL.md"}}]}}
+transcript(os.path.join(ix, "projects", "-p", "chat9.jsonl"), [
+    bash(T0, "quiet --x", "msg_Q", "toolu_q"), ERR(T0 + 1, "toolu_q"), bash(T0 + 2, "results/quiet/run.sh", "msg_Q2", "toolu_q2"),
+    bash(T0 + 3, "land b", "msg_L", "toolu_l"), result(T0 + 3, "toolu_l"), READ])
+transcript(os.path.join(ix, "projects", "-p", HUB + ".jsonl"), [bash(T0, "land b", "msg_H", "toolu_h")])
+transcript(os.path.join(ix, "projects", "-p", WORKER + ".jsonl"), [bash(T0, "quiet", "msg_W", "toolu_w")])
+transcript(os.path.join(ix, "projects", "-p", HUB, "subagents", "agent-a.jsonl"), [bash(T0, "land c", "msg_A", "toolu_a")])
+os.environ["CLAUDE_PROJECTS_DIR"] = os.path.join(ix, "projects")
+uses = t.collections.defaultdict(t.collections.Counter)
+t.scan(HI - t.WINDOW_S, HI, names=t.command_re(["land", "quiet"]), uses=uses, keep=False)
+os.environ["CLAUDE_PROJECTS_DIR"] = projects
+check(dict(uses[day0]) == {"bin/quiet": 1, "err/bin/quiet": 1, "bin/land": 1, "skill/od": 1},
+      "use counts a chat's calls (`err/` for a failed one) and its reads of an on-demand skill; a night hub's, its "
+      "subagents' and the workers it launched are automation, no use: %s" % dict(uses[day0]))
+
+days30 = t.window(day0, t.USE_DAYS)
+spread = lambda n, recent=True: {d: 1 for d in (days30[-n:] if recent else days30[:n])}
+plan = {"bin/land": spread(5), "bin/quiet": spread(4), "err/bin/quiet": spread(1), "bin/hooked": spread(20, False),
+        "bin/waiter": spread(4), "err/bin/waiter": spread(2), "skill/s2": spread(30)}
+hist = {d: {"uses": {k: v[d] for k, v in plan.items() if d in v}} for d in days30}
+hist[day0].update(sessions=10, chars_s=10.0, projects={R2: 4})
+old_face = {k: dict(v, born=NOW - 40 * 86400) for k, v in face.items()}
+got = t.adoption(hist, day0, old_face, NOW)
+check({k: v["cause"] for k, v in got.items() if v["unused"]} == {
+          "bin/lost": "access", "bin/waiter": "access", "bin/quiet": "unknown", "bin/hooked": "obsolete",
+          "skill/od": "unknown", "skill/typed": "unknown"}
+      and t.NEAR_UNUSED * t.USE_DAYS > 4 and t.NEAR_UNUSED * t.USE_DAYS < 5 and got["bin/hooked"]["recent"] == 0,
+      "near-unused: under one model call a week (4 of 30 days flagged, 5 not) or none in the last %d days, each "
+      "with its likely cause: access (link missing, most calls failed), unknown (no hint), obsolete: %s"
+      % (t.RECENT_DAYS, {k: (v["calls"], v["recent"], v["cause"]) for k, v in got.items()}))
+rows = s.unused_opportunities({"unused": [dict(got[k], key=k) for k in ("bin/quiet", "bin/hooked")]})
+check(rows[0]["opportunity"]["what"] == "near-unused tool · bin/quiet · unknown · review: " + s.UNUSED_CAUSES["unknown"]
+      and rows[0]["opportunity"]["cause"] == "unknown" and rows[0]["fact"].startswith("bin/quiet · 4 calls in 30 days · 40 d old")
+      and rows[1]["fact"].startswith("bin/hooked · 20 calls in 30 days, none in the last 7 · 40 d old")
+      and rows[1]["fact"].endswith("obsolete · " + s.UNUSED_CAUSES["obsolete"]),
+      "Speed asks for a review of a near-unused tool with its likely cause: %s" % [r["fact"] for r in rows])
+check("Review it by that cause, then delete it or fix it" in brief and "night automation" in brief
+      and "never an always-loaded list" in brief, "the fixer brief reviews a near-unused tool by its cause")
+
+mining = t.cache_path()
+stale_cache = t.time_budget.read_json(mining, {})
+stale_cache.pop("uses_v", None)
+stale_cache["history"][days30[0]] = {"to_s": 0, "uses": {"bin/x": 99}}
+t.time_budget.write_json(mining, stale_cache)
+t.collect(NOW + 9000, write=True)
+redone = t.time_budget.read_json(mining, {})
+check(redone.get("uses_v") == t.USES_V and "bin/x" not in redone["history"][days30[0]]["uses"],
+      "a cache counted under the old rules is backfilled again once")
 print(count[0])
 EOF
 ) || exit 1

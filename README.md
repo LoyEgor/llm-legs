@@ -276,6 +276,7 @@ Snapshot store and schema live in `~/.claude-profiles/` (documented in its READM
 Each needs its PATH link (`tests/test_consistency.sh` holds every name the media skill runs to
 this list):
 
+- `bin/tools` → `~/.local/bin/tools` — `[words...]` prints the 1–5 tools best matching a job, `name — job — how to call`, a line per family without words; the index (`share/tool_index.py`) is these entries, every `~/.local/bin` link into a sweep repository, `share/` modules' first doc line and the skills, cached by their mtimes.
 - `bin/worker-run` → `~/.local/bin/worker-run` — launcher the chat drives (`start`, `wait`, `report`).
 - `bin/worker-pick` → `~/.local/bin/worker-pick` — account and vendor pick per `docs/routing-contract.md`.
 - `bin/grokb` → `~/.local/bin/grokb` — SuperGrok multi-account launcher.
@@ -307,13 +308,18 @@ this list):
 - `bin/code-doctor` → `~/.local/bin/code-doctor` — Code doctor.
 - `bin/system-doctor` → `~/.local/bin/system-doctor` — System doctor.
 - `bin/log-audit` → `~/.local/bin/log-audit` — Haiku reads the day's transcripts; findings go to the Harness doctor.
-- `bin/doctor-fix` → `~/.local/bin/doctor-fix` — doctor fixer briefs and their close gate.
+- `bin/doctor-fix` → `~/.local/bin/doctor-fix` — `problems <doctor> [id-regex]` reads a doctor's open problems (one matching row as JSON); doctor fixer briefs and their close gate.
 - `bin/vendor-fingerprint` → `~/.local/bin/vendor-fingerprint` — vendor CLI fingerprint requests.
 - `bin/night-run` → `~/.local/bin/night-run` — the night run's jobs, base and report.
 - `bin/land` → `~/.local/bin/land` — `<branch> [--repo <dir>]...` lands a worktree's branch, a chat's or a night's: rebase onto main, the suites main's move shares, ff-only, teardown (`docs/fix-orchestrator.md` step 4).
 - `bin/page` → `~/.local/bin/page` — local browser pages (`page help`, `share/pages/CONTRACT.md`); shadows tcl-tk's `page`.
 - `bin/pkill` → `~/.local/bin/pkill` — shadows `/usr/bin/pkill` for every model and vendor: refuses an option after the first pattern (macOS stops option parsing there, and a stray `-P` pattern matches every Claude Bash shell's `pwd -P`), else execs the real tool.
 - `bin/pgrep` → `~/.local/bin/pgrep` — the same guard for `/usr/bin/pgrep` (a link to `bin/pkill`).
+
+Run by path, no link (worker preambles name them):
+- `bin/wait-until` — `[--max SEC] pid N|gone PATTERN|files GLOB N|log FILE REGEX` waits for a job to end, never a fixed `sleep` poll.
+- `tests/affected` — `<file>...` prints the suites covering the files, for `tests/run-all $(tests/affected <file>...)`.
+- `tests/run-all` — `<suite>...` runs suites in parallel, one table; every suite of the repository without arguments.
 
 ## codexb multi-account suite
 

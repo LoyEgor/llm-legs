@@ -189,9 +189,13 @@ ADHOC_WHAT = {"tool": "model-written scripts · build one command for the job: %
               "hint": "model-written scripts · %s already does the job: %s · the hint only, no new tool",
               "bypass": "commands run by hand · %s already does the job: %s · find why models bypass it, extend or "
                         "fix that tool"}
-UNUSED_LEVER = {"component": "tool", "lever": "delete the tool and its hint; a tool other code or Egor runs keeps its "
-                "file, only the hint goes", "effort": "S", "confidence": "measured", "saving": 1.0, "night_cost_h": 0.0,
+UNUSED_LEVER = {"component": "tool", "lever": "review it by its likely cause, then delete it with its hint or fix the "
+                "cause; a tool other code or Egor runs keeps its file", "effort": "S", "confidence": "measured",
+                "saving": 1.0, "night_cost_h": 0.0,
                 "proof": "elimination", "quality": "equivalent"}
+UNUSED_CAUSES = {"unknown": "no text tells models of it: its hint where the job starts, or fold it into a used tool",
+                 "access": "its link is missing or most calls fail: fix the access",
+                 "obsolete": "a hint and no calls: a doctrine or a newer tool retired it, delete it and its hint"}
 HUNG_LEVER = {"component": "hung-bash", "lever": "the call cannot sit to its timeout: stdin closed, a heredoc that "
               "reaches the command, a wait that ends with its job", "effort": "S", "confidence": "measured",
               "saving": 1.0, "night_cost_h": 0.0, "proof": "elimination", "quality": "equivalent"}
@@ -1200,18 +1204,23 @@ def adhoc_opportunities(adhoc):
 
 
 def unused_opportunities(adhoc):
-    """Tool mining's unused tools (share/tool_mining.py `adoption`): a hint the sessions load for a tool no call ran
-    in its USE_DAYS days, priced at the hint's minutes; deleting both saves them."""
+    """Tool mining's near-unused tools (share/tool_mining.py `adoption`): model calls under its floor in its USE_DAYS
+    days or none in the last RECENT_DAYS, night automation's not counted, priced at the hint's minutes; a review by
+    its likely cause deletes it with its hint or fixes the cause."""
     out = []
     for u in adhoc.get("unused") or ():
         target = "tool/" + u["key"]
         o = target_opportunity(target, u["hint_min_day"] or 0.0, dict(UNUSED_LEVER, component=target), 0,
                                seen_days=WINDOW_D)
-        o["opportunity"].update(what="unused tool · %s · delete it and its hint" % u["key"], path=u["path"],
-                                hint_b=u["hint_b"], hint_tok_day=u["hint_tok_day"], age_d=u["age_d"], files=[u["path"]])
-        o["fact"] = "%s · 0 calls in %d days%s · %s d old · hint %d B in %d sessions/day, %d tokens/day · %s · %s" % (
-            u["key"], u["days"], " · typed %s/day" % fmt(u["slash_day"]) if u.get("slash_day") else "", fmt(u["age_d"]),
-            u["hint_b"], u["hint_sessions"], u["hint_tok_day"], per_day(u["hint_min_day"] or 0.0), UNUSED_LEVER["lever"])
+        why = UNUSED_CAUSES.get(u.get("cause"), UNUSED_CAUSES["obsolete"])
+        o["opportunity"].update(what="near-unused tool · %s · %s · review: %s" % (u["key"], u.get("cause"), why),
+                                path=u["path"], cause=u.get("cause"), hint_b=u["hint_b"], hint_tok_day=u["hint_tok_day"],
+                                age_d=u["age_d"], files=[u["path"]])
+        o["fact"] = "%s · %d calls in %d days%s%s · %s d old · hint %d B in %d sessions/day, %d tokens/day · %s · %s · %s" % (
+            u["key"], u.get("calls") or 0, u["days"], ", none in the last %d" % u["recent_days"] if u.get("calls")
+            and not u.get("recent") else "", " · typed %s/day" % fmt(u["slash_day"]) if u.get("slash_day") else "",
+            fmt(u["age_d"]), u["hint_b"], u["hint_sessions"], u["hint_tok_day"], per_day(u["hint_min_day"] or 0.0),
+            u.get("cause"), why)
         out.append(o)
     return out
 
