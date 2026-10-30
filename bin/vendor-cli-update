@@ -239,6 +239,34 @@ record_divergence() { # vendor findings
   state_apply --arg v "$1" --arg d "$2" '.[$v].divergence = ($d | split("\n") | map(select(length > 0)))'
 }
 
+# npm install -g deletes the package it replaces before writing the new one, and a client launched in
+# between finds no executable (2026-10-29: codex 0.165.0 -> 0.166.0 took 41 s, and worker run
+# codex-1793307486-22564-5bdc started in it exited 127). So npm installs into a stage beside the live
+# prefix (same filesystem, its bin links relative alike) and two renames swap the package in.
+npm_install() { # bin-dir package version
+  local prefix stage live link rc=0
+  prefix=$(dirname "$1")
+  live="$prefix/lib/node_modules/$2"
+  stage=$(mktemp -d "$prefix/.vendor-cli-update.XXXXXX") || return 1
+  PATH="$1:$PATH" timeout_command 600 "$1/npm" install -g "$2@$3" --prefix "$stage" >>"$log_file" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || [ -d "$stage/lib/node_modules/$2" ] || rc=1
+  if [ "$rc" -eq 0 ]; then
+    if mv "$live" "$stage/replaced"; then
+      mv "$stage/lib/node_modules/$2" "$live" || { mv "$stage/replaced" "$live"; rc=1; }
+    else
+      rc=1
+    fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    for link in "$stage"/bin/*; do
+      [ -L "$link" ] && [ "$(readlink "$link")" != "$(readlink "$1/${link##*/}")" ] || continue
+      ln -sfh "$(readlink "$link")" "$1/${link##*/}"
+    done
+  fi
+  rm -rf "$stage"
+  return "$rc"
+}
+
 update_vendor() { # vendor
   local vendor=$1 package bin_dir installed latest native now
   if [ "$vendor" = gemini ]; then
@@ -272,7 +300,7 @@ update_vendor() { # vendor
     record "$vendor" busy "$installed" "$latest"
     return 0
   fi
-  if ! PATH="$bin_dir:$PATH" timeout_command 600 "$bin_dir/npm" install -g "$package@$latest" >>"$log_file" 2>&1; then
+  if ! npm_install "$bin_dir" "$package" "$latest"; then
     record "$vendor" install-failed "$installed" "$latest"
     return 0
   fi
@@ -297,7 +325,7 @@ update_older_nodes() { # vendor package version primary-bin-dir
     [ -n "$installed" ] && newer "$3" "$installed" || continue
     if busy "$1" "$(dirname "$dir")/lib/node_modules"; then
       printf '%s %s busy %s -> %s in %s\n' "$(stamp)" "$1" "$installed" "$3" "$dir" >>"$log_file"
-    elif PATH="$dir:$PATH" timeout_command 600 "$dir/npm" install -g "$2@$3" >>"$log_file" 2>&1 &&
+    elif npm_install "$dir" "$2" "$3" &&
       now=$(version_of "$dir/$1" --version) && [ "$now" = "$3" ]; then
       printf '%s %s updated %s -> %s in %s\n' "$(stamp)" "$1" "$installed" "$3" "$dir" >>"$log_file"
     else

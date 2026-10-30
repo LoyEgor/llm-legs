@@ -91,6 +91,12 @@ case $1 in
       *@latest) cp "$FAKE_BIN/latest-$(name "$3")" "$FAKE_BIN/ver-$(name "$3")" ;;
       *) printf '%s\n' "${3##*@}" >"$FAKE_BIN/ver-$(name "$3")" ;;
     esac
+    live=$(dirname "$FAKE_BIN") prefix=$(dirname "$FAKE_BIN")
+    [ "${4:-}" != --prefix ] || prefix=$5
+    printf 'npm prefix %s\n' "$prefix" >>"$CALLS"
+    mkdir -p "$prefix/lib/node_modules/${3%@*}"
+    [ "$prefix" = "$live" ] || cp -R "$live/lib/node_modules/${3%@*}/." "$prefix/lib/node_modules/${3%@*}/"
+    printf '%s\n' "$3" >"$prefix/lib/node_modules/${3%@*}/installed"
     ;;
 esac
 EOF
@@ -140,6 +146,12 @@ set_versions 0.154.0 0.156.1 1.0.40 1.0.41
 run || fail "run exited non-zero"
 assert grep -qxF 'npm install @openai/codex@0.156.1' "$CALLS"
 assert grep -qxF 'npm install @xai-official/grok@1.0.41' "$CALLS"
+# npm never writes the live prefix, where it deletes the package first: a client launched mid-install
+# found no executable. The staged package is swapped in whole and the stage is gone.
+assert_fails grep -qxF "npm prefix $WORK/node" "$CALLS"
+assert grep -qxF '@openai/codex@0.156.1' "$NPM_ROOT/@openai/codex/installed"
+assert test -e "$CODEX_NATIVE"
+assert_fails compgen -G "$WORK/node/.vendor-cli-update.*"
 assert grep -qxF "codex-refresh $HOME/.codex" "$CALLS"
 assert grep -qxF "codex-refresh $HOME/.codex-profiles/a" "$CALLS"
 assert_fails grep -qF "codex-refresh $HOME/.codex-profiles/b" "$CALLS"
@@ -501,7 +513,7 @@ OLD_CLAUDE="$HOME/.nvm/versions/node/v24.14.1/lib/node_modules/@anthropic-ai/cla
 mkdir -p "$OLD_BIN" "$(dirname "$OLD_CLAUDE")"
 : >"$OLD_CLAUDE"
 printf '#!/usr/bin/env bash\nprintf "%%s (Claude Code)\\n" "$(cat "%s/ver")"\n' "$OLD_BIN" >"$OLD_BIN/claude"
-printf '#!/usr/bin/env bash\nprintf "old npm %%s %%s\\n" "$1" "$3" >>"$CALLS"\nprintf "%%s\\n" "${3##*@}" >"%s/ver"\n' "$OLD_BIN" >"$OLD_BIN/npm"
+printf '#!/usr/bin/env bash\nprintf "old npm %%s %%s\\n" "$1" "$3" >>"$CALLS"\nprintf "%%s\\n" "${3##*@}" >"%s/ver"\nmkdir -p "$5/lib/node_modules/${3%%@*}"\n' "$OLD_BIN" >"$OLD_BIN/npm"
 chmod +x "$OLD_BIN/claude" "$OLD_BIN/npm"
 printf '2.1.296\n' >"$OLD_BIN/ver"
 printf '2.1.304\n' >"$FAKE_BIN/ver-claude"
@@ -537,4 +549,4 @@ bash "$SCRIPT" uninstall >/dev/null || fail "uninstall failed"
 assert test ! -e "$WRAPPER"
 assert test ! -e "$PLIST"
 
-echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps, a refused Gemini sign-in refresh) recorded once per change, no reinstall or downgrade, busy clients left alone and retried within half an hour, every version checked every 2 h with no network on a tick not due while the full pass stays daily, the native claude installed natively to the npm claude's target, agy's lag read off its updater manifest, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, then the Updater doctor whose failure fails no pass, a manual update detached with one chat for every vendor"
+echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), installed in a stage and swapped in whole, model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps, a refused Gemini sign-in refresh) recorded once per change, no reinstall or downgrade, busy clients left alone and retried within half an hour, every version checked every 2 h with no network on a tick not due while the full pass stays daily, the native claude installed natively to the npm claude's target, agy's lag read off its updater manifest, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, then the Updater doctor whose failure fails no pass, a manual update detached with one chat for every vendor"
