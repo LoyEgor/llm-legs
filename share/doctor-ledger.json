@@ -1901,7 +1901,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-07",
    "reviewed_by": "Night 20261006T233611Z-7777",
-   "note": "2 legs 2026-10-05: gemini-image tronjhon 22:18Z with --no-composite (opted-out, recorded by image_leg_composite_record as a quiet skip), codex-image egbogd 18:28Z an edit re-aspected to the asked 16:9 (fit ok) from an input of another ratio (aspect-changed). Both did what was asked; soft_outcome flags every skip but new-generation. A judge question for the owner. 2026-10-07 (Night image fixer): no such skip in the 10 codex-image legs of 2026-10-06; soft_outcome (bin/llm-doctor:1209) unchanged. 2026-10-07 (Night 20261006T233611Z-7777): soft_outcome no longer flags a skip the caller asked for: opted-out, transparent, and aspect-changed when the asked aspect fit ok (all 11 aspect-changed legs of the journal had fit ok); aspect-changed with no asked aspect still reads soft (tests/test_llm_doctor.sh).",
+   "note": "2 legs 2026-10-05: gemini-image tronjhon 22:18Z with --no-composite (opted-out, recorded by image_leg_composite_record as a quiet skip), codex-image egbogd 18:28Z an edit re-aspected to the asked 16:9 (fit ok) from an input of another ratio (aspect-changed). Both did what was asked; soft_outcome flags every skip but new-generation. A judge question for the owner. 2026-10-07 (Night image fixer): no such skip in the 10 codex-image legs of 2026-10-06; soft_outcome (bin/llm-doctor:1209) unchanged. 2026-10-07 (Night 20261006T233611Z-7777): soft_outcome no longer flags a skip the caller asked for: opted-out, transparent, and aspect-changed when the asked aspect fit ok (all 11 aspect-changed legs of the journal had fit ok); aspect-changed with no asked aspect still reads soft (tests/test_llm_doctor.sh). 2026-10-30 (llm-image-20261030T051950Z-5565): ruled out; 'regressed' was the case the fix keeps soft, not a regression of it: codex-image locomthebest 01:32Z (job 20261030T013214Z-34738) edited a 4:1 outpaint canvas (2400x600, /Volumes/Work/tmp/sunlit2/scratch/r3/outpaint/in.png, 'fill the empty white lower half') with no --aspect, and ChatGPT rendered 2172x724 (3:1), so image_composite could not paste it back (share/image_composite.py:293). docs/image-vendors.md:33 routes an outpaint through --aspect; soft_outcome bin/llm-doctor:1257 and the pins tests/test_llm_doctor.sh:885-899 unchanged. Of the 2026-10-14..22 no-aspect codex skips, lineage chain roots (not always the edit's input) run 16:10, 26:15, 6:5, 4:5, 16:9 and 3:2; whether ChatGPT re-aspects an input of a ratio it renders cannot be told from the journal (blind spot image-composite-sizes).",
    "handoff": null
   },
   {
@@ -2624,7 +2624,7 @@
    ],
    "last_reviewed": "2026-10-30",
    "reviewed_by": "Fixer llm-image-20261030T023005Z-00ce",
-   "note": "11 legs, none spent (rc 2, 0-1 s, no account): 10 gemini-image at 23:15:12-23Z 2026-10-29 from the pixel-forge loop of claude-setup chat ac22ec9e (transcript: one Bash loop over packs), refused by share/flow_image.py require_image_capability; its next turn added --upscale 2k and all 10 delivered by 23:28Z. 1 codex-image 'missing --prompt' at 22:22:19Z, a second before the shared-browser trial leg 20261029T222220Z-50555 (I37 note). The wrappers working as designed, like I35/I41/I48/I58: proposed not-a-bug; `until` bounds it. gemini-image's usage showed [--upscale 2k] as optional while the Flow route refuses without it; it now names it required.",
+   "note": "11 legs, none spent (rc 2, 0-1 s, no account): 10 gemini-image at 23:15:12-23Z 2026-10-29 from the pixel-forge loop of claude-setup chat ac22ec9e (transcript: one Bash loop over packs), refused by share/flow_image.py require_image_capability; its next turn added --upscale 2k and all 10 delivered by 23:28Z. 1 codex-image 'missing --prompt' at 22:22:19Z, a second before the shared-browser trial leg 20261029T222220Z-50555 (I37 note). The wrappers working as designed, like I35/I41/I48/I58: proposed not-a-bug; `until` bounds it. gemini-image's usage showed [--upscale 2k] as optional while the Flow route refuses without it; it now names it required. 2026-10-30 (llm-image-20261030T051950Z-5565): ruled out again under this id (the 02:30Z run ruled the same 11 legs as leg-failure:image/bad command); none since, share/flow_image.py:47 and bin/gemini-image:13 stand.",
    "handoff": null
   },
   {
@@ -2644,7 +2644,7 @@
    ],
    "last_reviewed": "2026-10-30",
    "reviewed_by": "Fixer llm-image-20261030T023005Z-00ce",
-   "note": "8 legs 22:55-23:21Z 2026-10-29, each delivered: 4 Remove BG cutouts image_matte could not register back onto the input (unregistered) and 1 over REDRAWN_LIMIT (share/image_matte.py:71/85/108); 3 pixel-forge 'repair only these defects' edits (lineage root /tmp/pf-work/enhance1/packs) where ChatGPT changed 61-82 % of the image, over GLOBAL_LIMIT 0.60, so image_composite delivered the whole edit (share/image_composite.py:321, limit_hit image-composite.global). The fallbacks working as docs/image-vendors.md specifies; the cause is ChatGPT re-rendering the frame. Proposed not-a-bug; `until` bounds it. Not changed: the limits (judge-side thresholds).",
+   "note": "8 legs 22:55-23:21Z 2026-10-29, each delivered: 4 Remove BG cutouts image_matte could not register back onto the input (unregistered) and 1 over REDRAWN_LIMIT (share/image_matte.py:71/85/108); 3 pixel-forge 'repair only these defects' edits (lineage root /tmp/pf-work/enhance1/packs) where ChatGPT changed 61-82 % of the image, over GLOBAL_LIMIT 0.60, so image_composite delivered the whole edit (share/image_composite.py:321, limit_hit image-composite.global). The fallbacks working as docs/image-vendors.md specifies; the cause is ChatGPT re-rendering the frame. Proposed not-a-bug; `until` bounds it. Not changed: the limits (judge-side thresholds). 2026-10-30 (llm-image-20261030T051950Z-5565): ruled out again under this id (the 02:30Z run ruled the same 8 legs as leg-failure:image/soft outcome); none since, REDRAWN_LIMIT share/image_matte.py:33 and GLOBAL_LIMIT share/image_composite.py:80 unchanged.",
    "handoff": null
   }
  ],
@@ -2711,6 +2711,13 @@
    "reason": "share/account_stores.py _web lists profiles, accounts, locks and walls only; ~/.chatgpt-web/logs and ~/.gemini-web/logs keep <account>-chrome.log, -chrome.sh, -chrome-cdp.sh, -host.log and -serve.log, and burkhartor's are still there off the codex roster. Found 2026-10-30 by llm-doctor-20261030T022954Z-78ec while fixing the serve/slot/full lock names (4eb25d60) that read as 30 false codex remnants.",
    "since": "2026-10-30",
    "would_catch_if": "_web held an Entries over root()/logs matching {name}-(chrome|chrome-cdp|host|serve)\\.(log|sh), with tests/test_account_purge.sh's fill helper able to build a name from a non-optional alternation"
+  },
+  {
+   "id": "image-composite-sizes",
+   "what": "An aspect-changed composite skip with no asked aspect cannot be told apart: a caller's input the vendor cannot render, or the vendor re-aspecting an input of a ratio it renders",
+   "reason": "image_composite prints `composite=skipped reason=aspect-changed from=<WxH> to=<WxH>`, but share/image-leg.sh image_leg_composite_record keeps only kind, changed and reason, and the lineage root is the chain's first image, not the edit's input. I45's 2026-10-30 leg (4:1 in, 3:1 out) took a scratch-dir dig; its ~25 codex-image predecessors 2026-10-14..22 cannot be judged now.",
+   "since": "2026-10-30",
+   "would_catch_if": "the composite record kept from/to, and soft_outcome named an input ratio past the route's manifest range apart from a re-aspect inside it"
   }
  ]
 }
