@@ -130,7 +130,7 @@ def load(path, lo, night=()):
             row["n"] += 1
             e = {"repo": row["repo"], "root": root, "checkout": str(r.get("repo") or root), "name": name,
                  "start": start, "end": end, "secs": s["secs"], "cpu": num(s.get("cpu_s")),
-                 "sleep": num(s.get("sleep_s")), "ok": s.get("rc") == 0,
+                 "sleep": num(s.get("sleep_s")), "ok": s.get("rc") == 0, "fail": s.get("fail"),
                  "killed": r.get("signal") is not None or r.get("complete") is False and r.get("reason") != "repeat-red",
                  "who": who,
                  "tree": r.get("tree") or None, "head": r.get("head") or None, "scope": r.get("scope"), "row": row}
@@ -578,7 +578,9 @@ def findings(window, suites, now, born, since=lambda target: None):
             if cls == "flaky":
                 secs, worker = cost(runs, "flaky") / STATS_D, cost(runs, "flaky", "worker") / STATS_D
                 out.append(finding("flaky", "flaky/%s/%s" % (repo, short), secs, worker, len(runs), days(runs),
-                                   "%s · %s: %d red runs a later run of the same code passed" % (short, repo, len(runs)),
+                                   "%s · %s: %d red runs a later run of the same code passed%s" % (
+                                       short, repo, len(runs), next(("; last red at %s" % e["fail"] for e in reversed(runs)
+                                                                     if isinstance(e.get("fail"), str)), "")),
                                    files_of))
             elif cls == "idle" and s.get("idle_s"):
                 slept = s.get("slept_runs")

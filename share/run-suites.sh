@@ -386,7 +386,7 @@ find "${progress_file%/*}" -maxdepth 1 -name 'suites-*.done' -mmin +1 -delete 2>
 suite_journal_git "$repo"
 suite_journal_content "$repo"
 journal_run() {
-  local entry name rc secs real cpu detached bound execs complete=true queued began ended reason='' stopped=''
+  local entry name rc secs real cpu detached bound execs complete=true queued began ended reason='' stopped='' failed
   local -a names=()
   suite_journal_suites=''
   for entry in ${suites[@]+"${suites[@]}"}; do
@@ -408,6 +408,10 @@ journal_run() {
         if (k) { printf ",\"sleep_sites\":{"; for (i = 0; i < 3 && i < k; i++) { m = ""; for (x in p) if (m == "" || p[x] > p[m]) m = x
           printf "%s\"%s\":%.3f", i ? "," : "", m, p[m]; delete p[m] } printf "}" } }' "$logdir/$name.execs")
     [ -z "${shards[$name]:-}" ] || execs="\"shards\":${shards[$name]}${execs:+,$execs}"
+    if [ "${rc:-0}" != 0 ] && failed=$(grep -a '^FAIL: ' "$logdir/$name.log" 2>/dev/null | tail -n1) && [ -n "$failed" ]; then
+      suite_journal_str failed "${failed:0:300}"
+      execs="${execs:+$execs,}\"fail\":$failed"
+    fi
     if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu" "$bound" "$execs"
     else complete=false stopped+=" $name"; fi
   done

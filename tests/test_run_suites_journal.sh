@@ -74,7 +74,7 @@ new_repo "$REPO"
 SHA=$(git -C "$REPO" rev-parse HEAD)
 suite "$REPO" test_cpu.sh 'i=0; while [ "$i" -lt 30000 ]; do i=$((i + 1)); done'
 suite "$REPO" test_env.sh "env | grep -E '^(WORKER_RUN_ID|SUITE_JOURNAL_PID|RUN_SUITES_JOURNAL|RUN_SUITES_TIMES)=' >\"$WORK/env.out\"; exit 0"
-suite "$REPO" test_fail.sh 'exit 3'
+suite "$REPO" test_fail.sh 'echo "FAIL: first" >&2; echo "FAIL: the \"last\" check" >&2; exit 3'
 printf '%s\ttest_gone.sh\t5\n/elsewhere\ttest_gone.sh\t5\n' "$REPO" >"$RUN_SUITES_TIMES"
 
 # A full run: its row names the run, the worker and chat it ran for, and each suite's verdict and CPU;
@@ -89,6 +89,12 @@ assert jqe --argjson keys "$KEYS" --arg repo "$REPO" --arg sha "$SHA" --arg slot
   and (.suites | keys) == ["test_cpu.sh","test_env.sh","test_fail.sh"]
   and ([.suites[].rc] == [0,0,3]) and all(.suites[]; (.secs | type == "number") and (.cpu_s | type == "number"))
   and .suites["test_cpu.sh"].cpu_s > 0 and .suites["test_cpu.sh"].secs > 0' "$JOURNAL"
+# A red suite keeps its last FAIL line, run by run-suites or directly through the library's fail.
+assert jqe '.suites["test_fail.sh"].fail == "FAIL: the \"last\" check" and (.suites["test_cpu.sh"] | has("fail") | not)' "$JOURNAL"
+new_repo "$WORK/dfail"
+suite "$WORK/dfail" test_dfail.sh 'fail "boom"'
+SUITE_JOURNAL="$WORK/dfail.jsonl" bash "$WORK/dfail/tests/test_dfail.sh" 2>/dev/null
+assert jqe '.suites["test_dfail.sh"] | .rc == 1 and .fail == "FAIL: boom"' "$WORK/dfail.jsonl"
 run_pid=$(jq -r .pid "$JOURNAL")
 assert test "$(cat "$WORK/env.out")" = "SUITE_JOURNAL_PID=$run_pid"
 # A bash with wait -n but no EPOCHREALTIME (4.3, 4.4) leaves a suite's start empty; its CPU stays CPU.

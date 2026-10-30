@@ -144,6 +144,7 @@ row(T - 800, T - 750, [("test_b.sh", 0, 50, 25)], who="s-chat", tree="t3")
 row(T - 700, T - 650, [("test_b.sh", 1, 50, 25)], who="s-chat", tree="t4")
 row(T - 600, T - 550, [("test_b.sh", 0, 50, 25)], who="s-chat", tree="t5")
 row(T - 500, T - 450, [("test_b.sh", 1, 50, 25)], head="h1", scope="full")
+rows[-1]["suites"]["test_b.sh"]["fail"] = "FAIL: assert 7 failed: lock held"
 row(T - 400, T - 350, [("test_b.sh", 0, 50, 25)], head="h1", scope="full")
 row(T - 300, T - 250, [("test_b.sh", 1, 50, 25)], head="h2")
 row(T - 200, T - 150, [("test_b.sh", 0, 50, 25)], head="h2")
@@ -210,7 +211,10 @@ check(idle and abs(idle["min_day"] - min(sum(50.0 * 30 / (100 + i) for i in rang
       "share, priced at the median of the 7 days' sums; a busy suite is not: %s" % idle)
 check(idle["confidence"] == "measured" and "bounded by the sleeps 10 profiled runs" in idle["fact"],
       "idle: a profiled bound reads measured: %s" % idle)
-check(findings["test-health/flaky/alpha/test_b"]["exposure"] == 2, "flaky: one finding per suite, its flakes counted")
+check(findings["test-health/flaky/alpha/test_b"]["exposure"] == 2
+      and findings["test-health/flaky/alpha/test_b"]["fact"].endswith("; last red at FAIL: assert 7 failed: lock held"),
+      "flaky: one finding per suite, its flakes counted, its latest red's FAIL line named: %s"
+      % findings["test-health/flaky/alpha/test_b"])
 check(findings["test-health/retests"]["exposure"] == 3, "retests: one finding over every repeat")
 check(findings["test-health/idle/alpha/test_a"]["confidence"] == "estimated",
       "idle: without a profiled run any wait counts and reads estimated")

@@ -278,7 +278,7 @@ suite_shard_wanted() { # [wait] -> status 0 under RUN_SUITES_SHARDS=on, or auto 
 
 [ "${1:-}" != --lib ] || return 0
 # A suite's helpers; one that needs another body defines its own after this source.
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() { suite_journal_failed="FAIL: $*"; echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() {
   asserts=$((asserts + 1))
@@ -317,7 +317,7 @@ suite_journal_queued=$suite_journal_began suite_journal_slot='' suite_journal_he
 suite_journal_end() { # exit-code -> returns it
   [ -z "${suite_journal_done:-}" ] && [ "${BASHPID:-$$}" = "$$" ] || return "$1"
   suite_journal_done=1
-  local rc=$1 flags=$- name=${suite_journal_test##*/} ended secs cpu began queued complete=true owner='' tree tree_end
+  local rc=$1 flags=$- name=${suite_journal_test##*/} ended secs cpu began queued complete=true owner='' tree tree_end failed
   local members=${suite_shard_ran:+\"shards\":$suite_shard_ran}
   set +eu
   # store_lock_release's owner check, inline: sourcing slots.sh here costs a fork and three files.
@@ -346,6 +346,10 @@ suite_journal_end() { # exit-code -> returns it
   if [ -n "$tree" ] && [ -n "$tree_end" ]; then
     suite_journal_secs tree "$(( tree_end - tree ))"
     members="${members:+$members,}\"tree_s\":$tree"
+  fi
+  if [ "$rc" != 0 ] && [ -n "${suite_journal_failed:-}" ]; then
+    suite_journal_str failed "${suite_journal_failed:0:300}"
+    members="${members:+$members,}\"fail\":$failed"
   fi
   suite_journal_suites=''
   suite_journal_suite "$name" "$rc" "$secs" "$cpu" '' "$members"
