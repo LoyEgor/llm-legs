@@ -4229,6 +4229,46 @@ def hang_line(runs, now):
     return out
 
 
+NIGHT_TREE = re.compile(r"/\.claude/worktrees/night-(\d{8}T\d{6}Z-[0-9a-f]{4})-")
+# A red-on-old-code run and a test speed row's measuring runs are a fixer's own; more is the landing's work twice.
+FIXER_SUITES_MIN = 15
+
+
+def fixer_runs_line(runs):
+    """The newest night's suite runs inside its worktrees: a worker run's are a fixer's own (its landing reruns
+    them), a run with no worker run the landing's; a watch over FIXER_SUITES_MIN of the fixers' wall."""
+    nights = {}
+    for r in runs:
+        found = NIGHT_TREE.search(str(r.get("repo") or ""))
+        if found:
+            nights.setdefault(found.group(1), []).append(r)
+    if not nights:
+        return None
+    night = max(nights)
+    fixers = [r for r in nights[night] if r.get("worker_run")]
+    landing = [r for r in nights[night] if not r.get("worker_run")]
+    mins = lambda xs: sum(r["ended_at"] - r["started_at"] for r in xs) / 60.0
+    by = {}
+    for r in fixers:
+        by.setdefault(r["worker_run"], []).append(r)
+    top = sorted(by.values(), key=lambda xs: -mins(xs))
+    limit = FIXER_SUITES_MIN
+    level = "watch" if fixers and mins(fixers) >= limit else None
+    fact = "night %s: fixers ran %d suite runs, %s min, on their own branches beside the landing's %d, %s min" % (
+        night, len(fixers), num(mins(fixers)), len(landing), num(mins(landing)))
+    out = line("fixers' suites, night %s: %s min" % (night[-4:], num(mins(fixers))), dim=not level, menu=section("", [
+        row([xs[0]["worker_run"], os.path.basename(str(xs[0].get("repo") or "").rstrip("/")), fmt_count(len(xs)),
+             num(mins(xs))]) for xs in top[:INVENTORY_ROWS]], ["worker run", "worktree", "runs", "min"],
+        [False, False, True, True]) if top else None)
+    out.update(key="tests:fixers", say=fact if level else None, judge=[verdict(
+        "test_fixer_runs", "night", mins(fixers), limit, "min", 24, len(fixers), level, fact=fact,
+        values=[mins(xs) for xs in top], bad=int(bool(level)),
+        evidence=[evidence(xs[0]["started_at"], "runs.jsonl %s %s" % (xs[0].get("kind"), xs[0].get("pid")),
+                           "%d runs, %s min in %s" % (len(xs), num(mins(xs)), os.path.basename(
+                               str(xs[0].get("repo") or "").rstrip("/"))), xs[0]["worker_run"]) for xs in top])])
+    return out
+
+
 def tests_section(tests, now, kills=(), runs=()):
     today = local_day(now)
     todays = [t for t in tests if local_day(t["end"]) == today]
@@ -4325,7 +4365,8 @@ def tests_section(tests, now, kills=(), runs=()):
                                evidence=[evidence(t["end"] - t["secs"], history_ref(t))])
                        for t, crowd, passed in fails]
     pole, cost, hung = pole_line(tests, now), cost_line(tests, now), hang_line(runs, now)
-    out = section("Tests", rows, columns, right, lead=[hung, overlap, loaded, pole, cost], nav=nav,
+    fixers = fixer_runs_line(runs)
+    out = section("Tests", rows, columns, right, lead=[hung, overlap, loaded, pole, cost] + ([fixers] if fixers else []), nav=nav,
                   ok=("%d runs today, %s of wall clock, none slower than usual" % (
                       len(todays), fmt_long(union_secs(intervals(todays)))) if todays else "no test finished today")
                   + ("; %d running now" % len(live) if live else ""))

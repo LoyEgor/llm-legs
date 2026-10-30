@@ -791,7 +791,22 @@ unprobed = [{"kind": "suites", "repo_root": "/r/%s" % r, "started_at": T - 900, 
 check(state_of(m.tests_section(suites[:1], T, (), unprobed)) == "problem"
       and state_of(m.tests_section(suites[:1], T, (), [dict(r, kind="direct") for r in unprobed])) == "ok",
       "Tests: suite runs only run-suites' own journal saw count toward the peak")
-runs_slow = [test_row("a", "t", T - d * 86400 - 300, T - d * 86400) for d in (3, 2, 1)] + [test_row("a", "t", T - 1600, T - 100)]
+OLD_NIGHT, NEW_NIGHT = "20261029T163046Z-74c1", "20261030T012330Z-5867"
+in_night = lambda n, run, a, b: {"kind": "suites", "repo": "/x/.claude/worktrees/night-%s-job" % n, "pid": 7,
+                                 "started_at": a, "ended_at": b, "worker_run": run, "suites": {}}
+fixer_runs = [in_night(OLD_NIGHT, "claudeb-1", T - 90000, T - 80000), in_night(NEW_NIGHT, "claudeb-2", T - 3000, T - 2400),
+              in_night(NEW_NIGHT, "claudeb-2", T - 2400, T - 1800), in_night(NEW_NIGHT, "claudeb-3", T - 1800, T - 1500),
+              in_night(NEW_NIGHT, None, T - 1200, T - 600),
+              {"kind": "direct", "repo": "/x", "worker_run": "claudeb-4", "started_at": T - 900, "ended_at": T - 100}]
+fx = [x for x in m.tests_section(suites[:1], T, (), fixer_runs)["lead"] if x.get("key") == "tests:fixers"][0]["judge"][0]
+check(fx["rule"] == "test_fixer_runs" and fx["level"] == "watch" and fx["value"] == 25.0
+      and fx["fact"] == "night %s: fixers ran 3 suite runs, 25 min, on their own branches beside the landing's 1, 10 min"
+      % NEW_NIGHT and [e["account"] for e in fx["evidence"]] == ["claudeb-2", "claudeb-3"],
+      "Tests: the newest night's suite runs in its worktrees under a worker run are its fixers', beside the landing's "
+      "runs with none, a watch over %d min naming the costliest fixers: %s" % (m.FIXER_SUITES_MIN, fx))
+check(m.fixer_runs_line(fixer_runs[3:])["judge"][0]["level"] is None and m.fixer_runs_line(fixer_runs[-1:]) is None,
+      "Tests: fixers under %d min are quiet, and no night worktree run reads no line" % m.FIXER_SUITES_MIN)
+runs_slow =[test_row("a", "t", T - d * 86400 - 300, T - d * 86400) for d in (3, 2, 1)] + [test_row("a", "t", T - 1600, T - 100)]
 check(state_of(m.tests_section(runs_slow, T)) == "problem", "Tests: a run twice its usual is red")
 check(state_of(m.tests_section(runs_slow, T + 7 * 3600)) == "ok", "J Tests: a slow run clears after 6 h")
 

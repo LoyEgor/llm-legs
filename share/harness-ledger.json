@@ -14279,7 +14279,8 @@
       "what": "processes one instruction-watch check or bloat-gate decision starts (suite audits 2026-10-13: the tripwire suite spawns 678 awk, 359 jq, 180 date per run, the bloat suite ~150 gate runs of ~60 command substitutions each)",
       "reason": "suite wall of test_instruction_gate_tripwire/bloat is the hooks under test, which run before every Edit/Write and after every tool call; gate_journal and the wc|tr pairs are cut, the awk/jq pipelines of instruction-watch.sh and share/instruction-files.sh are not. Ruled out as not worth it: a stat-keyed digest cache for suite_journal_content (about 90 ms a direct run, mostly python start and git ls-files) and a bash JSON builder for the harness's jq payloads (needs a byte-identical escaper to be safe)",
       "since": "2026-10-13",
-      "would_catch_if": "the hook journal priced each hook's spawn count per call next to its wall, so a CPU audit of instruction-watch and instruction-bloat-gate ranks them"
+      "would_catch_if": "the hook journal priced each hook's spawn count per call next to its wall, so a CPU audit of instruction-watch and instruction-bloat-gate ranks them",
+      "unmeasurable": "macOS gives an unprivileged bash no count of the processes it forked (getrusage has no fork field, dtrace is blocked under SIP, a counting PATH shim is itself a spawn per call); what the count was for is already ranked: hook-time's cpu_us is the hook plus its waited children (`times`), and cpu_audit's rows read cpu:hook/instruction-watch.sh 65.5 CPU-min/day at 0.228 CPU-s a run and cpu:hook/instruction-bloat-gate.sh 1.5 at 0.036 (2026-10-30)"
     },
     {
       "id": "hook-off-cpu-wait",
@@ -14427,13 +14428,6 @@
       "reason": "2026-10-29: of 5 refusals in 24 h (35.9 s) 14.6 s were the door working, 0.4 s a fixed cd-behind-|| catch, 19.6 s two false catches: `J=$S/x; cd $J && git init -q && git commit` fell back to the wired session cwd because the gate returns at a `$` in the cd target (and /Volumes/Work/tmp is no throwaway root); the refusal row carries neither, so the split took reading 17 refusals' commands from the transcripts",
       "since": "2026-10-29",
       "would_catch_if": "commit-push-gate's denial row named why it judged the session cwd (the unresolved cd token, a branch operator, a git outside the segment walk), and refusal_cost listed those apart from word-door denials"
-    },
-    {
-      "id": "night-fixer-suite-runs-unmetered",
-      "what": "suite runs a night fixer makes on its night branch, which its landing reruns",
-      "reason": "2026-10-29: the BRIEF_PREAMBLE skip clause was ambiguous (log_audit:night-branch-suites-run-despite-skip, ~48 min at 1c68), and nothing counts what fixers still run once it reads plainly",
-      "since": "2026-10-29",
-      "would_catch_if": "the Harness doctor summed ~/.cache/run-suites/runs.jsonl rows whose worker_run is a doctor-fix or night job and whose repo is a .claude/worktrees/night-* worktree, per night, beside the landing's own runs"
     }
   ]
 }
