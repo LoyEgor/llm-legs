@@ -172,8 +172,9 @@
    "verdict": "kept",
    "zero": "removal saves ~2.2 % of Claude spend; loses every global and project rule (language, commits, shared checkout, cardinal store rules) and the memory index workers and chats cite",
    "note": "kept (re-audit 2026-10-13): the x1.7 is load: main contexts loading it ~930 -> ~2530/7d while the part per context fell 13.8k -> 9.3k (-33%) and the Workers cell price per unit 13.4k -> 12.7k (-5%); the only new cell is Reviewers (999 bench cells x ~0.9k, the reviewed checkout CLAUDE.md, none before 10-09); Unused startup lists no CLAUDE.md or memory entry; workers act on the index (10-09 audit: 43/675 cite a slug) and instruction files are the orchestrator to cut; Reviewers CLAUDE.md + memory before 10-09 (stream-only cells) Done in token-map e427b8b",
-   "depends_on": "removal saves ~2.2 % of Claude spend; loses every global and project rule (language, commits, shared checkout, cardinal store rules) and the memory index workers and chats cite",
-   "reread_by": "2026-10-30"
+   "depends_on": "removal saves ~1.2 % of Claude spend (fee:CLAUDE.md & memory, 2026-10-30; was ~2.2 %); loses every global and project rule (language, commits, shared checkout, cardinal store rules) and the memory index workers and chats cite",
+   "reread_by": "2026-12-11",
+   "reread_note": "2026-10-30: speed-doctor --json 2026-10-30: the startup: layer is no longer measured (5e55c09d7 moved Spend to tokenmap Fee sources); its successor fee:CLAUDE.md & memory is 1.2 % of Claude spend (audit ~2.2 %), share x0.77 and price per unit x0.4 of its 10-14 audit, raw Δ +64 % is load; removal still loses every global/project rule and the memory index"
   },
   {
    "id": "suite:llm-legs/test_consistency",
@@ -3081,8 +3082,9 @@
    "verdict": "kept",
    "zero": "removal saves 72.9 wall-min/day; loses 478 asserts pinning doctor-fix launch, close, record and briefs",
    "note": "wall is shard 3 (df-speed: 18 sequential night launches, 62 of 4 shards' 23/26/62/18 s at load 60-110); each launch is ~60 forks (record_set lock+jq, python subcommands packet/snapshot ~0.3 s idle each); state chains through the section so no split; F7 lock retry 0.01 s on shard 1; PASS 478",
-   "depends_on": "removal saves 72.9 wall-min/day; loses 478 asserts pinning doctor-fix launch, close, record and briefs",
-   "reread_by": "2026-10-30"
+   "depends_on": "removal saves ~29.5 wall-min/day (2026-10-30; was 72.9); loses ~435 asserts pinning doctor-fix launch, close, record and briefs",
+   "reread_by": "2026-12-25",
+   "reread_note": "2026-10-30: speed-doctor --json 2026-10-30: 29.5 wall-min/day, 33.9 CPU-min/day, 120 runs/7 d, p50 119 s (audit 94 wall-min/day, 170 CPU-min/day); last run-suites journal rc 0, 77 s wall, 115 CPU-s, 4 shards; tests/test_doctor_fix.sh still ~435 assert/assert_fails lines on doctor-fix launch, close, record and briefs"
   },
   {
    "id": "suite:llm-legs/test_vendor_fingerprint",
@@ -3466,8 +3468,9 @@
    "verdict": "trade",
    "zero": "removing Hammerspoon saves 92 CPU-min/day and loses the menubar and every hotkey",
    "note": "100 ms Terminal AX tab poll dominates timers, handoff docs/handoffs/2026-10-13-hammerspoon-ax-poll.md",
-   "depends_on": "removing Hammerspoon saves 92 CPU-min/day and loses the menubar and every hotkey",
-   "reread_by": "2026-10-30"
+   "depends_on": "removing Hammerspoon saves ~35 CPU-min/day (2026-10-30; was 92) and loses the menubar and every hotkey",
+   "reread_by": "2026-12-25",
+   "reread_note": "2026-10-30: speed-doctor --json 2026-10-30: 35.0 CPU-min/day, 24 runs/day, 86.8 CPU-s a run (audit 92); the AX-poll handoff settled (hammerspoon@b4a4941, @75d60db, d3bb5a6 tab tty once) and menu rebuilds cut (@3800a5f, f9e3b1a); the remaining lever is the open opportunity background/hs lag (4.4 min/day); the menubar is still Egor's single source of truth and hotkeys depend on it"
   },
   {
    "id": "suite:claude-setup/test_worker_pin_gate",
@@ -6547,8 +6550,9 @@
    "verdict": "kept",
    "zero": "removal saves 2.2 % of Claude spend (22.9M limit tokens/7 d); loses delegation itself: the chat writing briefs and reading worker answers, and the worker reading its brief",
    "note": "kept: what it is made of is the delegated task own prompt and answer, which a bare Agent call pays too, at a near-minimal harness frame: in 288 chat transcripts 10-07..10-14 worker-run start prints a median 233 B (124 tok avg), wait is the background-task notice (77 tok), report is the worker RETURN under a RESULT: header (590 tok avg); review-bench steps 100-940 tok; the worker side is brief.launch (median 6.0 kB, 1189 non-fixer briefs) of which BRIEF_PREAMBLE+MD-GUARD+EDITS fence are ~2.8 kB, each clause tied to a dated incident, no exact duplicate of the brief body (MD-GUARD is skipped when the brief has one); Δ -30 % is claudeb-worker (8.4M -> 3.2M, relay retired ee185fa8) leaving the window; Workers price per task 16.4k -> 17.9k (+9 %), inside noise of brief length; tokenmap gap: a brief that embeds its work material (log-audit chunk briefs, ~200 kB of transcript skeletons, zone worker) counts whole as Delegation head",
-   "depends_on": "removal saves 2.2 % of Claude spend (22.9M limit tokens/7 d); loses delegation itself: the chat writing briefs and reading worker answers, and the worker reading its brief",
-   "reread_by": "2026-10-30"
+   "depends_on": "removal saves ~0.9 % of Claude spend (2026-10-30; was 2.2 %, 22.9M limit tokens/7 d); loses delegation itself: the chat writing briefs and reading worker answers, and the worker reading its brief",
+   "reread_by": "2026-12-11",
+   "reread_note": "2026-10-30: speed-doctor --json 2026-10-30: Delegation is 0.89 % of Claude spend (audit 2.2 %), share x0.4 and price per unit x0.18 of its 10-14 audit, raw Δ +76 % is load; it is still the delegated task's own brief and answer that a bare Agent call pays too"
   },
   {
    "id": "fee:Project docs",
