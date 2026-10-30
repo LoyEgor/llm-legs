@@ -2191,7 +2191,7 @@ assert jq -e --argjson floor "$NOW" '.five_hour.as_of >= $floor and .auth_needed
 
 # A usage reset lowers the week without moving its resets_at, so an idle chat replaying its
 # pre-reset 100 looks "higher in the same window" and re-walls the account until the week ends
-# (claude/locomthebest, 2026-10-06 13:18). While a `.reset-at` marker stands only a reading
+# (claude/locomthebest, 2026-10-06 13:18). While llm-reset-redeem's marker stands only a reading
 # that followed spend AFTER the reset is taken, whatever its percentage.
 reset_week=$((NOW + 300000))
 seed_reset_cache() {

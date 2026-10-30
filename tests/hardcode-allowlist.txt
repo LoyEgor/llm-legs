@@ -7,6 +7,7 @@ bin/grokb ^    grok-[0-9][-0-9.a-z]* (yes|no) grok- # frozen models_builtin fall
 bin/dia-mcp ^VERSION=[0-9.]+$ # chrome-devtools-mcp npm package pin, not a model
 bin/worker-pick gemini:flash3\[0-9\]\) # slug-shape pattern shortening any catalog Flash label
 bin/claudeb User-Agent: claude-cli/[0-9.]+ # server-gated claude-cli version in the usage User-Agent
+share/claude_resets.py ^USER_AGENT = "claude-cli/[0-9.]+ # server-gated claude-cli version, same string as bin/claudeb
 grok-quota.py ^FALLBACK_CLIENT_VERSION = # vendor CLI version when the installed one cannot be parsed
 review-bench/share/rbench/catalog.py ^ +"note": " # measurement note naming the model it was taken on
 review-bench/share/rbench/catalog.py ^    "[a-z0-9.-]+": "([0-9]+s, |HTTP [0-9]) # screened-out model's recorded failure

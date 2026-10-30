@@ -2619,6 +2619,63 @@ function M.hardRefreshCodex(name) hardRefresh("codex/" .. name) end
 function M.hardRefreshGemini(name) hardRefresh("gemini/" .. (name or "main")) end
 function M.hardRefreshGrok(name) hardRefresh("grok/" .. name) end
 
+-- The whole per-vendor difference: who has a redeem RPC. Wording and layout are shared, so the
+-- item still renders for a vendor without one, disabled and saying why, rather than vanishing.
+local RESET_REDEEM_VENDORS = { grok = true, codex = true, claude = true }
+
+-- Spends a real one-per-period consumable on the account, so it fires on a click and a
+-- confirmation and on nothing else. The script does the targeted refresh itself; the recollect
+-- here is what moves the number in the menu.
+function M.redeemReset(vendor, account)
+  local target = vendor .. "/" .. account
+  -- Cancel is the first button, so Return and Escape both back out: the spend is irreversible and
+  -- must cost a deliberate click, never a keystroke aimed at whatever dialog was expected.
+  local choice = hs.dialog.blockAlert("Redeem the usage reset for " .. target .. "?",
+    "This spends that account's one-per-period reset now and cannot be undone.",
+    "Cancel", "Redeem")
+  if choice ~= "Redeem" then return end
+  local key = "reset-redeem:" .. target
+  if taskForKey(key) then
+    logAction("already-running", "redeem " .. target)
+    hs.alert.show("llm-limits: redeem " .. target .. " is still running")
+    return
+  end
+  logAction("launch", "redeem " .. target)
+  local id = reserveTask("reset-redeem", 360, key)
+  local task = hs.task.new(resolveCommand(M.resetRedeemCmd or "llm-reset-redeem"),
+    function(exitCode, stdOut, stdErr)
+      local line = tostring(stdOut or ""):match("[^\r\n]+")
+        or tostring(stdErr or ""):match("[^\r\n]+")
+        or ("exit " .. tostring(exitCode))
+      hs.alert.show(line)
+      if exitCode ~= 0 then
+        logAction("failed", string.format("redeem %s exit=%s %s", target, tostring(exitCode), line))
+        finishTask(id, exitCode, stdOut, stdErr, "redeem failed")
+        return
+      end
+      logAction("done", "redeem " .. target .. " exit=0")
+      local reread = newCollectorTask(function(collectExit, collectOut, collectErr)
+        finishTask(id, collectExit, collectOut, collectErr, "collect failed")
+      end, {})
+      startTask(id, reread, "collect could not start")
+    end, { target })
+  if task then task:setEnvironment(baseEnvironment()) end
+  startTask(id, task, "redeem could not start")
+end
+
+local function redeemResetItem(vendor, account, block)
+  local credits = tonumber(block.reset_credits)
+  if not credits or credits < 1 or block.reset_credits_stale == true then return nil end
+  local title = "Redeem usage reset"
+  if parseTime(block.reset_credits_expires_at) then
+    title = title .. " · " .. formatResetTime(block.reset_credits_expires_at)
+  end
+  if not RESET_REDEEM_VENDORS[vendor] then
+    return { title = title .. " — no redeem API", disabled = true }
+  end
+  return { title = title, fn = function() M.redeemReset(vendor, account) end }
+end
+
 -- A bare vendor name refreshes every account of that vendor and no other vendor, free.
 function M.refreshVendor(vendor)
   userRefreshData({ "--refresh-account", vendor }, "vendor-refresh", 360, "vendor-refresh:" .. vendor)
@@ -2759,7 +2816,7 @@ function M.removeGrok(name)
 end
 
 -- A healthy account (a Codex plan lapsed to free) is still signed in, so its Remove deletes a working
--- login: Cancel is the first button, so Return and Escape both back out.
+-- login: Cancel is the first button, as on the reset redeem.
 function M.confirmRemove(vendor, name)
   local choice = hs.dialog.blockAlert("Remove " .. vendor .. "/" .. name .. "?",
     "This deletes the account's profile and login on this Mac; adding it back needs a new login.",
@@ -3480,6 +3537,10 @@ local function buildMenuItems()
                 and ({ codex = { title = "Log in to ChatGPT web…", fn = function() M.loginChatgptWeb(acct) end },
                   claude = { title = "Enroll browser…", fn = function() M.enrollBrowser(acct) end } })[entry.key]
               if ownerLogin then table.insert(accountRow.menu, 1, ownerLogin) end
+              if accountRow.menu then
+                local redeem = redeemResetItem(entry.key, acct, block)
+                if redeem then table.insert(accountRow.menu, redeem) end
+              end
             end
             if fastApi and accountRow.menu then
               -- A logged-out row's submenu is one constructor's fixed three items, and an account

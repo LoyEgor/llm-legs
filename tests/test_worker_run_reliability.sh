@@ -93,26 +93,33 @@ reliability_tests() {
     assert test "$?" -eq 0
   fi
 
-  # A weekly wall spends nothing: usage resets are banned (Egor 2026-10-14), so an arm file a past
-  # llm-reset-redeem left on disk launches no redeem, and the wall is still recorded.
+  # The watchdog's wall fires the armed redeem from inside its own tree, which is killed whole the
+  # moment the CLI exits; reroute_walled's second record then reads no reset text.
   if suite_shard_owns 1 R2-redeem; then
     (
       eval "$(sed -n '/^record_run_wall() {/,/^}/p' "$ROOT/share/worker-run-pool.sh")"
       . "$ROOT/share/worker-walls.sh"
       . "$ROOT/share/processes.sh"
-      worker_model_clear_walled_pin() { :; }
-      SCRIPT_DIRECTORY="$WORK/redeem-bin"
+      worker_model_clear_walled_pin() { sleep 2; }
+      SCRIPT_DIRECTORY="$WORK/redeem-bin" WORKER_RUN_ID=redeem-run
+      export WORKER_RUN_ID
       mkdir -p "$SCRIPT_DIRECTORY" "$CLAUDEB_DIR/reset-arm" "$WORK/redeem-wall"
-      printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"%s"\n' "$WORK/redeem.log" >"$SCRIPT_DIRECTORY/llm-reset-redeem"
+      printf '#!/bin/bash\nsleep 1\nprintf "%%s %%s\\n" "$*" "${WORKER_RUN_ID:-unset}" >>"%s"\n' "$WORK/redeem.log" \
+        >"$SCRIPT_DIRECTORY/llm-reset-redeem"
       chmod +x "$SCRIPT_DIRECTORY/llm-reset-redeem"
       : >"$CLAUDEB_DIR/reset-arm/codex-armed"
       printf '{"account":"armed"}\n' >"$WORK/redeem-wall/meta.json"
       printf '1\n' >"$WORK/redeem-wall/attempt"
       : >"$WORK/redeem-wall/out"
       printf 'ERROR: usage limit, resets in 72 hours\n' >"$WORK/redeem-wall/err"
+      ( record_run_wall "$WORK/redeem-wall" codex; sleep 30 ) & watchdog=$!
+      for _ in $(seq 1 600); do [ ! -e "$WORK/redeem-wall/wall-reset.1" ] || break; sleep 0.05; done
+      process_tree_end "$watchdog" 0
+      wait "$watchdog" 2>/dev/null
+      worker_model_clear_walled_pin() { :; }
       record_run_wall "$WORK/redeem-wall" codex
-      for _ in $(seq 1 20); do [ ! -e "$WORK/redeem.log" ] || break; sleep 0.05; done
-      [ -s "$WORK/redeem-wall/wall-reset.1" ] && [ ! -e "$WORK/redeem.log" ]
+      for _ in $(seq 1 300); do [ "$(cat "$WORK/redeem.log" 2>/dev/null)" = '--fire-armed codex/armed --wall weekly unset' ] && break; sleep 0.1; done
+      [ "$(cat "$WORK/redeem.log" 2>/dev/null)" = '--fire-armed codex/armed --wall weekly unset' ]
     )
     assert test "$?" -eq 0
     rm -f "$CLAUDEB_DIR/reset-arm/codex-armed"

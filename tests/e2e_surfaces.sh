@@ -117,7 +117,7 @@ assert_reset_credits_row() {
   if [ "${credits%.*}" -gt 0 ]; then
     grep -Fq "$account  ↻${credits%.*}" <<<"$row" \
       || fail "$vendor reset-credit count missing for $account: $row"
-    # The row carries the data age; an expiry there would displace it.
+    # The expiry belongs to the redeem action in the submenu; on the row it would displace the age.
     [[ "$row" != *"↻${credits%.*} → "* ]] \
       || fail "$vendor row spelled the reset expiry instead of the data age for $account: $row"
   else

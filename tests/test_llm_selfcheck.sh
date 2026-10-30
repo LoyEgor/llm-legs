@@ -29,7 +29,7 @@ mkdir -p "$FIXTURE/bin" "$FIXTURE/tests" "$FAKE_BIN"
 cp "$ROOT/bin/llm-selfcheck" "$FIXTURE/bin/llm-selfcheck"
 chmod +x "$FIXTURE/bin/llm-selfcheck"
 
-for suite in e2e_surfaces.sh test_llm_limits.sh test_llm_limits_grok.sh test_claudeb.sh test_codexb.sh test_geminib.sh test_grokb.sh; do
+for suite in e2e_surfaces.sh test_llm_limits.sh test_llm_limits_grok.sh test_claudeb.sh test_codexb.sh test_geminib.sh test_grokb.sh test_llm_reset_redeem.sh; do
   cat >"$FIXTURE/tests/$suite" <<'EOF'
 #!/usr/bin/env bash
 name=$(basename "$0")
@@ -109,7 +109,7 @@ mkdir -p "$TRIPWIRE_DIR"
 printf 'safe\n' >"$TRIPWIRE_DIR/worker.md"
 write_caches
 bash "$SCRIPT" || fail "successful run failed"
-assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_llm_limits_grok.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh"
+assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_llm_limits_grok.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh,test_llm_reset_redeem.sh"
 assert grep -Eq '^timestamp=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4} status=PASS failed_step=-$' "$LOG"
 assert grep -q 'status=PASS step=config-tripwire detail=baseline' "$LOG"
 assert test -s "$LLM_SELFCHECK_TRIPWIRE_STATE"
@@ -215,14 +215,14 @@ assert test "$(cat "$LOG")" = "$FRESH_LOG_CONTENT"
 printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((CLOCK - 22 * 3600)))" >"$LOG"
 : >"$CALLS"
 bash "$SCRIPT" || fail "catch-up bare invocation failed"
-assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_llm_limits_grok.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh"
+assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_llm_limits_grok.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh,test_llm_reset_redeem.sh"
 assert test ! -s "$ALERTS"
 
 printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((CLOCK - 30 * 3600)))" >"$LOG"
 : >"$CALLS"
 : >"$ALERTS"
 bash "$SCRIPT" || fail "stale bare invocation failed"
-assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_llm_limits_grok.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh"
+assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_llm_limits_grok.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh,test_llm_reset_redeem.sh"
 assert grep -q 'stale since' "$ALERTS"
 
 # One run per 10:30 slot: a run 20.5 h ago that followed yesterday's slot is not due again before

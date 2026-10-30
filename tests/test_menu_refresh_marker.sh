@@ -19,6 +19,7 @@ import sys
 MARKED = {
     ("llm-limits.lua", "runAccountCommand"): ("LLM limits", "llm-limits.lua"),
     ("llm-limits.lua", "refreshData"): ("LLM limits", "llm-limits.lua"),
+    ("llm-limits.lua", "M.redeemReset"): ("LLM limits", "llm-limits.lua"),
     ("llm-limits.lua", "M.setWorkerPaused"): ("LLM limits", "llm-limits.lua"),
     ("llm-limits.lua", "M.setWorkerRole"): ("LLM limits", "llm-limits.lua"),
     ("llm-limits.lua", "startDiagnosticsTask"): ("Doctors", "doctors.lua"),

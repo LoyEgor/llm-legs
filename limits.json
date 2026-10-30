@@ -79,6 +79,14 @@
     "why": "Chrome quits and relaunches within seconds; past 30 s it is wedged and enabling Apple-event JS gives up.",
     "normal": "0 hits; a hit means Chrome hung on quit or launch."
   },
+  "claude-resets.timeout": {
+    "value": 10,
+    "unit": "s",
+    "where": "share/claude_resets.py:31",
+    "set_by": "chat f612a230",
+    "why": "The reset read answers in a second and the redeem (25 s) in a few; the bounds keep the menu action from hanging.",
+    "normal": "0 hits; the action is user-initiated and shows its error."
+  },
   "claude-session-driver.capture": {
     "value": 262144,
     "unit": "bytes",
@@ -590,6 +598,22 @@
     "set_by": "chat 123b5750",
     "why": "A refresh tick holding its lock past 1 h is hung and is killed.",
     "normal": "0 hits since 2026-10-06."
+  },
+  "llm-reset-redeem.attempts": {
+    "value": 3,
+    "unit": "count",
+    "where": "bin/llm-reset-redeem:609",
+    "set_by": "chat 90b1bfde",
+    "why": "An armed auto-redeem retries a transient failure 3 times, 600 s apart, then disarms.",
+    "normal": "0 hits."
+  },
+  "llm-reset-redeem.lock-wait": {
+    "value": 600,
+    "unit": "s",
+    "where": "bin/llm-reset-redeem:648",
+    "set_by": "night 5a27cb17",
+    "why": "A run's weekly wall waits up to 10 min for the collector's redeem to finish.",
+    "normal": "0 hits."
   },
   "llm-selfcheck.suite-timeout": {
     "value": 300,
