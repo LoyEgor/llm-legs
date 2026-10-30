@@ -94,19 +94,6 @@ lines: `git diff --numstat <base>..<merge>` of the goal's commits, legacy.md's b
 Breakages' `bash-cap`, this block's largest wait, is not repeated. Proofs replay fixed journals: a 7-day window
 after landing moves with the pilot's volume and tests-once.
 
-### goal fixture-path: a suite that only names a file as a fixture path never covers it
-
-Class (dig 10-29, row `dig-fixture-path-selection`): `share/suite_select.py`'s own rule counts a fixture write
-(`: >"$L/hammerspoon/llm-limits.lua"`) as holding the repo path, so the edit waits on that suite; test_doctor_fix
-(its doctors stubs, long pole 7.2 runs/day, 195 s mean): 159 commits 10-15…29 selected it, 80 by fixture paths alone.
-- Change: the path-holding rule counts a line only when the path is the repo's own (`$ROOT/<path>`, a bare
-  relative path), never under a fixture root; evidence credits and imports stay.
-- First step: per pair the replay drops (87 over 57 files), the suite green with the real file truncated in a
-  scratch worktree; a red keeps that pair, and under 5 min/day left stops the goal.
-- Proof, old → new: the 575 commits of 10-15…29 through old and new `select()`, waited min/day at one run per commit
-  and 14-day median walls, 47.6 → ≤ 40.4; no pair with a catch credit dropped.
-- Must not get worse: a defect a dropped suite caught in 90 days of `test_catches` (none expected); night full runs.
-
 ### goal warm-chrome: back-to-back image calls on one account reuse its browser
 
 Class (dig 10-29, row `dig-chrome-per-image-call`): `share/gemini_web.py` starts and kills a Chrome per call;
@@ -186,6 +173,7 @@ read …`, which `C1_MACHINE` (`bin/harness-doctor`) misses: 4 chats, 279 turn-s
 | 10-23 | goal night-owned: stratum `night` (jobs of nights finished), one agent per night: its hub sessions and Close's session-less runs | v5 → v6, journals 10-03…21: chat, workers equal 19/19 days; hub spans in `agents[None]` 0; `out_s.suites` 10-08…14 261 → 3.2 min/day; night 6.12 → 5.87 min/job | a92cc622 |
 | 10-23 | goal suite-own-cost: test_health's heavy and pole findings go; both suite_audit rises read beyond `load()`, on CPU a run under 3 controls | heavy/pole rows on audited suites, 4 windows, 12 → 0; at-once rises at flat CPU (2 controls) 3 → 0, due 60 → 60; code −20, tests −12 lines; 7-day read: a suite risen beyond its load or CPU (≥ 2× held over HELD_S) not due, target 0 | ebf5bde1 |
 | 10-23 | goal shared-asserts: `fail`, `assert`, `assert_fails` from `tests/lib/suite-journal.sh` to line-2 sources; 133 copies behaving as the lib's go, variants stay | llm-legs helper-copy lines 382 → 182 (less one 333 → 145); touched suites' PASS counts = HEAD's, 3 sampled mutations red; tests −188 lines; 7-day read: suites added defining their own (class command), llm-legs 13 of 23 → target 0 | 5e084b8d |
+| 10-30 | goal fixture-path stopped at its First step: a held path counts only bare or under a root (`$ROOT/`, `{root}/`, `$1/`, `%s/`, `../`, `$(…)/`, `root .. "/`) | live `select()`, main 10-15…29 (569 commits, 14-d median walls, a commit waits on its slowest suite): 44.9 → 44.0 min/day, 3.8 by the dig's static subtraction (→ 41.1); under 5 before any truncation run. The dig's 7.2 missed that a file left with no own suite refills through `importers()` (breakages.md, 26 commits: 1 → 8 suites by a docstring and a printf) and that test_doctor_fix holds most paths as bare data strings (`purpose: "bin/llm-doctor"`) | no commit |
 
 ## Open
 

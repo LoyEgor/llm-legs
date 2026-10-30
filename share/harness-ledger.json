@@ -13128,14 +13128,16 @@
         "rule": "dig",
         "ident": "dig/fixture-path-selection"
       },
-      "status": "open",
+      "status": "ruled-out",
       "expected_min_day": 7.2,
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-29",
-      "reviewed_by": "night dig 2026-W44",
-      "note": "2026-10-29 dig (lens: hot module in a large file). share/suite_select.py's own rule takes a suite that holds a file's repo path, and a fixture write holds it too: test_doctor_fix.sh (the 14-d long pole, 7.2 runs/day, 119 s median, 195 s mean, its doctors stubs in $L/bin) holds hammerspoon/llm-limits.lua as `: >\"$L/hammerspoon/llm-limits.lua\"`, docs/shared-invariants.md as `>\"$WORK/docs/shared-invariants.md\"`, share/worker-policy.md, share/image-caps/gemini.json, bin/llm-doctor the same way. Source: suite_select.select() over the 423 llm-legs files main changed 10-15..29, a .sh suite counted fixture-only when every line naming the path lacks $ROOT/<path>, a bare path and an evidence credit: 87 pairs over 57 files; replaying the 575 commits, 144 select a slower set, waited 47.6 -> 40.4 min/day at one run per commit and 14-d median walls (journal: 1.2 named runs per commit, 260 s mean against the medians' 70 s, so up to ~30). 80 of 159 commits selecting test_doctor_fix did so through fixture paths alone (bin/harness-doctor counted real: doctor-fix greps its rule lines). Proof: each dropped (file, suite) pair, the suite green with the real file truncated in a scratch worktree; the same 575-commit replay through old and new select(), waited min/day by median walls, new <= 40.4; no pair with a catch credit dropped.",
-      "handoff": null
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "night 20261030T012330Z-5867 goal fixture-path",
+      "note": "2026-10-29 dig (lens: hot module in a large file). share/suite_select.py's own rule takes a suite that holds a file's repo path, and a fixture write holds it too: test_doctor_fix.sh (the 14-d long pole, 7.2 runs/day, 119 s median, 195 s mean, its doctors stubs in $L/bin) holds hammerspoon/llm-limits.lua as `: >\"$L/hammerspoon/llm-limits.lua\"`, docs/shared-invariants.md as `>\"$WORK/docs/shared-invariants.md\"`, share/worker-policy.md, share/image-caps/gemini.json, bin/llm-doctor the same way. Source: suite_select.select() over the 423 llm-legs files main changed 10-15..29, a .sh suite counted fixture-only when every line naming the path lacks $ROOT/<path>, a bare path and an evidence credit: 87 pairs over 57 files; replaying the 575 commits, 144 select a slower set, waited 47.6 -> 40.4 min/day at one run per commit and 14-d median walls (journal: 1.2 named runs per commit, 260 s mean against the medians' 70 s, so up to ~30). 80 of 159 commits selecting test_doctor_fix did so through fixture paths alone (bin/harness-doctor counted real: doctor-fix greps its rule lines). Proof: each dropped (file, suite) pair, the suite green with the real file truncated in a scratch worktree; the same 575-commit replay through old and new select(), waited min/day by median walls, new <= 40.4; no pair with a catch credit dropped. 2026-10-30 (night 20261030T012330Z-5867): ruled out, goal fixture-path stopped at its First step: the rule (a held path counts only bare or under a repo root) replayed live through select() over main 10-15..29 gives 44.9 -> 44.0 min/day (-0.9; -3.8 by the dig static subtraction), since a file left with no own suite refills through importers() and test_doctor_fix holds most paths as bare data strings; under the 5 min/day bar. Re-read only if importers() stops counting docstring/message mentions.",
+      "handoff": null,
+      "depends_on": "share/suite_select.py importers() refilling a suite-less file from docstring/message mentions, and test_doctor_fix holding its paths as bare data strings; either change reopens the 44.9 -> 44.0 min/day replay",
+      "reread_by": "2026-12-30"
     },
     {
       "id": "dig-chrome-per-image-call",
