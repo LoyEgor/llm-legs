@@ -121,7 +121,7 @@ codex_cache "$HOME/.codex" 0.154.0 '[{"slug":"gpt-5.6-sol"}]'
 fixture_repo() { # dir
   mkdir -p "$1/bin" "$1/share" "$1/docs"
   cp "$ROOT/bin/vendor-fingerprint" "$ROOT/bin/doctor-fix" "$1/bin/"
-  cp "$ROOT"/share/{account-roster.sh,chat-open.sh,codex-accounts.sh,gemini-accounts.sh,worker-pool.sh,worktree.sh,limit-hit.sh,store-lock.sh,test-scope.sh,report_frame.py,limit_hit.py,doctor-areas.json,fix_commit.py,spend.py,keepalive.py,knobs.py} "$1/share/"
+  cp "$ROOT"/share/{account-roster.sh,chat-open.sh,codex-accounts.sh,gemini-accounts.sh,worker-pool.sh,worktree.sh,limit-hit.sh,store-lock.sh,test-scope.sh,doctor-areas.json} "$ROOT"/share/*.py "$1/share/"
   cp "$ROOT/docs/vendor-release.md" "$1/docs/"
   git -C "$1" init -q -b main
   git -C "$1" add -A
