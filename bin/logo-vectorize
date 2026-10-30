@@ -12,7 +12,9 @@ usage() {
   printf '  By default (auto=on) it first decides whether the art is flat and how many colours it has: flat art takes a\n' >&2
   printf '  palette path that keeps colours apart, kept only when it loses nothing the champion keeps; gradients, JPEG,\n' >&2
   printf '  transparency, blur and art under 300 px get the champion unchanged. On unseen logos judges preferred it to\n' >&2
-  printf '  the champion alone on 29, the champion on 8, no element lost. --auto no runs the champion alone\n' >&2
+  printf '  the champion alone on 29, the champion on 8, no element lost. Rough print art (linocut, stamp, woodcut: a few\n' >&2
+  printf '  inks with grain and ragged edges), JPEG included, is detected and traced flat with its roughness kept, without\n' >&2
+  printf '  the champion (judges preferred it on 21 of 21 unseen tiles). --auto no runs the champion alone\n' >&2
   printf '  --size native (default) traces up to 1024 px as given (finer edges). Flat opaque PNG of 300 px or more takes the\n' >&2
   printf '  palette path at any size; on the fallback most post-steps match the bench sizes (256/512/1024) exactly, so other\n' >&2
   printf '  sizes (e.g. 257-511 px tiles) get the core trace plus crack/spike repair; above 512 px soft art gets the core steps)\n' >&2
@@ -20,9 +22,8 @@ usage() {
   printf '  --dry-run prints the champion, the source size and the traced size, and writes nothing\n' >&2
   printf '  Hints: rerun with them only after looking at a default output that mixes or loses colours:\n' >&2
   printf '  --gradient no   the art is flat: forces the palette path (every gate off), no gradients, no blend fills;\n' >&2
-  printf '                  use it when flat shapes got gradients, banding, mottle or in-between edge tones, and from the\n' >&2
-  printf '                  start (with --palette) when rough or torn edges, carving marks or grain are the design (linocut,\n' >&2
-  printf '                  stamp, woodcut): the default reads them as noise, smooths them away and can add foreign tones\n' >&2
+  printf '                  use it when flat shapes got gradients, banding, mottle or in-between edge tones, or (with\n' >&2
+  printf '                  --palette) when the default still smoothed rough print art whose torn edges or grain are the design\n' >&2
   printf '  --gradient yes  the art has real gradients (smooth ramps, metallic shading) that came out flat or banded\n' >&2
   printf '  --colors N      N distinct colours, background included (2-16); with --gradient no exactly N fills: missing ones\n' >&2
   printf '                  are searched among pixels no colour or blend explains, never added as blends; alone it keeps\n' >&2
@@ -61,11 +62,11 @@ done
 [ -x "$BENCH/tracers/stable/run.sh" ] || { printf 'logo-vectorize: no stable champion at %s/tracers/stable\n' "$BENCH" >&2; exit 1; }
 runner="$BENCH/tracers/stable/run.sh" hints='' lvauto=''
 if [ -n "$grad$colors$palette" ]; then
-  runner="$BENCH/tracers/hints-a4/run.sh"
-  [ -x "$runner" ] || { printf 'logo-vectorize: no hints tracer at %s/tracers/hints-a4\n' "$BENCH" >&2; exit 1; }
+  runner="$BENCH/tracers/hints-a7/run.sh"
+  [ -x "$runner" ] || { printf 'logo-vectorize: no hints tracer at %s/tracers/hints-a7\n' "$BENCH" >&2; exit 1; }
   hints=" hints=gradient:${grad:-auto},colors:${colors:-auto}${palette:+,palette:$palette}"
-elif [ "$auto" = on ] && [ -x "$BENCH/tracers/hints-a4/run.sh" ]; then
-  runner="$BENCH/tracers/hints-a4/run.sh" hints=' auto=on' lvauto=1
+elif [ "$auto" = on ] && [ -x "$BENCH/tracers/hints-a7/run.sh" ]; then
+  runner="$BENCH/tracers/hints-a7/run.sh" hints=' auto=on' lvauto=1
 fi
 
 champion=$(basename "$(cd -P "$BENCH/tracers/stable" && pwd)")
@@ -110,7 +111,7 @@ new = re.sub(r'\s(width|height)="[^"]*"', '', head)[:-1] + f' width="{w}" height
 open(dest, 'w').write(svg.replace(head, new, 1))
 EOF
 printf 'svg=%s champion=%s source=%sx%s traced=%sx%s seconds=%s%s\n' "$dest" "$champion" "$w" "$h" "$tw" "$th" "$((SECONDS - start))" "$hints"
-cc="$BENCH/tracers/colcheck-a2/check.py" ccpy="$BENCH/tracers/champ47-soft/.venv/bin/python"
+cc="$BENCH/tracers/colcheck-a2b/check.py" ccpy="$BENCH/tracers/champ47-soft/.venv/bin/python"
 [ -f "$cc" ] && [ -x "$ccpy" ] && "$ccpy" -I "$cc" "$src" "$work/out.svg" 2>/dev/null | "$PY" -I -c '
 import json, sys
 r = json.loads(sys.stdin.read().strip().splitlines()[-1])
