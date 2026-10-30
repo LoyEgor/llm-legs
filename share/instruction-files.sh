@@ -36,10 +36,39 @@ _instruction_emit() {
 _instruction_emit_paths() { LC_ALL=C tr '\n\t\000' '??\n'; }
 # ${text//pattern/replacement} into var, byte-wise: under a UTF-8 locale bash runs it in time
 # quadratic in the text, seconds on a script body. Only for ASCII patterns, which no multibyte
-# character contains, so the answer is the same.
+# character contains, so the answer is the same. No local LC_ALL (its pop in a $(...) child segfaults
+# Homebrew bash, see limit-hit.sh): short ASCII text, where UTF-8 and C agree and the cost is nil, takes
+# bash's own form; the rest goes to LC_ALL=C tr when the pattern is one character or a [bracket] of
+# plain ASCII characters (\x escapes allowed) and the replacement is empty or one character, the
+# shapes the callers use; any other shape keeps bash's own form.
 instruction_sub_bytes() { # var text pattern [replacement]
-  local LC_ALL=C
-  printf -v "$1" '%s' "${2//$3/${4-}}"
+  local body=$3 replacement=${4-} from='' to='' char out i=0
+  case $2 in *[![:ascii:]]*) ;; *) [ "${#2}" -ge 2000 ] || { printf -v "$1" '%s' "${2//$3/$replacement}"; return; } ;; esac
+  case $body in
+    '['?*']') body=${body:1:${#body}-2} ;;
+    ?) ;;
+    *) body='' ;;
+  esac
+  while [ "$i" -lt "${#body}" ]; do
+    char=${body:i:1}
+    [ "$char" != '\' ] || { i=$((i + 1)); char=${body:i:1}; }
+    case $char in '' | [!\ -~$'\n'] | [\[\]*?^!-]) from=''; break ;; esac
+    printf -v char '\\%03o' "'$char"
+    from+=$char
+    i=$((i + 1))
+  done
+  if [ -n "$from" ] && case $replacement in '') true ;; [\&\\]) false ;; [\ -~$'\n']) true ;; *) false ;; esac; then
+    if [ -z "$replacement" ]; then
+      out=$({ printf %s "$2" | LC_ALL=C tr -d "$from"; printf x; })
+    else
+      printf -v char '\\%03o' "'$replacement"
+      for ((i = 0; i < ${#from} / 4; i++)); do to+=$char; done
+      out=$({ printf %s "$2" | LC_ALL=C tr "$from" "$to"; printf x; })
+    fi
+    printf -v "$1" '%s' "${out%x}"
+    return
+  fi
+  printf -v "$1" '%s' "${2//$3/$replacement}"
 }
 _instruction_nl='
 '

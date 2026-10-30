@@ -79,7 +79,14 @@ case "$session" in ''|.|..|*[!A-Za-z0-9._-]*) exit 0 ;; esac
 
 lines=''
 # Every finished run stays for days; sorting that many names in a UTF-8 locale costs more CPU than testing them.
-run_dirs() { local LC_COLLATE=C; runs=("$run_root"/*/); }
+# No local LC_COLLATE (its pop in a $(...) child segfaults Homebrew bash, see share/limit-hit.sh): bash 5.3 skips
+# the glob's own sort (GLOBSORT), sort in C orders the names.
+run_dirs() {
+  local GLOBSORT=none dir found
+  found=("$run_root"/*/)
+  runs=()
+  while IFS= read -r dir; do runs+=("$dir"); done < <(printf '%s\n' "${found[@]}" | LC_ALL=C sort)
+}
 run_dirs
 ids=()
 starters=''

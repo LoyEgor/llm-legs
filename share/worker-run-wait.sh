@@ -290,8 +290,9 @@ wait_progress() { # directory run-id stream
 }
 
 wait_print_rows() { # lines: each cut to 120 characters
-  # ${#line} counts characters only under a UTF-8 locale; under C it counts bytes.
-  local LC_ALL=C.UTF-8 line out='' mark='…' 2>/dev/null
+  # ${#line} counts characters only under a UTF-8 locale; under C it counts bytes. No local LC_ALL (its
+  # pop in a $(...) child segfaults Homebrew bash, see limit-hit.sh): a C-locale caller takes perl.
+  local line out='' mark='…'
   if [ "${#mark}" -ne 1 ]; then
     printf '%s' "$1" | perl -CSD -ne 'chomp; print length($_) > 120 ? substr($_, 0, 119) . "\x{2026}" : $_, "\n"'
     return

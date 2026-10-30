@@ -39,7 +39,7 @@ inbox_queued_text() { # vendor mode live(true|false)
 # Sets INBOX_TAKEN (the complete lines past the last take) and INBOX_END (their end offset); returns
 # 1 when there are none. A line still being appended has no newline yet and waits for the next take.
 inbox_pending() { # directory
-  local LC_ALL=C directory="$1" last offset size chunk
+  local directory="$1" last offset size chunk
   INBOX_TAKEN='' INBOX_END=0
   [ -s "$directory/inbox" ] || return 1
   last=$(tail -n1 "$directory/inbox.delivered" 2>/dev/null)
@@ -51,11 +51,15 @@ inbox_pending() { # directory
   chunk=${chunk%x}
   case "$chunk" in *$'\n'*) ;; *) return 1 ;; esac
   INBOX_TAKEN=${chunk%$'\n'*}$'\n'
-  INBOX_END=$((offset + ${#INBOX_TAKEN}))
+  # The offset counts bytes whatever the caller's locale, and a `local LC_ALL=C` pop in a $(...) child segfaults
+  # Homebrew bash (see limit-hit.sh).
+  declare -F limit_hit_bytes >/dev/null || . "${BASH_SOURCE[0]%/*}/limit-hit.sh" || return 1
+  limit_hit_bytes "$INBOX_TAKEN"
+  INBOX_END=$((offset + limit_hit_n))
 }
 
 inbox_append() { # directory json-line — sets INBOX_APPENDED_END
-  local LC_ALL=C size
+  local size
   printf '%s\n' "$2" >>"$1/inbox" && : >"$1/inbox.new" || return 1
   size=$(wc -c <"$1/inbox" | tr -d '[:space:]')
   INBOX_APPENDED_END=$size
