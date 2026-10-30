@@ -2592,20 +2592,41 @@ def ps_snapshot():
     return procs
 
 
+SUPERVISOR = re.compile(r"/bin/worker-run _supervise (\S+)")
+CHAT_CLI = re.compile(r"^(?:\S*/)?claude(?=$| )(?!.* (?:-p|--print)(?: |$))")
+
+
 def label_resolver(labels):
-    memo = {}
+    """A process's label: its nearest ancestor's launchd label, worker run (night-job when the run works in a
+    night worktree), or interactive Claude chat; else `root:<program>` of its chain's top, `unattributed` only
+    for a chain that breaks before launchd."""
+    memo, nights = {}, {}
+
+    def harness(command):
+        found = SUPERVISOR.search(command)
+        if found:
+            if found.group(1) not in nights:
+                import time_budget
+                workdir = (read_json(os.path.join(found.group(1), "meta.json")) or {}).get("workdir")
+                nights[found.group(1)] = bool(time_budget.NIGHT_WORKDIR.search(str(workdir or "")))
+            return "night-job" if nights[found.group(1)] else "worker-run"
+        return "chat" if CHAT_CLI.match(command) else None
 
     def resolve(procs, pid):
         chain, label = [], None
         while label is None:
             if pid in memo:
                 label = memo[pid]
+            elif pid in ("0", "1") and chain:
+                command = procs[chain[-1]][3].split(" ", 1)[0]
+                label = "root:" + (os.path.basename(command) or "?")
             elif pid not in procs or pid in ("0", "1") or len(chain) > 64:
                 label = UNATTRIBUTED
             else:
                 chain.append(pid)
                 ppid, _, _, command = procs[pid]
-                label = next((name for name, paths in labels if any(p in command for p in paths)), None)
+                label = next((name for name, paths in labels if any(p in command for p in paths)), None) \
+                    or harness(command)
                 pid = ppid
         for item in chain:
             memo[item] = label

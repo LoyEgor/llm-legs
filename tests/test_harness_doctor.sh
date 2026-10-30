@@ -2868,9 +2868,25 @@ last = dict(after, **{"100": ("1", 7.5, early, before["100"][3])})
 st = {"speed": {"ps": {"100|" + early: 5.0}, "ps_t": mark}}
 m.speed_census(st, [(T - 2, before), (T - 1, after), (T, last)], T, labels)
 acc = m.speed_day(st, T)
-check(acc["census"] == {"com.x.tool": 1, "unattributed": 1} and acc["census_s"] == 2
-      and acc["label_cpu_s"] == {"com.x.tool": 2.6, "unattributed": 0.3},
-      "C7 census forks and ps CPU deltas go to the launchd label of their ancestor chain: %s" % acc)
+check(acc["census"] == {"com.x.tool": 1, "root:other": 1} and acc["census_s"] == 2
+      and acc["label_cpu_s"] == {"com.x.tool": 2.6, "root:other": 0.3},
+      "C7 census forks and ps CPU deltas go to the launchd label of their ancestor chain, else its top program: %s" % acc)
+runs_dir = os.path.join(work, "c7-runs")
+for name, workdir in (("day", "/r/llm-legs"), ("night", "/r/llm-legs/.claude/worktrees/night-1-x")):
+    os.makedirs(os.path.join(runs_dir, name))
+    json.dump({"workdir": workdir}, open(os.path.join(runs_dir, name, "meta.json"), "w"))
+procs = {"1": ("0", 0.0, early, "launchd"),
+         "200": ("1", 0.0, early, "bash /x/bin/worker-run _supervise %s/day" % runs_dir),
+         "201": ("200", 0.0, early, "claude -p --model opus"), "202": ("201", 0.0, early, "/bin/zsh -c make"),
+         "300": ("1", 0.0, early, "bash /x/bin/worker-run _supervise %s/night" % runs_dir),
+         "301": ("300", 0.0, early, "/bin/zsh -c make"),
+         "400": ("1", 0.0, early, "/Applications/Ghostty.app/Contents/MacOS/ghostty"),
+         "401": ("400", 0.0, early, "/bin/zsh -l"), "402": ("401", 0.0, early, "claude --resume s"),
+         "403": ("402", 0.0, early, "/bin/zsh -c ls"), "500": ("77", 0.0, early, "/usr/bin/orphan")}
+resolve = m.label_resolver([])
+chains = {pid: resolve(procs, pid) for pid in ("202", "301", "403", "401", "500")}
+check(chains == {"202": "worker-run", "301": "night-job", "403": "chat", "401": "root:ghostty", "500": "unattributed"},
+      "C7 an unlabelled chain is a worker run's, a night job's, a chat's or its top program's: %s" % chains)
 events = scan(m, root, os.path.join(work, "calibration"))
 a_min, b_min = (x / ((HI - LO) / 86400.0) for x in m.owner_minutes(events, 1, LO, HI))
 check(94 <= a_min <= 104 and 63 <= b_min <= 77,

@@ -13813,13 +13813,6 @@
       "would_catch_if": "the menu journal carried the caller (click, pick, hs -c) beside the name"
     },
     {
-      "id": "unattributed-cpu",
-      "what": "which unattended load fills the >4/core band that prices machine/contention",
-      "reason": "speed-doctor machine.label_cpu_s reads 95.3 % of 7 days' CPU as unattributed (2026-10-08); only launchd labels resolve, so worker trees, night runs and the owner's benchmark share one bucket and the next QoS lever cannot be picked",
-      "since": "2026-10-08",
-      "would_catch_if": "C7 census bursts mapped ancestor chains to worker run, night job, chat session or a non-harness root, and label_cpu_s showed those buckets"
-    },
-    {
       "id": "test-live-collector-reads",
       "what": "suites whose llm-limits.sh calls run with the real HOME and so reach live vendor reads (the ElevenLabs balance) or real key mirrors",
       "reason": "test_llm_limits_render made ~10 live ElevenLabs requests a run unseen until a per-line profile showed 9.5 s waits at 7% CPU; nothing flags a suite that reads the real HOME",
