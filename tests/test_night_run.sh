@@ -261,7 +261,9 @@ assert_fails grep -qF 'system-doctor tidy' <<<"$pvp"
 printf '# D\n\n## Goals\n\n## Done\n' >"$WORK/pv/llm-legs/docs/directions/doctors.md"
 pv block7 start >"$WORK/out" || fail "pilot start, doctors reached"
 pvp=$(pv_prompt block7 "$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")")
-assert grep -qF '`updater-doctor --quiet`, `system-doctor tidy`, `system-doctor --quiet`, `system-doctor explain`, `code-doctor refresh`, `nr base R` and `code-doctor judge --night R`, then `wait-until --max 2700 gone '"'"'log-audit run'"'"'` and `harness-doctor --quiet`; no leftovers' <<<"$pvp"
+# The log-audit wait is on its pid: a `gone 'log-audit run'` pattern matched the chat's own prompt (Claude Code's
+# caffeinate child carries it), so every pilot night sat out the whole 2,700 s cap (2026-10-30).
+assert grep -qF '`updater-doctor --quiet`, `system-doctor tidy`, `system-doctor --quiet`, `system-doctor explain`, `code-doctor refresh`, `nr base R` and `code-doctor judge --night R`, then `wait-until --max 2700 pid <the pid log-audit printed>` and `harness-doctor --quiet`; no leftovers' <<<"$pvp"
 assert grep -qF 'until it prints nothing. Past the doctors goals carry launches the doctor fixers itself (`fixer` rows, jobs recorded) and adds a `deep-search` job: land each per branch, no `doctor-fix launch` of your own. Then step 3' <<<"$pvp"
 
 # Jobs: add before dispatch, one per ref, kinds checked.
