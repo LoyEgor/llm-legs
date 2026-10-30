@@ -64,7 +64,7 @@ except a suite the worker edited; the landing and the night full run run them.
 A suite whose first 5 lines hold `# shards: N` runs as N jobs, each with SUITE_SHARD=i/N and only
 the sections `suite_shard_owns i <name>` (tests/lib/suite-journal.sh) gives it; one verdict, one
 journal entry (max shard wall, summed CPU). RUN_SUITES_SHARDS=on|off, default only while slot_room
-finds room; `# shards: N wait`, a suite that mostly sleeps, needs only memory room.
+finds memory room (a load spike still shards).
 
 A suite running past its bound is killed with its whole process tree and reads FAIL 124, TIMEOUT:
 5 x the p90 of its last 50 passes in the journal, never under RUN_SUITES_SUITE_FLOOR (default 1800 s,
@@ -644,12 +644,11 @@ if [ "${#wave[@]}" -gt 1 ]; then
   done | sort -t $'\t' -k1,1nr -k2,2nr -k3,3n | cut -f4-)
 fi
 
-# Shards are jobs of this run's -j, so a slot still caps the fan-out; with no cores free they would
-# add their duplicated setup and save no wall, so auto shards only while slot_room finds room, but a
-# `wait` suite's, asleep, save it at any load.
+# Shards are jobs of this run's -j, so a slot still caps the fan-out; auto shards at any load, only short
+# memory keeps a suite whole.
 for entry in "${suites[@]}"; do
   case $entry in *.sh) suite_shard_count "$entry" >/dev/null
-    [ "$suite_shard_n" -lt 2 ] || ! suite_shard_wanted "$suite_shard_wait" || shards[${entry##*/}]=$suite_shard_n ;; esac
+    [ "$suite_shard_n" -lt 2 ] || ! suite_shard_wanted || shards[${entry##*/}]=$suite_shard_n ;; esac
 done
 declare -a wave_jobs=()
 for entry in ${wave[@]+"${wave[@]}"}; do

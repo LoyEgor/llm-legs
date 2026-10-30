@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 4 wait
+# shards: 4
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

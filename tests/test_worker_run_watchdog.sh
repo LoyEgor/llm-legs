@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 4 wait
+# shards: 4
 # Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-brief.sh
 # share/worker-run-files.sh share/worker-run-outcomes.sh share/worker-run-report.sh share/worker-run-vendors.sh
 # share/worker-run-wait.sh

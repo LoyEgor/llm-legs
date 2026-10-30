@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# shards: 3 wait
+# shards: 3
 # Runs on an edit of the worker-run modules it exercises (tests/affected): share/worker-run-pool.sh
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)

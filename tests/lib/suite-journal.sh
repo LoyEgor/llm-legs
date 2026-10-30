@@ -201,13 +201,12 @@ suite_journal_append() { # journal -> appends suite_journal_line
   return 0
 }
 
-suite_shard_count() { # suite-file -> its `# shards: N [wait]` header line's N, else 1; suite_shard_wait the word
+suite_shard_count() { # suite-file -> its `# shards: N` header line's N, else 1
   local line n=0
-  suite_shard_n=1 suite_shard_wait=''
+  suite_shard_n=1
   while [ "$n" -lt 5 ] && IFS= read -r line; do
     n=$((n + 1))
-    case $line in '# shards: '[1-9]*) [[ ${line#'# shards: '} =~ ^([1-9][0-9]*)( wait)?$ ]] &&
-      suite_shard_n=${BASH_REMATCH[1]} suite_shard_wait=${BASH_REMATCH[2]# } ;; esac
+    case $line in '# shards: '[1-9]*) [[ ${line#'# shards: '} =~ ^[1-9][0-9]*$ ]] && suite_shard_n=${line#'# shards: '} ;; esac
   done 2>/dev/null <"$1"
   printf '%s\n' "$suite_shard_n"
 }
@@ -265,15 +264,16 @@ if [ -z "${suite_shard_top:-}" ]; then
   unset SUITE_SHARD
 fi
 
-suite_shard_wanted() { # [wait] -> status 0 under RUN_SUITES_SHARDS=on, or auto while slot_room finds room
+suite_shard_wanted() { # -> status 0 under RUN_SUITES_SHARDS=on, or auto while slot_room finds memory room
   case ${RUN_SUITES_SHARDS:-auto} in on) return 0 ;; off) return 1 ;; esac
   if [ -z "${suite_shard_room:-}" ]; then
     suite_shard_room=$( (declare -F slot_room >/dev/null || . "${BASH_SOURCE[0]%/*}/../../share/slots.sh" && slot_room) 2>/dev/null) &&
       suite_shard_room=room
     suite_shard_room=${suite_shard_room:-unknown}
   fi
-  # Shards that sleep save wall however loaded the cores are; only memory holds them.
-  [ "$suite_shard_room" = room ] || { [ "${1:-}" = wait ] && [[ $suite_shard_room == 'load '* ]]; }
+  # Shards save wall in a load spike too (test_doctor_fix 10-30, load 92 on 10 cores: 4 shards 42 s, whole
+  # 120-126 s, CPU equal); only memory holds them.
+  [ "$suite_shard_room" = room ] || [[ $suite_shard_room == 'load '* ]]
 }
 
 [ "${1:-}" != --lib ] || return 0
@@ -426,7 +426,7 @@ if [ -z "$suite_journal_held" ]; then
 fi
 
 # A direct run splits like a run-suites one: RUN_SUITES_SHARDS=on|off, auto only while slot_room.
-if [ "$suite_shard_n" -gt 1 ] && [ "${BASH_VERSINFO[0]}" -ge 4 ] && suite_shard_wanted "$suite_shard_wait"; then
+if [ "$suite_shard_n" -gt 1 ] && [ "${BASH_VERSINFO[0]}" -ge 4 ] && suite_shard_wanted; then
   suite_shard_logs=$(mktemp -d) suite_shard_pids='' suite_shard_rc=0 suite_shard_passed='' suite_shard_failed=''
   for ((suite_shard_i = 1; suite_shard_i <= suite_shard_n; suite_shard_i++)); do
     SUITE_SHARD=$suite_shard_i/$suite_shard_n "$BASH" "$suite_shard_top" "$@" \
