@@ -112,6 +112,8 @@ Wait for the 11-05 read.
 - Proof on the copy, old → new: dead rows in the first 16 pending 0 → 16, false-hit rows 10 → 0; 7 days after
   landing class 2 ≤ 330 lines, `queue_k` > 1.
 - Files: llm-legs `bin/code-doctor`, `tests/test_code_doctor.sh`.
+- Checked 10-30 (fresh run): every number reproduces. The cross-repository retirement upstream stays, since
+  removal is asked in prose, never by a mechanism (Decision 2026-09-30). Stale `problem` re-queues are outside this goal.
 
 ## Done
 
