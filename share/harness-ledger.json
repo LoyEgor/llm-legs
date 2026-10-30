@@ -10410,12 +10410,12 @@
     },
     {
       "id": "test_hang-llm-legs-test_doctors_menu",
-      "title": "test_doctors_menu · llm-legs: a 1500 s Bash timeout queued for a run-suites slot, and two 600 s waits on /tmp/hs-cli.lock",
+      "title": "test_doctors_menu · llm-legs: a Hammerspoon reload under its hs -c call dropped the reply, and hs -t 120 waited it out",
       "match": {
         "rule": "test_hang",
         "ident": "llm-legs:test_doctors_menu"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-14T07:58:48+03:00",
@@ -10426,12 +10426,22 @@
           ],
           "in": "llm-legs@816bd668",
           "regressed_at": "2026-10-29T20:09:52+02:00"
+        },
+        {
+          "at": "2026-10-30T04:50:00+02:00",
+          "by": "night 20261030T012330Z-5867 harness-tests-20261030T023059Z-7fe1",
+          "files": [
+            "hammerspoon/config_reload.lua",
+            "hammerspoon/tests/test_config_reload.lua"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-14",
-      "reviewed_by": "night 20261014T013750Z-8004 harness-tests-20261014T021759Z-70e3",
-      "note": "Not a suite hang: a direct `bash tests/x.sh` waits for a run-suites slot inside tests/lib/suite-journal.sh, and a worker's Bash timeout killed it still queued (slot null, queued_at == started_at); the lib journaled the whole queue as suite seconds, so the test_hang rule read the wait as a hang. 6b095a8a journals such a run with zero suite seconds (started_at = ended_at) and its wait as a run-suites wait row; test_run_suites_journal's queued-and-killed case is red on the old lib. Measured: direct pid 75543 2026-10-13 13:42-14:07, 1500 s, cpu 0.008 s, slot null, worker claudeb-1791886457-36284-44c8 (its suite waits that hour 37-830 s, reason limit): fixed by 6b095a8a. The two 600 s rows inside run-suites runs 63792 and 75960 (cpu 0.6 s, rc 1) are the /tmp/hs-cli.lock holder of rows test_hang-llm-legs-test_presence and its siblings, ruled out there. Rerun 2026-10-14 with the lock free: 3 s, 313 checks.",
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "night 20261030T012330Z-5867 harness-tests-20261030T023059Z-7fe1",
+      "note": "2026-10-29 regression, a new cause (not the 10-14 queue wait): run 10935 (worker claudeb-1793296196-40666-100b) wall 120.954 s, cpu 0.559 s (its passes 0.5-0.9), the rest 120 s = hs -t 120 waiting for a reply. Not a busy Hammerspoon: its hs-lag journal ticked through 20:03:16-20:05:15 with no lag over 3 s. llm-legs main fast-forwarded at 20:03:05 (reflog, 27d766ad) with hammerspoon/llm-limits.lua changed, so config_reload.lua reloaded 10 s later, at ~20:03:15, the second the locked hs call began; the same worktree's rerun at 20:06:12 passed in 4.3 s. Fix: config_reload holds a due reload while /tmp/hs-cli.lock is held (lockf -k -s -t 0, rc 75), rechecking every second; every hs suite in llm-legs and hammerspoon takes that lock for its call, so the whole class is covered. test_config_reload's held case is red on the old module (1 reload ~= 0). Not covered: hs calls outside the lock (hooks, bin tools), and a client that takes the lock in the milliseconds between the probe and the teardown. 2026-10-14: not a suite hang: a direct `bash tests/x.sh` waits for a run-suites slot inside tests/lib/suite-journal.sh, and a worker's Bash timeout killed it still queued (slot null, queued_at == started_at); the lib journaled the whole queue as suite seconds, so the test_hang rule read the wait as a hang. 6b095a8a journals such a run with zero suite seconds (started_at = ended_at) and its wait as a run-suites wait row; test_run_suites_journal's queued-and-killed case is red on the old lib. Measured: direct pid 75543 2026-10-13 13:42-14:07, 1500 s, cpu 0.008 s, slot null, worker claudeb-1791886457-36284-44c8 (its suite waits that hour 37-830 s, reason limit): fixed by 6b095a8a. The two 600 s rows inside run-suites runs 63792 and 75960 (cpu 0.6 s, rc 1) are the /tmp/hs-cli.lock holder of rows test_hang-llm-legs-test_presence and its siblings, ruled out there. Rerun 2026-10-14 with the lock free: 3 s, 313 checks.",
       "handoff": null
     },
     {
@@ -13627,6 +13637,31 @@
       "ruled_at": "2026-10-30T02:45:00Z",
       "depends_on": "bin/wait-until's ancestry exclusion (probed) and the stray cat being model-written",
       "reread_by": "2026-12-25"
+    },
+    {
+      "id": "test_hang-llm-legs-test_worker_run_entry",
+      "title": "test_worker_run_entry · llm-legs: a CPU-starved run outlived the 60 s stub its duplicate-run assert needed alive",
+      "match": {
+        "rule": "test_hang",
+        "ident": "llm-legs:test_worker_run_entry"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-30T04:50:00+02:00",
+          "by": "night 20261030T012330Z-5867 harness-tests-20261030T023059Z-7fe1",
+          "files": [
+            "llm-legs/tests/test_worker_run_entry.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-30",
+      "reviewed_by": "night 20261030T012330Z-5867 harness-tests-20261030T023059Z-7fe1",
+      "note": "Not a block: run 35849 (worker claudeb-1793284438-11496-6d91, 2026-10-29 14:41-15:20Z) shards wall 703/615/386/295 s, cpu 24/30/33/38 s (a pass: ~50 s and ~32 s a shard), the rest 650 s at most run-queue wait. Harness samples in the window: busy 0.999-1.0, kernel 0.48-0.57, the 5-min sampler itself 15 min apart; this run's suites drew 1.8 cores, and the rest of the machine was other load (weather). The red was ours: shard 2's only FAIL, test_worker_run_entry.sh:185 'test 0 = 4': the duplicate-run case started its first run on STUB_SLEEP=60, and a starved second start reached the check after that stub had exited, so nothing was live to refuse; test_hang counts only red runs. Fix: the first run waits on start_gated's gate, opened after the asserts. Proof: the old case with the second start delayed 65 s fails the same assert, the new one passes 11 asserts. The other reds of run 35849 (test_worker_run_files, lifecycle, rounds, test_llm_limits_refresh 1174 s) are not this row's. Same class as test_hang-llm-legs-test_llm_limits: a wall-clock window inside a fixture fails under starvation, a class candidate for docs/directions/breakages.md.",
+      "handoff": null
     }
   ],
   "blind_spots": [

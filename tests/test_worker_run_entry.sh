@@ -157,7 +157,7 @@ effort_header_tests() {
 report_bus_tests() {
   local CLAUDE_CODE_SESSION_ID=report-launcher CLAUDE_LAUNCHER_SESSION=report-launcher
   local WORKER_RUN_IDLE_S=0 WORKER_RUN_SILENT_S=0 WORKER_RUN_DEADLINE=600
-  local PICK_RC=0 PICK_ACCOUNT=reportacct rc old_id old_dir
+  local PICK_RC=0 PICK_ACCOUNT=reportacct rc old_id
   export CLAUDE_CODE_SESSION_ID CLAUDE_LAUNCHER_SESSION WORKER_RUN_IDLE_S WORKER_RUN_SILENT_S WORKER_RUN_DEADLINE PICK_RC PICK_ACCOUNT
   set_config 'codex_effort=high'
 
@@ -178,13 +178,13 @@ worker-end $place_top"
   assert test -z "$(sed -n 's/^RUN: //p' "$WORK/report-limit.out")"
 
   clear_stub
-  STUB_SLEEP=60 start_ok codex --account reportacct
-  old_id=$RUN_ID old_dir=$RUN_DIR
+  start_gated codex --account reportacct
+  old_id=$RUN_ID
   rc=0
   WORKER_RUN_ALLOW_DUPLICATE=0 "$RUNNER" start codex --account reportacct --brief "$WORK/brief" >"$WORK/report-duplicate.out" 2>&1 || rc=$?
   assert test "$rc" = 4
   assert grep -qx "OUTCOME: DUPLICATE_RUN $old_id" "$WORK/report-duplicate.out"
-  kill -TERM "$(jq -r .pid "$old_dir/meta.json")"
+  gate_open
   assert await_exit
   clear_stub
 }
