@@ -89,7 +89,7 @@
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-30",
-   "reviewed_by": "Fixer llm-reviewers-20261030T023012Z-65b3",
+   "reviewed_by": "Fixer llm-reviewers-20261030T052008Z-0355",
    "note": "kept apart from R1, which is about review-cell shapes. 2026-10-01: the cause still stands in code: review-bench judge.py parse_judge_answer refuses a partial answer whole, and the batch's ruled claims go to the manual path with the missing ones. Since 2e32983 (2026-09-22) a session judges at most JUDGE_BATCH_CLAIMS = 40 claims and none fell short in the window. Keeping a batch's ruled part is a design change for the owner, not a bug fix. 2026-10-02 to 2026-10-30: unchanged in review-bench share/rbench/judge.py (:190 raises `the judge ruled on N of M claims`, JUDGE_BATCH_CLAIMS = 40 at :26; 97e8c17, the verifier removal, left the judge unchanged); no occurrence in any window.",
    "handoff": null
   },
@@ -682,8 +682,8 @@
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-30",
-   "reviewed_by": "Fixer llm-reviewers-20261030T023012Z-65b3",
-   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the rest were real unfinished rounds. 2026-10-01 contract: the reviewers fixer settles each round itself (docs/doctor-fix.md \"Stuck review rounds\"); this row stays open. 2026-10-02 to 2026-10-20: every pending round was a live owner chat, a finding resolved or gone in main (settled), or one still holding; no machinery cause. 2026-10-29: 10 pending, all llm-legs, all past 24 h: the eight 2026-10-20 suite-audit speed rounds of harness-doctor-20261020T113845Z-2c2a (no fix run took them but 807899bb and 9775a304) and the two 10-14 test rounds; 7 findings resolved in main and recorded (d06be8a 3/12/13/18, a243282 0/19 by 4ceaf7bf and 9775a304, 5c09d39 5 by 9775a304), the other 127 still hold (all P2/P3 suite-speed or test-shape): night debt, no machinery cause. 10-29 16:50Z and 10-30 reruns over files main changed since: 5c09d39#17 (6e4722b7), d06be8a#4 (b9e1d356, EPOCHREALTIME START stamps) and d06be8a#16 (9938c9c6, lazy child_group_prefix) resolved and recorded; the other findings on changed files still hold; 124 open.",
+   "reviewed_by": "Fixer llm-reviewers-20261030T052008Z-0355",
+   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the rest were real unfinished rounds. 2026-10-01 contract: the reviewers fixer settles each round itself (docs/doctor-fix.md \"Stuck review rounds\"); this row stays open. 2026-10-02 to 2026-10-20: every pending round was a live owner chat, a finding resolved or gone in main (settled), or one still holding; no machinery cause. 2026-10-29: 10 pending, all llm-legs, all past 24 h: the eight 2026-10-20 suite-audit speed rounds of harness-doctor-20261020T113845Z-2c2a (no fix run took them but 807899bb and 9775a304) and the two 10-14 test rounds; 7 findings resolved in main and recorded (d06be8a 3/12/13/18, a243282 0/19 by 4ceaf7bf and 9775a304, 5c09d39 5 by 9775a304), the other 127 still hold (all P2/P3 suite-speed or test-shape): night debt, no machinery cause. 10-29 16:50Z and 10-30 reruns over files main changed since: 5c09d39#17 (6e4722b7), d06be8a#4 (b9e1d356, EPOCHREALTIME START stamps) and d06be8a#16 (9938c9c6, lazy child_group_prefix) resolved and recorded; the other findings on changed files still hold; 124 open. 10-30 05:20Z rerun over the 50 files main changed since 591ef210 (slots.sh, suite-journal.sh, test_harness_doctor/llm_doctor/night_carry/night_run/watchdog/claims/entry/vendor_fingerprint, instruction-files.sh): none resolved; 124 open.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -2188,7 +2188,7 @@
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-30",
-   "reviewed_by": "Fixer llm-reviewers-20261030T023012Z-65b3",
+   "reviewed_by": "Fixer llm-reviewers-20261030T052008Z-0355",
    "note": "2026-10-20 to 10-30: no occurrence since 10-13; store.command_path unchanged (store.py:1204). weather (machine-wide, not ours): bench:20261013T170701Z-6c08a20/sol-high#3 (rawilimo) and #2#5 (egbogd), 20:07 local, `sandbox-exec: execvp() of 'codex' failed`. An Arbostar chat ran `nvm install 24.21.0 && nvm alias default 24.21.0` at 18:13 for that repo's engines pin; the global vendor CLIs stayed in v24.14.1, so `codex` (review-bench store.command_path falls back to PATH) was gone until claude/codex/grok were reinstalled into v24.21.0 at 20:22. Both cells were recovered, 0 s lost. Ruled out: a review-bench launch fault (sandbox_command execs the PATH name as given), the updater (no codex install that day in vendor-cli-update/update.log). Not built: a prelaunch CLI-on-PATH check, since a missing CLI fails at exec in under a second and the panel restaffs it.",
    "handoff": null
   },
