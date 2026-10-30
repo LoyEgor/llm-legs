@@ -99,20 +99,6 @@ in all 88 samples); 10-20's 63 fixers, CPU-bound, fan-out's; chats testing while
 exists); chat compaction 19.6 min/day, a spend trade; worker compaction 3.6 min/day; API retries 7; model-written
 scripts, beside the index.
 
-### goal shards-at-load: a load spike no longer runs a sharded suite whole
-
-Class: `suite_shard_wanted` shards only while `slot_room` finds room, so a run started in a load spike waits a
-`# shards:` suite whole. runs.jsonl 10-16…29: such a suite the run's slowest, 9.9 runs/day, 28.7 waited min/day over
-the runner-up (`test_doctor_fix` 9.5, `test_review_flow_gate` 3.9, `test_night_run` 3.7, `test_night_carry` 3.5);
-all 69 of 10-27…30 started at ≥ 4,240 MB available (memlogd), so load, not memory. Gain 20.4 min/day at sharded/whole
-0.5 (11.7 at 0.75). Row `dig-shards-off-at-load-spike`.
-- Change: only memory (pressure level or available MB) keeps a suite whole, as for `wait` suites.
-- First step: `test_doctor_fix`, one tree, `RUN_SUITES_SHARDS=on` against `off`, three interleaved pairs while
-  `slot_room` prints a `load` reason; sharded/whole over 0.9 (5.0 min/day) stops it.
-- Proof: 7 days after landing, the same measure: shardable whole poles from load 0, their excess ≤ 8.3 min/day;
-  memlogd available MB in sharded spike runs never under the guard.
-- Files: `tests/lib/suite-journal.sh` (`suite_shard_wanted`), `share/run-suites.sh`.
-
 ### goal jobs-by-room: a run's -j grows with room
 
 Class: `share/run-suites.sh` fixes `-j` at cores/2 (5); the run slots are already F–M by `slot_room`. runs.jsonl
@@ -174,6 +160,7 @@ read …`, which `C1_MACHINE` (`bin/harness-doctor`) misses: 4 chats, 279 turn-s
 | 10-30 | goal fixture-path stopped at its First step: a held path counts only bare or under a root (`$ROOT/`, `{root}/`, `$1/`, `%s/`, `../`, `$(…)/`, `root .. "/`) | live `select()`, main 10-15…29 (569 commits, 14-d median walls, a commit waits on its slowest suite): 44.9 → 44.0 min/day, 3.8 by the dig's static subtraction (→ 41.1); under 5 before any truncation run. The dig's 7.2 missed that a file left with no own suite refills through `importers()` (breakages.md, 26 commits: 1 → 8 suites by a docstring and a printf) and that test_doctor_fix holds most paths as bare data strings (`purpose: "bin/llm-doctor"`) | no commit |
 | 10-30 | goal warm-chrome stopped at its First step: a call's Chrome kept up to 120 s for its account's next | legs.jsonl 10-22…29, a call starting ≤ 120 s after its account's last ended, saving `page` − `lock` − 1 s (a served page, 10-30: 0.5–1.5 s); a fan-out waits max over accounts of chain end − chain saving, a lone call whole: codex 65.6 calls/day, 9.7 leg-min → 2.2 waited; gemini 6.5, 3.9 → 1.2; class 3.4 waited min/day, under 5 before any change. Since 4eb25d60 (10-30) chatgpt-web's account server keeps codex's browser 60 s: left 60–120 s codex gaps and gemini, 1.7 | no commit |
 | 10-30 | goal walled-resume stopped at its First step: a claudeb rescue resumes the walled session | 10-19's 3 pairs (sessions from worker-attempts.jsonl, transcripts in `~/.claude/projects`; 10-14's pruned): the fresh rescues repeat 29 of 1,311 calls by exact input, all Reads, 0 of 149 edits, 0 Bash; first edit at 8.7, 3.0, 6.9 min, so a resume saves ≤ 3 worker-min/day over 10-14…22, not 38 (the dig took the walled attempts' 516 min as redo; the CONTINUATION note already continues from the files); walled contexts end at 128.7k, 168.6k, 168.9k, 2 of 3 past the 150k cap, ≈1 min/day left; under 5 before any change; cross-account resume not tried | no commit |
+| 10-30 | goal shards-at-load: `suite_shard_wanted` shards at any load, only memory (pressure level, available MB) keeps a suite whole; the `# shards: N wait` word goes | First step, `test_doctor_fix` on one tree, 3 interleaved pairs at load 51–93 on 10 cores: sharded 40.6–41.7 s, whole 119.3–124.8 s, 0.33 (stop line 0.9); the run inside a spike (`load 92 over its 15-minute base 65 + 10 cores`, 9 of 9 samples) 41.7 s; CPU 76 vs 79 s; code −5 lines; 7-day read: shardable whole poles from load 0, their excess ≤ 8.3 min/day; memlogd available MB in sharded spike runs never under the guard | da088e91 |
 
 ## Open
 
