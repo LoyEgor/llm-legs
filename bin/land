@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+{
+# land <branch> [--repo <dir>]...: docs/fix-orchestrator.md step 4 as one command (Egor 2026-10-30, after three night
+# hubs each retyped it with a bug of its own). Each repository holding the branch (a night's: every sweep repository;
+# any other: the current one and each --repo) is rebased onto main, its selected suites run in its own worktree; main
+# fast-forwards in the main checkout and the worktree and branch go. Exit 0 landed, 1 back to the worker (conflict,
+# red, uncommitted work, selection error), 2 usage, 3 later (another land holds the branch, the main checkout
+# refuses, main kept moving). No journal, no wait of its own: git's ff-only guards main, a try-lock per branch the
+# worktree, so nights and chats landing at once only ever retry.
+set -u
+
+resolve_script() {
+  local source="${BASH_SOURCE[0]}" directory
+  [[ $source == */* ]] || source=./$source
+  while [ -L "$source" ]; do
+    directory=$(cd -P "${source%/*}" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "${source%/*}" && printf '%s/%s\n' "$PWD" "${source##*/}"
+}
+
+script_path=$(resolve_script)
+. "${script_path%/*/*}/share/store-lock.sh"
+. "${script_path%/*/*}/share/test-scope.sh"
+journal=${RUN_SUITES_JOURNAL:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/runs.jsonl}
+
+usage() { echo 'usage: land <branch> [--repo <dir>]...' >&2; exit 2; }
+stop() { local code=$1; shift; printf 'land: %s\n' "$*" >&2; exit "$code"; }
+
+branch=${1:-}
+[ -n "$branch" ] && [ "$branch" != main ] && [[ $branch != -* ]] || usage
+shift
+candidates=()
+while [ $# -gt 0 ]; do
+  case $1 in --repo) [ $# -ge 2 ] || usage; candidates+=("$2"); shift 2 ;; *) usage ;; esac
+done
+here=$(git rev-parse --show-toplevel 2>/dev/null) && candidates+=("$here")
+# Only a night's branch name is unique across repositories; another name lands where it is named, never on a stale
+# namesake elsewhere.
+sweep=${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}
+[[ $branch != night/* ]] || [ ! -r "$sweep" ] ||
+  while IFS= read -r line; do [ -z "$line" ] || candidates+=("$line"); done <"$sweep"
+
+repos=() trees=() locks=()
+trap 'for l in ${locks[@]+"${locks[@]}"}; do store_lock_release "$l"; done' EXIT
+for dir in ${candidates[@]+"${candidates[@]}"}; do
+  git_top "$dir" 2>/dev/null || continue
+  case " ${repos[*]-} " in *" $root "*) continue ;; esac
+  git -C "$root" show-ref -q --verify "refs/heads/$branch" || continue
+  wt=$(git -C "$root" worktree list --porcelain |
+    awk -v b="branch refs/heads/$branch" '/^worktree /{w=substr($0, 10)} $0 == b {print w; exit}')
+  [ -n "$wt" ] && [ "$wt" != "$root" ] || stop 1 "no worktree holds $branch in $root"
+  lock="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)/land-${branch//\//+}.lock"
+  LLM_STORE_LOCK_RETRIES=1 LLM_STORE_LOCK_CEILING_SECONDS=86400 store_lock_acquire "$lock" ||
+    stop 3 "another land (pid ${store_lock_owner:-?}) holds $branch in $root"
+  locks+=("$lock")
+  [ "$(git -C "$root" symbolic-ref -q --short HEAD)" = main ] || stop 3 "the main checkout $root is not on main"
+  [ -z "$(git -C "$wt" status --porcelain --untracked-files=no)" ] || stop 1 "uncommitted work in $wt: back to the worker"
+  repos+=("$root") trees+=("$wt")
+done
+[ ${#repos[@]} -gt 0 ] || stop 1 "no repository holds the branch $branch"
+
+base_of() { # worktree -> the commit its branch grew from: a night's press snapshot it still holds, else its merge-base
+  local n best='' count least=''
+  while IFS= read -r n; do
+    git -C "$1" merge-base --is-ancestor "$n" HEAD && ! git -C "$1" merge-base --is-ancestor "$n" main || continue
+    count=$(git -C "$1" rev-list --count "$n..HEAD")
+    [ -n "$least" ] && [ "$count" -ge "$least" ] || { best=$n least=$count; }
+  done < <(git -C "$1" for-each-ref --format='%(objectname)' 'refs/night/*/base')
+  [ -n "$best" ] && printf '%s\n' "$best" || git -C "$1" merge-base main HEAD
+}
+
+run_suites() { # worktree suite... -> 0 when every suite is green, a red one green alone is flaky
+  local wt=$1 pid rc since suite red=() still=()
+  shift
+  since=$(date +%s)
+  bash "$wt/tests/run-all" "$@" &
+  pid=$!
+  wait "$pid" && return 0
+  rc=$?
+  while IFS= read -r suite; do red+=("$suite"); done < <(jq -rR --argjson p "$pid" --argjson t "$since" \
+    'fromjson? | select(.kind == "suites" and .pid == $p and .started_at >= $t) | .suites | to_entries[]
+      | select(.value.rc != 0) | .key' "$journal" 2>/dev/null)
+  [ ${#red[@]} -gt 0 ] || { printf 'land: run-all exited %s with no journaled red suite\n' "$rc" >&2; return 1; }
+  for suite in "${red[@]}"; do
+    printf 'land: %s rerun once alone\n' "$suite" >&2
+    if bash "$wt/tests/run-all" "$suite"; then flaky+=("$suite"); else still+=("$suite"); fi
+  done
+  [ ${#still[@]} -eq 0 ] || { printf 'land: red twice: %s\n' "${still[*]}" >&2; return 1; }
+}
+
+flaky=() landed=() attempt=0
+while [ ${#repos[@]} -gt 0 ]; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -le 5 ] || stop 3 "main moved under every attempt; land $branch again"
+  bases=() selected=()
+  for i in "${!repos[@]}"; do
+    wt=${trees[$i]}
+    base=$(base_of "$wt") || stop 1 "no base for $branch in $wt"
+    bases+=("$base")
+    if [ ! -x "$wt/tests/affected" ]; then suites=''
+    # A night worker runs no suites (its branch leaves them to the landing): the first pass runs every covering one.
+    elif [ "$attempt" -eq 1 ] && [[ $branch == night/* ]]; then
+      suites=$(git -C "$wt" diff --name-only "$base...HEAD" | tr '\n' '\0' | xargs -0 bash "$wt/tests/affected") ||
+        stop 1 "suite selection failed in $wt"
+    else
+      suites=$(bash "$wt/tests/affected" --overlap "$base") || stop 1 "suite selection failed in $wt"
+    fi
+    selected+=("$suites")
+  done
+  # Every repository first: a suite reads a sibling's same-branch worktree, still on old code until it is rebased.
+  for i in "${!repos[@]}"; do
+    git -C "${trees[$i]}" rebase -q --onto main "${bases[$i]}" >/dev/null 2>&1 || {
+      git -C "${trees[$i]}" rebase --abort 2>/dev/null
+      stop 1 "rebasing $branch onto main conflicts in ${repos[$i]}: back to the worker"
+    }
+  done
+  for i in "${!repos[@]}"; do
+    [ -n "${selected[$i]}" ] || continue
+    suites=()
+    while IFS= read -r line; do [ -z "$line" ] || suites+=("$line"); done <<<"${selected[$i]}"
+    run_suites "${trees[$i]}" "${suites[@]}" || stop 1 "suites red in ${repos[$i]}: back to the worker"
+  done
+  left=() left_trees=()
+  for i in "${!repos[@]}"; do
+    root=${repos[$i]} wt=${trees[$i]} merged='' own=$(git -C "$root" rev-list --count "main..$branch")
+    for try in 1 2 3; do
+      if out=$(git -C "$root" merge -q --ff-only "$branch" 2>&1); then merged=1; break; fi
+      case $out in *index.lock*) sleep 1 ;; *) break ;; esac
+    done
+    if [ -z "$merged" ]; then
+      # Main moved past the rebase: this repository goes round again; anything else is the main checkout's to clear.
+      git -C "$root" merge-base --is-ancestor main "$branch" &&
+        stop 3 "the main checkout $root refuses the fast-forward: $out"
+      left+=("$root") left_trees+=("$wt")
+      continue
+    fi
+    if [ "$own" -gt 0 ]; then
+      landed+=("${root##*/}:$(git -C "$root" rev-parse --short=12 HEAD)")
+      printf 'landed %s@%s\n' "${root##*/}" "$(git -C "$root" rev-parse --short=12 HEAD)"
+    fi
+    git -C "$root" worktree remove "$wt" 2>/dev/null || printf 'land: kept %s (untracked files)\n' "$wt" >&2
+    if git -C "$root" show-ref -q --verify "refs/remotes/origin/$branch"; then
+      git -C "$root" push -q origin --delete "$branch" 2>/dev/null || printf 'land: origin kept %s\n' "$branch" >&2
+    fi
+    [ ! -d "$wt" ] && git -C "$root" branch -q -D "$branch"
+  done
+  repos=(${left[@]+"${left[@]}"}) trees=(${left_trees[@]+"${left_trees[@]}"})
+done
+[ ${#flaky[@]} -eq 0 ] || printf 'flaky %s\n' "${flaky[@]}"
+IFS=,; printf 'commits=%s\n' "${landed[*]}"
+exit; }

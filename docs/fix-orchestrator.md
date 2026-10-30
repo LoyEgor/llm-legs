@@ -18,27 +18,18 @@ the repositories.
 
 ## Per branch, serially when its worker completes
 
-1. `doctor-fix show <ref>` reads closed. Its close gate does not prove suites green. Require all branch covering suites (including the slow layer) green on the worker's final commit in every worktree (report and run-suites journal `head`); missing proof goes to step 3.
+1. `doctor-fix show <ref>` reads closed. Its close gate does not prove suites green. By day, require all branch covering suites (including the slow layer) green on the worker's final commit in every worktree (report and run-suites journal `head`); missing proof goes to step 3. A `night/…` branch's worker runs none: `land` runs them.
 2. Check every non-`fixed` verdict of its decision table yourself, a vendor's run against its blind list
    too; no per-branch review.
 3. What you find goes to the SAME worker (`RESUME <session>:`, the brief's `ADD-DIR:` lines under it); it
-   resolves conflicts and gets suites green; at night, after that repository's press-time push, it first
-   rebases as step 4 does.
-4. Land one branch at a time, including its `ADD-DIR:` repositories; no parallel landing batches. Before
-   each rebase pass, in the worktree: `base=$(git merge-base main HEAD)`; at night, only while the branch
-   still holds the press snapshot, `n=refs/night/<id>/base; git merge-base --is-ancestor $n HEAD &&
-   ! git merge-base --is-ancestor $n main && base=$n` — once rebased onto main (step 3, a refused merge) the
-   night ref would replay main's commits and select nearly every suite. Then
-   `suites=$(tests/affected --overlap "$base")`; a selection error stops landing.
-   `git rebase --onto main "$base"` in every repository of the branch first, then
-   `if [ -n "$suites" ]; then tests/run-all "$suites"; fi` per repository: run-suites reads a sibling
-   repository's same-branch worktree, so a suite run beside one still on the press snapshot fails on old code.
-   No overlap means no rerun: mapped inputs main did not touch are still the worker's green inputs.
-   Green: in the main checkout `git merge --ff-only <branch> &&` the teardown (`git worktree remove
-   <worktree>`, `git branch -D <branch>`, `git push origin --delete <branch>`), the same per `ADD-DIR:` repository (one without commits loses only its
-   worktree and branch); chain with `&&`, never `;`: a refused merge (main moved) keeps everything and
-   repeats step 4. A red suite reruns once alone (`tests/run-all <suite>`): green lands as a flake,
-   red again goes to step 3, as a conflict does.
+   resolves a conflict by rebasing onto main and fixes a red suite; it never lands.
+4. Land one branch at a time: `bin/land <branch>` (Egor 2026-10-30), never a script of your own. A `night/…`
+   branch lands in every sweep repository holding it; another names each `ADD-DIR:` repository with
+   `--repo <dir>`. It rebases past the press snapshot, runs in each worktree a night branch's covering suites
+   or otherwise only those main's new commits share with the branch, reruns a red one once alone (green
+   prints `flaky`), fast-forwards main and drops worktree and branch; main moving under it repeats its pass.
+   Exit 0: its `commits=` line is the merged line's. Exit 1 (conflict, red twice, uncommitted work, a selection
+   error): step 3. Exit 3 (another land holds the branch, the main checkout refuses): land it again later.
 5. A worker the watchdog killed (`KILLED: idle|silent|deadline`): `doctor-fix abandon <ref>`, its branch
    unlanded.
 

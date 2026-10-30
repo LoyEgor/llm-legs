@@ -167,6 +167,9 @@ read …`, which `C1_MACHINE` (`bin/harness-doctor`) misses: 4 chats, 279 turn-s
 
 ## Decisions
 
+- 2026-10-30: landing is `bin/land` (fix-orchestrator step 4) after three hubs' own land.sh each broke (row
+  `dig-night-hub-land-script`): reliable, adds no wait, safe for parallel nights and chats; no journal, doctor
+  area or floors (the 10-06 cut's reasons). Depends on: no hub script again; re-read 2026-11-13. («Updater doctor»)
 - 2026-10-20: everything about tests is one block, this one; Legacy is code only: tests grew and problems
   did not fall. («Updater doctor»)
 - 2026-10-19: tests may mark only what changes with the code, so most changes rewrite them and the architecture must
