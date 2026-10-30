@@ -175,9 +175,10 @@ clear_stub
 start_ok codex --account resumeacct --resume codex-cold
 assert test "$(grep -c 'refused' "$WORK/start.err")" -eq 0
 # A resume with no explicit model asks for the session's own, its rollout's last turn: `exec resume`
-# without -m falls to config.toml's (run codex-1793280617-19169-4d59 went sol -> luna).
-assert test "$(grep -A1 -x 'ARG=-m' "$CALL_LOG" | grep -cx 'ARG=gpt-6.1-sol')" -ge 1
+# without -m falls to config.toml's (run codex-1793280617-19169-4d59 went sol -> luna). The stub writes the log
+# as it runs: read it after the exit, as above (night 5921: red under load at 10 workers).
 assert await_exit
+assert test "$(grep -A1 -x 'ARG=-m' "$CALL_LOG" | grep -cx 'ARG=gpt-6.1-sol')" -ge 1
 
 # Explicit --model/--effort override a resumed session; config defaults never do.
 clear_stub
