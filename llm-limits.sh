@@ -670,17 +670,18 @@ account_profile_dir() {
 # newly added account lands at the end instead of wherever the alphabet drops it. An account whose
 # directory has no readable birth time sorts last, by name.
 account_order() {
-  local vendor=$1 priority name candidate index rank birth line i births='' names=() dirs=()
-  priority=$(account_priority_names "$vendor")
+  local vendor=$1 name candidate index rank birth line i priority=() births=() names=() dirs=()
+  # Read once into arrays: a here-string inside the per-account loops writes a temp file each time.
+  while IFS= read -r line; do priority+=("$line"); done < <(account_priority_names "$vendor")
   {
     while IFS= read -r name; do
       [ -n "$name" ] || continue
       rank=''
       index=0
-      while IFS= read -r candidate; do
+      for candidate in ${priority[@]+"${priority[@]}"}; do
         if [ "$candidate" = "$name" ]; then rank=$index; break; fi
         index=$((index + 1))
-      done <<<"$priority"
+      done
       if [ -n "$rank" ]; then
         printf '0\t%s\t%s\n' "$rank" "$name"
         continue
@@ -689,13 +690,14 @@ account_order() {
       dirs+=("$(account_profile_dir "$vendor" "$name")")
     done
     # One stat for every directory: a directory it cannot read prints no line and sorts last.
-    [ "${#dirs[@]}" -eq 0 ] || births=$(stat -f '%B %N' "${dirs[@]}" 2>/dev/null)
+    [ "${#dirs[@]}" -eq 0 ] ||
+      while IFS= read -r line; do births+=("$line"); done < <(stat -f '%B %N' "${dirs[@]}" 2>/dev/null)
     i=0
     while [ "$i" -lt "${#names[@]}" ]; do
       birth=''
-      while IFS= read -r line; do
+      for line in ${births[@]+"${births[@]}"}; do
         if [ "${line#* }" = "${dirs[$i]}" ]; then birth=${line%% *}; break; fi
-      done <<<"$births"
+      done
       case "$birth" in
         ''|*[!0-9]*) printf '2\t0\t%s\n' "${names[$i]}" ;;
         *) printf '1\t%s\t%s\n' "$birth" "${names[$i]}" ;;
