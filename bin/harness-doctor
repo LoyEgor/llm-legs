@@ -4676,7 +4676,7 @@ def write_classes(paths):
     paths = sorted(set(paths))
     if not paths:
         return {}
-    script = '. "$1" || exit 1; shift; for p; do printf "%s\\0" "$(instruction_write_class "$p")"; done'
+    script = '. "$1" || exit 1; shift; for p; do instruction_write_class "$p"; printf "\\0"; done'
     try:
         out = subprocess.run(["bash", "-c", script, "bash", os.path.join(ROOT_DIR, "share", "instruction-files.sh")]
                              + paths, capture_output=True, text=True, timeout=10)
