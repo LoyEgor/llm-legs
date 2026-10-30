@@ -14,7 +14,12 @@ limit_hit_num() { # var value -> the value when it is a plain number, else null
   if [[ ${2:-} =~ $re ]]; then printf -v "$1" '%s' "$2"; else printf -v "$1" null; fi
 }
 
-limit_hit_bytes() { local LC_ALL=C; limit_hit_n=${#1}; }
+# No local LC_ALL: its pop in a $(...) child runs libintl setlocale into CoreFoundation after fork and
+# segfaults Homebrew bash (vendor-cli-update, llm-refresh crash reports, 2026-10).
+limit_hit_bytes() {
+  limit_hit_n=${#1}
+  case $1 in *[![:ascii:]]*) limit_hit_n=$(printf %s "$1" | wc -c); limit_hit_n=$((limit_hit_n)) ;; esac
+}
 
 limit_hit_where() { # where -> limit_hit_at: `file:ANCHOR` becomes `file:N`, N the first line of the repo file holding ANCHOR
   local file=${1%%:*} anchor=${1#*:} root n
