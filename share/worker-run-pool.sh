@@ -77,21 +77,9 @@ record_run_wall() {
   account=$(jq -r '.account' "$directory/meta.json" 2>/dev/null) || return 0
   [ -n "$account" ] || return 0
   event="$directory/wall-reset.$(head -n1 "$directory/attempt" 2>/dev/null)"
-  local target="${vendor/#claudeb/claude}/$account" wall
   if ! IFS= read -r epoch 2>/dev/null <"$event"; then
     reset=$(worker_walls_extract_reset "$directory/out" "$directory/err")
     epoch=$(worker_walls_parse_reset "$reset") || epoch=''
-    # Once per attempt: the second call (reroute_walled after the watchdog's) no longer holds the
-    # reset text, and read without it a codex weekly wall is `unknown`. Fired BEFORE the mark that
-    # stops the second call: the watchdog's tree kill can land between the two, and a mark written
-    # first would lose the armed redeem for good. Detached and off the run's id, or that kill and
-    # end_run_orphans end it while it waits for the arm lock.
-    if [ -f "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/reset-arm/${target/\//-}" ]; then
-      wall=$(worker_walls_kind "$vendor" "${reset:+$epoch}" "$directory/out" "$directory/err")
-      child_group_prefix
-      (env -u WORKER_RUN_ID ${CHILD_GROUP_PREFIX[@]+"${CHILD_GROUP_PREFIX[@]}"} "$SCRIPT_DIRECTORY/llm-reset-redeem" \
-        --fire-armed "$target" --wall "$wall" </dev/null >/dev/null 2>&1 &)
-    fi
     # A timeless wall keeps the attempt's first sighting, so a re-record never moves its retry time.
     printf '%s\n' "${epoch:-@$(date +%s)}" >"$event" || return 1
   fi

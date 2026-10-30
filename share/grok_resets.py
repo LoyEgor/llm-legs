@@ -8,8 +8,8 @@ two messages are three scalar fields deep and a protobuf dependency would buy no
                                             google.protobuf.Timestamp validity_start = 20;
                                             google.protobuf.Timestamp validity_end   = 30; }
     message ConsumerGetRemainingResetsResp { repeated ConsumerResetToken tokens = 10; }
-    message ConsumerRedeemResetReq         { string token_id = 10; }
-    message ConsumerRedeemResetResp        { repeated ConsumerResetToken still_redeemable = 10; }
+
+Read only: usage resets are banned (Egor 2026-10-14), so the redeem write is gone.
 """
 
 from __future__ import annotations
@@ -54,18 +54,6 @@ class AuthError(TransientError):
 
 class _Malformed(Exception):
     pass
-
-
-def _varint(value: int) -> bytes:
-    out = bytearray()
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        if value:
-            out.append(byte | 0x80)
-        else:
-            out.append(byte)
-            return bytes(out)
 
 
 def _read_varint(data: bytes, index: int) -> tuple[int, int]:
@@ -219,16 +207,6 @@ def _call(method: str, token: str, message: bytes, timeout: float) -> bytes:
 
 def get_remaining_resets(token: str, timeout: float = DEFAULT_TIMEOUT) -> list[dict]:
     payload = _call("GetRemainingResets", token, b"", timeout)
-    try:
-        return _tokens(payload)
-    except _Malformed as exc:
-        raise TransientError(f"unparsable reset payload: {exc}") from None
-
-
-def redeem_reset(token: str, token_id: str, timeout: float = DEFAULT_TIMEOUT) -> list[dict]:
-    encoded = token_id.encode("utf-8")
-    message = bytes([TOKEN_ID_FIELD << 3 | WIRE_LEN]) + _varint(len(encoded)) + encoded
-    payload = _call("RedeemReset", token, message, timeout)
     try:
         return _tokens(payload)
     except _Malformed as exc:

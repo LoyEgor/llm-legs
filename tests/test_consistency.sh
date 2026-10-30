@@ -65,7 +65,6 @@ REVIEW_ROOT="${REVIEW_ROOT:-$PROJECTS/review-bench}"
 export RBENCH_SHARE="$REVIEW_ROOT/share"
 # Sites more than one shard reads are named here, outside every section.
 LIMITSVIEW="$ROOT/share/limits-view.sh"
-CLAUDE_RESETS="$ROOT/share/claude_resets.py"
 CODEXB="$ROOT/bin/codexb"
 POLICY="$ROOT/share/worker-policy.md"
 CONTRACT="$ROOT/docs/routing-contract.md"
@@ -289,11 +288,6 @@ assert grep -Fq 'hashlib.sha256(profile.encode("utf-8")).hexdigest()[:8]' "$DRIV
 assert grep -Fq '"Claude Code-credentials-"' "$DRIVER"
 assert grep -Fq '".claude-profiles"' "$DRIVER"
 assert doc_has 'bin/claude-session-driver'
-assert grep -q '^def keychain_service' "$CLAUDE_RESETS"
-assert grep -Fq 'hashlib.sha256(profile.encode("utf-8")).hexdigest()[:8]' "$CLAUDE_RESETS"
-assert grep -Fq '"Claude Code-credentials-"' "$CLAUDE_RESETS"
-assert grep -Fq '".claude-profiles"' "$CLAUDE_RESETS"
-assert doc_has '`share/claude_resets.py` `keychain_service`'
 
 # --- Row d: weather HTTP classes ---------------------------------------------
 # probe_weather_failed's case pattern is the canonical class list.
@@ -2766,20 +2760,18 @@ assert doc_has 'Worker claims ledger'
 
 # --- Row bo: the reset consumable ---------------------------------------------
 # The glyph is the whole vocabulary for this state, so a render that gates it on a vendor name
-# tells the owner one leg has no reset when the leg simply is not codex; and the write RPC that
-# spends it may have exactly one caller.
+# tells the owner one leg has no reset when the leg simply is not codex; and nothing spends it: usage
+# resets are banned (Egor 2026-10-14), so llm-reset-redeem, its arms and every write RPC are gone.
 RESETS="$ROOT/share/grok_resets.py"
 GROKQUOTA="$ROOT/grok-quota.py"
 CODEXQUOTA="$ROOT/codex-quota.py"
-REDEEM="$ROOT/bin/llm-reset-redeem"
 assert doc_has 'Reset consumable'
 assert doc_has '`prod_mc_billing.ConsumerUiSvc`'
 for credits_site in "$LLMLIMITS" "$HAMMER"; do
   assert grep -Fq '↻' "$credits_site"
   assert eq "$(grep -c '"codex" and (.reset_credits' "$credits_site")" 0
 done
-# The router prints no count at all: the reset is spent from the menu, and a number beside a row
-# nobody ranks on reads as one that ranked it.
+# The router prints no count at all: a number beside a row nobody ranks on reads as one that ranked it.
 assert eq "$(grep -c '↻' "$WORKERPICK")" 0
 assert eq "$(grep -c 'if (.reset_credits | type) == "number" then "↻"' "$LLMLIMITS")" 2
 assert eq "$(grep -c '\$key == "codex" then credits' "$LLMLIMITS")" 0
@@ -2789,59 +2781,23 @@ for credits_field in "$GROKQUOTA" "$CODEXQUOTA" "$CLAUDEB"; do
   assert grep -Fq 'reset_credits' "$credits_field"
   assert grep -Fq 'reset_credits_expires_at' "$credits_field"
 done
-# One spelling of each vendor's transport, and one caller for each of the two writes.
+# One spelling of each vendor's read transport.
 APPSERVER="$ROOT/share/codex_appserver.py"
 assert grep -Fq 'SERVICE_PATH = "/prod_mc_billing.ConsumerUiSvc"' "$RESETS"
-assert eq "$(grep -c 'prod_mc_billing.ConsumerUiSvc' "$REDEEM")" 0
 assert eq "$(grep -c 'prod_mc_billing.ConsumerUiSvc' "$GROKQUOTA")" 0
 assert grep -Fq '_call("GetRemainingResets"' "$RESETS"
-assert grep -Fq '_call("RedeemReset"' "$RESETS"
-assert eq "$(grep -rl 'grok_resets.redeem_reset' "$ROOT/bin" "$ROOT/share" "$GROKQUOTA" | wc -l | tr -d ' ')" 1
-assert grep -Fq 'grok_resets.redeem_reset' "$REDEEM"
 assert grep -Fq 'import grok_resets' "$GROKQUOTA"
 assert grep -Fq '"app-server"' "$APPSERVER"
 assert eq "$(grep -c '"app-server"' "$CODEXQUOTA")" 0
-assert eq "$(grep -c '"app-server"' "$REDEEM")" 0
-for appserver_caller in "$CODEXQUOTA" "$REDEEM"; do
-  assert grep -Fq 'import codex_appserver' "$appserver_caller"
-done
-assert eq "$(grep -rl 'rateLimitResetCredit/consume' "$ROOT/bin" "$ROOT/share" "$CODEXQUOTA" | wc -l | tr -d ' ')" 1
-assert grep -Fq 'rateLimitResetCredit/consume' "$REDEEM"
-assert grep -Fq 'RESET_PATH = "/api/organizations/{organization}/reset_rate_limits"' "$CLAUDE_RESETS"
-assert grep -Fq 'PROGRAM = "cedar_ember"' "$CLAUDE_RESETS"
-assert eq "$(grep -rlI 'reset_rate_limits' "$ROOT/bin" "$ROOT/share" | wc -l | tr -d ' ')" 1
-assert eq "$(grep -rlI 'claude_resets.reset(' "$ROOT/bin" "$ROOT/share" | wc -l | tr -d ' ')" 1
-assert grep -Fq 'claude_resets.reset(' "$REDEEM"
+assert grep -Fq 'import codex_appserver' "$CODEXQUOTA"
 assert grep -Fq 'oauth/usage?cedar_ember=1' "$CLAUDEB"
-claude_ua=$(sed -nE 's/^USER_AGENT = "(claude-cli\/[^"]+)"$/\1/p' "$CLAUDE_RESETS")
-assert test -n "$claude_ua"
-assert grep -Fq -- "-H 'User-Agent: $claude_ua'" "$CLAUDEB"
 assert doc_has '`cedar_ember`'
-# One wording for the action, shared by the renderer and the contract that pins it.
-assert grep -Fq 'local title = "Redeem usage reset"' "$HAMMER"
-assert grep -Fq 'title .. " · " .. formatResetTime(block.reset_credits_expires_at)' "$HAMMER"
-assert grep -Fq 'Redeem usage reset · ' "$ROOT/tests/llm_limits_renderer_harness.lua"
-assert doc_has 'Redeem usage reset · <when>'
-# The menu is the only surface that may fire the write, and only for a vendor with a backend.
-assert grep -Fq 'local RESET_REDEEM_VENDORS = { grok = true, codex = true, claude = true }' "$HAMMER"
-assert grep -Fq 'M.resetRedeemCmd or "llm-reset-redeem"' "$HAMMER"
-assert grep -Fq 'hs.dialog.blockAlert' "$HAMMER"
-# Beyond the menu, only the two armed-only triggers reach it, each gated on an arm file existing.
-assert eq "$(grep -rlI 'llm-reset-redeem' "$ROOT/bin" "$ROOT/share/"worker-run-*.sh "$ROOT/hammerspoon" "$LLMLIMITS" |
-  grep -v '/bin/llm-reset-redeem$' | sort | tr '\n' ' ')" \
-  "$(printf '%s\n' "$ROOT/share/worker-run-pool.sh" "$ROOT/hammerspoon/llm-limits.lua" "$LLMLIMITS" | sort | tr '\n' ' ')"
-for armed_trigger in "$WORKER_RUN_TEXT" "$LLMLIMITS"; do
-  assert eq "$(grep -c 'llm-reset-redeem' "$armed_trigger")" 1
-  assert grep -Fq 'reset-arm/' "$armed_trigger"
-  assert grep -Fq -- '--fire-armed' "$armed_trigger"
-done
-assert doc_has '`--fire-armed` from the collector'
-# Only his word arms: no code here arms, and the CLI arm demands his words.
-assert eq "$(grep -rlIE -- '--arm( |")|arm_words' "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" "$LLMLIMITS" |
-  grep -v '/bin/llm-reset-redeem$')" ''
-assert doc_has 'armed by his own word'
-assert test -r "$ROOT/tests/test_llm_reset_redeem.sh"
-assert grep -Fq 'test_llm_reset_redeem.sh' "$ROOT/bin/llm-selfcheck"
+# Nothing spends a reset: no redeem tool, no arm, no write RPC, no menu action.
+assert test ! -e "$ROOT/bin/llm-reset-redeem"
+assert test ! -e "$ROOT/share/claude_resets.py"
+assert eq "$(grep -rlI --exclude='*-ledger.json' -e 'llm-reset-redeem' -e 'reset-arm/' -e '--fire-armed' -e 'RedeemReset' \
+  -e 'rateLimitResetCredit/consume' -e 'reset_rate_limits' -e 'Redeem usage reset' \
+  "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" "$LLMLIMITS" "$ROOT/limits.json")" ''
 
 # --- Row bn: the main-account shield ------------------------------------------
 # The budget a base account is pulled from the pool at, spelled once in the pool module and
