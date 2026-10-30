@@ -263,9 +263,8 @@ when a codex home holds it, else the web's). Exit 5 without a fallback prints `A
   no CLI fallback. `image-fanout` packs codex takes into one `--count` launch.
 - **Account server** (`chatgpt-web serve <account>`): a `generate` without `--region`/`--point` joins one
   browser per account, holding `<account>.lock` until 60 s after its last job, over `locks/<account>.sock`; two
-  jobs from any run at a time (`slot-N.lock`) in tabs reused without a reload. 20 prompts, six accounts:
-  90-108 s against 194-198 s. An editor tool drains it first; `CHATGPT_WEB_SHARED=0` opts out; log
-  `logs/<account>-serve.log`.
+  jobs from any run at a time (`slot-N.lock`), tabs reused. 20 prompts, six accounts, two ABBA rounds: 87-108 s
+  against 155-199 s; three jobs no faster (101-110 s). Editor tools drain it; `CHATGPT_WEB_SHARED=0` opts out.
 - **`--each <img>`** (2-4, web only): different images edited by one prompt, a tab each in one pack (tab k
   uploads image k, then the `--ref`s). Its bytes land at `<stem>.landing` (k = 1) or `<stem>-k.landing`; at
   the end tab k goes to `--dest` or `<stem>-k.<ext>` as a `take=<k>` line and the lone-edit block, composited

@@ -1151,9 +1151,15 @@ reap() {
 }
 
 # An account runs one unit at a time; one whose engine serves several jobs from one browser (the roster's tabs:
-# chatgpt-web's account server) takes more while their takes fit them.
+# chatgpt-web's account server) takes more while their takes fit them, past the --max-parallel cap too: they
+# join a browser already up (cap_full: every browser the cap allows is up).
+cap_full=0
 slot_free() { # account unit
-  [ "${a_live[$1]}" = 0 ] || [ $((a_live[$1] + u_count[$2])) -le "${a_slots[$1]}" ]
+  if [ "${a_live[$1]}" = 0 ]; then
+    [ "$cap_full" = 0 ]
+    return
+  fi
+  [ $((a_live[$1] + u_count[$2])) -le "${a_slots[$1]}" ]
 }
 
 pick_account() { # unit now -> picked, the account index (0 = the script picks); 1 = none free now, 2 = none left
@@ -1161,7 +1167,7 @@ pick_account() { # unit now -> picked, the account index (0 = the script picks);
   picked=''
   vendor=${g_vendor[${u_group[u]}]}
   case "${u_mode[u]}" in
-    pick) picked=0; return 0 ;;
+    pick) [ "$cap_full" = 0 ] || return 1; picked=0; return 0 ;;
     pinned)
       account_index "$vendor" "${u_pin[u]}"
       a=$account_at
@@ -1310,7 +1316,8 @@ try_launch() { # -> 0 when a unit was launched; primary takes before spares
         continue
       fi
       if [ "$pick_rc" -ne 0 ]; then
-        if lock_blocked "$u"; then
+        # At the cap the unit waits on this run's own browsers, not on another run's lock.
+        if [ "$cap_full" = 0 ] && lock_blocked "$u"; then
           ! busy_gave_up "$u" "$now" "$held_names" || continue
           add_note "$u" 'waited: account held by another run'
         fi
@@ -1362,7 +1369,9 @@ if [ "$dry_run" = false ]; then
     done
     [ $((running + pending)) -gt 0 ] || break
     launched=0
-    if [ "$pending" -gt 0 ] && [ "$browsers" -lt "$max_parallel" ] && ! gap_open && try_launch; then
+    cap_full=0
+    [ "$browsers" -lt "$max_parallel" ] || cap_full=1
+    if [ "$pending" -gt 0 ] && { [ "$cap_full" = 0 ] || [ "$shared" != ' ' ]; } && ! gap_open && try_launch; then
       launched=1
     fi
     refresh_state

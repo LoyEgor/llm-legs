@@ -866,6 +866,20 @@ assert test "$rc" -eq 0
 assert test "$(awk '/^START / { print $2 }' "$CALLS" | paste -sd, -)" = fasta,fastc
 assert grep -Fq $'grok\t-\tspare-cancelled\t' "$DEST_WORK/fanout.tsv"
 
+# --- a served account (roster tabs 2) takes its second job past --max-parallel: it shares the browser up --
+set_roster chatgpt-web '[ "${1:-}" = accounts ] || exit 2
+printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"slowa\",\"login\":true,\"tabs\":2},{\"account\":\"slowb\",\"login\":true,\"tabs\":2}]}"'
+jq -cn --arg d "$DEST" 'range(4) | {prompt: "p\(.)", dest: ($d + "/served-\(.).png"), vendor: "codex"}' >"$WORK/served.jsonl"
+: >"$CALLS"
+rm -rf "$LIVE"/*
+rc=0
+env "${FANOUT_ENV[@]}" FANOUT_LIVE="$LIVE" FANOUT_SLEEP=1.5 bash "$SCRIPT" --dest-dir "$DEST" --jobs "$WORK/served.jsonl" \
+  --spare 0 --max-parallel 2 >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
+assert test "$rc" -eq 0
+assert test "$(grep -c '^OVERLAP ' "$CALLS")" -eq 2
+set_roster chatgpt-web '[ "${1:-}" = accounts ] || exit 2
+printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"alpha\",\"login\":true,\"walled_until\":null},{\"account\":\"beta\",\"login\":false,\"walled_until\":null}]}"'
+
 # --- a packed request's spare waits for its pack to run lazily long without delivering ---------------
 set_roster gemini-web '[ "${1:-}" = accounts ] || exit 2
 printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"slowp\",\"login\":true},{\"account\":\"fastq\",\"login\":true}]}"'
