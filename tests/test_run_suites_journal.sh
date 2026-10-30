@@ -133,6 +133,13 @@ assert jqe --arg repo "$REPO" --arg sha "$WT_SHA" '.repo == $repo + "/.claude/wo
 SUITE_JOURNAL="$WORK/wt.jsonl" /bin/bash "$REPO/.claude/worktrees/wt/tests/test_cpu.sh"
 assert jqe --arg repo "$REPO" --arg sha "$WT_SHA" '.repo == $repo + "/.claude/worktrees/wt" and .repo_root == $repo and .head == $sha' \
   "$WORK/wt.jsonl"
+# The main checkout's path to a suite, handed to the worktree's run, runs the worktree's copy: the row's
+# head and tree are the worktree's, so the code they name is the code that ran (2026-10-30, 1143a5d5).
+suite "$REPO" test_side.sh 'exit 0'
+suite "$REPO/.claude/worktrees/wt" test_side.sh 'exit 5'
+side_out=$(bash "$ROOT/share/run-suites.sh" --repo "$REPO/.claude/worktrees/wt" "$REPO/tests/test_side.sh" 2>&1)
+assert jqe --arg sha "$WT_SHA" '.head == $sha and .suites["test_side.sh"].rc == 5' <(tail -1 "$JOURNAL")
+assert grep -qF "$REPO/tests/test_side.sh is another checkout's; ran $REPO/.claude/worktrees/wt/tests/test_side.sh" <<<"$side_out"
 
 # A run stopped by a signal writes its row, incomplete, gives up its slot and still dies of the signal.
 R2="$WORK/r2"

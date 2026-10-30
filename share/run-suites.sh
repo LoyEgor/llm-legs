@@ -274,7 +274,18 @@ if [ "${#explicit[@]}" -gt 0 ]; then
   for entry in "${explicit[@]}"; do
     case "$entry" in
       */*) [ -r "$entry" ] || fail "no such suite: $entry"
-           suites+=("$(cd "$(dirname "$entry")" && pwd -P)/$(basename "$entry")") ;;
+           entry="$(cd "$(dirname "$entry")" && pwd -P)/$(basename "$entry")"
+           # Another checkout of this repository's suite reads that checkout's code under this one's head and
+           # tree (2026-10-30: main's tests/affected run from a night worktree landed 1143a5d5 green on main's
+           # code, red in main's full run on the same tree): this checkout's copy of the path runs instead.
+           if [ "${entry%/*}" != "$repo/tests" ] && [ -n "${common:-}" ] &&
+               entry_top=$(git -C "${entry%/*}" rev-parse --show-toplevel 2>/dev/null) && [ "$entry_top" != "$repo" ] &&
+               [ "$(git -C "$entry_top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$common" ]; then
+             [ -r "$repo/${entry#"$entry_top"/}" ] || fail "no such suite: $repo/${entry#"$entry_top"/} (named as $entry)"
+             printf 'run-suites: %s is another checkout'"'"'s; ran %s\n' "$entry" "$repo/${entry#"$entry_top"/}" >&2
+             entry=$repo/${entry#"$entry_top"/}
+           fi
+           suites+=("$entry") ;;
       *) [ -r "$repo/tests/$entry" ] || fail "no such suite: $repo/tests/$entry"
          suites+=("$repo/tests/$entry") ;;
     esac
