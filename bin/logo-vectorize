@@ -16,7 +16,8 @@ usage() {
   printf '  inks with grain and ragged edges), JPEG included, is detected and traced flat with its roughness kept, without\n' >&2
   printf '  the champion (judges preferred it on 21 of 21 unseen tiles). Pixel art (8-bit logos on a coarse square grid), JPEG\n' >&2
   printf '  included, is detected and traced as exact square cells in about a second (preferred on 22 of 23 decided unseen\n' >&2
-  printf '  tiles). --auto no runs the champion alone\n' >&2
+  printf '  tiles). A pale tinted background keeps its input colour instead of turning pure white; white details inside\n' >&2
+  printf '  the logo stay white. --auto no runs the champion alone\n' >&2
   printf '  --size native (default) traces up to 1024 px as given (finer edges). Flat opaque PNG of 300 px or more takes the\n' >&2
   printf '  palette path at any size; on the fallback most post-steps match the bench sizes (256/512/1024) exactly, so other\n' >&2
   printf '  sizes (e.g. 257-511 px tiles) get the core trace plus crack/spike repair; above 512 px soft art gets the core steps)\n' >&2
@@ -67,8 +68,8 @@ if [ -n "$grad$colors$palette" ]; then
   runner="$BENCH/tracers/hints-a7/run.sh"
   [ -x "$runner" ] || { printf 'logo-vectorize: no hints tracer at %s/tracers/hints-a7\n' "$BENCH" >&2; exit 1; }
   hints=" hints=gradient:${grad:-auto},colors:${colors:-auto}${palette:+,palette:$palette}"
-elif [ "$auto" = on ] && [ -x "$BENCH/tracers/pixel-a3/run.sh" ]; then
-  runner="$BENCH/tracers/pixel-a3/run.sh" hints=' auto=on' lvauto=1
+elif [ "$auto" = on ] && [ -x "$BENCH/tracers/bgkeep-a1/run.sh" ]; then
+  runner="$BENCH/tracers/bgkeep-a1/run.sh" hints=' auto=on' lvauto=1
 fi
 
 champion=$(basename "$(cd -P "$BENCH/tracers/stable" && pwd)")
