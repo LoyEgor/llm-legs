@@ -94,17 +94,6 @@ lines: `git diff --numstat <base>..<merge>` of the goal's commits, legacy.md's b
 Breakages' `bash-cap`, this block's largest wait, is not repeated. Proofs replay fixed journals: a 7-day window
 after landing moves with the pilot's volume and tests-once.
 
-### goal warm-chrome: back-to-back image calls on one account reuse its browser
-
-Class (dig 10-29, row `dig-chrome-per-image-call`): `share/gemini_web.py` starts and kills a Chrome per call;
-legs.jsonl 10-22…29: 79.6 calls/day start within 120 s of the same account's last, each 10–14 s to page ready, 15.3
-leg-min/day.
-- Change: a finished call's Chrome stays up to 120 s for the same account's next call, then is reaped as now.
-- First step: the fan-out logs' critical path share of those reopens; under 5 waited min/day stops the goal.
-- Proof, old → new: legs.jsonl `phases.page` of a call within 120 s of its account's last, ~10 s → ≤ 2 s,
-  interleaved on the same machine; delivered/requested equal.
-- Must not get worse: memlogd available MB during image runs; never held below the slot gate.
-
 Dropped, 10-09…22: full-night slot queues (917 worker-min/day), memory and load; run-suites `limit` waits (CPU busy
 in all 88 samples); 10-20's 63 fixers, CPU-bound, fan-out's; chats testing while iterating (13 min/day, a rule
 exists); chat compaction 19.6 min/day, a spend trade; worker compaction 3.6 min/day; API retries 7; model-written
@@ -174,6 +163,7 @@ read …`, which `C1_MACHINE` (`bin/harness-doctor`) misses: 4 chats, 279 turn-s
 | 10-23 | goal suite-own-cost: test_health's heavy and pole findings go; both suite_audit rises read beyond `load()`, on CPU a run under 3 controls | heavy/pole rows on audited suites, 4 windows, 12 → 0; at-once rises at flat CPU (2 controls) 3 → 0, due 60 → 60; code −20, tests −12 lines; 7-day read: a suite risen beyond its load or CPU (≥ 2× held over HELD_S) not due, target 0 | ebf5bde1 |
 | 10-23 | goal shared-asserts: `fail`, `assert`, `assert_fails` from `tests/lib/suite-journal.sh` to line-2 sources; 133 copies behaving as the lib's go, variants stay | llm-legs helper-copy lines 382 → 182 (less one 333 → 145); touched suites' PASS counts = HEAD's, 3 sampled mutations red; tests −188 lines; 7-day read: suites added defining their own (class command), llm-legs 13 of 23 → target 0 | 5e084b8d |
 | 10-30 | goal fixture-path stopped at its First step: a held path counts only bare or under a root (`$ROOT/`, `{root}/`, `$1/`, `%s/`, `../`, `$(…)/`, `root .. "/`) | live `select()`, main 10-15…29 (569 commits, 14-d median walls, a commit waits on its slowest suite): 44.9 → 44.0 min/day, 3.8 by the dig's static subtraction (→ 41.1); under 5 before any truncation run. The dig's 7.2 missed that a file left with no own suite refills through `importers()` (breakages.md, 26 commits: 1 → 8 suites by a docstring and a printf) and that test_doctor_fix holds most paths as bare data strings (`purpose: "bin/llm-doctor"`) | no commit |
+| 10-30 | goal warm-chrome stopped at its First step: a call's Chrome kept up to 120 s for its account's next | legs.jsonl 10-22…29, a call starting ≤ 120 s after its account's last ended, saving `page` − `lock` − 1 s (a served page, 10-30: 0.5–1.5 s); a fan-out waits max over accounts of chain end − chain saving, a lone call whole: codex 65.6 calls/day, 9.7 leg-min → 2.2 waited; gemini 6.5, 3.9 → 1.2; class 3.4 waited min/day, under 5 before any change. Since 4eb25d60 (10-30) chatgpt-web's account server keeps codex's browser 60 s: left 60–120 s codex gaps and gemini, 1.7 | no commit |
 
 ## Open
 
