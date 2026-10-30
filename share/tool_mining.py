@@ -11,6 +11,9 @@ model-facing tool's calls a day over USE_DAYS; one with a hint and no call is un
 Hung calls (`hung_findings`): Claude Code Bash calls that sat to their timeout with no output (a stdin read, a lost
 heredoc), their wall per command head a day, Speed's `opportunity:hung-bash/<head>` over the floor.
 A cluster recurring in fewer than FLOOR_PROJECTS projects is that project's job (`home`): its tool and hint go there.
+Two jobs no single script shows ride the same pass, costed, floored and proven like a cluster: a chain (`chain/<heads>`),
+the same command heads run by hand as separate short Bash calls in FLOOR_SESSIONS sessions (`chain_rows`), and a kind of
+file the Write tool writes outside any repository (`file/<ext>`, `file_rows`), costed by the characters written.
 
   tool_mining.py [--to T] [--calls]   T in epoch seconds; --calls prints each matched call
 """
@@ -116,6 +119,25 @@ SET_UP = re.compile(r"^\s*(?:cd\b|[A-Za-z_]\w*=(?:\$\([^)]*\)|\S)*\s*$)")
 HEAD = re.compile(r"^\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|env|command|exec|time|nohup|timeout\s+\S+"
                   r"|nice(?:\s+-n\s*-?\d+)?)\s+)*([^\s;&|()<>]+)")
 CODEX_CMD = re.compile(r"""exec_command\(\{\s*cmd:\s*("(?:[^"\\]|\\.)*")""")
+# A chain: CHAIN_MIN to CHAIN_MAX heads in order inside CHAIN_SPAN calls of its first, the CHAIN_KEEP costliest whose
+# calls are mostly their own. LOOK heads read or glue: a chain is made of the calls that act.
+CHAIN_MIN, CHAIN_MAX, CHAIN_SPAN, CHAIN_KEEP = 3, 5, 5, 20
+MINED = ("chain/", "file/")
+LOOK = frozenset("cat ls head tail grep egrep fgrep rg sed awk jq wc sort uniq cut tr echo printf pwd true false sleep "
+                 "test [ [[ date ps pgrep which type stat file find du df diff cmp basename dirname realpath readlink "
+                 "xargs tee less column nl od xxd shasum md5 export set source . exit wait read local unset trap "
+                 "command".split()) | {"git " + verb for verb in "status log diff show rev-parse ls-files merge-base "
+                                       "rev-list blame grep cat-file describe shortlog".split()}
+BODY = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?(?:\n[ \t]*\2[ \t]*(?=\n|$)|\Z)", re.S)
+QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+PARTS = re.compile(r"&&|\|\||[;\n|()`]|\$\(")
+KEYWORD = re.compile(r"^\s*(?:(?:if|then|else|elif|do|while|until|!|\{)\s+)+")
+NOT_A_COMMAND = re.compile(r"^\s*(?:for|case|done|fi|esac|\}|function)\b")
+WORD = re.compile(r"""(?:[^\s'"]|'[^']*'|"(?:[^"\\]|\\.)*")+""")
+VERB = re.compile(r"^[a-z][a-z0-9-]*$")
+PROGRAM = re.compile(r"^[A-Za-z][\w.-]*$")
+FILE_PATH = re.compile(rb'"file_path":"((?:[^"\\]|\\.)*)"')
+CLAUDE_TREE = (".claude", ".claude-profiles")
 
 
 def projects_dir():
@@ -240,8 +262,13 @@ def facing(now):
 
 def project(cwd):
     """The repository a session worked in, a worktree's main checkout; the directory itself outside any."""
-    if cwd not in REPOS:
-        top, at = None, cwd
+    return repository(cwd) or os.path.realpath(cwd)
+
+
+def repository(path):
+    """The repository holding `path`, a worktree's main checkout, by realpath; None outside any."""
+    if path not in REPOS:
+        top, at = None, path
         while not top and at != os.path.dirname(at):
             git = os.path.join(at, ".git")
             if os.path.isfile(git):
@@ -254,8 +281,24 @@ def project(cwd):
             elif os.path.isdir(git):
                 top = at
             at = os.path.dirname(at)
-        REPOS[cwd] = os.path.realpath(top or cwd)
-    return REPOS[cwd]
+        REPOS[path] = os.path.realpath(top) if top else None
+    return REPOS[path]
+
+
+def loose(target):
+    """Whether a Write target is a throwaway file: outside any repository and Claude's own tree, and no scratch script
+    (that one counts in the call running it)."""
+    return not (SCRATCH.search(target) and SCRIPT.search(target)) \
+        and not target.startswith(tuple(time_budget.home(d) + os.sep for d in CLAUDE_TREE)) \
+        and repository(os.path.dirname(target)) is None
+
+
+def loose_line(line):
+    found = FILE_PATH.search(line)
+    try:
+        return bool(found) and loose(json.loads(b'"' + found.group(1) + b'"'))
+    except ValueError:
+        return False
 
 
 def window(day, n):
@@ -307,6 +350,33 @@ def head(cmd):
     return os.path.basename(found.group(1)) if found else ""
 
 
+def heads(cmd):
+    """The acting programs a Bash call runs (LOOK aside), in order, a repeat of the one before dropped, each with its
+    first word when that is a bare verb (`git merge`, `doctor-fix close`), past -C/-c and their argument; a $( ) counts,
+    a heredoc body and quoted text without a $( are no commands."""
+    text = QUOTED.sub(lambda m: m.group(0) if m.group(0)[0] == '"' and "$(" in m.group(0) else "''", BODY.sub("\n", cmd))
+    out = []
+    for part in PARTS.split(text):
+        part = KEYWORD.sub("", part)
+        if not part.strip() or NOT_A_COMMAND.match(part) or SET_UP.match(part):
+            continue
+        found = HEAD.match(part)
+        name = os.path.basename(found.group(1)) if found else ""
+        if name in LOOK or not PROGRAM.match(name):
+            continue
+        words = iter(WORD.findall(part[found.end():]))
+        word = next(words, "")
+        while word in ("-C", "-c"):
+            next(words, None)
+            word = next(words, "")
+        token = name + " " + word if VERB.match(word) else name
+        if token in LOOK:
+            continue
+        if not out or out[-1] != token:
+            out.append(token)
+    return tuple(out)
+
+
 def kept(cmd, tools, at, session, worker, out, script=False):
     """The call of a benched tool (`tool`: its target) or an ad-hoc call, appended to `out`; None for any other."""
     tool = next((target for target, rule in tools.items() if rule.search(cmd)), None)
@@ -324,7 +394,7 @@ def count(uses, at, keys):
         uses[time_budget.local_day(at)][key] += 1
 
 
-def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hung=None):
+def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hung=None, chains=None, files=None):
     """Ad-hoc and benched-tool Bash calls of one Claude Code transcript: {session, worker, ts, cmd, exec_s, out_b}. A
     tool_use block written right after another block of the same message adds (chars, seconds) to the write rate.
     A script file written into a scratch place (a `cat >` heredoc or the Write tool) is ad hoc in the first Bash call
@@ -332,9 +402,11 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
     call runs, Skill calls and, apart (`slash/`), the user's slash commands. A call's project is the repository of the
     session's launch cwd (`project`), the transcript's project directory without one. `hung` gets each Bash call whose
     result says it timed out (toolUseResult.timedOutAfterMs) with no stdout or stderr: {session, worker, head, cmd,
-    wall_s}."""
+    wall_s}. `chains` gets every other Bash call that runs an acting head (`heads`), its exec from its result's
+    timestamp; `files` each Write of a throwaway file (`loose`, nor under a cwd its record puts on a git branch, a
+    worktree removed since): {session, worker, ts, cmd: path, chars, kind}."""
     session = os.path.splitext(os.path.basename(path))[0]
-    worker, pending, prev, written, bashes = "/subagents/" in path, {}, b"", {}, {}
+    worker, pending, prev, written, bashes, chained = "/subagents/" in path, {}, b"", {}, {}, {}
     where = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(path))) if worker else os.path.dirname(path))
     launched = False
     try:
@@ -346,7 +418,8 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
             if n < 40 and b"RUN-TOKEN: " in line:
                 worker = True
             if b'"tool_use"' in line and (b'"name":"Bash"' in line or uses is not None and b'"name":"Skill"' in line
-                                          or b'"name":"Write"' in line and SCRATCH_WRITE.search(line)):
+                                          or b'"name":"Write"' in line and (SCRATCH_WRITE.search(line)
+                                                                            or files is not None and loose_line(line))):
                 try:
                     record = json.loads(line)
                 except ValueError:
@@ -363,8 +436,14 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
                         count(uses, at, ["skill/" + str((block.get("input") or {}).get("skill") or "").lstrip("/")])
                     if block.get("name") == "Write":
                         target = str((block.get("input") or {}).get("file_path") or "")
+                        content = str((block.get("input") or {}).get("content") or "")
                         if SCRATCH.search(target) and SCRIPT.search(target):
-                            written[target] = str((block.get("input") or {}).get("content") or "")
+                            written[target] = content
+                        elif files is not None and at and lo <= at < hi and loose(target) and not (
+                                record.get("gitBranch") and target.startswith(str(record.get("cwd")).rstrip("/") + "/")):
+                            files.append({"session": session, "worker": worker, "ts": at, "cmd": target,
+                                          "chars": len(content), "exec_s": 0.0, "out_b": 0, "project": where,
+                                          "kind": os.path.splitext(target)[1][1:].lower() or "none"})
                     if block.get("name") != "Bash":
                         continue
                     cmd = str((block.get("input") or {}).get("command") or "")
@@ -395,8 +474,22 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
                         if call:
                             call["project"] = where
                             pending[block.get("id")] = call
-            elif (pending or bashes and TIMED_OUT in line[-TIMED_OUT_TAIL_B:]) and b'"tool_use_id"' in line:
+                        elif chains is not None:
+                            acts = heads(cmd)
+                            if acts:
+                                chained[block.get("id")] = {"session": session, "worker": worker, "ts": at, "cmd": cmd,
+                                                            "exec_s": 0.0, "out_b": 0, "heads": acts, "project": where}
+                                chains.append(chained[block.get("id")])
+            elif (pending or chained or bashes and TIMED_OUT in line[-TIMED_OUT_TAIL_B:]) and b'"tool_use_id"' in line:
                 found = [f.group(1).decode() for f in RESULT.finditer(line)]
+                links = [i for i in found if i in chained]
+                if links:
+                    stamp = TS.search(line)
+                    end = epoch(stamp.group(1).decode()) if stamp else None
+                    for ident in links:
+                        link = chained.pop(ident)
+                        if end and end >= link["ts"]:
+                            link["exec_s"] = end - link["ts"]
                 ids = [i for i in found if i in pending]
                 timed = [i for i in found if i in bashes] if bashes and TIMED_OUT in line[-TIMED_OUT_TAIL_B:] else []
                 if not ids and not timed:
@@ -436,9 +529,9 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
             prev = line
 
 
-def codex_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None):
-    """Ad-hoc and benched-tool commands of one codex rollout's exec calls; codex runs only as a worker, in its session's
-    cwd."""
+def codex_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, chains=None):
+    """Ad-hoc and benched-tool commands of one codex rollout's exec calls, the others running an acting head into
+    `chains`; codex runs only as a worker, in its session's cwd."""
     session = os.path.basename(path)[-42:-6]
     pending, where = {}, "codex"
     try:
@@ -470,6 +563,11 @@ def codex_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None):
                     if uses is not None:
                         count(uses, at, ["bin/" + n for n in used(cmd, names)])
                     call = kept(cmd, tools or {}, at, session, True, out)
+                    acts = heads(cmd) if not call and chains is not None else ()
+                    if acts:
+                        call = {"session": session, "worker": True, "ts": at, "cmd": cmd, "exec_s": 0.0, "out_b": 0,
+                                "heads": acts}
+                        chains.append(call)
                     if call:
                         call.update(share=1.0 / len(literals), project=where)
                         pending.setdefault(payload.get("call_id"), []).append(call)
@@ -492,31 +590,151 @@ class Dropped(list):
         pass
 
 
-def scan(lo, hi, tools=None, names=None, uses=None, keep=True, hung=None):
+def scan(lo, hi, tools=None, names=None, uses=None, keep=True, hung=None, chains=None, written=None):
     """(ad-hoc and benched-tool calls in [lo, hi), all Bash calls in it, write rate in chars a second or None, the
     sessions that made a Bash call per project); `tools` maps a target to the pattern of its tool's calls; `uses` (day -> Counter)
-    gets the model-facing tools' calls; `keep` False drops the calls themselves; `hung` gets the hung Claude Code calls."""
+    gets the model-facing tools' calls; `keep` False drops the calls themselves; `hung` gets the hung Claude Code calls;
+    `chains` the other calls running an acting head, `written` the throwaway files the Write tool wrote."""
     calls, rate = [] if keep else Dropped(), [0, 0.0, 0, {}]
     for root in projects_roots():
         for path in files(root, "*/*.jsonl", lo) + files(root, "*/*/subagents/*.jsonl", lo):
-            claude_calls(path, lo, hi, calls, rate, tools, names, uses, hung)
+            claude_calls(path, lo, hi, calls, rate, tools, names, uses, hung, chains, written)
     for path in files(codex_dir(), "*/sessions/*/*/*/rollout-*.jsonl", lo):
-        codex_calls(path, lo, hi, calls, rate, tools, names, uses)
+        codex_calls(path, lo, hi, calls, rate, tools, names, uses, chains)
     return calls, rate[2], (rate[0] / rate[1] if rate[1] else None), collections.Counter(rate[3].values())
 
 
+def size(c):
+    """The characters a call or a written file cost to write."""
+    return c["chars"] if "chars" in c else len(c["cmd"])
+
+
 def part(group):
-    return {"calls": len(group), "chars": sum(len(c["cmd"]) for c in group),
+    return {"calls": len(group), "chars": sum(size(c) for c in group),
             "exec_s": round(sorted(c["exec_s"] for c in group)[len(group) // 2], 2) if group else 0.0,
             "out_b": sum(c.get("out_b") or 0 for c in group)}
 
 
-def day_of(calls, bash, chars_s, hi, sessions=None, hung=()):
+def priced(group, chars_s, shown):
+    """A group's row: its part, sessions, sessions per project, minutes (the writing plus calls times the median exec,
+    as an edit and its suite run often share one call), worker minutes, the writing part and `shown` on one line each."""
+    median = sorted(c["exec_s"] for c in group)[len(group) // 2]
+    write = [size(c) / chars_s / 60.0 if chars_s else 0.0 for c in group]
+    worker = [w + median / 60.0 for w, c in zip(write, group) if c["worker"]]
+    return dict(part(group), sessions=len({c["session"] for c in group}),
+                projects=dict(collections.Counter(p for _, p in {(c["session"], c.get("project", "")) for c in group})),
+                min=round(sum(write) + len(group) * median / 60.0, 2), worker_min=round(sum(worker), 2),
+                write_min=round(sum(write), 2), examples=[" ⏎ ".join(c.splitlines())[:200] for c in shown])
+
+
+def runs_of(events, pattern):
+    """The non-overlapping runs of `pattern` in one session's (call index, head) events, leftmost first, each inside
+    CHAIN_SPAN calls of its first, gaps allowed: [call indexes]."""
+    out, k = [], 0
+    while k < len(events):
+        if events[k][1] != pattern[0]:
+            k += 1
+            continue
+        got, m = [events[k][0]], k + 1
+        while len(got) < len(pattern) and m < len(events) and events[m][0] - got[0] < CHAIN_SPAN:
+            if events[m][1] == pattern[len(got)]:
+                got.append(events[m][0])
+            m += 1
+        if len(got) < len(pattern):
+            k += 1
+            continue
+        out.append(sorted(set(got)))
+        k = m
+    return out
+
+
+def grown(events, pattern):
+    """Every head past a run of `pattern` inside CHAIN_SPAN calls of the run's first, not in it."""
+    out = set()
+    for k, (first, h) in enumerate(events):
+        if h != pattern[0]:
+            continue
+        q, m = 1, k + 1
+        while m < len(events) and events[m][0] - first < CHAIN_SPAN:
+            if q < len(pattern):
+                q += events[m][1] == pattern[q]
+            elif events[m][1] not in pattern:
+                out.add(events[m][1])
+            m += 1
+    return out
+
+
+def chain_key(pattern):
+    return "chain/" + "+".join(h.replace(" ", "-") for h in pattern)
+
+
+def chain_rows(chains, chars_s, track=None):
+    """{chain/<heads>: row} of the day's chains: CHAIN_MIN to CHAIN_MAX acting heads (`heads`) run in that order by one
+    session's short Bash calls, gaps allowed, in FLOOR_SESSIONS sessions; level by level, a chain grown only from one
+    already in that many. Each costs its runs' calls (`priced`); the costliest CHAIN_KEEP whose calls are mostly not a
+    costlier one's are kept, and every `track` chain ({key: heads}, a landed fix's) at any count."""
+    by = collections.defaultdict(list)
+    for call in sorted(chains, key=lambda c: (c["session"], c["ts"])):
+        by[call["session"]].append(call)
+    track = {k: tuple(v) for k, v in (track or {}).items()}
+    support = collections.Counter(h for group in by.values() for h in {h for c in group for h in c["heads"]})
+    common = {h for h, n in support.items() if n >= FLOOR_SESSIONS} | {h for p in track.values() for h in p}
+    events = {s: [(i, h) for i, c in enumerate(group) for h in dict.fromkeys(c["heads"]) if h in common]
+              for s, group in by.items()}
+    level = collections.defaultdict(set)
+    for s, ev in events.items():
+        for _, h in ev:
+            level[(h,)].add(s)
+    found = {p: set(events) for p in track.values()}
+    for _ in range(CHAIN_MAX - 1):
+        longer = collections.defaultdict(set)
+        for pattern, sessions in level.items():
+            for s in sessions:
+                for h in grown(events[s], pattern):
+                    longer[pattern + (h,)].add(s)
+        level = {p: s for p, s in longer.items() if len(s) >= FLOOR_SESSIONS}
+        found.update((p, s) for p, s in level.items() if len(p) >= CHAIN_MIN and p not in found)
+    rows = []
+    for pattern, sessions in found.items():
+        runs = [(s, run) for s in sorted(sessions) for run in runs_of(events[s], pattern)]
+        if not runs:
+            continue
+        group = [by[s][i] for s, run in runs for i in run]
+        shown = sorted(("\n".join(by[s][i]["cmd"] for i in run) for s, run in runs), key=len)[:2]
+        row = dict(priced(group, chars_s, shown), chain=list(pattern), runs=len(runs),
+                   job="run %s by hand, a Bash call each" % " → ".join(pattern))
+        rows.append((chain_key(pattern), row, {(s, i) for s, run in runs for i in run}))
+    jobs, claimed = [], set()
+    for key, row, own in sorted(rows, key=lambda r: (-len(r[1]["chain"]), -r[1]["write_min"], r[0])):
+        if key in track or row["sessions"] >= FLOOR_SESSIONS and len(own & claimed) * 2 < len(own):
+            jobs.append((key, row))
+            claimed |= own
+    kept = sorted((r for r in jobs if r[0] not in track), key=lambda r: (-r[1]["write_min"], r[0]))[:CHAIN_KEEP]
+    return dict(kept + [r for r in jobs if r[0] in track])
+
+
+def file_rows(written, chars_s, track=()):
+    """{file/<ext>: row} of each kind of throwaway file the Write tool wrote in FLOOR_SESSIONS sessions (every `track`
+    kind at any count), costed by the characters written."""
+    kinds = collections.defaultdict(list)
+    for f in written:
+        kinds[f["kind"] if f["kind"].isalnum() else "other"].append(f)
+    out = {}
+    for kind, group in sorted(kinds.items()):
+        if len({f["session"] for f in group}) >= FLOOR_SESSIONS or "file/" + kind in track:
+            out["file/" + kind] = dict(priced(group, chars_s, sorted(sorted({f["cmd"] for f in group}), key=len)[:2]),
+                                       job="hand-write %s files outside a repository"
+                                       % ("." + kind if kind not in ("none", "other") else kind))
+    return out
+
+
+def day_of(calls, bash, chars_s, hi, sessions=None, hung=(), chains=(), written=(), track=None):
     """One scanned window's numbers per cluster: calls, sessions, sessions per project, minutes (the scripts' writing plus calls times the
     median exec, as an edit and its suite run often share one call), worker minutes, the writing part, two examples,
     characters and output bytes; per cluster its substitutes (`shadow`: ad-hoc calls an earlier cluster took that
     match its pattern) and per benched target its tool's calls (`tools`); the day's sessions, also per project; the
-    hung calls per command head (`hung`: calls, sessions, min, worker_min, two examples)."""
+    hung calls per command head (`hung`: calls, sessions, min, worker_min, two examples); the chains (`chain_rows`) and
+    throwaway file kinds (`file_rows`) as clusters, `track` the keys of landed fixes, and their mining's seconds."""
     out = {"bash_calls": bash, "chars_s": round(chars_s, 1) if chars_s else None, "to_s": int(hi), "clusters": {},
            "sessions": sum((sessions or {}).values()), "projects": dict(sessions or {}), "shadow": {}, "tools": {}}
     grouped, shadow, tools = (collections.defaultdict(list) for _ in range(3))
@@ -531,25 +749,21 @@ def day_of(calls, bash, chars_s, hi, sessions=None, hung=()):
             if key not in CATCH_ALL and rule.search(call["cmd"]):
                 shadow[key].append(call)
     for key, group in grouped.items():
-        median = sorted(c["exec_s"] for c in group)[len(group) // 2]
-        write = [len(c["cmd"]) / chars_s / 60.0 if chars_s else 0.0 for c in group]
-        worker = [w + median / 60.0 for w, c in zip(write, group) if c["worker"]]
-        shown = sorted((c["cmd"] for c in group if len(c["cmd"]) >= 40), key=len)[:2]
-        out["clusters"][key] = dict(part(group), sessions=len({c["session"] for c in group}),
-                                    projects=dict(collections.Counter(
-                                        p for _, p in {(c["session"], c.get("project", "")) for c in group})),
-                                    min=round(sum(write) + len(group) * median / 60.0, 2),
-                                    worker_min=round(sum(worker), 2), write_min=round(sum(write), 2),
-                                    examples=[" ⏎ ".join(c.splitlines())[:200] for c in shown])
-    heads = collections.defaultdict(list)
+        out["clusters"][key] = priced(group, chars_s, sorted((c["cmd"] for c in group if len(c["cmd"]) >= 40), key=len)[:2])
+    started = time.monotonic()
+    track = track or {}
+    out["clusters"].update(chain_rows(chains, chars_s, {k: v for k, v in track.items() if k.startswith("chain/")}))
+    out["clusters"].update(file_rows(written, chars_s, track))
+    out["chain_s"] = round(time.monotonic() - started, 2)
+    by_head = collections.defaultdict(list)
     for call in hung:
-        heads[call["head"]].append(call)
+        by_head[call["head"]].append(call)
     out["hung"] = {key: {"calls": len(group), "sessions": len({c["session"] for c in group}),
                          "min": round(sum(c["wall_s"] for c in group) / 60.0, 2),
                          "worker_min": round(sum(c["wall_s"] for c in group if c["worker"]) / 60.0, 2),
                          "examples": [" ⏎ ".join(c["cmd"].splitlines())[:200]
                                       for c in sorted(group, key=lambda c: -c["wall_s"])[:2]]}
-                   for key, group in heads.items()}
+                   for key, group in by_head.items()}
     out["shadow"] = {key: part(group) for key, group in shadow.items()}
     out["tools"] = {target: part(group) for target, group in tools.items()}
     return out
@@ -675,13 +889,27 @@ def home(c):
     return None if len(recurs(c)) >= FLOOR_PROJECTS else max(sorted(projects), key=projects.get, default="")
 
 
+def mined(days):
+    """{key: newest row} of every chain and file kind the scanned days carry."""
+    out = {}
+    for d in sorted(days, key=lambda d: d.get("to_s") or 0):
+        out.update((k, c) for k, c in (d.get("clusters") or {}).items() if k.startswith(MINED))
+    return out
+
+
+def jobs(days):
+    """(key, job, covered_by) of every CLUSTERS row, then of each chain and file kind the days carry."""
+    rows = mined(days)
+    return [(key, job, tool) for key, job, tool, _ in RULES] + [(k, rows[k].get("job") or k, None) for k in sorted(rows)]
+
+
 def findings(day, history, since=lambda target: None, bench=lambda target: None):
     """({target: net} of every cluster whose fix landed, the clusters over the floor worst writing minutes first, each
     with the project it belongs to, None for the harness's); a landed cluster is charged only on a window that began
-    after its landing."""
+    after its landing. Chains and file kinds are clusters here."""
     out, nets = [], {}
     recent = [d for k, d in sorted(history.items()) if "clusters" in d][-7:]
-    for key, job, tool, _ in RULES:
+    for key, job, tool in jobs(list(history.values()) + [day]):
         target = "adhoc/" + key
         landed = since(target)
         if landed:
@@ -705,9 +933,9 @@ def hung_findings(day):
                   key=lambda f: (-f["min"], f["head"]))
 
 
-def tool_rules(bench):
+def tool_rules(bench, keys=None):
     out = {}
-    for key, _, _, _ in RULES:
+    for key in keys or [k for k, _, _, _ in RULES]:
         command = (bench("adhoc/" + key) or {}).get("command")
         try:
             if command and isinstance(command, str):
@@ -801,13 +1029,14 @@ def menu_row(cache):
     the last scanned day decides. Repeated jobs, the night's target: clusters over the floor not ruled out or handed
     off, and every cluster a built tool serves, as [tool min/day, cluster, [], residual min/day] (NO_TOOL while none
     is built), the heaviest CANDIDATE_ROWS of the unbuilt; one-off, never a target: each ruled-out or handed-off
-    cluster, then the catch-alls and clusters under the floor as one row."""
+    cluster, then the catch-alls and clusters under the floor as one row. A chain or file kind, no script, shows only
+    built, parked or over the floor, at the last scanned day's minutes where the hours lack it."""
     history = cache.get("history") or {}
     scanned = [d for d in history if "clusters" in history[d]]
     if not scanned:
         return None
     last = history[max(scanned)]
-    built, parked = set(cache.get("built") or ()), set(cache.get("parked") or ())
+    built, parked, shown = set(cache.get("built") or ()), set(cache.get("parked") or ()), 0.0
     hours = list((cache.get("hours") or {}).values())
     if hours:
         mins, tool_min = collections.Counter(), collections.Counter()
@@ -823,6 +1052,11 @@ def menu_row(cache):
         target, m = "adhoc/" + key, round(mins.get(key) or 0, 1)
         if key in ROW_SKIP:
             continue
+        if key.startswith(MINED):
+            if target not in built | parked and not over_floor(c):
+                continue
+            m = round(mins[key] if key in mins else c.get("min") or 0, 1)
+            shown += m
         if target in built:
             repeated.append([round(tool_min.get(target) or 0, 1), key, [], m])
         elif target in parked:
@@ -836,7 +1070,7 @@ def menu_row(cache):
     oneoff = sorted(oneoff, key=lambda r: -r[0]) + ([[round(rest, 1), "other", []]] if rest else [])
     groups = [[jobs, "repeated jobs", repeated],
               [round(sum(r[0] for r in oneoff), 1), "one-off", oneoff]]
-    total = round(sum(v for k, v in mins.items() if k not in ROW_SKIP), 1)
+    total = round(sum(v for k, v in mins.items() if k not in ROW_SKIP and not k.startswith(MINED)) + shown, 1)
     return [total, "model-written scripts", groups]
 
 
@@ -861,22 +1095,27 @@ def collect(now, write=False, since=lambda target: None, bench=lambda target: No
     history = cache.get("history") or {}
     hi = time_budget.day_bounds(time_budget.local_day(now))[0]
     day = time_budget.local_day(hi - 1)
-    fresh = not {"shadow", "uses", "hung"} <= set(history.get(day) or {})
+    fresh = not {"shadow", "uses", "hung", "chain_s"} <= set(history.get(day) or {})
     if fresh:
         cache["facing"] = facing(now)
         names = command_re([k[4:] for k in cache["facing"] if k.startswith("bin/")])
-        uses, hung = collections.defaultdict(collections.Counter), []
-        calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi, tool_rules(bench), names, uses, hung=hung)
-        history[day] = dict(day_of(calls, bash, chars_s, hi, sessions, hung), uses=dict(uses.get(day) or {}))
+        uses, hung, chains, written = collections.defaultdict(collections.Counter), [], [], []
+        known = [k for k, _, _ in jobs(history.values())]
+        calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi, tool_rules(bench, known), names, uses, hung=hung,
+                                              chains=chains, written=written)
+        track = {k: c.get("chain") for k, c in mined(history.values()).items() if since("adhoc/" + k)}
+        history[day] = dict(day_of(calls, bash, chars_s, hi, sessions, hung, chains, written, track),
+                            uses=dict(uses.get(day) or {}))
         cache["scan_s"] = round(time.monotonic() - started, 2)
         if write and not cache.get("uses_from"):
             cache["uses_from"] = backfill(history, day, names)
         cache["history"] = {d: v for d, v in history.items() if d >= time_budget.local_day(hi - HISTORY_D * 86400)}
     tools = adoption(history, day, cache.get("facing") or {}, now)
-    hours = hours_of(cache, now, tool_rules(bench)) if write else cache.get("hours")
-    marks = {"hours": hours, "built": sorted("adhoc/" + k for k, _, _, _ in RULES if since("adhoc/" + k)
+    known = [k for k, _, _ in jobs(history.values())]
+    hours = hours_of(cache, now, tool_rules(bench, known)) if write else cache.get("hours")
+    marks = {"hours": hours, "built": sorted("adhoc/" + k for k in known if since("adhoc/" + k)
                              and (bench("adhoc/" + k) or {}).get("command")),
-             "parked": sorted("adhoc/" + k for k, _, _, _ in RULES if parked("adhoc/" + k)),
+             "parked": sorted("adhoc/" + k for k in known if parked("adhoc/" + k)),
              "unused": sorted(k for k, t in tools.items() if t["unused"])}
     marks["kept"] = [k for k in marks["unused"] if k.startswith("skill/") or elsewhere(k[4:], tools[k]["path"])]
     if write and (fresh or any(cache.get(k) != v for k, v in marks.items())):
@@ -895,18 +1134,20 @@ def main(argv):
     args = parser.parse_args(argv)
     hi = args.to or time.time()
     started = time.monotonic()
-    calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi)
+    chains, written = [], []
+    calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi, chains=chains, written=written)
     if args.calls:
         for call in calls:
             print(json.dumps(dict(call, cluster=cluster(call["cmd"])), ensure_ascii=False))
         return 0
-    day = day_of(calls, bash, chars_s, hi, sessions)
-    print("%d Bash calls, %d ad hoc, write rate %s chars/s, scan %.1f s" % (
-        bash, len(calls), round(chars_s or 0, 1), time.monotonic() - started))
+    day = day_of(calls, bash, chars_s, hi, sessions, chains=chains, written=written)
+    print("%d Bash calls, %d ad hoc, %d chain links, %d throwaway files, write rate %s chars/s, scan %.1f s, mining %.1f s"
+          % (bash, len(calls), len(chains), len(written), round(chars_s or 0, 1), time.monotonic() - started,
+             day["chain_s"]))
     for key, c in sorted(day["clusters"].items(), key=lambda kv: -kv[1]["write_min"]):
-        print("%-16s %5d calls %4d sessions %3d projects %6.1f min/day (%5.1f writing, %5.1f worker)%s" % (
+        print("%-16s %5d calls %4d sessions %3d projects %6.1f min/day (%5.1f writing, %5.1f worker)%s%s" % (
             key, c["calls"], c["sessions"], len(recurs(c)), c["min"], c["write_min"], c["worker_min"],
-            " · " + home(c) if home(c) is not None else ""))
+            " · " + home(c) if home(c) is not None else "", " · over the floor" if over_floor(c) else ""))
     return 0
 
 

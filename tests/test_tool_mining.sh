@@ -3,7 +3,8 @@
 # share/tool_mining.py off fixture transcripts (a chat, a RUN-TOKEN worker, a subagent, a codex rollout): which Bash
 # calls are ad hoc, their clusters, exec, writing time and output, substitutes, a benched tool's calls, the floor, the
 # once-a-day cache, a landed fix's net (proven, worse, load-matched, drift), the bench gate, Speed's adhoc opportunities
-# and regressions and Harness's net proof. Fixture directories only.
+# and regressions and Harness's net proof; chains of short calls (a hand landing) and throwaway files the Write tool
+# writes outside a repository (hand-made pages). Fixture directories only.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -427,6 +428,99 @@ del os.environ["CLAUDE_PROJECTS_DIR"]
 roots = t.projects_roots()
 os.environ["CLAUDE_PROJECTS_DIR"] = projects
 check(len(roots) == 1, "a transcript root two profiles link to is read once: %s" % roots)
+
+HUB = ("cd /r; R=x; b=night/$R/g; wt=.claude/worktrees/n; git -C $wt rebase -q main && tests/run-all "
+       "\"$(tests/affected --overlap HEAD~1)\" 2>&1 | tail -2; git merge -q --ff-only $b && git worktree remove $wt "
+       "&& git branch -D $b")
+check(t.heads(HUB) == ("git rebase", "run-all", "affected", "git merge", "git worktree", "git branch")
+      and t.heads("git commit -m 'fix; rm x' && git log -1") == ("git commit",)
+      and t.heads("python3 - <<'EOF'\nimport os\nos.remove('x')\nEOF") == ("python3",)
+      and t.heads("cat x | grep y; ls; git status --short") == (),
+      "a call's acting heads in order, a git verb kept past -C, a $( ) counted; reads, quoted text and a heredoc "
+      "body are none: %s" % [t.heads(HUB)])
+LAND = ["cd /x/wt && git rebase -q main", "git log --oneline -3",
+        'tests/run-all "$(tests/affected --overlap main)" 2>&1 | tail -3',
+        "git merge -q --ff-only night/b && git worktree remove /x/wt"]
+
+
+def landing(at, n, session):
+    rows = []
+    for i, cmd in enumerate(LAND):
+        ident = "toolu_%s_%d_%d" % (session, n, i)
+        rows += [bash(at + 100 * i, cmd, "msg_%s_%d_%d" % (session, n, i), ident),
+                 result(at + 100 * i + (60 if "run-all" in cmd else 1), ident)]
+    return rows
+
+
+def write(at, path, content, ident, **extra):
+    return dict({"type": "assistant", "timestamp": iso(at), "message": {"id": "msg_" + ident, "content": [
+        {"type": "tool_use", "id": ident, "name": "Write", "input": {"file_path": path, "content": content}}]}}, **extra)
+
+
+PAGE = lambda n: "<html><body>%s</body></html>" % ("x" * n)
+memory = os.path.join(os.environ["HOME"], ".claude-profiles", "a", "projects", "-p", "memory", "m.md")
+transcript(os.path.join(work, "projects5", "-l", "l1.jsonl"), landing(T0, 0, "l1") + landing(T0 + 1000, 1, "l1") + [
+    write(T0 + 2000, "/tmp/pages-l1/report.html", PAGE(100), "w11"), write(T0 + 2001, REPO + "/docs/page.html", PAGE(9), "w12"),
+    write(T0 + 2002, "/tmp/notes.md", "n", "w13")])
+transcript(os.path.join(work, "projects5", "-l", "l2.jsonl"), landing(T0, 0, "l2") + [
+    write(T0 + 2000, "/tmp/pages-l2/report.html", PAGE(200), "w21"), write(T0 + 2002, "/tmp/notes.md", "n", "w23"),
+    write(T0 + 2001, "/gone/wt/page.html", PAGE(9), "w22", cwd="/gone/wt", gitBranch="wt/x")])
+transcript(os.path.join(work, "projects5", "-l", "l3.jsonl"), landing(T0, 0, "l3") + [
+    write(T0 + 2000, "/var/folders/zz/T/p/index.html", PAGE(300), "w31"), write(T0 + 2001, memory, "m", "w32"),
+    write(T0 + 2002, "/tmp/s.py", "print(1)\n", "w33")])
+spread = [bash(T0, LAND[0], "msg_s0", "toolu_s0")] + [bash(T0 + i, "touch f%d" % i, "msg_s%d" % i, "toolu_s%d" % i)
+                                                       for i in range(1, 6)] + landing(T0 + 10, 0, "l4")[4:]
+transcript(os.path.join(work, "projects5", "-l", "l4.jsonl"), spread)
+os.environ["CLAUDE_PROJECTS_DIR"] = os.path.join(work, "projects5")
+links, loose = [], []
+got = t.scan(HI - t.WINDOW_S, HI, chains=links, written=loose)
+os.environ["CLAUDE_PROJECTS_DIR"] = projects
+check(sorted((f["session"], f["kind"], f["chars"]) for f in loose)
+      == [("l1", "html", len(PAGE(100))), ("l1", "md", 1), ("l2", "html", len(PAGE(200))), ("l2", "md", 1),
+          ("l3", "html", len(PAGE(300)))],
+      "a Write outside any repository is a throwaway file by its extension; one in a repository, under a cwd its record "
+      "puts on a git branch (a worktree removed since), in Claude's own tree or a scratch script is not: %s" % loose)
+check(not [c for c in got[0] if c["session"] in ("l1", "l2", "l3", "l4")] and len(links) == 4 * 3 + 8 and all(c["exec_s"] in (1.0, 60.0) for c in links if "l4" != c["session"]),
+      "every short Bash call running an acting head is a chain link, its exec from its result; a read-only call is "
+      "none: %s" % [(c["session"], c["heads"], c["exec_s"]) for c in links])
+lday = t.day_of(got[0], got[1], 10.0, HI, got[3], chains=links, written=loose)
+KEY = "chain/git-rebase+run-all+affected+git-merge+git-worktree"
+chars = 4 * sum(len(LAND[i]) for i in (0, 2, 3))
+check(sorted(k for k in lday["clusters"] if k.startswith(t.MINED)) == [KEY, "file/html"]
+      and lday["clusters"][KEY]["sessions"] == 3 and lday["clusters"][KEY]["runs"] == 4
+      and lday["clusters"][KEY]["calls"] == 12 and lday["clusters"][KEY]["chars"] == chars
+      and lday["clusters"][KEY]["write_min"] == round(chars / 10.0 / 60.0, 2)
+      and lday["clusters"][KEY]["min"] == round(chars / 10.0 / 60.0 + 12 * 1.0 / 60.0, 2)
+      and lday["clusters"][KEY]["chain"] == ["git rebase", "run-all", "affected", "git merge", "git worktree"],
+      "a hand landing run as separate calls in %d sessions is one chain, its whole form, costed as its calls' writing "
+      "plus calls times their median exec; its parts and a run spread past %d calls are not: %s"
+      % (t.FLOOR_SESSIONS, t.CHAIN_SPAN, {k: v for k, v in lday["clusters"].items() if k.startswith(t.MINED)}))
+html = lday["clusters"]["file/html"]
+check(html["calls"] == 3 and html["sessions"] == 3 and html["chars"] == len(PAGE(100) + PAGE(200) + PAGE(300))
+      and html["write_min"] == html["min"] == round(html["chars"] / 10.0 / 60.0, 2)
+      and html["examples"][0] == "/tmp/pages-l1/report.html",
+      "throwaway files of one kind in %d sessions are a job costed by the characters written; a kind in fewer is "
+      "none: %s" % (t.FLOOR_SESSIONS, html))
+nets, found = t.findings(lday, {t.time_budget.local_day(HI - 1): lday})
+mined_found = {f["key"]: f for f in found if f["key"].startswith(t.MINED)}
+check(sorted(mined_found) == [KEY, "file/html"] and mined_found[KEY]["covered_by"] is None
+      and mined_found[KEY]["job"] == "run git rebase → run-all → affected → git merge → git worktree by hand, a Bash call each"
+      and mined_found["file/html"]["job"] == "hand-write .html files outside a repository",
+      "a chain and a file kind over the floor are findings like a cluster: %s" % mined_found)
+rows = s.adhoc_opportunities({"findings": [mined_found[KEY]]})
+check(rows[0]["id"] == "opportunity:adhoc/" + KEY and rows[0]["opportunity"]["kind"] == "tool",
+      "Speed turns a chain into an adhoc opportunity for one command: %s" % rows[0]["id"])
+alone = [c for c in links if c["session"] == "l3"]
+check(KEY in t.chain_rows(alone, 10.0, {KEY: lday["clusters"][KEY]["chain"]})
+      and KEY not in t.chain_rows(alone, 10.0),
+      "a landed fix's chain is tracked in a single session, its residual measured")
+cache = {"history": {day0: {"chars_s": 10.0, "clusters": {"tokenmap": C(24.4), "chain/a+b+c": C(30.0, 0.0, 9),
+                                                          "file/md": C(12.0)}}},
+         "hours": {"0": {"clusters": {"tokenmap": 24.4}, "tools": {}}}}
+check(t.menu_row(cache) == [36.4, "model-written scripts", [
+    [36.4, "repeated jobs", [["–", "tokenmap", [], 24.4], ["–", "file/md", [], 12.0]]], [0, "one-off", []]]],
+      "a file kind over the floor shows at its last day's minutes where the hours lack it; a chain under the floor "
+      "is no row and no part of the total: %s" % t.menu_row(cache))
 print(count[0])
 EOF
 ) || exit 1
