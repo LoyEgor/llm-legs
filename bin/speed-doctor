@@ -181,11 +181,14 @@ TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "
 ADHOC_LEVERS = {k: {"component": "adhoc/" + k, "lever": v, "effort": "S", "confidence": "measured", "saving": 1.0,
                     "night_cost_h": 0.0, "proof": "net", "quality": "equivalent"} for k, v in {
     "tool": "a command for the job, its hint where the script would start",
-    "hint": "the hint toward the tool that already does the job, where the script would start"}.items()}
+    "hint": "the hint toward the tool that already does the job, where the script would start",
+    "bypass": "the tool that already does the job, extended or fixed until nobody runs its chain by hand"}.items()}
 ADHOC_HOME = ("in %s, its hint in that project's CLAUDE.md or a skill, never an always-loaded file; a repository "
               "outside the night's gets it as a handoff to its owner chat")
 ADHOC_WHAT = {"tool": "model-written scripts · build one command for the job: %s · then its hint",
-              "hint": "model-written scripts · %s already does the job: %s · the hint only, no new tool"}
+              "hint": "model-written scripts · %s already does the job: %s · the hint only, no new tool",
+              "bypass": "commands run by hand · %s already does the job: %s · find why models bypass it, extend or "
+                        "fix that tool"}
 UNUSED_LEVER = {"component": "tool", "lever": "delete the tool and its hint; a tool other code or Egor runs keeps its "
                 "file, only the hint goes", "effort": "S", "confidence": "measured", "saving": 1.0, "night_cost_h": 0.0,
                 "proof": "elimination", "quality": "equivalent"}
@@ -1173,11 +1176,11 @@ def test_opportunities(tests):
 
 def adhoc_opportunities(adhoc):
     """Tool mining's clusters over its floor (share/tool_mining.py), saving their writing minutes: a new command and
-    its hint, or only the hint where a tool already does the job; both in the project a job recurring in fewer than
-    FLOOR_PROJECTS projects belongs to."""
+    its hint, or only the hint where a tool already does the job, or that tool extended where models run its chain by
+    hand (a bypass); each in the project a job recurring in fewer than FLOOR_PROJECTS projects belongs to."""
     out = []
     for f in adhoc.get("findings") or ():
-        kind = "hint" if f["covered_by"] else "tool"
+        kind = ("bypass" if f["key"].startswith(tool_mining.MINED) else "hint") if f["covered_by"] else "tool"
         lever = dict(ADHOC_LEVERS[kind], saving=f["write_min_day"] / f["min_day"] if f["min_day"] else 0.0)
         if f.get("project") is not None:
             lever["lever"] += " · " + ADHOC_HOME % f["project"]

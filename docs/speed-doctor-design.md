@@ -178,21 +178,25 @@ code or Egor runs it. Menu (`menu_row`): repeated jobs (the night's target: buil
 unbuilt clusters over the floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row), unused
 tools as 0 | ○ where the fix keeps the file (a skill, a bin tool other code, a LaunchAgent, Hammerspoon or Egor's
 shell history runs: `elsewhere`), 0 | 🗑 where it deletes it.
-Chains and throwaway files (2026-10-30, after Egor had to ask for `bin/land` and `page` himself): the same pass, rows,
-cost, floor, `adhoc/<key>`, bench and net. `chain/<heads>`: one session's short (non-script) Bash calls running the same
-acting heads in order (`heads`: each part of a call, a `$( )` too, a git verb kept past `-C`; `LOOK` reads, glue and
-read-only git verbs aside), 3–5 heads inside 5 acting calls, gaps allowed, in ≥ 3 sessions, grown level by level only
-from chains already in 3; the fullest form claims its calls first (a variant holding half of them is the same job), the
-20 costliest a day kept (the hand landing ranked 15th and 17th on its hub days), a landed one tracked at any count;
-cost = its calls' characters at the write rate + calls × median exec. `file/<ext>`: Write-tool files outside any
-repository (today's `.git`, or the record's cwd on a `gitBranch`: a worktree removed since), Claude's own tree and
-scratch scripts aside, in ≥ 3 sessions, cost = characters written. The menu shows one only built, parked or over the
-floor. Backtest (`--to`, old code: no such row): 10-30 `chain/affected+run-all+git-merge+git-worktree+git-branch`,
-4 sessions with hubs 5867 and 5921, 7 runs, 0.65 writing of 2.8 min/day; 10-29
-`chain/git-commit+git-rebase+git-merge+git-worktree+git-branch`, 4 sessions, 0.81 of 3.0: found, under
-`FLOOR_MIN_DAY` both days. `bin/land` paid for three hubs' bugs, not for writing. Pages before 10-28: ≤ 2 sessions and
-≤ 17.7k chars (1.3 min) a day, never a `file/html` row; over the floor instead `file/md` (briefs and scratch notes,
-8.8–22.4 min/day on 6 of 30 days). Cost: CPU +0.4 s (+2.4 %, inside run noise) for a day's scan, mining 0.2–0.4 s.
+Chains (2026-10-30, after Egor had to ask for `bin/land` himself): the same pass, rows, cost, floor, `adhoc/<key>`,
+bench and net. `chain/<heads>`: one session's short (non-script) Bash calls running the same acting heads in order
+(`heads`: each part of a call, a `$( )` too, a git verb kept past `-C`; `LOOK` reads, glue and read-only git verbs
+aside), 3–5 heads inside 5 acting calls, gaps allowed, in ≥ 3 sessions, grown level by level only from chains already
+in 3; the fullest form claims its calls first (a variant holding half of them is the same job), the 20 costliest a day
+kept (the hand landing ranked 15th and 17th on its hub days), a landed one tracked at any count; cost = its calls'
+characters at the write rate + calls × median exec. The menu shows one only built, parked or over the floor; a cached
+day's key no `CLUSTERS` row or chain has shows nowhere. Backtest (`--to`, old code: no such row): 10-30
+`chain/affected+run-all+git-merge+git-worktree+git-branch`, 4 sessions with hubs 5867 and 5921, 7 runs, 0.65 writing
+of 2.8 min/day; 10-29 `chain/git-commit+git-rebase+git-merge+git-worktree+git-branch`, 4 sessions, 0.81 of 3.0: found,
+under `FLOOR_MIN_DAY` both days. Cost: CPU +0.4 s (+2.4 %, inside run noise) for a day's scan, mining 0.2–0.4 s.
+A hand landing is a bypass of `land` (Egor: models extend a tool, never bypass it): `COVERED_CHAINS` names both shapes,
+`covered_by` `land`, since 10-30. Both are tracked at any count, and their runs are the substitutes in one net,
+`adhoc/chain/land`, beside `land`'s own calls (its name as the command pattern, matched before any bench). The net reads
+only days that mined chains. It restarts at a later fix of either shape. Speed's row for a covered chain over the floor
+is `bypass`: find why models went around the tool, then extend or fix it. An uncovered chain gets one command for the
+whole chain. A worse net is the same bypass, as `regression:adhoc/chain/land`. The throwaway-file detector
+(`file/<ext>`) is gone: over 30 days it never flagged a page (`file/html` ≤ 2 sessions a day), and its only rows over
+the floor were `file/md` worker briefs and notes, 8.8–22.4 min/day on 6 days. Those are unique prose, no tool's job.
 
 **ROI** (`roi ·` lines, `share/time_budget.py`). Each Speed or time row of a fixer job is an improvement with an
 even share of the job's spend, proven per unit against the 7 days before, never by an earlier drop, only beside 3+

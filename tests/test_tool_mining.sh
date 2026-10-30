@@ -3,8 +3,8 @@
 # share/tool_mining.py off fixture transcripts (a chat, a RUN-TOKEN worker, a subagent, a codex rollout): which Bash
 # calls are ad hoc, their clusters, exec, writing time and output, substitutes, a benched tool's calls, the floor, the
 # once-a-day cache, a landed fix's net (proven, worse, load-matched, drift), the bench gate, Speed's adhoc opportunities
-# and regressions and Harness's net proof; chains of short calls (a hand landing) and throwaway files the Write tool
-# writes outside a repository (hand-made pages). Fixture directories only.
+# and regressions and Harness's net proof; chains of short calls (a hand landing), a covered one a bypass of its tool
+# (`land`) counted in that tool's net. Fixture directories only.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -452,41 +452,23 @@ def landing(at, n, session):
     return rows
 
 
-def write(at, path, content, ident, **extra):
-    return dict({"type": "assistant", "timestamp": iso(at), "message": {"id": "msg_" + ident, "content": [
-        {"type": "tool_use", "id": ident, "name": "Write", "input": {"file_path": path, "content": content}}]}}, **extra)
-
-
-PAGE = lambda n: "<html><body>%s</body></html>" % ("x" * n)
-memory = os.path.join(os.environ["HOME"], ".claude-profiles", "a", "projects", "-p", "memory", "m.md")
-transcript(os.path.join(work, "projects5", "-l", "l1.jsonl"), landing(T0, 0, "l1") + landing(T0 + 1000, 1, "l1") + [
-    write(T0 + 2000, "/tmp/pages-l1/report.html", PAGE(100), "w11"), write(T0 + 2001, REPO + "/docs/page.html", PAGE(9), "w12"),
-    write(T0 + 2002, "/tmp/notes.md", "n", "w13")])
-transcript(os.path.join(work, "projects5", "-l", "l2.jsonl"), landing(T0, 0, "l2") + [
-    write(T0 + 2000, "/tmp/pages-l2/report.html", PAGE(200), "w21"), write(T0 + 2002, "/tmp/notes.md", "n", "w23"),
-    write(T0 + 2001, "/gone/wt/page.html", PAGE(9), "w22", cwd="/gone/wt", gitBranch="wt/x")])
-transcript(os.path.join(work, "projects5", "-l", "l3.jsonl"), landing(T0, 0, "l3") + [
-    write(T0 + 2000, "/var/folders/zz/T/p/index.html", PAGE(300), "w31"), write(T0 + 2001, memory, "m", "w32"),
-    write(T0 + 2002, "/tmp/s.py", "print(1)\n", "w33")])
+transcript(os.path.join(work, "projects5", "-l", "l1.jsonl"), landing(T0, 0, "l1") + landing(T0 + 1000, 1, "l1"))
+transcript(os.path.join(work, "projects5", "-l", "l2.jsonl"), landing(T0, 0, "l2"))
+transcript(os.path.join(work, "projects5", "-l", "l3.jsonl"), landing(T0, 0, "l3"))
 spread = [bash(T0, LAND[0], "msg_s0", "toolu_s0")] + [bash(T0 + i, "touch f%d" % i, "msg_s%d" % i, "toolu_s%d" % i)
                                                        for i in range(1, 6)] + landing(T0 + 10, 0, "l4")[4:]
 transcript(os.path.join(work, "projects5", "-l", "l4.jsonl"), spread)
 os.environ["CLAUDE_PROJECTS_DIR"] = os.path.join(work, "projects5")
-links, loose = [], []
-got = t.scan(HI - t.WINDOW_S, HI, chains=links, written=loose)
+links = []
+got = t.scan(HI - t.WINDOW_S, HI, chains=links)
 os.environ["CLAUDE_PROJECTS_DIR"] = projects
-check(sorted((f["session"], f["kind"], f["chars"]) for f in loose)
-      == [("l1", "html", len(PAGE(100))), ("l1", "md", 1), ("l2", "html", len(PAGE(200))), ("l2", "md", 1),
-          ("l3", "html", len(PAGE(300)))],
-      "a Write outside any repository is a throwaway file by its extension; one in a repository, under a cwd its record "
-      "puts on a git branch (a worktree removed since), in Claude's own tree or a scratch script is not: %s" % loose)
 check(not [c for c in got[0] if c["session"] in ("l1", "l2", "l3", "l4")] and len(links) == 4 * 3 + 8 and all(c["exec_s"] in (1.0, 60.0) for c in links if "l4" != c["session"]),
       "every short Bash call running an acting head is a chain link, its exec from its result; a read-only call is "
       "none: %s" % [(c["session"], c["heads"], c["exec_s"]) for c in links])
-lday = t.day_of(got[0], got[1], 10.0, HI, got[3], chains=links, written=loose)
+lday = t.day_of(got[0], got[1], 10.0, HI, got[3], chains=links)
 KEY = "chain/git-rebase+run-all+affected+git-merge+git-worktree"
 chars = 4 * sum(len(LAND[i]) for i in (0, 2, 3))
-check(sorted(k for k in lday["clusters"] if k.startswith(t.MINED)) == [KEY, "file/html"]
+check(sorted(k for k in lday["clusters"] if k.startswith(t.MINED)) == [KEY]
       and lday["clusters"][KEY]["sessions"] == 3 and lday["clusters"][KEY]["runs"] == 4
       and lday["clusters"][KEY]["calls"] == 12 and lday["clusters"][KEY]["chars"] == chars
       and lday["clusters"][KEY]["write_min"] == round(chars / 10.0 / 60.0, 2)
@@ -495,18 +477,11 @@ check(sorted(k for k in lday["clusters"] if k.startswith(t.MINED)) == [KEY, "fil
       "a hand landing run as separate calls in %d sessions is one chain, its whole form, costed as its calls' writing "
       "plus calls times their median exec; its parts and a run spread past %d calls are not: %s"
       % (t.FLOOR_SESSIONS, t.CHAIN_SPAN, {k: v for k, v in lday["clusters"].items() if k.startswith(t.MINED)}))
-html = lday["clusters"]["file/html"]
-check(html["calls"] == 3 and html["sessions"] == 3 and html["chars"] == len(PAGE(100) + PAGE(200) + PAGE(300))
-      and html["write_min"] == html["min"] == round(html["chars"] / 10.0 / 60.0, 2)
-      and html["examples"][0] == "/tmp/pages-l1/report.html",
-      "throwaway files of one kind in %d sessions are a job costed by the characters written; a kind in fewer is "
-      "none: %s" % (t.FLOOR_SESSIONS, html))
 nets, found = t.findings(lday, {t.time_budget.local_day(HI - 1): lday})
 mined_found = {f["key"]: f for f in found if f["key"].startswith(t.MINED)}
-check(sorted(mined_found) == [KEY, "file/html"] and mined_found[KEY]["covered_by"] is None
-      and mined_found[KEY]["job"] == "run git rebase → run-all → affected → git merge → git worktree by hand, a Bash call each"
-      and mined_found["file/html"]["job"] == "hand-write .html files outside a repository",
-      "a chain and a file kind over the floor are findings like a cluster: %s" % mined_found)
+check(sorted(mined_found) == [KEY] and mined_found[KEY]["covered_by"] is None
+      and mined_found[KEY]["job"] == "run git rebase → run-all → affected → git merge → git worktree by hand, a Bash call each",
+      "a chain over the floor is a finding like a cluster: %s" % mined_found)
 rows = s.adhoc_opportunities({"findings": [mined_found[KEY]]})
 check(rows[0]["id"] == "opportunity:adhoc/" + KEY and rows[0]["opportunity"]["kind"] == "tool",
       "Speed turns a chain into an adhoc opportunity for one command: %s" % rows[0]["id"])
@@ -515,12 +490,85 @@ check(KEY in t.chain_rows(alone, 10.0, {KEY: lday["clusters"][KEY]["chain"]})
       and KEY not in t.chain_rows(alone, 10.0),
       "a landed fix's chain is tracked in a single session, its residual measured")
 cache = {"history": {day0: {"chars_s": 10.0, "clusters": {"tokenmap": C(24.4), "chain/a+b+c": C(30.0, 0.0, 9),
-                                                          "file/md": C(12.0)}}},
+                                                          "chain/d+e+f": C(12.0)}}},
          "hours": {"0": {"clusters": {"tokenmap": 24.4}, "tools": {}}}}
-check(t.menu_row(cache) == [36.4, "model-written scripts", [
-    [36.4, "repeated jobs", [["–", "tokenmap", [], 24.4], ["–", "file/md", [], 12.0]]], [0, "one-off", []]]],
-      "a file kind over the floor shows at its last day's minutes where the hours lack it; a chain under the floor "
+MENU = [36.4, "model-written scripts", [
+    [36.4, "repeated jobs", [["–", "tokenmap", [], 24.4], ["–", "chain/d+e+f", [], 12.0]]], [0, "one-off", []]]]
+check(t.menu_row(cache) == MENU,
+      "a chain over the floor shows at its last day's minutes where the hours lack it; a chain under the floor "
       "is no row and no part of the total: %s" % t.menu_row(cache))
+cache["history"][day0]["clusters"]["file/md"] = C(12.0)
+cache["hours"]["0"]["clusters"]["file/md"] = 3.0
+check(t.menu_row(cache) == MENU,
+      "a cached day's key no CLUSTERS row or chain has (the removed file/md) shows nowhere: %s" % t.menu_row(cache))
+
+A = ("affected", "run-all", "git merge", "git worktree", "git branch")
+B = ("git commit", "git rebase", "git merge", "git worktree", "git branch")
+KA, KB = t.chain_key(A), t.chain_key(B)
+covers = {k: tool for k, _, tool in t.jobs([{"clusters": {KA: {"job": "a"}, KB: {"job": "b"}, KEY: {"job": "c"}}}])}
+check(covers[KA] == covers[KB] == "land" and covers[KEY] is None
+      and t.covering() == {"land": (t.time_budget.day_bounds("2026-10-30")[0], [KA, KB])},
+      "both hand landing shapes the backtest found are covered by land from 10-30; another chain by no tool: %s"
+      % {k: covers[k] for k in (KA, KB, KEY)})
+HAND_A = ["tests/affected --overlap main", "tests/run-all test_tool_mining.sh", "git merge -q --ff-only b",
+          "git worktree remove /x/wt", "git branch -D b"]
+LANDS = ["land mining-x --repo /r", "cd /r && ~/.local/bin/land b"]
+rows6 = []
+for i, cmd in enumerate(HAND_A):
+    rows6 += [bash(T0 + 10 * i, cmd, "msg_k%d" % i, "toolu_k%d" % i), result(T0 + 10 * i + 1, "toolu_k%d" % i)]
+transcript(os.path.join(work, "projects6", "-k", "k1.jsonl"), rows6)
+transcript(os.path.join(work, "projects6", "-k", "k2.jsonl"), [
+    bash(T0, LANDS[0], "msg_j0", "toolu_j0"), result(T0 + 90, "toolu_j0"),
+    bash(T0 + 100, LANDS[1], "msg_j1", "toolu_j1"), result(T0 + 130, "toolu_j1")])
+os.environ["CLAUDE_PROJECTS_DIR"] = os.path.join(work, "projects6")
+rules, links = t.tool_rules(lambda target: None), []
+got = t.scan(HI - t.WINDOW_S, HI, rules, chains=links)
+os.environ["CLAUDE_PROJECTS_DIR"] = projects
+kd = t.day_of(got[0], got[1], 10.0, HI, got[3], chains=links)
+hand = kd["clusters"].get(KA) or {}
+check(hand.get("sessions") == 1 and hand.get("runs") == 1 and hand.get("calls") == 5
+      and kd["tools"].get("adhoc/chain/land") == {"calls": 2, "chars": len("".join(LANDS)), "exec_s": 90.0, "out_b": 4}
+      and not [c for c in links if c["session"] == "k2"] and not rules["adhoc/chain/land"].search("git branch -D land"),
+      "a covered chain is tracked in a single session; the covering tool's calls, by its name past cd and a path, are "
+      "its tool's calls, no chain links: %s %s" % (hand, kd["tools"]))
+
+saved = t.COVERED_CHAINS
+t.COVERED_CHAINS = tuple((p, tool, t.time_budget.local_day(HI - 5 * 86400)) for p, tool, _ in saved)
+since_land = t.covering()["land"][0]
+
+
+def mined_at(to_s, hand=None, other=None, tool=None, mined=True):
+    """A scanned day of 1000 Bash calls at 10 chars/s, hand landings of each shape and land's own calls."""
+    controls = {k: part(5, 500, 1.0, 0) for k in ("suite-history", "worker-runs", "tokenmap")}
+    return dict({"to_s": to_s, "bash_calls": 1000, "chars_s": 10.0, "sessions": 10, "shadow": {},
+                 "clusters": dict(controls, **{k: v for k, v in ((KA, hand), (KB, other)) if v}),
+                 "tools": {"adhoc/chain/land": tool} if tool else {}}, **({"chain_s": 0.1} if mined else {}))
+
+
+BY_HAND, LANDED = part(10, 3000, 60.0, 2000), part(2, 80, 60.0, 500)
+pre = {"p0": mined_at(since_land - 2 * 86400, mined=False), "p1": mined_at(since_land - 86400, BY_HAND),
+       "p2": mined_at(since_land, BY_HAND)}
+used = dict(pre, a1=mined_at(since_land + t.WINDOW_S, tool=LANDED), a2=mined_at(since_land + t.WINDOW_S + 86400, tool=LANDED))
+QUIET = {"clusters": {}, "to_s": HI}
+n = t.findings(QUIET, used)[0].get("adhoc/chain/land") or {}
+check(n.get("state") == "proven" and n.get("days") == [2, 2] and n.get("min_before") == 15.0 and n.get("min_after") == 2.13,
+      "land's net: the hand landings before it against its own calls after, a day that mined no chains left out: %s" % n)
+bypassed = dict(pre, a1=mined_at(since_land + t.WINDOW_S, other=BY_HAND, tool=LANDED))
+n = t.findings(QUIET, bypassed)[0].get("adhoc/chain/land") or {}
+check(n.get("state") == "worse" and n.get("min_after") == 17.13,
+      "a hand landing of either shape after land landed is its substitute, the net worse: %s" % n)
+t.COVERED_CHAINS = saved
+bday = dict(lday, clusters={KB: dict(lday["clusters"][KEY], chain=list(B))})
+bypass = [f for f in t.findings(bday, {t.time_budget.local_day(HI - 1): bday})[1] if f["key"] == KB]
+rows = s.adhoc_opportunities({"findings": bypass})
+check(bypass and bypass[0]["covered_by"] == "land" and rows[0]["opportunity"]["kind"] == "bypass"
+      and "land already does the job" in rows[0]["opportunity"]["what"]
+      and "find why models bypass it, extend or fix that tool" in rows[0]["opportunity"]["what"],
+      "a covered chain over the floor is a bypass of its tool: Speed asks why and for that tool extended: %s" % rows)
+brief = open(os.path.join(root, "bin", "doctor-fix")).read()
+check("one naming no tool gets one command that does the whole chain" in brief
+      and "is a bypass of that tool" in brief and "extend or fix the tool itself" in brief,
+      "the fixer brief: an uncovered chain gets one command, a covered one the bypassed tool extended or fixed")
 print(count[0])
 EOF
 ) || exit 1

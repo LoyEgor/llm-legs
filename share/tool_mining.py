@@ -11,9 +11,9 @@ model-facing tool's calls a day over USE_DAYS; one with a hint and no call is un
 Hung calls (`hung_findings`): Claude Code Bash calls that sat to their timeout with no output (a stdin read, a lost
 heredoc), their wall per command head a day, Speed's `opportunity:hung-bash/<head>` over the floor.
 A cluster recurring in fewer than FLOOR_PROJECTS projects is that project's job (`home`): its tool and hint go there.
-Two jobs no single script shows ride the same pass, costed, floored and proven like a cluster: a chain (`chain/<heads>`),
-the same command heads run by hand as separate short Bash calls in FLOOR_SESSIONS sessions (`chain_rows`), and a kind of
-file the Write tool writes outside any repository (`file/<ext>`, `file_rows`), costed by the characters written.
+A job no single script shows rides the same pass, costed, floored and proven like a cluster: a chain (`chain/<heads>`),
+the same command heads run by hand as separate short Bash calls in FLOOR_SESSIONS sessions (`chain_rows`). A chain a
+tool already does (COVERED_CHAINS) is a bypass of it: each run a substitute in the tool's net (`adhoc/chain/<tool>`).
 
   tool_mining.py [--to T] [--calls]   T in epoch seconds; --calls prints each matched call
 """
@@ -122,7 +122,11 @@ CODEX_CMD = re.compile(r"""exec_command\(\{\s*cmd:\s*("(?:[^"\\]|\\.)*")""")
 # A chain: CHAIN_MIN to CHAIN_MAX heads in order inside CHAIN_SPAN calls of its first, the CHAIN_KEEP costliest whose
 # calls are mostly their own. LOOK heads read or glue: a chain is made of the calls that act.
 CHAIN_MIN, CHAIN_MAX, CHAIN_SPAN, CHAIN_KEEP = 3, 5, 5, 20
-MINED = ("chain/", "file/")
+MINED = "chain/"
+# (heads, covered_by, since): a chain a tool already does, from the local day it landed; its runs are tracked at any
+# count and priced as substitutes in the tool's net, `adhoc/chain/<tool>`, beside the tool's own calls.
+COVERED_CHAINS = ((("affected", "run-all", "git merge", "git worktree", "git branch"), "land", "2026-10-30"),
+                  (("git commit", "git rebase", "git merge", "git worktree", "git branch"), "land", "2026-10-30"))
 LOOK = frozenset("cat ls head tail grep egrep fgrep rg sed awk jq wc sort uniq cut tr echo printf pwd true false sleep "
                  "test [ [[ date ps pgrep which type stat file find du df diff cmp basename dirname realpath readlink "
                  "xargs tee less column nl od xxd shasum md5 export set source . exit wait read local unset trap "
@@ -136,8 +140,6 @@ NOT_A_COMMAND = re.compile(r"^\s*(?:for|case|done|fi|esac|\}|function)\b")
 WORD = re.compile(r"""(?:[^\s'"]|'[^']*'|"(?:[^"\\]|\\.)*")+""")
 VERB = re.compile(r"^[a-z][a-z0-9-]*$")
 PROGRAM = re.compile(r"^[A-Za-z][\w.-]*$")
-FILE_PATH = re.compile(rb'"file_path":"((?:[^"\\]|\\.)*)"')
-CLAUDE_TREE = (".claude", ".claude-profiles")
 
 
 def projects_dir():
@@ -262,13 +264,8 @@ def facing(now):
 
 def project(cwd):
     """The repository a session worked in, a worktree's main checkout; the directory itself outside any."""
-    return repository(cwd) or os.path.realpath(cwd)
-
-
-def repository(path):
-    """The repository holding `path`, a worktree's main checkout, by realpath; None outside any."""
-    if path not in REPOS:
-        top, at = None, path
+    if cwd not in REPOS:
+        top, at = None, cwd
         while not top and at != os.path.dirname(at):
             git = os.path.join(at, ".git")
             if os.path.isfile(git):
@@ -281,24 +278,8 @@ def repository(path):
             elif os.path.isdir(git):
                 top = at
             at = os.path.dirname(at)
-        REPOS[path] = os.path.realpath(top) if top else None
-    return REPOS[path]
-
-
-def loose(target):
-    """Whether a Write target is a throwaway file: outside any repository and Claude's own tree, and no scratch script
-    (that one counts in the call running it)."""
-    return not (SCRATCH.search(target) and SCRIPT.search(target)) \
-        and not target.startswith(tuple(time_budget.home(d) + os.sep for d in CLAUDE_TREE)) \
-        and repository(os.path.dirname(target)) is None
-
-
-def loose_line(line):
-    found = FILE_PATH.search(line)
-    try:
-        return bool(found) and loose(json.loads(b'"' + found.group(1) + b'"'))
-    except ValueError:
-        return False
+        REPOS[cwd] = os.path.realpath(top or cwd)
+    return REPOS[cwd]
 
 
 def window(day, n):
@@ -394,7 +375,7 @@ def count(uses, at, keys):
         uses[time_budget.local_day(at)][key] += 1
 
 
-def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hung=None, chains=None, files=None):
+def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hung=None, chains=None):
     """Ad-hoc and benched-tool Bash calls of one Claude Code transcript: {session, worker, ts, cmd, exec_s, out_b}. A
     tool_use block written right after another block of the same message adds (chars, seconds) to the write rate.
     A script file written into a scratch place (a `cat >` heredoc or the Write tool) is ad hoc in the first Bash call
@@ -403,8 +384,7 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
     session's launch cwd (`project`), the transcript's project directory without one. `hung` gets each Bash call whose
     result says it timed out (toolUseResult.timedOutAfterMs) with no stdout or stderr: {session, worker, head, cmd,
     wall_s}. `chains` gets every other Bash call that runs an acting head (`heads`), its exec from its result's
-    timestamp; `files` each Write of a throwaway file (`loose`, nor under a cwd its record puts on a git branch, a
-    worktree removed since): {session, worker, ts, cmd: path, chars, kind}."""
+    timestamp."""
     session = os.path.splitext(os.path.basename(path))[0]
     worker, pending, prev, written, bashes, chained = "/subagents/" in path, {}, b"", {}, {}, {}
     where = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(path))) if worker else os.path.dirname(path))
@@ -418,8 +398,7 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
             if n < 40 and b"RUN-TOKEN: " in line:
                 worker = True
             if b'"tool_use"' in line and (b'"name":"Bash"' in line or uses is not None and b'"name":"Skill"' in line
-                                          or b'"name":"Write"' in line and (SCRATCH_WRITE.search(line)
-                                                                            or files is not None and loose_line(line))):
+                                          or b'"name":"Write"' in line and SCRATCH_WRITE.search(line)):
                 try:
                     record = json.loads(line)
                 except ValueError:
@@ -436,14 +415,8 @@ def claude_calls(path, lo, hi, out, rate, tools=None, names=None, uses=None, hun
                         count(uses, at, ["skill/" + str((block.get("input") or {}).get("skill") or "").lstrip("/")])
                     if block.get("name") == "Write":
                         target = str((block.get("input") or {}).get("file_path") or "")
-                        content = str((block.get("input") or {}).get("content") or "")
                         if SCRATCH.search(target) and SCRIPT.search(target):
-                            written[target] = content
-                        elif files is not None and at and lo <= at < hi and loose(target) and not (
-                                record.get("gitBranch") and target.startswith(str(record.get("cwd")).rstrip("/") + "/")):
-                            files.append({"session": session, "worker": worker, "ts": at, "cmd": target,
-                                          "chars": len(content), "exec_s": 0.0, "out_b": 0, "project": where,
-                                          "kind": os.path.splitext(target)[1][1:].lower() or "none"})
+                            written[target] = str((block.get("input") or {}).get("content") or "")
                     if block.get("name") != "Bash":
                         continue
                     cmd = str((block.get("input") or {}).get("command") or "")
@@ -590,27 +563,22 @@ class Dropped(list):
         pass
 
 
-def scan(lo, hi, tools=None, names=None, uses=None, keep=True, hung=None, chains=None, written=None):
+def scan(lo, hi, tools=None, names=None, uses=None, keep=True, hung=None, chains=None):
     """(ad-hoc and benched-tool calls in [lo, hi), all Bash calls in it, write rate in chars a second or None, the
     sessions that made a Bash call per project); `tools` maps a target to the pattern of its tool's calls; `uses` (day -> Counter)
     gets the model-facing tools' calls; `keep` False drops the calls themselves; `hung` gets the hung Claude Code calls;
-    `chains` the other calls running an acting head, `written` the throwaway files the Write tool wrote."""
+    `chains` the other calls running an acting head."""
     calls, rate = [] if keep else Dropped(), [0, 0.0, 0, {}]
     for root in projects_roots():
         for path in files(root, "*/*.jsonl", lo) + files(root, "*/*/subagents/*.jsonl", lo):
-            claude_calls(path, lo, hi, calls, rate, tools, names, uses, hung, chains, written)
+            claude_calls(path, lo, hi, calls, rate, tools, names, uses, hung, chains)
     for path in files(codex_dir(), "*/sessions/*/*/*/rollout-*.jsonl", lo):
         codex_calls(path, lo, hi, calls, rate, tools, names, uses, chains)
     return calls, rate[2], (rate[0] / rate[1] if rate[1] else None), collections.Counter(rate[3].values())
 
 
-def size(c):
-    """The characters a call or a written file cost to write."""
-    return c["chars"] if "chars" in c else len(c["cmd"])
-
-
 def part(group):
-    return {"calls": len(group), "chars": sum(size(c) for c in group),
+    return {"calls": len(group), "chars": sum(len(c["cmd"]) for c in group),
             "exec_s": round(sorted(c["exec_s"] for c in group)[len(group) // 2], 2) if group else 0.0,
             "out_b": sum(c.get("out_b") or 0 for c in group)}
 
@@ -619,7 +587,7 @@ def priced(group, chars_s, shown):
     """A group's row: its part, sessions, sessions per project, minutes (the writing plus calls times the median exec,
     as an edit and its suite run often share one call), worker minutes, the writing part and `shown` on one line each."""
     median = sorted(c["exec_s"] for c in group)[len(group) // 2]
-    write = [size(c) / chars_s / 60.0 if chars_s else 0.0 for c in group]
+    write = [len(c["cmd"]) / chars_s / 60.0 if chars_s else 0.0 for c in group]
     worker = [w + median / 60.0 for w, c in zip(write, group) if c["worker"]]
     return dict(part(group), sessions=len({c["session"] for c in group}),
                 projects=dict(collections.Counter(p for _, p in {(c["session"], c.get("project", "")) for c in group})),
@@ -672,11 +640,11 @@ def chain_rows(chains, chars_s, track=None):
     """{chain/<heads>: row} of the day's chains: CHAIN_MIN to CHAIN_MAX acting heads (`heads`) run in that order by one
     session's short Bash calls, gaps allowed, in FLOOR_SESSIONS sessions; level by level, a chain grown only from one
     already in that many. Each costs its runs' calls (`priced`); the costliest CHAIN_KEEP whose calls are mostly not a
-    costlier one's are kept, and every `track` chain ({key: heads}, a landed fix's) at any count."""
+    costlier one's are kept, and every `track` chain ({key: heads}, a landed fix's) and COVERED_CHAINS one at any count."""
     by = collections.defaultdict(list)
     for call in sorted(chains, key=lambda c: (c["session"], c["ts"])):
         by[call["session"]].append(call)
-    track = {k: tuple(v) for k, v in (track or {}).items()}
+    track = dict({chain_key(p): p for p, _, _ in COVERED_CHAINS}, **{k: tuple(v) for k, v in (track or {}).items()})
     support = collections.Counter(h for group in by.values() for h in {h for c in group for h in c["heads"]})
     common = {h for h, n in support.items() if n >= FLOOR_SESSIONS} | {h for p in track.values() for h in p}
     events = {s: [(i, h) for i, c in enumerate(group) for h in dict.fromkeys(c["heads"]) if h in common]
@@ -713,28 +681,13 @@ def chain_rows(chains, chars_s, track=None):
     return dict(kept + [r for r in jobs if r[0] in track])
 
 
-def file_rows(written, chars_s, track=()):
-    """{file/<ext>: row} of each kind of throwaway file the Write tool wrote in FLOOR_SESSIONS sessions (every `track`
-    kind at any count), costed by the characters written."""
-    kinds = collections.defaultdict(list)
-    for f in written:
-        kinds[f["kind"] if f["kind"].isalnum() else "other"].append(f)
-    out = {}
-    for kind, group in sorted(kinds.items()):
-        if len({f["session"] for f in group}) >= FLOOR_SESSIONS or "file/" + kind in track:
-            out["file/" + kind] = dict(priced(group, chars_s, sorted(sorted({f["cmd"] for f in group}), key=len)[:2]),
-                                       job="hand-write %s files outside a repository"
-                                       % ("." + kind if kind not in ("none", "other") else kind))
-    return out
-
-
-def day_of(calls, bash, chars_s, hi, sessions=None, hung=(), chains=(), written=(), track=None):
+def day_of(calls, bash, chars_s, hi, sessions=None, hung=(), chains=(), track=None):
     """One scanned window's numbers per cluster: calls, sessions, sessions per project, minutes (the scripts' writing plus calls times the
     median exec, as an edit and its suite run often share one call), worker minutes, the writing part, two examples,
     characters and output bytes; per cluster its substitutes (`shadow`: ad-hoc calls an earlier cluster took that
     match its pattern) and per benched target its tool's calls (`tools`); the day's sessions, also per project; the
-    hung calls per command head (`hung`: calls, sessions, min, worker_min, two examples); the chains (`chain_rows`) and
-    throwaway file kinds (`file_rows`) as clusters, `track` the keys of landed fixes, and their mining's seconds."""
+    hung calls per command head (`hung`: calls, sessions, min, worker_min, two examples); the chains (`chain_rows`) as
+    clusters, `track` the keys of landed fixes, and their mining's seconds."""
     out = {"bash_calls": bash, "chars_s": round(chars_s, 1) if chars_s else None, "to_s": int(hi), "clusters": {},
            "sessions": sum((sessions or {}).values()), "projects": dict(sessions or {}), "shadow": {}, "tools": {}}
     grouped, shadow, tools = (collections.defaultdict(list) for _ in range(3))
@@ -751,9 +704,7 @@ def day_of(calls, bash, chars_s, hi, sessions=None, hung=(), chains=(), written=
     for key, group in grouped.items():
         out["clusters"][key] = priced(group, chars_s, sorted((c["cmd"] for c in group if len(c["cmd"]) >= 40), key=len)[:2])
     started = time.monotonic()
-    track = track or {}
-    out["clusters"].update(chain_rows(chains, chars_s, {k: v for k, v in track.items() if k.startswith("chain/")}))
-    out["clusters"].update(file_rows(written, chars_s, track))
+    out["clusters"].update(chain_rows(chains, chars_s, track))
     out["chain_s"] = round(time.monotonic() - started, 2)
     by_head = collections.defaultdict(list)
     for call in hung:
@@ -773,11 +724,12 @@ def per_1k(day, key):
     return 1000.0 * ((day["clusters"].get(key) or {}).get("calls") or 0) / max(1, day["bash_calls"])
 
 
-def job_cost(d, key, hint_b):
+def job_cost(d, key, hint_b, subs=()):
     """(writing min, exec min, Opus-eq tokens) per 1000 Bash calls of the job on one scanned day: the cluster's
-    residual calls, its substitutes and its tool's calls (characters written, calls times median exec, output read)
-    plus the hint's bytes once a session."""
-    parts = [d["clusters"].get(key) or {}, d["shadow"].get(key) or {}, d["tools"].get("adhoc/" + key) or {}]
+    residual calls, its substitutes (and the `subs` clusters') and its tool's calls (characters written, calls times
+    median exec, output read) plus the hint's bytes once a session."""
+    parts = [d["clusters"].get(k) or {} for k in (key,) + tuple(subs)] + [d["shadow"].get(key) or {},
+                                                                          d["tools"].get("adhoc/" + key) or {}]
     chars = sum(p.get("chars") or 0 for p in parts)
     scale = 1000.0 / max(1, d["bash_calls"])
     return (scale * chars / d["chars_s"] / 60.0, scale * sum((p.get("calls") or 0) * (p.get("exec_s") or 0.0)
@@ -786,30 +738,32 @@ def job_cost(d, key, hint_b):
             / CHARS_PER_TOKEN)
 
 
-def load_factor(before, after, key):
+def load_factor(before, after, key, subs=()):
     """How much slower the machine ran the other clusters' calls after the landing: the median over the clusters
     seen on both sides of their mean median exec after over before, 1 under time_budget's LOAD_CONTROLS of them."""
     ratios = []
-    for other in sorted({k for d in after for k in d["clusters"]} - {key}):
+    for other in sorted({k for d in after for k in d["clusters"]} - {key, *subs}):
         sides = [[d["clusters"][other]["exec_s"] for d in side if other in d["clusters"]] for side in (before, after)]
         if all(sides) and sum(sides[0]) > 0:
             ratios.append(sum(sides[1]) / len(sides[1]) / (sum(sides[0]) / len(sides[0])))
     return statistics.median(ratios) if len(ratios) >= time_budget.LOAD_CONTROLS else 1.0
 
 
-def net(history, key, landed, bench=None):
+def net(history, key, landed, bench=None, subs=()):
     """A landed fix's job cost, its last NET_DAYS scanned days before the landing against its last NET_DAYS after,
     per 1000 Bash calls, after's exec over the load factor, priced at the newest day's Bash calls: proven when the
-    minutes and the tokens both fell, worse when either rose."""
-    days = sorted((d for d in history.values() if "shadow" in d and d.get("chars_s")), key=lambda d: d["to_s"])
+    minutes and the tokens both fell, worse when either rose. `subs` are chains doing the job by hand, read only off
+    days that mined chains."""
+    days = sorted((d for d in history.values() if "shadow" in d and d.get("chars_s") and (not subs or "chain_s" in d)),
+                  key=lambda d: d["to_s"])
     before = [d for d in days if d["to_s"] <= landed][-NET_DAYS:]
     after = [d for d in days if d["to_s"] - WINDOW_S >= landed][-NET_DAYS:]
     if not before or not after:
         return {"state": "pending", "days": [len(before), len(after)]}
     hint = (bench or {}).get("hint_b") or 0
-    (bw, be, bt), (aw, ae, at) = ([sum(x) / len(side) for x in zip(*(job_cost(d, key, h) for d in side))]
+    (bw, be, bt), (aw, ae, at) = ([sum(x) / len(side) for x in zip(*(job_cost(d, key, h, subs) for d in side))]
                                   for side, h in ((before, 0), (after, hint)))
-    factor = load_factor(before, after, key)
+    factor = load_factor(before, after, key, subs)
     was, now, volume = bw + be, aw + ae / factor, after[-1]["bash_calls"] / 1000.0
     state = "proven" if now < was and at < bt else "worse" if now > was or at > bt else "even"
     return {"state": state, "days": [len(before), len(after)], "min_before": round(was * volume, 2),
@@ -890,29 +844,46 @@ def home(c):
 
 
 def mined(days):
-    """{key: newest row} of every chain and file kind the scanned days carry."""
+    """{key: newest row} of every chain the scanned days carry."""
     out = {}
     for d in sorted(days, key=lambda d: d.get("to_s") or 0):
         out.update((k, c) for k, c in (d.get("clusters") or {}).items() if k.startswith(MINED))
     return out
 
 
+def covering():
+    """{tool: (the start of the local day it landed, the keys of the chains it does)} of COVERED_CHAINS."""
+    out = {}
+    for heads, tool, day in COVERED_CHAINS:
+        at, keys = out.get(tool, (0, []))
+        out[tool] = (max(at, time_budget.day_bounds(day)[0]), keys + [chain_key(heads)])
+    return out
+
+
 def jobs(days):
-    """(key, job, covered_by) of every CLUSTERS row, then of each chain and file kind the days carry."""
-    rows = mined(days)
-    return [(key, job, tool) for key, job, tool, _ in RULES] + [(k, rows[k].get("job") or k, None) for k in sorted(rows)]
+    """(key, job, covered_by) of every CLUSTERS row, then of each chain the days carry."""
+    rows, tools = mined(days), {chain_key(p): tool for p, tool, _ in COVERED_CHAINS}
+    return [(key, job, tool) for key, job, tool, _ in RULES] + [(k, rows[k].get("job") or k, tools.get(k))
+                                                                for k in sorted(rows)]
 
 
 def findings(day, history, since=lambda target: None, bench=lambda target: None):
     """({target: net} of every cluster whose fix landed, the clusters over the floor worst writing minutes first, each
     with the project it belongs to, None for the harness's); a landed cluster is charged only on a window that began
-    after its landing. Chains and file kinds are clusters here."""
+    after its landing. Chains are clusters here; a covered one's runs are substitutes in its tool's net,
+    `adhoc/chain/<tool>`, from the tool's landing or a later fix of one of them, once a day carries them or its calls."""
     out, nets = [], {}
     recent = [d for k, d in sorted(history.items()) if "clusters" in d][-7:]
+    for tool, (at, keys) in sorted(covering().items()):
+        target = "adhoc/chain/" + tool
+        if not any(set(keys) & set(d.get("clusters") or {}) or target in (d.get("tools") or {}) for d in history.values()):
+            continue
+        landed = max([at] + [since(t) or 0 for t in [target] + ["adhoc/" + k for k in keys]])
+        nets[target] = net(history, "chain/" + tool, landed, bench(target), keys)
     for key, job, tool in jobs(list(history.values()) + [day]):
         target = "adhoc/" + key
         landed = since(target)
-        if landed:
+        if landed and not (key.startswith(MINED) and tool):
             nets[target] = net(history, key, landed, bench(target))
         c = day["clusters"].get(key)
         if not c or key in CATCH_ALL or landed and day["to_s"] - WINDOW_S < landed:
@@ -934,7 +905,9 @@ def hung_findings(day):
 
 
 def tool_rules(bench, keys=None):
-    out = {}
+    """{target: pattern of its tool's Bash calls}: a covering tool's by its name first, so its calls count in its net,
+    then each landed fix's bench command."""
+    out = {"adhoc/chain/" + tool: command_re([tool]) for tool in covering()}
     for key in keys or [k for k, _, _, _ in RULES]:
         command = (bench("adhoc/" + key) or {}).get("command")
         try:
@@ -1029,8 +1002,9 @@ def menu_row(cache):
     the last scanned day decides. Repeated jobs, the night's target: clusters over the floor not ruled out or handed
     off, and every cluster a built tool serves, as [tool min/day, cluster, [], residual min/day] (NO_TOOL while none
     is built), the heaviest CANDIDATE_ROWS of the unbuilt; one-off, never a target: each ruled-out or handed-off
-    cluster, then the catch-alls and clusters under the floor as one row. A chain or file kind, no script, shows only
-    built, parked or over the floor, at the last scanned day's minutes where the hours lack it."""
+    cluster, then the catch-alls and clusters under the floor as one row. A chain, no script, shows only
+    built, parked or over the floor, at the last scanned day's minutes where the hours lack it; a key no CLUSTERS row
+    or chain has (a cached day's removed one) shows nowhere."""
     history = cache.get("history") or {}
     scanned = [d for d in history if "clusters" in history[d]]
     if not scanned:
@@ -1047,10 +1021,11 @@ def menu_row(cache):
         mins = {k: c.get("min") or 0 for k, c in last["clusters"].items()}
         tool_min = {t: minutes(p, last.get("chars_s")) for t, p in (last.get("tools") or {}).items()}
     repeated, candidates, oneoff, rest = [], [], [], 0.0
+    gone = {k for k in set(last["clusters"]) | set(mins) if not k.startswith(MINED)} - {k for k, _, _, _ in RULES}
     for key in sorted(set(last["clusters"]) | set(mins) | {t[6:] for t in built}):
         c = last["clusters"].get(key) or {"write_min": 0, "sessions": 0}
         target, m = "adhoc/" + key, round(mins.get(key) or 0, 1)
-        if key in ROW_SKIP:
+        if key in ROW_SKIP or key in gone:
             continue
         if key.startswith(MINED):
             if target not in built | parked and not over_floor(c):
@@ -1070,7 +1045,8 @@ def menu_row(cache):
     oneoff = sorted(oneoff, key=lambda r: -r[0]) + ([[round(rest, 1), "other", []]] if rest else [])
     groups = [[jobs, "repeated jobs", repeated],
               [round(sum(r[0] for r in oneoff), 1), "one-off", oneoff]]
-    total = round(sum(v for k, v in mins.items() if k not in ROW_SKIP and not k.startswith(MINED)) + shown, 1)
+    total = round(sum(v for k, v in mins.items() if k not in ROW_SKIP and k not in gone and not k.startswith(MINED))
+                  + shown, 1)
     return [total, "model-written scripts", groups]
 
 
@@ -1099,12 +1075,12 @@ def collect(now, write=False, since=lambda target: None, bench=lambda target: No
     if fresh:
         cache["facing"] = facing(now)
         names = command_re([k[4:] for k in cache["facing"] if k.startswith("bin/")])
-        uses, hung, chains, written = collections.defaultdict(collections.Counter), [], [], []
+        uses, hung, chains = collections.defaultdict(collections.Counter), [], []
         known = [k for k, _, _ in jobs(history.values())]
         calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi, tool_rules(bench, known), names, uses, hung=hung,
-                                              chains=chains, written=written)
+                                              chains=chains)
         track = {k: c.get("chain") for k, c in mined(history.values()).items() if since("adhoc/" + k)}
-        history[day] = dict(day_of(calls, bash, chars_s, hi, sessions, hung, chains, written, track),
+        history[day] = dict(day_of(calls, bash, chars_s, hi, sessions, hung, chains, track),
                             uses=dict(uses.get(day) or {}))
         cache["scan_s"] = round(time.monotonic() - started, 2)
         if write and not cache.get("uses_from"):
@@ -1134,16 +1110,15 @@ def main(argv):
     args = parser.parse_args(argv)
     hi = args.to or time.time()
     started = time.monotonic()
-    chains, written = [], []
-    calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi, chains=chains, written=written)
+    chains = []
+    calls, bash, chars_s, sessions = scan(hi - WINDOW_S, hi, chains=chains)
     if args.calls:
         for call in calls:
             print(json.dumps(dict(call, cluster=cluster(call["cmd"])), ensure_ascii=False))
         return 0
-    day = day_of(calls, bash, chars_s, hi, sessions, chains=chains, written=written)
-    print("%d Bash calls, %d ad hoc, %d chain links, %d throwaway files, write rate %s chars/s, scan %.1f s, mining %.1f s"
-          % (bash, len(calls), len(chains), len(written), round(chars_s or 0, 1), time.monotonic() - started,
-             day["chain_s"]))
+    day = day_of(calls, bash, chars_s, hi, sessions, chains=chains)
+    print("%d Bash calls, %d ad hoc, %d chain links, write rate %s chars/s, scan %.1f s, mining %.1f s"
+          % (bash, len(calls), len(chains), round(chars_s or 0, 1), time.monotonic() - started, day["chain_s"]))
     for key, c in sorted(day["clusters"].items(), key=lambda kv: -kv[1]["write_min"]):
         print("%-16s %5d calls %4d sessions %3d projects %6.1f min/day (%5.1f writing, %5.1f worker)%s%s" % (
             key, c["calls"], c["sessions"], len(recurs(c)), c["min"], c["write_min"], c["worker_min"],
