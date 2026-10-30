@@ -2,7 +2,10 @@
 
 Numbers show what is already measured (Egor 2026-10-29, `docs/directions/README.md` Rules, Dig); this job reads the
 harness where none points. Finding is free-form. The dig changes no code; it is time-bounded: 90 minutes, then write
-what you have. Speed first: an estimate is waited minutes a day (he or a worker waits), else a spend share.
+what you have. Speed first: an estimate is waited minutes a day (he or a worker waits), else a spend share. Waited
+means the critical path, never a sum of legs or CPU: a fan-out waits its slowest chain, a commit its slowest suite
+after every other selector rule still picks what it picks. The 10-29 dig's sums (15.3 leg-min, 7.2) measured 3.4 and
+0.9 on that path and both goals stopped at their First step; a candidate you can only sum is no candidate yet.
 
 1. Read the four sweep repositories (`~/.claude/sweep-repos`) and the caches below through these seed lenses, each
    with its cheap measure; they are examples, never the limit:
