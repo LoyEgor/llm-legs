@@ -3459,6 +3459,7 @@ assert grep -Fq 'type(limits.openai_api) == "table"' "$HAMMER"
 assert grep -Fq '| .openai_api = $openai_api' "$LLMLIMITS"
 assert eq "$(grep -rl 'from transcriber import keystate' "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" | sed "s|$ROOT/||")" share/key_state.py
 assert doc_has '| eo | API-key state |'
+assert doc_has '| ep | No `local` locale |'
 
 # Row ep: no `local`/`declare`/`typeset` of an LC_* or LANG variable in the bash under share/ and bin/: its pop in a
 # $(...) child runs libintl setlocale into CoreFoundation after fork and segfaults Homebrew bash (crash reports 2026-10).
