@@ -7,10 +7,10 @@ set -euo pipefail
 usage() {
   image_leg_cause "$@"
   printf 'usage: gemini-image --dest <absolute path> --prompt <description> [--aspect <%s>] [--edit <absolute image path>] [--ref <absolute image path>]... [--transparent] [--composite[=auto|x,y,w,h] | --no-composite] [--account <profile>] [--resume <conversation-id> --account <profile>]\n' "$aspect_choices" >&2
-  printf '  [--route flow|cli] [--lock-wait <seconds>] flow only: [--model %s] [--count 1-4] [--upscale 2k]; flow (the default) is Google Flow (Nano Banana, 0 credits) in the hidden Chrome of gemini-web and maps --aspect to the nearest of %s, cli is agy; without --route a route-level failure of flow (sign-in, busy, limit, unsent) reruns a request cli can express there; --resume <id> continues on the route that made it\n' \
+  printf '  [--route flow|cli] [--lock-wait <seconds>] flow only: [--model %s] [--count 1-4] --upscale 2k; flow (the default) is Google Flow (Nano Banana, 0 credits) in the hidden Chrome of gemini-web and maps --aspect to the nearest of %s, cli is agy; without --route a route-level failure of flow (sign-in, busy, limit, unsent) reruns a request cli can express there; --resume <id> continues on the route that made it\n' \
     "$(image_caps_get "$root" gemini '.flow_image.models | keys_unsorted | join("|")')" \
     "$(image_caps_get "$root" gemini '.flow_image.aspects | join("|")')" >&2
-  printf '  Flow'\''s Image Editor (--region/--point inpaint, outpaint with no --prompt, --remove-bg) is refused since Flow went video-first: use media-run image (codex)\n' >&2
+  printf '  Since Flow went video-first it makes images only with --upscale 2k, and its Image Editor (--region/--point inpaint, outpaint with no --prompt, --remove-bg) is refused: use media-run image (codex)\n' >&2
   exit 2
 }
 

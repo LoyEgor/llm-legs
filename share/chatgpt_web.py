@@ -459,21 +459,24 @@ def upload(page, refs: list[str], index: int, batch: bool) -> tuple[int, list[st
     before, files = live(page, "attachment").count(), [refs[index]]
     # The composer's image/* file inputs stay in the page but ignore a file set on them (live 2026-10-02):
     # only the chooser its own menu opens takes the upload. A "+" click on a page not yet live opens no menu
-    # (14 legs 2026-10-15..19, their page ready 0.6 s sooner than the median): it is clicked again.
+    # (14 legs 2026-10-15..19, their page ready 0.6 s sooner than the median): it is clicked again. On such a page
+    # the menu can show and its item still open no chooser (2 cold-Chrome legs 2026-10-29, ~11 s past the page
+    # phase: the menu came at once, the chooser never), so the chooser is retried with the menu.
     item = page.get_by_text(SELECTORS["upload"], exact=True).filter(visible=True).first
     try:
         for attempt in range(MENU_TRIES):
             if attempt:
                 decline_offers(page)
-            page.get_by_role("button", name=SELECTORS["add_files"], exact=True).filter(visible=True).first.click(timeout=10000)
+            if not item.is_visible():
+                page.get_by_role("button", name=SELECTORS["add_files"], exact=True).filter(visible=True).first.click(timeout=10000)
             try:
                 item.wait_for(state="visible", timeout=MENU_CHECK_S * 1000)
+                with page.expect_file_chooser(timeout=10000) as chooser:
+                    item.click(timeout=5000)
                 break
             except Exception:  # noqa: BLE001
                 if attempt == MENU_TRIES - 1:
                     raise
-        with page.expect_file_chooser(timeout=10000) as chooser:
-            item.click(timeout=5000)
         if batch and chooser.value.is_multiple():
             files = refs
         chooser.value.set_files(files if len(files) > 1 else files[0], timeout=15000)
