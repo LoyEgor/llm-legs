@@ -4,6 +4,8 @@
 chat_open_repo=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
 . "$chat_open_repo/share/worker-pool.sh"
 chat_open_model=opus
+# Every brief of delegated work says it this way, never "never ask Egor" (Egor 2026-10-30).
+egor_ask="Egor is never asked mid-run: a strategic fork ($chat_open_repo/docs/doctor-fix.md §7) goes to him as a trade handoff and the rest lands; what research settles you decide"
 
 # The chat role ranks by the chat model, but `chat` ignores the pool, and an opened chat is delegated
 # work (the night, a doctor fixer): an account out of the pool is never its (Egor 2026-10-12).

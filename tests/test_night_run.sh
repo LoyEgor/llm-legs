@@ -57,6 +57,8 @@ exit 2
 EOF
 chmod +x "$FAKE_BIN"/*
 
+# Briefs reach Egor only by a trade handoff on a strategic fork, in one phrase (doctor-fix.md §7), never "never ask Egor".
+asks_egor() { grep -qF "Egor is never asked mid-run: a strategic fork ($ROOT/docs/doctor-fix.md §7) goes to him as a trade handoff and the rest lands; what research settles you decide" "$1" && ! grep -qi 'never ask Egor' "$1"; }
 night() { # a start runs as from Egor's terminal or click: no LLM's env (share/llm-launch.sh)
   if [ "${1:-}" = start ]; then env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_LAUNCHER_SESSION -u WORKER_RUN_ID bash "$ROOT/bin/night-run" "$@"
   else bash "$ROOT/bin/night-run" "$@"; fi
@@ -942,6 +944,7 @@ Working directory: $nwt" ]
 assert grep -qF "The leftover branch \`stale-dirty\`, adopted as \`night/$idc/leftover-stale-dirty\`: in its worktree, \`git rebase refs/night/$idc/base\`" "$lbrief"
 assert grep -qF "\`tests/run-all \$(tests/affected \$(git diff --name-only refs/night/$idc/base...HEAD))\` green" "$lbrief"
 assert grep -qF 'end with `ESCALATE: <reason>`' "$lbrief"
+assert asks_egor "$lbrief"
 assert [ "$(git -C "$WORK/repo" show "night/$idc/leftover-stale-dirty:wip")" = wip ]
 assert [ "$(git -C "$WORK/repo" log -1 --format=%s "night/$idc/leftover-stale-dirty")" = "Leftover WIP from stale-dirty, adopted by night $idc" ]
 assert [ "$(git -C "$WORK/repo" rev-parse "night/$idc/leftover-stale-dirty^")" = "$pushed_hash" ]

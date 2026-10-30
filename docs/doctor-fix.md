@@ -87,6 +87,12 @@ job (your section says what it counts); never wait for it.
 To the orchestrator, in English: per problem the verdict, one line of why and where it was fixed and
 tested; handoffs and blind spots added; the commits as `repo@hash`. No session ids, diffs or transcripts.
 
+## 7. Strategic forks go to Egor
+
+A strategic fork has a real downside both ways, and the pick changes something Egor sees or relies on: his menu, reports, commands or chats; a feature, tool or doctor area removed or replaced; a standing rule, goal or policy; a speed/spend/quality trade; or it is hard to reverse.
+Never decide one silently: it goes to him as a handoff whose `To:` names him, with `Cost:`, `Loss:` and `Recommendation:` lines (close's net-zero markdown check exempts it), and the rest of the work lands; it never blocks other work.
+A bug, a choice between equivalent implementations, or anything research settles (`git log -S`, journals, docs, the owning chat) is decided, never handed to him.
+
 ## Updater doctor
 
 Owner: the chat «Updater doctor» (`share/updater-ledger.json` `owner`). Scope at night: the doctor's

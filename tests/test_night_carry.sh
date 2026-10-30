@@ -18,6 +18,8 @@ export HOME="$WORK/home" RUN_SUITES_JOURNAL="$WORK/runs.jsonl" DOCTORS_DIR="$WOR
 export NIGHT_RUN_CODE_DOCTOR=true
 NIGHTS="$DOCTORS_DIR/nights"
 night() { bash "$ROOT/bin/night-run" "$@"; }
+# Briefs reach Egor only by a trade handoff on a strategic fork, in one phrase (doctor-fix.md §7), never "never ask Egor".
+asks_egor() { grep -qF "Egor is never asked mid-run: a strategic fork ($ROOT/docs/doctor-fix.md §7) goes to him as a trade handoff and the rest lands; what research settles you decide" "$1" && ! grep -qi 'never ask Egor' "$1"; }
 mkdir -p "$NIGHTS" "$HOME/.claude/sessions" "$HOME/.claude/projects/p"
 for name in repo other; do
   git init -q "$WORK/$name"
@@ -68,6 +70,7 @@ brief=$(cut -f2 "$WORK/carry.out" | head -1)
 assert grep -qxF "ADD-DIR: $WORK/other/.claude/worktrees/night-N1-handoff-2026-09-28-old" "$brief"
 assert grep -qF "Settle the handoff \`$WORK/repo/docs/handoffs/2026-09-28-old.md\`" "$brief"
 assert grep -qF 'Cost:`, `Loss:` and `Recommendation:`' "$brief"
+assert asks_egor "$brief"
 assert_fails grep -q '^MODEL:' "$brief"
 assert grep -qF "Not the night's, so never a worktree, branch or commit there: \`$WORK/foreign\`. When the fix lies there" "$brief"
 assert [ "$(grep -c "Not the night's" "$brief")" = 1 ]
@@ -229,6 +232,7 @@ prompt="$NIGHTS/N2.owner-chat-alpha-doctor.prompt.md"
 assert grep -qxF -- "- \`$H/2026-09-20-a1.md\`" "$prompt"
 assert grep -qF "Work on branch \`night/N2/owner-chat-alpha-doctor\` in its night worktrees: \`$awt\`" "$prompt"
 assert grep -qF 'SendMessage the sweep chat running night N2' "$prompt"
+assert asks_egor "$prompt"
 # The orchestrator may change after carry (a wall failover): the owner resolves it when it reports.
 assert grep -qF "\`$ROOT/bin/chat-name \"\$(jq -r .session $NIGHTS/N2.json)\"\` names the one now" "$prompt"
 assert grep -qxF '«Alpha Doctor» open · 2 handoffs' <(night report N2 2>/dev/null | grep -o '«Alpha Doctor».*handoffs')
@@ -287,6 +291,7 @@ assert [ "$(head -3 "$NIGHTS/P2.$ref.brief.md")" = "ROUND: none
 STRONG: yes
 WEB: on" ]
 assert grep -qF '## Tool ideas — monthly, harness direction' "$NIGHTS/P2.$ref.brief.md"
+assert asks_egor "$NIGHTS/P2.$ref.brief.md"
 assert grep -qF "MD-GUARD: in \`$pwt\` write the markdown" "$NIGHTS/P2.$ref.brief.md"
 NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-periodic" night carry P2 >"$WORK/p2b.out" 2>"$WORK/p2b.err" || fail "a second carry failed"
 assert [ ! -s "$WORK/p2b.out" ]
@@ -354,6 +359,7 @@ assert jqe '[.jobs[] | [.kind, .ref, .state, .priority]] == [["goal", "goal-gate
 assert [ "$(head -2 "$b")" = "ROUND: none
 STRONG: yes" ]
 assert grep -qxF "ADD-DIR: $C/.claude/worktrees/night-G1-goal-gates" "$b"
+assert asks_egor "$b"
 # Its own guard lets it write its Done row, where worker-run's would have it hand the row back.
 assert grep -qxF "MD-GUARD: in \`$L/.claude/worktrees/night-G1-goal-gates\` write the markdown this brief asks for yourself; CLAUDE.md, SKILL.md, memory and anything under ~/.claude only as exact text under MD-PROPOSAL in your RETURN." "$b"
 assert grep -qxF '### goal gates: one parser' "$b"
@@ -614,6 +620,7 @@ assert [ "$(grep '^trade-' "$WORK/n6c.out")" = "trade-t1	$NIGHTS/N6.trade-t1.bri
 assert [ "$(git -C "$twt" symbolic-ref --short HEAD)" = night/N6/trade-t1 ]
 assert grep -qxF 'The trade: Cost: c. Loss: l. Recommendation: merge.' "$NIGHTS/N6.trade-t1.brief.md"
 assert grep -qxF 'His answer: merge it' "$NIGHTS/N6.trade-t1.brief.md"
+assert asks_egor "$NIGHTS/N6.trade-t1.brief.md"
 assert grep -qF "Its handoff: \`$WORK/dupb/docs/handoffs/2026-10-09-same.md\`" "$NIGHTS/N6.trade-t1.brief.md"
 night carry N6 >"$WORK/n6d.out" 2>/dev/null || fail "a second carry of a trade job failed"
 assert_fails grep -q '^trade-' "$WORK/n6d.out"

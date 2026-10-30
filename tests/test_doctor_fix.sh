@@ -55,6 +55,8 @@ chmod +x "$WORK/refresh-bin/llm-doctor"
 
 FIX="$ROOT/bin/doctor-fix"
 fix() { bash "$FIX" "$@"; }
+# Briefs reach Egor only by a trade handoff on a strategic fork, in one phrase (doctor-fix.md §7), never "never ask Egor".
+asks_egor() { grep -qF "Egor is never asked mid-run: a strategic fork ($ROOT/docs/doctor-fix.md §7) goes to him as a trade handoff and the rest lands; what research settles you decide" "$1" && ! grep -qi 'never ask Egor' "$1"; }
 # Fixers launch only inside an open full night: each night a launch below names has its ledger, unfinished, no pilot.
 night_ledger() { # doctors-dir id [jq-update]
   mkdir -p "$1/nights" && jq -n --arg id "$2" "{id: \$id, finished_at: null} | ${3:-.}" >"$1/nights/$2.json"
@@ -153,6 +155,7 @@ assert [ "$(head -n 1 "$brief")" = "ROUND: none" ]
 assert grep -qxF "# Fixer run $id" "$brief"
 assert grep -qxF "Night nD · llm doctor · area doctor · 3 problems. Worktree \`$wt\` on branch \`night/nD/$id\`." "$brief"
 assert grep -qF "all on the branch \`night/nD/$id\`, started from their \`refs/night/nD/base\`" "$brief"
+assert asks_egor "$brief"
 session=$(jq -r .session "$R")
 assert grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' <<<"$session"
 assert_fails grep -qF "$session" "$WORK/out"
@@ -480,7 +483,7 @@ assert grep -qxF "    note: the cause in the judge prompt still stands" "$WB"
 assert [ "$(grep -c 'known, quiet (' "$RUNS/$rid.brief.md")" = 0 ]
 # The brief is complete: the procedure, the close line with a run-local document, and the packet.
 B="$RUNS/$rid.brief.md"
-assert grep -qF "docs/doctor-fix.md\`: sections 0-6 and \"LLM doctor\" only." "$B"
+assert grep -qF "docs/doctor-fix.md\`: sections 0-7 and \"LLM doctor\" only." "$B"
 assert grep -qF "Night n1 · llm doctor · area reviewers" "$B"
 assert grep -qF "cd $WT && DOCTORS_DIR=$WORK/doctors bin/doctor-fix close $rid --decisions $RUNS/$rid.d/decisions.tsv <one-line note>" "$B"
 assert grep -qF 'Close reruns `bin/llm-doctor --json` in this worktree itself' "$B"
@@ -548,6 +551,13 @@ printf '%079d\n' 0 >"$WT/new.md"
 assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
 assert grep -qF "markdown grew by 30 bytes since refs/night/n1/base in $WT (docs/grown.md +100, new.md +80)" "$WORK/err"
 rm "$WT/new.md"
+# A trade handoff to Egor (doctor-fix.md §7) costs no markdown budget; any other handoff still counts.
+mkdir -p "$WT/docs/handoffs"
+{ printf '# fork\n\nTo: Egor.\nStatus: open\nCost: c.\nLoss: l.\nRecommendation: r.\n'; printf '%0299d\n' 0; } >"$WT/docs/handoffs/2026-10-30-fork.md"
+{ printf '# owner\n\nTo: «Harness Doctor», next night.\nStatus: open\n'; printf '%0199d\n' 0; } >"$WT/docs/handoffs/2026-10-30-owner.md"
+assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
+assert grep -qF "markdown grew by 208 bytes since refs/night/n1/base in $WT (docs/handoffs/2026-10-30-owner.md +258, docs/grown.md +100)" "$WORK/err"
+rm "$WT/docs/handoffs/2026-10-30-owner.md"
 git -C "$PW" update-ref -d refs/night/n1/base
 assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
 assert grep -qxF "markdown: no refs/night/n1/base in $PW to measure it against" "$WORK/err"
@@ -568,6 +578,7 @@ jq -n --arg w "$WT" '{workdir: $w, effort: "medium"}' >"$WORK/wrun/meta.json"
 : >"$DATA/llm-doctor-runs"
 WORKER_RUN_RECORD="$WORK/wrun" fix close "$rid" --decisions "$WORK/nd-egor" "R9 fixed" >"$WORK/out" 2>"$WORK/err" || fail "night close failed: $(cat "$WORK/err")"
 assert grep -qxF "run $rid closed: 2 decisions" "$WORK/out"
+assert [ -f "$WT/docs/handoffs/2026-10-30-fork.md" ]
 assert jqe '.closed_at != null and .judge_at_close == "base-llm" and .effort == "medium"' "$RR"
 assert [ "$(wc -l <"$DATA/llm-doctor-runs" | tr -d ' ')" = 1 ]
 
@@ -729,7 +740,7 @@ assert jqe '.decisions == [{id: "load:host", verdict: "fixed", purpose: "proj/RE
 fix show "$load" >"$WORK/show"
 assert grep -qxF "$(printf '  load:host\tfixed\tproj/README\ttests/test_x.sh\tcomponent unverified')" "$WORK/show"
 rm "$DATA/harness-doc.json"
-assert grep -qF 'sections 0-6 and "Harness doctor" only.' "$RUNS/$hk.brief.md"
+assert grep -qF 'sections 0-7 and "Harness doctor" only.' "$RUNS/$hk.brief.md"
 fi
 
 if suite_shard_owns 2 df-updater; then
@@ -956,7 +967,7 @@ assert grep -qE '^code-code-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$' <<<"$cid"
 assert jqe --arg f "$WORK/projects/proj/README" '[.problems[].id] == ["cause:proj/f3", "cause:proj/f2", "cause:proj/f1"]
   and .problems[0].component.files == [$f] and .area == "code" and .judge_at_launch == "base-code"' "$(record "$cid")"
 assert grep -qF 'Code runs: every problem carries its judged plan' "$RUNS/$cid.brief.md"
-assert grep -qF 'sections 0-6 and "Code doctor" only.' "$RUNS/$cid.brief.md"
+assert grep -qF 'sections 0-7 and "Code doctor" only.' "$RUNS/$cid.brief.md"
 jq -n --argjson s "$(($(now) + 5))" '{contract: 1, doctor: "code", as_of_s: $s, judge: "base-code", status: "ok", problem_count: 0,
   problems: []}' >"$DATA/code-doc.json"
 printf 'cause:proj/f%s\tfixed\tproj/README\tdeleted, the suites pass\n' 3 2 1 >"$WORK/cd-decisions"

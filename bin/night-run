@@ -640,7 +640,7 @@ leftover_brief() { # id ref old adopted-json -> the brief file its worker runs
     printf 'Working directory: %s\n\n# Night leftover job %s\n\n' "$wt" "$2"
     printf 'Night %s. The leftover branch `%s`, adopted as `%s`: in its worktree%s, `git rebase refs/night/%s/base`, conflicts resolved for main'"'"'s newer behaviour, then `tests/run-all $(tests/affected $(git diff --name-only refs/night/%s/base...HEAD))` green.\n' \
       "$id" "$3" "night/$id/$2" "$(jq -r 'if length > 1 then " and each ADD-DIR: one" else "" end' <<<"$4")" "$id" "$id"
-    printf 'Commit on the branch (one long line); never push, never touch a main checkout, never ask Egor; markdown is net zero against `refs/night/%s/base`.\n' "$id"
+    printf 'Commit on the branch (one long line); never push, never touch a main checkout; '"$egor_ask"'; markdown is net zero against `refs/night/%s/base`.\n' "$id"
     printf 'You run on Sonnet: on a conflict in logic or a failure whose cause is unclear, stop editing, write what you found and end with `ESCALATE: <reason>`.\n'
     printf 'Report: the outcome, the suites with PASS counts, the commits as repo@hash.\n'
   } >"$file" || return 1
@@ -1036,7 +1036,7 @@ carry_brief() { # id kind ref repo what log worktree branch -> the brief file
       printf 'Working directory: %s\n\n# Night %s goal %s\n\n' "$wt" "$id" "${ref#goal-}"
       printf 'Night %s is the pilot of one direction. Read `%s` whole first: it is the direction'"'"'s knowledge (metric, classes, decisions), and `%s/docs/directions/README.md` holds the rules every direction keeps. Your job is the goal below, a class: one change that makes the whole class impossible, never one more instance of it.\n\n' \
         "$id" "$wt/$what" "$repo"
-      printf 'Work in the worktree `%s` on branch `%s`; `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout, never ask Egor. Prove the change on the goal'"'"'s own number, old against new on the same machine; no other direction'"'"'s number gets worse. No suite run checks the work: the landing runs them. Once it holds, move the goal out of the Goals section into a Done row with its commit and proof, on the same branch; a goal its First step stops (its check does not hold, so no change can meet the proof) leaves Goals too, as a Done row `stopped` with that evidence, else it holds the queue every night; a goal you cannot reach for any other reason stays, with one line on what blocked it. Report: the outcome, the proof as before -> after, the commits as repo@hash.\n\n' \
+      printf 'Work in the worktree `%s` on branch `%s`; `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout; '"$egor_ask"'. Prove the change on the goal'"'"'s own number, old against new on the same machine; no other direction'"'"'s number gets worse. No suite run checks the work: the landing runs them. Once it holds, move the goal out of the Goals section into a Done row with its commit and proof, on the same branch; a goal its First step stops (its check does not hold, so no change can meet the proof) leaves Goals too, as a Done row `stopped` with that evidence, else it holds the queue every night; a goal you cannot reach for any other reason stays, with one line on what blocked it. Report: the outcome, the proof as before -> after, the commits as repo@hash.\n\n' \
         "$wt" "$branch" "$repo_root"
       printf '%s\n' "$goal"; } >"$file" || return 1
     printf '%s\n' "$file"
@@ -1045,7 +1045,7 @@ carry_brief() { # id kind ref repo what log worktree branch -> the brief file
   if [[ " $PERIODIC " == *" $kind:"* ]] || [[ " deep-search fix-audit reread " == *" $kind "* ]]; then
     { printf 'ROUND: none\nSTRONG: yes\nWEB: on\n'; night_md_guard "$wt"
       printf 'Working directory: %s\n\n# Night %s job %s\n\n' "$wt" "$kind" "$ref"
-      printf 'Night %s. Work in the worktree `%s` on branch `%s`; `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout, never ask Egor; markdown is net zero against `refs/night/%s/base`. No commit is `nothing-to-do`.\n\n' \
+      printf 'Night %s. Work in the worktree `%s` on branch `%s`; `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout; '"$egor_ask"'; markdown is net zero against `refs/night/%s/base`. No commit is `nothing-to-do`.\n\n' \
         "$id" "$wt" "$branch" "$repo_root" "$id"
       case $kind in
         fix-audit) "$repo_root/$what" brief ;;
@@ -1070,7 +1070,7 @@ carry_brief() { # id kind ref repo what log worktree branch -> the brief file
       printf 'Night %s. The full run at the previous night'"'"'s Close failed `%s` in %s (log `%s`). Make it green in the worktree `%s` on branch `%s`: fix the code or the suite; a load-only failure is made load-robust; every assert keeps its coverage.\n' "$id" "$what" "$repo" "$log" "$wt" "$branch"
       printf '   You run on Sonnet: when the cause is unclear or the fix needs a judgment in logic, stop editing, write what you found and end with `ESCALATE: <reason>`.\n'
     fi
-    printf '2. `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout, never ask Egor; markdown is net zero against `refs/night/%s/base`.\n' "$repo_root" "$id"
+    printf '2. `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout; '"$egor_ask"'; markdown is net zero against `refs/night/%s/base`.\n' "$repo_root" "$id"
     printf '3. Report: the outcome, the test, the commits as repo@hash.\n'
   } >"$file" || return 1
   printf '%s\n' "$file"
@@ -1090,7 +1090,7 @@ owner_prompt() { # id ref branch sweep batch-json worktrees -> the prompt file
     printf 'Night %s: the night hands you your open handoffs as one batch; you own them and hold their context.\n\n' "$id"
     jq -r '.handoffs[] | "- `\(.)`"' <<<"$5"
     printf '\n1. Settle each one: fix it and set its `Status:` line to `Status: settled %s: <one line>`; or, when only Egor'"'"'s word can settle it (a strategic change of course, or a serious downside against the gain; an unambiguous speed-up, or a recommendation to keep things as they are, is settled, never traded), reduce it to a trade: `Status: trade for Egor` with `Cost:`, `Loss:` and `Recommendation:` lines; or close it with the evidence that its cause no longer stands.\n' "$id"
-    printf '2. Work on branch `%s` in its night worktrees: %s. Another repository gets `<repo>/.claude/worktrees/night-%s-%s` on the same branch from `refs/night/%s/base`. Commit on the branch (one long line); never push, never merge, never touch a main checkout, never ask Egor; markdown is net zero.\n' \
+    printf '2. Work on branch `%s` in its night worktrees: %s. Another repository gets `<repo>/.claude/worktrees/night-%s-%s` on the same branch from `refs/night/%s/base`. Commit on the branch (one long line); never push, never merge, never touch a main checkout; '"$egor_ask"'; markdown is net zero.\n' \
       "$branch" "$(sed 's/.*/`&`/' <<<"$6" | paste -sd, - | sed 's/,/, /g')" "$id" "$ref" "$id"
     outside=$(jq -r '.handoffs[]' <<<"$5" | xargs python3 -B "$repo_root/share/handoffs.py" --outside 2>/dev/null |
       sort -u | sed 's/.*/`&`/' | paste -sd, - | sed 's/,/, /g')
@@ -1167,7 +1167,7 @@ trade_brief() { # id ref repo worktree branch -> the brief file carrying out Ego
         (if .from.path then "Its handoff: `\(.from.path)`; once done set its `Status:` line to `Status: settled \($id): <one line>`." else empty end), ""' \
       --arg ref "$ref" "$(night_file "$id")"
     printf '1. Do what his answer says, nothing past it.\n'
-    printf '2. `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout, never ask Egor; markdown is net zero against `refs/night/%s/base`.\n' "$repo_root" "$id"
+    printf '2. `%s/docs/doctor-fix.md` §1, §3 and §4 bind you: commit on the branch (one long line), never push, never touch a main checkout; '"$egor_ask"'; markdown is net zero against `refs/night/%s/base`.\n' "$repo_root" "$id"
     printf '3. Report: the outcome, the test, the commits as repo@hash.\n'
   } >"$file" || return 1
   printf '%s\n' "$file"

@@ -1018,9 +1018,9 @@ write_brief() { # id worktree -> the brief file
     [ "$night" = - ] || printf 'Night %s · ' "$night"
     printf '%s doctor · area %s · %s. Worktree `%s` on branch `%s`.\n\n' \
       "$doctor" "$area" "$(jq -r "$JQ_COUNTS" "$file")" "$wt" "$branch"
-    printf '1. Read `%s/docs/doctor-fix.md`: sections 0-6 and "%s doctor" only.\n' "$wt" "$title"
+    printf '1. Read `%s/docs/doctor-fix.md`: sections 0-7 and "%s doctor" only.\n' "$wt" "$title"
     printf '2. Your scope is the problems below and the known quiet rows after them, nothing else. Work only in the worktree and the `ADD-DIR:` worktrees of the other repositories your component lives in, all on the branch `%s`, started from their `%s`; a change another repository needs is a handoff. Look at the older blocks around what you touch, not only at what you add: is a workaround there obsolete now, because the vendor does it natively or its reason is gone? Then remove it.\n' "$branch" "$base"
-    printf '3. Commit on that branch; never push, never touch a main checkout, never ask Egor: decide what research settles (git log -S, the journals, the docs, the owning chat) and hand off to the next night, whose `night-run carry` makes every open handoff a job; Egor gets only a trade, a handoff whose `To:` names him carrying `Cost:`, `Loss:` and `Recommendation:` lines. Markdown is net zero: close refuses a worktree whose *.md bytes (handoffs included) grew since `%s`, so for every line you add cut stale ones (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md).\n' "$base"
+    printf '3. Commit on that branch; never push, never touch a main checkout. '"$egor_ask"' (research: git log -S, the journals, the docs, the owning chat); what it cannot settle is a handoff to the next night, whose `night-run carry` makes every open handoff a job; Egor gets only a trade, a handoff whose `To:` names him carrying `Cost:`, `Loss:` and `Recommendation:` lines. Markdown is net zero: close refuses a worktree whose *.md bytes (handoffs included, a trade handoff to Egor aside) grew since `%s`, so for every line you add cut stale ones (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md).\n' "$base"
     printf '4. Close, from the worktree:\n\n'
     printf '       cd %q && DOCTORS_DIR=%q bin/doctor-fix close %s --decisions %q <one-line note>\n\n' \
       "$wt" "${runs_dir%/runs}" "$id" "$decisions"
@@ -1328,6 +1328,7 @@ md_growth() { # worktree base -> the net *.md byte growth, then the 3 largest gr
   local wt=$1 base=$2 f old new delta total=0 rows=''
   git -C "$wt" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1 || return 1
   while IFS= read -r -d '' f; do
+    [[ $f != docs/handoffs/*.md || ! -f $wt/$f ]] || ! to_egor "$wt/$f" || continue # a trade to Egor (doctor-fix.md §7)
     old=$(git -C "$wt" cat-file -s "$base:$f" 2>/dev/null) || old=0
     new=0
     [ ! -f "$wt/$f" ] || new=$(wc -c <"$wt/$f" | tr -d ' ')
@@ -1357,11 +1358,15 @@ cited_handoffs() { # record evidence -> word<TAB>path of each handoff file the e
   done
 }
 
+to_egor() { # handoff file -> succeeds when its To: line names Egor
+  grep -iE '^[*_ ]*To[*_ ]*:' "$1" | grep -qiw egor
+}
+
 egor_handoffs() { # record evidence -> word<TAB>path of each handoff the evidence cites whose To: names Egor
   local word path
   while IFS=$'\t' read -r word path; do
     [ -n "$path" ] || continue
-    ! grep -iE '^[*_ ]*To[*_ ]*:' "$path" | grep -qiw egor || printf '%s\t%s\n' "$word" "$path"
+    ! to_egor "$path" || printf '%s\t%s\n' "$word" "$path"
   done < <(cited_handoffs "$@")
 }
 
