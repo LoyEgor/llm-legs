@@ -13908,7 +13908,9 @@
       "reviewed_by": "harness-doctor-20261030T052054Z-4436",
       "note": "2026-10-30 (run 4436): ruled out: worker-run is not silent: the refusal prints 'worker-run: RESUME <id> refused: ...' and OUTCOME: RESUME_REFUSED and exits 4 (share/worker-run-vendors.sh:249-250); the first call piped it through `sed -n '/^RUN:/p;/^STATUS/,$p' | tail -40`, which drops both lines and returns tail's 0 (output file: 22 bytes, empty). The 10-min gap 05:02-05:12 was the chat's own foreground landing of deep-search. Same pattern as the reread carry: a grep filter hid the line.",
       "handoff": null,
-      "ruled_at": "2026-10-30T05:37:04Z"
+      "ruled_at": "2026-10-30T05:37:04Z",
+      "depends_on": "worker-run's refusal printing its line and OUTCOME and exiting 4 (share/worker-run-vendors.sh:249-250)",
+      "reread_by": "2026-12-25"
     },
     {
       "id": "log_audit:bisect-payment-spec-slow",
@@ -13924,7 +13926,9 @@
       "reviewed_by": "harness-doctor-20261030T052054Z-4436",
       "note": "2026-10-30 (run 4436): ruled out: a Rentiva worker's method under its chat's brief (fresh worktree + pnpm install per bisect step, full e2e reruns while iterating); Rentiva is not a sweep repository and no harness component is involved.",
       "handoff": null,
-      "ruled_at": "2026-10-30T05:37:04Z"
+      "ruled_at": "2026-10-30T05:37:04Z",
+      "depends_on": "Rentiva staying outside the sweep repositories and its bisect method staying its brief's",
+      "reread_by": "2026-12-25"
     },
     {
       "id": "log_audit:cross-lane-kill-by-path-pattern",
