@@ -27,6 +27,13 @@ kill $held
 sleep 0.3
 out=$("$W" --max 5 gone "$marker") ; assert [ $? -eq 0 ]
 assert like "$out" "met: no process matches $marker after "*
+# A chat's prompt naming the pattern never holds it: claude and its caffeinate child carry the prompt in argv.
+for name in claude caffeinate; do
+  bash -c 'exec -a "$1" bash -c "sleep 30; :" "$2"' _ "$name" "$marker" & held=$!
+  sleep 0.3
+  out=$("$W" --max 2 gone "$marker"); assert [ $? -eq 0 ]
+  kill $held
+done
 
 # files: the count decides, not the first match.
 mkdir "$WORK/out"

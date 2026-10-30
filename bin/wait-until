@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # wait-until: block until a job ends instead of polling it with fixed sleeps; a fixed sleep overshoots by half its length.
 #   wait-until [--max SEC] pid PID | gone PATTERN | files GLOB N | log FILE REGEX
-# pid: PID is no longer alive. gone: no process matches `pgrep -f PATTERN` (this call and its shells excluded).
+# pid: PID is no longer alive. gone: no process matches `pgrep -f PATTERN` (this call, its shells, claude and caffeinate excluded).
 # files: GLOB matches at least N paths. log: FILE has a line matching the extended REGEX (an existing one counts).
 # Prints `met: ...` and exits 0, or `timeout after Ns` and exits 1; usage errors exit 2. The default cap is the Bash
 # call's own limit (BASH_DEFAULT_TIMEOUT_MS, 120 s without it) less 30 s; poll WAIT_UNTIL_POLL_S (default 2).
@@ -48,7 +48,9 @@ check() {
     gone)
       local p
       for p in $(/usr/bin/pgrep -f -- "$1" 2>/dev/null); do
-        case "$self" in *" $p "*) ;; *) return 1 ;; esac
+        case "$self" in *" $p "*) continue ;; esac
+        # A chat's prompt is argv text, not a job: claude carries it, and Claude Code's caffeinate child mirrors it.
+        case $(ps -o comm= -p "$p" 2>/dev/null) in claude | */claude | caffeinate | */caffeinate) ;; *) return 1 ;; esac
       done
       what="no process matches $1" ;;
     files)
