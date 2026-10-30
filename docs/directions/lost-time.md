@@ -99,19 +99,6 @@ in all 88 samples); 10-20's 63 fixers, CPU-bound, fan-out's; chats testing while
 exists); chat compaction 19.6 min/day, a spend trade; worker compaction 3.6 min/day; API retries 7; model-written
 scripts, beside the index.
 
-### goal jobs-by-room: a run's -j grows with room
-
-Class: `share/run-suites.sh` fixes `-j` at cores/2 (5); the run slots are already F–M by `slot_room`. runs.jsonl
-10-16…29: runs of over 5 jobs wait 87.0 min/day past their slowest suite (33.6 runs/day) at a median 2.16 cores used.
-A list-scheduling replay (new wall ≥ slowest suite, Σ CPU / 10 cores) of runs no other run overlapped (18.2/day):
-19.9 min/day at `-j 8`, 25.5 at 10. Row `dig-run-suites-jobs-fixed`.
-- Change: `-j` cores/2 always, up to 8 while `slot_room` finds room.
-- First step: the 12-suite set `aa474225` (10-30) on one tree, `-j 5` against `-j 8`, three interleaved pairs with
-  room; under 17 s saved a run (5 min/day) stops it.
-- Proof: 7 days after landing, wall past the slowest suite per lone >5-job run against 10-16…29's, ≥ 5 min/day
-  lower; run-suites queue (29.7 min/day) no higher; available MB never under the guard.
-- Files: `share/run-suites.sh`, `share/slots.sh`.
-
 ## Held goals
 
 Waiting for 1's read (2026-11-05); the speed goals above started early on Egor's 10-30 word «Скорость сейчас».
@@ -161,6 +148,7 @@ read …`, which `C1_MACHINE` (`bin/harness-doctor`) misses: 4 chats, 279 turn-s
 | 10-30 | goal warm-chrome stopped at its First step: a call's Chrome kept up to 120 s for its account's next | legs.jsonl 10-22…29, a call starting ≤ 120 s after its account's last ended, saving `page` − `lock` − 1 s (a served page, 10-30: 0.5–1.5 s); a fan-out waits max over accounts of chain end − chain saving, a lone call whole: codex 65.6 calls/day, 9.7 leg-min → 2.2 waited; gemini 6.5, 3.9 → 1.2; class 3.4 waited min/day, under 5 before any change. Since 4eb25d60 (10-30) chatgpt-web's account server keeps codex's browser 60 s: left 60–120 s codex gaps and gemini, 1.7 | no commit |
 | 10-30 | goal walled-resume stopped at its First step: a claudeb rescue resumes the walled session | 10-19's 3 pairs (sessions from worker-attempts.jsonl, transcripts in `~/.claude/projects`; 10-14's pruned): the fresh rescues repeat 29 of 1,311 calls by exact input, all Reads, 0 of 149 edits, 0 Bash; first edit at 8.7, 3.0, 6.9 min, so a resume saves ≤ 3 worker-min/day over 10-14…22, not 38 (the dig took the walled attempts' 516 min as redo; the CONTINUATION note already continues from the files); walled contexts end at 128.7k, 168.6k, 168.9k, 2 of 3 past the 150k cap, ≈1 min/day left; under 5 before any change; cross-account resume not tried | no commit |
 | 10-30 | goal shards-at-load: `suite_shard_wanted` shards at any load, only memory (pressure level, available MB) keeps a suite whole; the `# shards: N wait` word goes | First step, `test_doctor_fix` on one tree, 3 interleaved pairs at load 51–93 on 10 cores: sharded 40.6–41.7 s, whole 119.3–124.8 s, 0.33 (stop line 0.9); the run inside a spike (`load 92 over its 15-minute base 65 + 10 cores`, 9 of 9 samples) 41.7 s; CPU 76 vs 79 s; code −5 lines; 7-day read: shardable whole poles from load 0, their excess ≤ 8.3 min/day; memlogd available MB in sharded spike runs never under the guard | da088e91 |
+| 10-30 | goal jobs-by-room: `share/run-suites.sh` `-j` cores/2 always, up to 8 while `slot_room` finds room as each job past the floor starts; explicit `-j` fixed; journal `j` the most reached | First step, set `aa474225` on one tree, 3 interleaved pairs at load 52–93 on 10 cores: `-j 5` 128.7/115.5/112.5 s, `-j 8` 85.8/87.7/92.4 s, saved 20.1–42.9 s a run (stop line 17); past the slowest suite 60–62 → 25–32 s; CPU 398–408 vs 386–389 s; available MB min 5,818 (guard 3,548); code +18 lines; 7-day read: wall past the slowest suite per lone >5-job run ≥ 5 min/day lower than 10-16…29's, run-suites queue ≤ 29.7 min/day, available MB never under the guard | a93d2f5b |
 
 ## Open
 
