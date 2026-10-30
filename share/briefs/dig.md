@@ -17,7 +17,7 @@ after every other selector rule still picks what it picks. The 10-29 dig's sums 
    - something closed and reopened mid-job (a browser, a session): opens per job in its log × the open's cost;
    - memory pressure the harness could relieve itself: `share/slots.sh` holds and waits, `system-doctor` ticks;
    - the same work done twice across tools: one input read or computed by two tools in the same run.
-2. Skip what a row already holds: the open rows of `share/harness-ledger.json` and `share/spend-ledger.json`, the
+2. Skip what a row already holds: the open and fixed-pending rows of `share/harness-ledger.json` and `share/spend-ledger.json`, the
    `### goal` sections of `docs/directions/*.md`. Under 5 waited min/day or 1 % spend share is no candidate.
 3. Each candidate is one open row appended to `share/harness-ledger.json`:
    `{"id": "dig-<slug>", "title": "<the waste in one line>", "match": {"rule": "dig", "ident": "dig/<slug>"},
@@ -28,6 +28,6 @@ after every other selector rule still picks what it picks. The 10-29 dig's sums 
    direction file whose metric they move (README Rules): the class, the measured gain with its source, First step
    (the check that stops the goal when it does not hold), Proof (old against new, fixed before the work), Files.
    These sections are the job's output and pass the net-zero markdown rule; nothing else in the file grows.
-5. Run the suites `tests/affected share/harness-ledger.json` names in one `tests/run-all` call, then commit.
+5. Commit; the landing runs the suites.
 6. Report, outcome first, ≤ 200 words: each row's id with its estimate and source, which became goals, the lenses
    you could not measure and why.

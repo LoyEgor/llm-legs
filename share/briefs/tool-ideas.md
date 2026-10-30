@@ -20,6 +20,6 @@ effort or thinking.
    "tool-idea/<slug>"}, "status": "open", "expected_min_day": <n>, "fixes": [], "same_cause": [],
    "last_reviewed": "<today>", "reviewed_by": "night tool-ideas <night>", "note": "<evidence: the counts and
    where they come from; the build: files, reuse, its proof>", "handoff": null}`.
-   The Harness fixer takes an open row as a known quiet row (`bin/doctor-fix`). Run the
-   suites `tests/affected share/harness-ledger.json` names in one `tests/run-all` call, then commit the ledger.
+   The Harness fixer takes an open row as a known quiet row (`bin/doctor-fix`). Commit the
+   ledger; the landing runs the suites.
 4. Report, outcome first, ≤ 200 words: each row's id and min/day, the inputs you could not read.

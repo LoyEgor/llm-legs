@@ -15,3 +15,5 @@ Also (row `log_audit:worker-env-pitfalls-python-zsh`): workers keep trying bare 
 `.venv/bin/python`; no file a worker reads here names it. Name it in the README or a CLAUDE.md, or in the brief templates.
 
 Done when `share/tool_mining.py --calls` shows the command in place of the scripts, or this file says none serves.
+
+Also (log-audit 10-30): bench/judge.py sheets --n defaults to 12 and truncates silently (E75 judged 12 of 20); enhance.py pick-sheets splits windows by count, not cost; pf.py/t.py symbol tables overflow, region guard fires after the write, previews reuse names; judges share /tmp/judge-opus and hand-roll crop/diff loops: one aligned cell-diff/crop helper named in the judge brief, scratch per run.

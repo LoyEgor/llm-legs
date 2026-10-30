@@ -25,3 +25,5 @@ before `tracers/champ47-soft/.venv/bin/python`; name the lane interpreter in the
 
 Done when the next rounds' calls show the commands instead of the scripts; the Speed doctor reads it as each cluster's
 residual falling (`share/tool_mining.py --calls`).
+
+Also (log-audit 10-30): vm-queue.sh/vm-batch.sh exit 0 with 34/64 holdout outputs (exit non-zero when outputs < inputs); a pgrep -f path-fragment kill took other lanes' runs (kill only the lane's own pids); bench/slotrun.py queued jobs never report their wait.
