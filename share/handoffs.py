@@ -489,6 +489,24 @@ def phase(status):
     return "egor" if word.startswith("trade") else "queued" if word.startswith("open") else "done"
 
 
+def to_egor(lines):
+    """A handoff whose To: line names Egor (bin/doctor-fix `to_egor`): a trade awaiting his word."""
+    return any(re.match(r"^[*_ ]*To[*_ ]*:", line, re.I) and re.search(r"\begor\b", line, re.I) for line in lines)
+
+
+def delivered():
+    """The basenames of every handoff a night job carried (a handoff job's path, an owner-chat job's handoffs), its
+    launch not failed."""
+    import night_priority
+    out = set()
+    for path in glob.glob(os.path.join(night_priority.doctors_dir(), "nights", "*.json")):
+        night = night_priority.read_json(path, {}) or {}
+        for job in night.get("jobs") or () if isinstance(night, dict) else ():
+            if isinstance(job, dict) and job.get("state") != "failed-launch":
+                out.update(os.path.basename(str(p)) for p in [job.get("path")] + list(job.get("handoffs") or ()) if p)
+    return out
+
+
 def short_title(path):
     return re.sub(r"^\d{4}-\d{2}-\d{2}-", "", os.path.basename(path)[:-3]).replace("-", " ")
 

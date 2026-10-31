@@ -123,7 +123,7 @@ the last 24 whole hours `hours_of` keeps, sorted as the last scanned day decides
 the wall time of the bin commands and skills the adoption lists, top 5 then the rest, unioned and clipped as the
 classes, less the spans tests and waiting for workers already hold). Row names are stable: the night report cites
 them. The rows are ordered once by size, the day each first appears, and frozen (`lost-order.json`), never re-sorted
-live. Then system active, then `Unused tools ▸`, their count (tool_mining's `unused_row`). `wait overshoot` (class `wait_loop`,
+live. Then system active. `wait overshoot` (class `wait_loop`,
 Speed's `time/wait_loop`, the ledger row `tool-idea-wait-until`; Egor: a wait costs what it awaits, only its overshoot
 is lost) is in the overhead and the index: Harness's `w` rows, Bash calls waiting by fixed sleeps or a followed log,
 counted from the awaited end (the session's last suite, a named worker run) to the call's exit, else half a poll
@@ -166,8 +166,16 @@ Bash scripts by the first `CLUSTERS` pattern matched; a scratch script file (`ca
 median exec. Over `FLOOR_MIN_DAY` writing min/day in ≥ 3 sessions: `opportunity:adhoc/<key>`, a command plus hint, or
 the hint alone where `covered_by` names a tool. A harness tool only for a job recurring (≥ 3 sessions) in ≥ 3 projects
 (a session's launch cwd repository); else the job is its project's (`home`): tool and hint go there, a handoff
-outside the night's (Egor, 2026-10-14: no tools for one chat's need). A fix lands only with a bench (`bench_faults`). Proof (`net`): job min
-and tokens per 1000 Bash calls both below before; worse in either: `regression:adhoc/<key>`. A lever in a repository
+outside the night's (Egor, 2026-10-14: no tools for one chat's need; 10-31: need decides where, never whether). A fix
+lands only with a bench (`bench_faults`): a win in one is enough (10-31), the time (script: run plus writing; tool: run)
+or output bytes fell and the other did not rise, a change inside the noise band the same (`band`: the before days'
+relative stdev over √n, the error of the mean compared; the bench's over the cluster's last 7 days). A failed first
+bench names both numbers and asks where they go; the fixer records `bench2`; then a trade is a §7 handoff to Egor,
+worse a rejection. Proof (`net`): job min and tokens per 1000 Bash calls judged so; a trade or worse:
+`regression:adhoc/<key>`. A ruled-out row carries `reason` (slower|costlier|one-off), `min_day`, `projects`, both
+benches and `reread_by` (`rejection_faults`, refused at `close`). A parked row (ruled out or handed off) reopens
+(`reopened`, its fact saying what changed) at 3 projects, at twice its `min_day`, past `reread_by` (decision_reread
+skips these rows) or on a menu `Reopen tonight` marker ($DOCTORS_DIR/tools-reopen, consumed by the run). A lever in a repository
 outside the night's is a handoff to its owner chat (`close` accepts one citing that repository), never an open row.
 Adoption (Egor, 2026-10-14: tools are judged by use, not script volume; 2026-10-30: over the `tools` index, near-unused
 counts): per command and skill of the tool index (`facing` over `share/tool_index.py`: README entries, every
@@ -178,17 +186,16 @@ Under one model call a week (`NEAR_UNUSED`, the gap in the 30-day tail) or none 
 `opportunity:tool/<kind>/<name>` with its likely cause (`access`: link missing or most calls failed; `unknown`: no
 CLAUDE.md line, skill listing, hook or preamble names it; `obsolete`), priced at the hint's bytes once per session
 loading it (an output char = `OUTPUT_EQ` input ones at the write rate); the fixer reviews it by that cause, then deletes
-tool and hint (only the hint where other code or Egor runs it) or fixes the cause. Menu (`menu_row`): repeated jobs (the night's target: built tools as tool | residual min/day,
-unbuilt clusters over the floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row), unused
-tools as 0 | ○ where the fix keeps the file (a skill, a bin tool other code, a LaunchAgent, Hammerspoon or Egor's
-shell history runs: `elsewhere`), 0 | 🗑 where it deletes it.
+tool and hint (only the hint where other code or Egor runs it) or fixes the cause. Menu: the Tools row
+(`tools_document`, Speed's `tools`, the Harness header's `tools`; docs/doctors-contract.md "Menu layout"), its count a
+day kept (`tools_days`).
 Chains (2026-10-30, after Egor had to ask for `bin/land` himself): the same pass, rows, cost, floor, `adhoc/<key>`,
 bench and net. `chain/<heads>`: one session's short (non-script) Bash calls running the same acting heads in order
 (`heads`: each part of a call, a `$( )` too, a git verb kept past `-C`; `LOOK` reads, glue and read-only git verbs
 aside), 3–5 heads inside 5 acting calls, gaps allowed, in ≥ 3 sessions, grown level by level only from chains already
 in 3; the fullest form claims its calls first (a variant holding half of them is the same job), the 20 costliest a day
 kept (the hand landing ranked 15th and 17th on its hub days), a landed one tracked at any count; cost = its calls'
-characters at the write rate + calls × median exec. The menu shows one only built, parked or over the floor; a cached
+characters at the write rate + calls × median exec. The scripts total counts one only built, parked or over the floor; a cached
 day's key no `CLUSTERS` row or chain has shows nowhere. Backtest (`--to`, old code: no such row): 10-30
 `chain/affected+run-all+git-merge+git-worktree+git-branch`, 4 sessions with hubs 5867 and 5921, 7 runs, 0.65 writing
 of 2.8 min/day; 10-29 `chain/git-commit+git-rebase+git-merge+git-worktree+git-branch`, 4 sessions, 0.81 of 3.0: found,

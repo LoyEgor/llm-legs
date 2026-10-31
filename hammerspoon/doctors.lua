@@ -1793,26 +1793,11 @@ local function levelRows(levels)
   return out
 end
 
--- A built tool's min/day beside its job's residual scripts; a glyph or MISSING where a column has no number.
-local function pairCell(value, width)
-  local n = tonumber(value)
-  if not n then return { padded(tostring(value), width), style.DIM } end
-  return { padded(n == 0 and "0" or n < 9.95 and string.format("%.1f", n) or rounded(n), width) }
-end
-
 local function lostRows(rows)
   local out = {}
   for _, r in ipairs(type(rows) == "table" and rows or {}) do
     if r == "-" then
       out[#out + 1] = { title = "-" }
-    elseif type(r) == "table" and r[4] ~= nil and type(r[4]) ~= "table" then
-      out[#out + 1] = fitRow({ title = styled({ pairCell(r[1], 4), pairCell(r[4], 5),
-        { " min/day  " .. tostring(r[2]) } }), disabled = true })
-    elseif type(r) == "table" and type(r[4]) == "table" and r[4].count and tonumber(r[1]) then
-      local row = issueRow(tonumber(r[1]), nil, tostring(r[2]), nil, false)
-      local sub = lostRows(r[3])
-      if #sub > 0 then row.menu, row.disabled = sub, nil end
-      out[#out + 1] = row
     elseif type(r) == "table" and tonumber(r[1]) then
       local row = type(r[4]) == "table" and r[4].dim
         and fitRow({ title = styled({ { padded(rounded(tonumber(r[1])), 4), style.DIM },
@@ -1824,6 +1809,50 @@ local function lostRows(rows)
     end
   end
   return out
+end
+
+-- The Tools summary (docs/doctors-contract.md "Menu layout"): the candidates in work (● and →) a day from Speed's
+-- `tools` document, RED while a trade waits on Egor or a handoff sits undelivered, DIM without one. Each group lists
+-- its candidates as min/day, name, detail; a candidate's submenu is its lines and, parked, `Reopen tonight`, which only
+-- leaves a marker under $DOCTORS_DIR/tools-reopen for the next Speed run: Hammerspoon never writes the repository.
+local function toolsEntry(doc, now, stale)
+  doc = type(doc) == "table" and doc or nil
+  local function reopen(name)
+    return function()
+      local folder = dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors")
+      hs.fs.mkdir(folder)
+      hs.fs.mkdir(folder .. "/tools-reopen")
+      local handle = io.open(folder .. "/tools-reopen/" .. name, "w")
+      if handle then handle:write(os.date("!%Y-%m-%dT%H:%M:%SZ", now) .. "\n") handle:close() end
+    end
+  end
+  local rows = {}
+  for _, group in ipairs(doc and list(doc.groups) or {}) do
+    local items, width, sub = list(group.items), 0, {}
+    for _, item in ipairs(items) do width = math.max(width, cells(tostring(item.name))) end
+    for _, item in ipairs(items) do
+      local name = tostring(item.name)
+      local lines = {}
+      for _, line in ipairs(list(item.lines)) do lines[#lines + 1] = dim(tostring(line)) end
+      if item.marker then lines[#lines + 1] = { title = infoTitle("Reopen tonight"), fn = reopen(tostring(item.marker)) } end
+      local minutes = tonumber(item.min_day) or 0
+      sub[#sub + 1] = fitRow({ title = styled({ { padded(minutes < 9.95 and string.format("%.1f", minutes)
+          or rounded(minutes), 4), item.red and style.RED or nil },
+        { ("  " .. name .. string.rep(" ", width - cells(name)) .. "  " .. tostring(item.detail or "")):gsub("%s+$", ""),
+          item.red and style.RED or nil } }),
+        menu = #lines > 0 and lines or nil, disabled = #lines == 0 or nil })
+    end
+    rows[#rows + 1] = fitRow({ title = styled({ { padded(tostring(#items), 4), #items == 0 and style.DIM or nil },
+      { "  " .. tostring(group.glyph) .. " " .. tostring(group.label), #items == 0 and style.DIM or nil } }),
+      menu = #sub > 0 and sub or nil, disabled = #sub == 0 or nil })
+  end
+  local llm = {}
+  for _, text in ipairs(doc and list(doc.details) or {}) do llm[#llm + 1] = dim(tostring(text)) end
+  rows[#rows + 1] = { title = "-" }
+  rows[#rows + 1] = { title = infoTitle("LLM details"), menu = #llm > 0 and llm or nil, disabled = #llm == 0 or nil }
+  local status = not doc and "nodata" or #list(doc.red) > 0 and "problems" or "ok"
+  return { title = summaryTitle("Tools", doc and tonumber(doc.count) or nil, status,
+    doc and type(doc.by_day) == "table" and doc.by_day or {}, now, stale), menu = rows, problems = 0, status = status }
 end
 
 -- The day's highest red count per summary (contract row `rd`): the bars and the usual beside a count read the same
@@ -1877,7 +1906,7 @@ end
 
 local function compute()
   local now = os.time()
-  local entries, speed, spend, machine = {}, nil, nil, nil
+  local entries, speed, spend, machine, tools = {}, nil, nil, nil, nil
   held = heldIds(now)
   local built, lostDetails = {}, {}
   local moved, shift, incoming = { harness = {}, speed = {}, system = {} }, {}, { harness = {}, speed = {}, system = {} }
@@ -1958,11 +1987,13 @@ local function compute()
       spend = { title = summaryTitle("Spend", index, spendStatus,
         type(cost.index_by_day) == "table" and cost.index_by_day or {}, now, stale, true),
         menu = egorLayer(spendRows, menu, spendMenu), problems = 0 }
+      tools = toolsEntry(document and document.tools, now, stale)
     end
   end
   entries[#entries + 1] = speed
   entries[#entries + 1] = spend
   entries[#entries + 1] = machine
+  entries[#entries + 1] = tools
   if now - night.at >= NIGHT_REFRESH_S then M.refreshNight() end
   if night.text then entries[#entries + 1] = nightEntry() end
   entries[#entries + 1] = { title = "-", problems = 0 }

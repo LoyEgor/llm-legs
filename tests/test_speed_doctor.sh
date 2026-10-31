@@ -360,6 +360,18 @@ check(rows_header == [[40.0, "tests", [[30.0, "running"], [12.0, "queued"], "-"]
                       [1, "Unused tools", [[0, "x", [], "○"]], {"count": True}]],
       "the menu header carries the time budget's rows as they are, the tests row closing on the 8 heaviest suites: %s"
       % rows_header)
+TOOLS_DOC = {"count": 2, "red": [], "groups": [], "by_day": {"2026-10-31": 2}, "details": ["Ad-hoc scripts: 2 jobs"]}
+tools_header = [json.loads(l[2:]).get("tools") for l in h.menu_text({
+    "problem_count": 0, "as_of_s": HI, "title": "t", "status": "ok", "problems": [], "sections": [], "footer": "f",
+    "speed": {"status": "ok", "tools": TOOLS_DOC}}).splitlines() if l.startswith("H\t")]
+check(tools_header == [TOOLS_DOC], "the menu header carries Speed's Tools document whole: %s" % tools_header)
+lifecycle = {"day": "d", "bash_calls": 9, "scan_s": 1.0, "floor_min_day": 8.6, "findings": [], "net": {},
+             "lifecycle": {"count": 0, "red": [], "groups": []}}
+row = module.tools_row(lifecycle)
+check(row == {"count": 0, "red": [], "groups": [], "details": [
+          "Ad-hoc scripts: 0 jobs over 8.6 min/day writing · 0.0 min/day · 0 of 9 Bash calls · scan 1.0 s"]}
+      and "lifecycle" not in lifecycle and module.tools_row({}) is None,
+      "Speed's Tools document is tool mining's lifecycle with the ad-hoc lines as its LLM details: %s" % row)
 saved_env, saved = dict(os.environ), (module.with_time, module.time_budget.section)
 os.environ.update({k: v for k, v in base.items() if k != "PATH"}, SPEED_DOCTOR_DIR=os.path.join(work, "speed-floor"))
 module.with_time = lambda opportunities, budget: [dict(o, opportunity=dict(o["opportunity"], quality="risk"))

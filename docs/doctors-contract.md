@@ -44,6 +44,7 @@ Code         3  ▁▁▂▃▄▆█    3 ▸
 Lost time 0.93  ▁▁▂▃▄▆█      ▸
 Spend     0.46  ▁▁▂▃▄▆█      ▸
 System       2  ▁▁▂▃▄▆█    3 ▸
+Tools        2  ▁▂▃▄▆█▃    3 ▸
 Night 5 Oct · stopped · no jobs
 ──────────
 Land night branches now
@@ -54,6 +55,14 @@ LLM ▸     8  reviewers crashed
        fixer: never ran
        ──────────
        LLM details ▸   (the doctor's whole previous tree)
+
+Tools ▸   1  ✓ built ▸            ● ▸  24  tokenmap ▸            ✕ ▸ file-edit ▸ edit a file
+          2  ● night queue ▸            9  logo-verdict  your call ▸         tool    2.1 s   try 2  2.0 s
+          0  → with project chats                                            script  1.9 s   try 2  1.9 s
+          1  ✕ rejected ▸                                                    reopens  Nov 2 · 211 min/day
+          1  ○ unused ▸                                                      Reopen tonight
+       ──────────
+       LLM details ▸   (Speed's ad-hoc lines)
 ```
 
 - Summary row, fixed cells: name (9, in the status color) · value (4, right, plain) · 7 bars · usual (4, right, DIM), no
@@ -73,7 +82,7 @@ LLM ▸     8  reviewers crashed
 - `usual` is the median of measured completed dates, never today and never a loud day; index rows have none.
 - A doctor's first level: up to three issue rows of red problems (RED count, the group or the problem's own short name,
   then ` · ` and the first red problem's `fact` where the document gives one; Spend's rows DIM;
-  Lost time: the current window's `levels`, `min per order · chat`, `min per task · workers` and `min per job · night`, then the header's `rows`, plain aligned min/day, separators and sub-menus, a row flagged `{"dim": true}` (outside the index: model-written scripts, our tools) DIM whole, a `{"count": true}` row (Unused tools) a bare count opening its rows, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
+  Lost time: the current window's `levels`, `min per order · chat`, `min per task · workers` and `min per job · night`, then the header's `rows`, plain aligned min/day, separators and sub-menus, a row flagged `{"dim": true}` (outside the index: model-written scripts, our tools) DIM whole, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
   `LLM details`. The details hold every previous row in order, the non-ordinary status title
   (stale, failed, pending) first; Lost time's and Spend's details are Harness's `Lost time:` and `Spend:` subtrees.
 - Each doctor answers one question; the view moves, never the collectors (rule ids, groups, documents, areas and night
@@ -101,8 +110,16 @@ LLM ▸     8  reviewers crashed
   runs `bin/log-sweep --emergency`, and `Review disk with Claude…`, which runs `bin/disk-review`
   (`docs/disk-review.md`); neither has a timer. The menu only places and formats what the
   document says.
+- Tools (after System; Speed's `tools` document, `share/tool_mining.py` `tools_document`): value the candidates in
+  work (● + →), bars that count a day (`by_day`), usual their median; RED while a trade waits on Egor or a → handoff
+  sits open 7+ days with no night carrying it (`red`), DIM without the document; adds nothing to `Doctors: N
+  problems`. First level: ✓ built, ● night queue, → with project chats, ✕ rejected, ○ unused, each its count (a
+  submenu where it has candidates), separator, LLM details (Speed's ad-hoc lines). A group lists `min/day  name
+  detail` (✓ the residual's fall, ● `your call` or `reopened`, → `N chats`, ✕ reason and re-read date, ○ the cause);
+  a candidate opens ≤ 5 lines: its job, `tool`/`script` per try, `reopens  date · min/day · 3 projects`, and on ✕/→
+  `Reopen tonight`, which writes `$DOCTORS_DIR/tools-reopen/<key>` for the next Speed run, never the repository.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs (a loud one also its
-  `state`, `group` and `fact`), three group issues, every loud group's count (`groups`), Speed's status, timestamp, index, its daily series, levels and budget rows. The menu
+  `state`, `group` and `fact`), three group issues, every loud group's count (`groups`), Speed's status, timestamp, index, its daily series, levels and budget rows, the Tools document (`tools`). The menu
   reads it and `red-days.jsonl` cached by inode, mtime and size, never Harness's `latest.json`;
   a header-less file shows open Harness ledger rows as `known, awaiting snapshot`.
 

@@ -6342,6 +6342,8 @@ def menu_text(document):
             for r in (speed.get("budget") or {}).get("rows") or ()]
     if rows:
         header["speed"]["rows"] = rows
+    if speed.get("tools"):
+        header["tools"] = speed["tools"]
     menu.lines.append("H\t" + json.dumps(header, separators=(",", ":")))
     sections = document.get("sections") or ()
     if document["status"] != "error":

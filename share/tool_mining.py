@@ -6,7 +6,10 @@ Clusters over the floor become Speed's `adhoc/<key>` opportunities: a new tool p
 `covered_by` names a tool that already does the job. Proof is net (`net`): the job's whole cost per 1000 Bash calls,
 minutes and Opus-eq tokens, before the fix against after: the cluster's residual calls, substitutes (ad-hoc calls an
 earlier cluster took that match this one's pattern), the tool's own calls (its bench's `command`) and the hint's
-always-loaded bytes once a session. A fix lands only with a bench (`bench_faults`). Adoption (`adoption`): each
+always-loaded bytes once a session; a win in one measure is enough while the other stays inside its noise band
+(`judged`). A fix lands only with a bench that passes the same way, a second attempt (`bench2`) before a rejection
+(`bench_faults`); a rejection carries its reason, numbers and both benches (`rejection_faults`) and reopens when they
+change (`reopened`). The Tools menu row reads `tools_document`. Adoption (`adoption`): each
 command and skill of the tool index (share/tool_index.py, what `tools` searches) and its model calls a day over
 USE_DAYS, night automation's left out; one under NEAR_UNUSED a day, or with none in its last RECENT_DAYS, is near-unused
 with its likely cause (`cause`), Speed's `opportunity:tool/...`: a review that deletes it or fixes the cause.
@@ -25,6 +28,7 @@ import collections
 import datetime
 import glob
 import json
+import math
 import os
 import re
 import statistics
@@ -94,17 +98,15 @@ CLUSTERS = (
 )
 CATCH_ALL = ("json-other", "text-other")
 ROW_SKIP = ("file-edit", "file-read")
-CANDIDATE_ROWS = 5
+REASONS = ("slower", "costlier", "one-off")
+STALE_HANDOFF_D = 7
 USE_DAYS, RECENT_DAYS = 30, 7
 # Near-unused: under one model call a week. 30 days to 2026-10-29, night calls out, the 50 indexed commands and skills
 # older than the window ranked by calls: 0 1 1 3 3 4 4 | 7 8 8 10 ...; the floor (4.3) sits in the one gap of the tail.
 # A tool no model called in its last RECENT_DAYS is flagged too (`recent`): a doctrine may have retired it, or its occasion is rare (a usage reset), which doctor-fix settles from the tool's own log.
 NEAR_UNUSED = 1.0 / 7
 USES_V = 2
-UNUSED = "🗑"
-HINT_OFF = "○"
-NO_TOOL = "–"
-COMMAND = (r"(?:^|[;&|(`\n]|\$\()\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|env|command|exec|time|nohup|timeout\s+\S+"
+COMMAND =(r"(?:^|[;&|(`\n]|\$\()\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|env|command|exec|time|nohup|timeout\s+\S+"
            r"|nice(?:\s+-n\s*-?\d+)?)\s+)*(?:[\w.~/-]*/)?(%s)(?![\w./-])")
 BACKTICK = re.compile(r"`([^`\n]+)`")
 SLASH = re.compile(r"<command-name>/?([\w:.-]+)</command-name>")
@@ -780,11 +782,34 @@ def load_factor(before, after, key, subs=()):
     return statistics.median(ratios) if len(ratios) >= time_budget.LOAD_CONTROLS else 1.0
 
 
+def band(values):
+    """The noise band of a mean of `values` (the before days), relative: their sample standard deviation over their
+    mean, over √n. A mean of n such days strays from the job's true level by about that much with nothing changed
+    (which days happened to fall in the window), so a change inside it is no evidence either way and counts as the same;
+    under two days there is no spread to read: 0, an exact compare."""
+    values = [v for v in values if isinstance(v, (int, float))]
+    mean = sum(values) / len(values) if values else 0.0
+    return statistics.stdev(values) / mean / math.sqrt(len(values)) if len(values) >= 2 and mean > 0 else 0.0
+
+
+def moved(was, now, width):
+    """-1 fell, 1 rose, 0 the same: inside `width` (relative) of `was`."""
+    return -1 if now < was * (1 - width) else 1 if now > was * (1 + width) else 0
+
+
+def judged(minutes, tokens):
+    """A win in one measure is enough (Egor 2026-10-31): proven when one fell and the other did not rise, trade when one
+    fell and the other rose, worse when one rose and none fell, even when neither moved."""
+    if -1 in (minutes, tokens):
+        return "trade" if 1 in (minutes, tokens) else "proven"
+    return "worse" if 1 in (minutes, tokens) else "even"
+
+
 def net(history, key, landed, bench=None, subs=()):
     """A landed fix's job cost, its last NET_DAYS scanned days before the landing against its last NET_DAYS after,
-    per 1000 Bash calls, after's exec over the load factor, priced at the newest day's Bash calls: proven when the
-    minutes and the tokens both fell, worse when either rose. `subs` are chains doing the job by hand, read only off
-    days that mined chains."""
+    per 1000 Bash calls, after's exec over the load factor, priced at the newest day's Bash calls, judged with each
+    measure's noise band off the before days (`band`, `judged`). Script time is writing plus run; the tool's is its run
+    only. `subs` are chains doing the job by hand, read only off days that mined chains."""
     days = sorted((d for d in history.values() if "shadow" in d and d.get("chars_s") and (not subs or "chain_s" in d)),
                   key=lambda d: d["to_s"])
     before = [d for d in days if d["to_s"] <= landed][-NET_DAYS:]
@@ -792,71 +817,139 @@ def net(history, key, landed, bench=None, subs=()):
     if not before or not after:
         return {"state": "pending", "days": [len(before), len(after)]}
     hint = (bench or {}).get("hint_b") or 0
-    (bw, be, bt), (aw, ae, at) = ([sum(x) / len(side) for x in zip(*(job_cost(d, key, h, subs) for d in side))]
-                                  for side, h in ((before, 0), (after, hint)))
+    costs = [job_cost(d, key, 0, subs) for d in before]
+    widths = band([w + e for w, e, _ in costs]), band([t for _, _, t in costs])
+    (bw, be, bt), (aw, ae, at) = ([sum(x) / len(x) for x in zip(*side)]
+                                  for side in (costs, [job_cost(d, key, hint, subs) for d in after]))
     factor = load_factor(before, after, key, subs)
     was, now, volume = bw + be, aw + ae / factor, after[-1]["bash_calls"] / 1000.0
-    state = "proven" if now < was and at < bt else "worse" if now > was or at > bt else "even"
-    return {"state": state, "days": [len(before), len(after)], "min_before": round(was * volume, 2),
-            "min_after": round(now * volume, 2), "saved_min_day": round((was - now) * volume, 2),
-            "tok_before": round(bt * volume), "tok_after": round(at * volume),
-            "cost": round(at / bt, 2) if bt else None, "load": round(factor, 2)}
+    return {"state": judged(moved(was, now, widths[0]), moved(bt, at, widths[1])), "days": [len(before), len(after)],
+            "min_before": round(was * volume, 2), "min_after": round(now * volume, 2),
+            "saved_min_day": round((was - now) * volume, 2), "tok_before": round(bt * volume),
+            "tok_after": round(at * volume), "cost": round(at / bt, 2) if bt else None, "load": round(factor, 2),
+            "band": [round(w, 3) for w in widths]}
 
 
 def number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
 
 
-def bench_faults(bench, hint_only=False):
-    """Why an adhoc fix's bench keeps it from landing, [] when it lands. The bench runs the cluster's own example
-    calls (`calls` names them and their inputs) and the tool on the same inputs: the tool's wall at most the ad-hoc
-    median's plus `adhoc_write_s`, the model's writing of one example call (its characters at the day's write rate),
-    its output bytes at most the median's, a longer output only with a `reason`; `command` matches the tool's Bash
-    calls (empty only on a hint row whose tool is no Bash command), `hint_b` the hint's bytes loaded in every session."""
+def bench_shape(bench, hint_only=False, name="bench"):
+    """What a bench record lacks: its BENCH keys, numbers >= 0 (`adhoc_write_s` too, where given), named example calls
+    and a `command` pattern matching the tool's Bash calls (empty only on a hint row whose tool is no Bash command)."""
     if not isinstance(bench, dict):
-        return ["no bench {%s}" % ", ".join(BENCH)]
+        return ["no %s {%s}" % (name, ", ".join(BENCH))]
     missing = [k for k in BENCH if k not in bench]
     if missing:
-        return ["the bench lacks " + ", ".join(missing)]
-    out = ["bench %s is no number >= 0" % k for k in BENCH[1:2] + BENCH[3:] if not number(bench[k])]
-    write = bench.get("adhoc_write_s", 0)
-    if not number(write):
-        out.append("bench adhoc_write_s is no number >= 0")
+        return ["the %s lacks %s" % (name, ", ".join(missing))]
+    out = ["%s %s is no number >= 0" % (name, k) for k in BENCH[1:2] + BENCH[3:] + ("adhoc_write_s",)
+           if not number(bench.get(k, 0))]
     if not str(bench["calls"] or "").strip():
-        out.append("the bench names no example calls and inputs")
+        out.append("the %s names no example calls and inputs" % name)
     command = bench["command"]
     if not isinstance(command, str) or not command and not hint_only:
-        out.append("the bench names no command matching the tool's Bash calls")
+        out.append("the %s names no command matching the tool's Bash calls" % name)
     else:
         try:
             re.compile(command)
         except re.error as exc:
-            out.append("the bench command is no pattern: %s" % exc)
-    if out:
-        return out
-    if bench["tool_wall_s"] > bench["adhoc_wall_s"] + write:
-        out.append("the tool's wall %s s is over the ad-hoc median's %s s%s" % (
-            bench["tool_wall_s"], bench["adhoc_wall_s"], " plus its writing %s s" % write if write else ""))
-    if bench["tool_out_b"] > bench["adhoc_out_b"] and not str(bench.get("reason") or "").strip():
-        out.append("the tool prints %s bytes, over the ad-hoc median's %s, with no reason"
-                   % (bench["tool_out_b"], bench["adhoc_out_b"]))
+            out.append("the %s command is no pattern: %s" % (name, exc))
     return out
 
 
-def ledger_faults(ledger):
-    """`(row id, index, fault)` of every fix on an `adhoc/<key>` opportunity row whose bench keeps it from landing."""
+def bench_widths(history, key):
+    """The bench's noise bands: `band` of the cluster's daily median exec and output bytes a call over its last
+    NET_DAYS scanned days, the days before the fix; (0, 0) without them."""
+    days = sorted((d for d in (history or {}).values() if key in (d.get("clusters") or {})), key=lambda d: d["to_s"])
+    found = [d["clusters"][key] for d in days[-NET_DAYS:]]
+    return (band([c.get("exec_s") for c in found]),
+            band([(c.get("out_b") or 0) / c["calls"] for c in found if c.get("calls")]))
+
+
+def bench_verdict(bench, widths=(0.0, 0.0)):
+    """`judged` on one bench: the script's time is its run plus its writing (`adhoc_write_s`), the tool's its run."""
+    return judged(moved(bench["adhoc_wall_s"] + bench.get("adhoc_write_s", 0), bench["tool_wall_s"], widths[0]),
+                  moved(bench["adhoc_out_b"], bench["tool_out_b"], widths[1]))
+
+
+def bench_numbers(bench):
+    return "tool %s s vs script %s s, %s vs %s bytes" % (
+        bench["tool_wall_s"], round(bench["adhoc_wall_s"] + bench.get("adhoc_write_s", 0), 3), bench["tool_out_b"],
+        bench["adhoc_out_b"])
+
+
+def bench_faults(bench, hint_only=False, widths=(0.0, 0.0), bench2=None):
+    """Why an adhoc fix's bench keeps it from landing, [] when it lands. The bench runs the cluster's own example
+    calls (`calls` names them and their inputs) and the tool on the same inputs (`bench_shape`); it passes when the
+    tool beats the script in time or output bytes and loses in neither (`bench_verdict`, each measure's noise band
+    `widths`). A first failure is never final: it asks where the time or bytes go and wants a second attempt,
+    `bench2`; a failing `bench2` rules the row out, or hands Egor the trade when one measure won and the other lost."""
+    out = bench_shape(bench, hint_only)
+    if out:
+        return out
+    verdict = bench_verdict(bench, widths)
+    if verdict == "proven":
+        return []
+    if bench2 is None:
+        return ["%s (%s): where does it go, can the tool be faster or cheaper? Try again and record the second attempt "
+                "as bench2" % (bench_numbers(bench), verdict)]
+    out = bench_shape(bench2, hint_only, "bench2")
+    if out:
+        return out
+    verdict = bench_verdict(bench2, widths)
+    if verdict == "proven":
+        return []
+    if verdict == "trade":
+        return ["try 2 trades, %s: a real trade goes to Egor (docs/doctor-fix.md §7, Cost:/Loss:/Recommendation: with "
+                "these numbers), the row handed off, never landed" % bench_numbers(bench2)]
+    return ["try 2 fails too (%s, %s): rule the row out, reason slower or costlier, carrying both benches"
+            % (bench_numbers(bench2), verdict)]
+
+
+def adhoc_key(row):
+    """The cluster key of an `adhoc/<key>` opportunity row, else None."""
+    match = (row.get("match") or {}) if isinstance(row, dict) else {}
+    ident = str(match.get("ident") or "")
+    return ident[6:] if match.get("rule") == "opportunity" and ident.startswith("adhoc/") else None
+
+
+def ledger_faults(ledger, history=None):
+    """`(row id, index, fault)` of every fix on an `adhoc/<key>` opportunity row whose bench keeps it from landing,
+    each judged with its cluster's noise bands off `history`."""
     covered = {key: tool for key, _, tool, _ in RULES}
     faults = []
     for row in (ledger.get("rows") if isinstance(ledger, dict) else None) or ():
-        match = (row.get("match") or {}) if isinstance(row, dict) else {}
-        ident = str(match.get("ident") or "")
-        if match.get("rule") != "opportunity" or not ident.startswith("adhoc/"):
+        key = adhoc_key(row)
+        if key is None:
             continue
         for index, fix in enumerate(row.get("fixes") or ()):
-            for fault in bench_faults((fix or {}).get("bench") if isinstance(fix, dict) else None,
-                                      bool(covered.get(ident[6:]))):
+            fix = fix if isinstance(fix, dict) else {}
+            for fault in bench_faults(fix.get("bench"), bool(covered.get(key)), bench_widths(history, key),
+                                      fix.get("bench2")):
                 faults.append((row.get("id") or "?", index, fault))
     return faults
+
+
+def rejection_faults(row, history=None):
+    """What a ruled-out candidate row lacks: its `reason` (REASONS), the numbers at rejection (`min_day`, `projects`),
+    `reread_by`, and for slower or costlier both benches, the second failing without a trade (a trade is Egor's)."""
+    out = [] if row.get("reason") in REASONS else ["reason is one of %s" % "|".join(REASONS)]
+    out += [] if number(row.get("min_day")) else ["min_day is its min/day at rejection"]
+    out += [] if isinstance(row.get("projects"), int) and not isinstance(row.get("projects"), bool) \
+        and row["projects"] >= 0 else ["projects is the count of projects it recurs in at rejection"]
+    out += [] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(row.get("reread_by") or "")) else \
+        ["reread_by is the YYYY-MM-DD the night re-reads it"]
+    if row.get("reason") in ("slower", "costlier"):
+        key, hint_only = adhoc_key(row), any(k == adhoc_key(row) and tool for k, _, tool, _ in RULES)
+        shape = bench_shape(row.get("bench"), hint_only) + bench_shape(row.get("bench2"), hint_only, "bench2")
+        out += shape
+        if not shape:
+            verdict = bench_verdict(row["bench2"], bench_widths(history, key))
+            if verdict in ("trade", "proven"):
+                out.append("try 2 %s (%s): %s" % ("trades" if verdict == "trade" else "passes", bench_numbers(row["bench2"]),
+                           "a real trade goes to Egor as a docs/doctor-fix.md §7 trade handoff, never a rejection"
+                           if verdict == "trade" else "land the tool"))
+    return out
 
 
 def over_floor(c):
@@ -898,11 +991,12 @@ def jobs(days):
                                                                 for k in sorted(rows)]
 
 
-def findings(day, history, since=lambda target: None, bench=lambda target: None):
-    """({target: net} of every cluster whose fix landed, the clusters over the floor worst writing minutes first, each
-    with the project it belongs to, None for the harness's); a landed cluster is charged only on a window that began
-    after its landing. Chains are clusters here; a covered one's runs are substitutes in its tool's net,
-    `adhoc/chain/<tool>`, from the tool's landing or a later fix of one of them, once a day carries them or its calls."""
+def findings(day, history, since=lambda target: None, bench=lambda target: None, include=()):
+    """({target: net} of every cluster whose fix landed, the clusters over the floor (and the `include` keys under
+    it: reopened candidates) worst writing minutes first, each with the project it belongs to, None for the
+    harness's); a landed cluster is charged only on a window that began after its landing. Chains are clusters here;
+    a covered one's runs are substitutes in its tool's net, `adhoc/chain/<tool>`, from the tool's landing or a later
+    fix of one of them, once a day carries them or its calls."""
     out, nets = [], {}
     recent = [d for k, d in sorted(history.items()) if "clusters" in d][-7:]
     for tool, (at, keys) in sorted(covering().items()):
@@ -919,7 +1013,7 @@ def findings(day, history, since=lambda target: None, bench=lambda target: None)
         c = day["clusters"].get(key)
         if not c or key in CATCH_ALL or landed and day["to_s"] - WINDOW_S < landed:
             continue
-        if over_floor(c):
+        if over_floor(c) or key in include:
             out.append({"key": key, "target": target, "job": job, "covered_by": tool, "calls": c["calls"],
                         "sessions": c["sessions"], "projects": len(recurs(c)), "project": home(c),
                         "min_day": c["min"], "worker_min_day": c["worker_min"],
@@ -957,26 +1051,6 @@ def backfill(history, day, names):
     for d in days:
         history.setdefault(d, {"to_s": int(time_budget.day_bounds(d)[1])})["uses"] = dict(uses.get(d) or {})
     return days[0]
-
-
-def elsewhere(name, path):
-    """Whether anything but a model runs the bin tool `name`: another code file of a sweep repository, a LaunchAgent,
-    Hammerspoon or Egor's shell history."""
-    word = re.compile(r"(?<![\w.-])%s(?![\w.-])" % re.escape(name))
-    for repo in handoffs.sweep_repos():
-        try:
-            found = subprocess.run(["git", "-C", repo, "grep", "-l", "-I", "-F", "-e", name, "--", "."] + [
-                ":!tests/", ":!docs/", ":!*.md", ":!*.json", ":!*.jsonl"], capture_output=True, text=True,
-                timeout=20).stdout.split("\n")
-        except (OSError, subprocess.SubprocessError):
-            continue
-        for rel in filter(None, found):
-            full = os.path.join(repo, rel)
-            if os.path.realpath(full) != os.path.realpath(path) and word.search(read(full)):
-                return True
-    files = glob.glob(time_budget.home("Library", "LaunchAgents", "*.plist")) + \
-        glob.glob(time_budget.home(".hammerspoon", "**", "*.lua"), recursive=True) + [time_budget.home(".zsh_history")]
-    return any(word.search(read(f)) for f in files)
 
 
 def cause(tool, calls, errors):
@@ -1041,75 +1115,217 @@ def hours_of(cache, now, rules):
     return {str(h): hours[h] for h in sorted(hours)}
 
 
-def menu_row(cache):
-    """Lost time's model-written scripts row, beside the overhead, never in it: the clusters but the edits and reads
-    the Edit and Read tools own, in min over the last 24 whole hours (`hours`, else the last scanned day), sorted as
-    the last scanned day decides. Repeated jobs, the night's target: clusters over the floor not ruled out or handed
-    off, and every cluster a built tool serves, as [tool min/day, cluster, [], residual min/day] (NO_TOOL while none
-    is built), the heaviest CANDIDATE_ROWS of the unbuilt; one-off, never a target: each ruled-out or handed-off
-    cluster, then the catch-alls and clusters under the floor as one row. A chain, no script, shows only
-    built, parked or over the floor, at the last scanned day's minutes where the hours lack it; a key no CLUSTERS row
-    or chain has (a cached day's removed one) shows nowhere."""
+def last_day(cache):
     history = cache.get("history") or {}
     scanned = [d for d in history if "clusters" in history[d]]
-    if not scanned:
-        return None
-    last = history[max(scanned)]
-    built, parked, shown = set(cache.get("built") or ()), set(cache.get("parked") or ()), 0.0
+    return history[max(scanned)] if scanned else None
+
+
+def mins_of(cache, last):
+    """{cluster: min} over the last 24 whole hours (`hours`), else the last scanned day's."""
     hours = list((cache.get("hours") or {}).values())
-    if hours:
-        mins, tool_min = collections.Counter(), collections.Counter()
-        for h in hours:
-            mins.update(h.get("clusters") or {})
-            tool_min.update(h.get("tools") or {})
-    else:
-        mins = {k: c.get("min") or 0 for k, c in last["clusters"].items()}
-        tool_min = {t: minutes(p, last.get("chars_s")) for t, p in (last.get("tools") or {}).items()}
-    repeated, candidates, oneoff, rest = [], [], [], 0.0
-    gone = {k for k in set(last["clusters"]) | set(mins) if not k.startswith(MINED)} - {k for k, _, _, _ in RULES}
-    for key in sorted(set(last["clusters"]) | set(mins) | {t[6:] for t in built}):
+    if not hours:
+        return {k: c.get("min") or 0 for k, c in last["clusters"].items()}
+    mins = collections.Counter()
+    for h in hours:
+        mins.update(h.get("clusters") or {})
+    return mins
+
+
+def menu_row(cache):
+    """Lost time's model-written scripts row, beside the overhead, never in it: the minutes of every cluster but the
+    edits and reads the Edit and Read tools own, over the last 24 whole hours (`mins_of`); a chain, no script, counts
+    only built, parked or over the floor, at the last scanned day's minutes where the hours lack it; a key no CLUSTERS
+    row or chain has (a cached day's removed one) counts nowhere. Its candidates are the Tools row's (`tools_document`)."""
+    last = last_day(cache)
+    if last is None:
+        return None
+    mins, total = mins_of(cache, last), 0.0
+    keep, names = set(cache.get("built") or ()) | set(cache.get("parked") or ()), {k for k, _, _, _ in RULES}
+    for key in set(last["clusters"]) | set(mins):
         c = last["clusters"].get(key) or {"write_min": 0, "sessions": 0}
-        target, m = "adhoc/" + key, round(mins.get(key) or 0, 1)
-        if key in ROW_SKIP or key in gone:
-            continue
-        if key.startswith(MINED):
-            if target not in built | parked and not over_floor(c):
-                continue
-            m = round(mins[key] if key in mins else c.get("min") or 0, 1)
-            shown += m
+        if key.startswith(MINED) and ("adhoc/" + key in keep or over_floor(c)):
+            total += round(mins[key] if key in mins else c.get("min") or 0, 1)
+        elif key in names and key not in ROW_SKIP:
+            total += mins.get(key) or 0
+    return [round(total, 1), "model-written scripts", []]
+
+
+def parked(row):
+    """A candidate row ruled out or handed off."""
+    return bool(row) and (row.get("status") == "ruled-out" or bool(row.get("handoff")))
+
+
+def num(value):
+    return "%d" % round(value) if value >= 9.95 else ("%.1f" % value).rstrip("0").rstrip(".")
+
+
+def day_label(date):
+    """YYYY-MM-DD as the menu reads it: `Nov 2`."""
+    try:
+        when = datetime.date.fromisoformat(str(date))
+    except ValueError:
+        return str(date)
+    return "%s %d" % (when.strftime("%b"), when.day)
+
+
+def dated(row):
+    return re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(row.get("reread_by") or "")) is not None
+
+
+def reopened(row, c, today, asked=False):
+    """What reopens a parked candidate tonight, None while nothing did: its projects reached FLOOR_PROJECTS from under
+    it (a handed-off one becomes a shared candidate), its min/day reached twice the `min_day` recorded at the decision,
+    its `reread_by` passed, or Egor asked from the menu (`asked`). Never a hypothetical future need."""
+    if not parked(row):
+        return None
+    was_p, was_m = row.get("projects"), row.get("min_day")
+    now_p, now_m = len(recurs(c)) if c else 0, (c or {}).get("min") or 0.0
+    known_p = isinstance(was_p, int) and not isinstance(was_p, bool)
+    grew = (not known_p or was_p < FLOOR_PROJECTS) and now_p >= FLOOR_PROJECTS
+    doubled = number(was_m) and was_m > 0 and now_m >= 2 * was_m
+    due = dated(row) and row["reread_by"] <= today
+    if not (grew or doubled or due or asked):
+        return None
+    return "reopened: %s → %d projects, %s → %s min/day%s%s" % (
+        was_p if known_p else "–", now_p, num(was_m) if number(was_m) else "–", num(now_m),
+        " · re-read by %s passed" % day_label(row["reread_by"]) if due else "", " · Egor asked" if asked else "")
+
+
+def reopen_dir():
+    """Where the Tools menu's `Reopen tonight` leaves a marker per candidate; the next Speed run consumes it."""
+    import night_priority
+    return os.path.join(night_priority.doctors_dir(), "tools-reopen")
+
+
+def marker(key):
+    return key.replace("/", "_")
+
+
+def fingerprint(row):
+    """A parked row's decision: a menu reopen holds until the night decides the row again."""
+    return json.dumps([row.get(k) for k in ("status", "handoff", "reason", "reread_by", "min_day", "projects")])
+
+
+def short_job(job, chain=None):
+    """A job in at most four words: a chain by its count of commands, else the job's first four words, a trailing
+    connective and a parenthesis dropped."""
+    if chain:
+        return "%d commands by hand" % len(chain)
+    words = re.sub(r"\s*\(.*", "", str(job)).split()[:4]
+    while len(words) > 1 and words[-1] in ("a", "an", "the", "by", "to", "on", "of", "and", "in", "for", "with"):
+        words.pop()
+    return " ".join(words)
+
+
+def bench_lines(bench, bench2=None, reason=None):
+    """`tool` and `script` beside each other's bench, in bytes for a costlier rejection, else seconds (the script's
+    with its writing); `try 2` beside them when there was one."""
+    if bench_shape(bench, True):
+        return []
+    again = not bench_shape(bench2, True)
+
+    def side(b, tool):
+        if reason == "costlier":
+            return "%d B" % (b["tool_out_b"] if tool else b["adhoc_out_b"])
+        s = b["tool_wall_s"] if tool else b["adhoc_wall_s"] + b.get("adhoc_write_s", 0)
+        return ("%.1f s" if s >= 0.95 else "%.2g s") % s
+    width = max(len(side(bench, True)), len(side(bench, False)))
+    return ["%-6s  %s%s" % (label, side(bench, tool).ljust(width) if again else side(bench, tool),
+                            "   try 2  " + side(bench2, tool) if again else "")
+            for label, tool in (("tool", True), ("script", False))]
+
+
+def reopen_line(row):
+    """`reopens  Nov 2 · 198 min/day · 3 projects`: what reopens a parked row."""
+    parts = [day_label(row["reread_by"])] if dated(row) else []
+    parts += ["%s min/day" % num(2 * row["min_day"])] if number(row.get("min_day")) and row["min_day"] > 0 else []
+    known = isinstance(row.get("projects"), int) and not isinstance(row.get("projects"), bool)
+    parts += ["%d projects" % FLOOR_PROJECTS] if not known or row["projects"] < FLOOR_PROJECTS else []
+    return ["reopens  " + " · ".join(parts)] if parts else []
+
+
+def handed(row, key, root, folders, carried, now):
+    """(waits on Egor, chats, stale) of a handed-off row, over its own handoff and every other doc beside it naming
+    the row or `adhoc/<key>`: a trade when an open one's To: names Egor or its Status reads trade; its chats the addressees of the open ones
+    (all, once none is open); stale when one is open STALE_HANDOFF_D days after its date and no night carried it."""
+    own = os.path.normpath(os.path.join(root, str(row["handoff"])))
+    folder = os.path.dirname(own)
+    if folder not in folders:
+        folders[folder] = {p: read(p) for p in glob.glob(os.path.join(folder, "*.md"))}
+    names = re.compile(r"(?<![\w/-])(?:%s|%s)(?![\w-])" % (re.escape(str(row.get("id") or "\0")), re.escape("adhoc/" + key)))
+    docs = [(p, t.splitlines()[:handoffs.HEAD_LINES]) for p, t in sorted(folders[folder].items())
+            if p == own or names.search(t)]
+    live = [(p, lines) for p, lines in docs if handoffs.phase(handoffs.status_of(lines)) != "done"]
+    chats = {n for _, lines in live or docs for n in handoffs.addressees(lines)}
+    stale = any(now - (handoffs.written_at(p) or now) >= STALE_HANDOFF_D * 86400 and os.path.basename(p) not in carried
+                for p, _ in live)
+    egor = any(handoffs.to_egor(lines) or handoffs.phase(handoffs.status_of(lines)) == "egor" for _, lines in live)
+    return egor, max(1, len(chats)), stale
+
+
+GROUPS = (("built", "✓", "built"), ("queue", "●", "night queue"), ("handed", "→", "with project chats"),
+          ("rejected", "✕", "rejected"), ("unused", "○", "unused"))
+
+
+def tools_document(cache, last, found, nets, rows, reopen, tools, now, root=None):
+    """The Tools row's document (docs/doctors-contract.md "Menu layout"): each candidate in one group, ✓ built (the
+    residual's fall), ● night queue (`your call` while it waits on Egor's trade), → with project chats, ✕ rejected
+    (reason, re-read date), ○ unused (cause), at its min/day over the last 24 hours, with up to four lines: its job,
+    the tool and script bench, what reopens a parked one, and the `marker` its `Reopen tonight` writes. `count` is the
+    candidates in work (● and →), `red` why the name reads RED (a trade waits on Egor, a handoff undelivered)."""
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    mins, clusters = (mins_of(cache, last), last["clusters"]) if last else ({}, {})
+    named = {k: job for k, job, _ in jobs([last] if last else [])}
+    built = set(cache.get("built") or ()) | {t for t, r in rows.items() if r.get("status") in ("fixed", "fixed-pending")}
+    groups, folders, red = {g: [] for g, _, _ in GROUPS}, {}, []
+    carried = handoffs.delivered() if any(parked(r) and r.get("handoff") for r in rows.values()) else set()
+    for target in sorted(built | {f["target"] for f in found} | {t for t, r in rows.items() if parked(r)}):
+        key, row = target[6:], rows.get(target) or {}
+        c = clusters.get(key) or {}
+        fix = next((f for f in reversed(row.get("fixes") or ()) if isinstance(f, dict) and f.get("bench")), {})
+        item = {"name": key, "min_day": round(mins.get(key, c.get("min") or 0), 1), "detail": "",
+                "lines": [short_job(named.get(key) or key, c.get("chain"))] + bench_lines(
+                    row.get("bench") or fix.get("bench"), row.get("bench2") or fix.get("bench2"), row.get("reason"))}
         if target in built:
-            repeated.append([round(tool_min.get(target) or 0, 1), key, [], m])
-        elif target in parked:
-            oneoff.append([m, key, []])
-        elif key not in CATCH_ALL and over_floor(c):
-            candidates.append([NO_TOOL, key, [], m])
+            n, group = nets.get(target) or {}, "built"
+            item["detail"] = "%s%d%%" % ("−" if n["min_after"] < n["min_before"] else "+", abs(round(
+                100.0 * (n["min_after"] - n["min_before"]) / n["min_before"]))) if n.get("min_before") else "pending"
+        elif target in reopen or not parked(row):
+            group, item["detail"] = "queue", "reopened" if target in reopen else ""
+        elif row.get("handoff"):
+            egor, chats, stale = handed(row, key, root, folders, carried, now)
+            group = "queue" if egor else "handed"
+            item["detail"] = "your call" if egor else "%d chat%s" % (chats, "" if chats == 1 else "s")
+            if egor or stale:
+                item["red"] = True
+                red.append("%s: %s" % (key, "your call" if egor else "handoff undelivered %d+ days" % STALE_HANDOFF_D))
         else:
-            rest += mins.get(key) or 0
-    jobs = round(sum(r[3] for r in repeated + candidates), 1)
-    repeated = sorted(repeated, key=lambda r: -r[3]) + sorted(candidates, key=lambda r: -r[3])[:CANDIDATE_ROWS]
-    oneoff = sorted(oneoff, key=lambda r: -r[0]) + ([[round(rest, 1), "other", []]] if rest else [])
-    groups = [[jobs, "repeated jobs", repeated],
-              [round(sum(r[0] for r in oneoff), 1), "one-off", oneoff]]
-    total = round(sum(v for k, v in mins.items() if k not in ROW_SKIP and k not in gone and not k.startswith(MINED))
-                  + shown, 1)
-    return [total, "model-written scripts", groups]
+            group = "rejected"
+            item["detail"] = "%s  %s" % (row.get("reason") or "–", day_label(row["reread_by"]) if dated(row) else "–")
+        if group in ("handed", "rejected"):
+            item["lines"] += reopen_line(row)
+            item["marker"] = marker(key)
+        groups[group].append(item)
+    for key in cache.get("unused") or ():
+        tool = tools.get(key) or {}
+        groups["unused"].append({"name": ("/" if key.startswith("skill/") else "") + key.split("/", 1)[1],
+                                 "min_day": round(tool.get("hint_min_day") or 0, 1), "detail": tool.get("cause") or "–",
+                                 "lines": []})
+    return {"as_of_s": int(now), "count": len(groups["queue"]) + len(groups["handed"]), "red": red,
+            "groups": [{"glyph": glyph, "label": label, "items": sorted(groups[g], key=lambda i: (-i["min_day"], i["name"]))}
+                       for g, glyph, label in GROUPS]}
 
 
-def unused_row(cache):
-    """Every unused tool, [0, name, [], HINT_OFF] where its fix keeps the file (a skill, a bin tool something else
-    runs: `elsewhere`), else [0, name, [], UNUSED], under a row counting them; None without one."""
-    keeps = set(cache.get("kept") or ())
-    unused = [[0, ("/" if key.startswith("skill/") else "") + key.split("/", 1)[1], [], HINT_OFF if key in keeps else UNUSED]
-              for key in cache.get("unused") or ()]
-    return [len(unused), "Unused tools", unused, {"count": True}] if unused else None
-
-
-def collect(now, write=False, since=lambda target: None, bench=lambda target: None, parked=lambda target: False):
+def collect(now, write=False, since=lambda target: None, bench=lambda target: None, rows=None):
     """The `adhoc` section: the scan of the local day before `now`'s, done once a local day (the first Speed run after
     midnight, before the night starts), the per-day history with the model-facing tools' calls (backfilled once over
     USE_DAYS), the findings, each landed fix's net, each tool's adoption and the scan's own seconds; `bench` gives a
-    target's last fix bench, whose command marks its tool's calls; `parked` a target ruled out or handed off. The
-    cache keeps what the menu rows need (`menu_row`, `unused_row`), the last 24 hours' clusters (`hours_of`) too."""
+    target's last fix bench, whose command marks its tool's calls; `rows` the candidates' ledger rows by target. A
+    parked finding (`parked`) carries what reopened it (`reopened`), a menu marker kept until its row is decided again
+    (`reopen`). The cache keeps what the menu rows need (`menu_row`, `tools_document` and its daily count), the last
+    24 hours' clusters (`hours_of`) too."""
+    rows = rows or {}
     started = time.monotonic()
     cache = time_budget.read_json(cache_path(), {})
     cache = cache if isinstance(cache, dict) else {}
@@ -1137,16 +1353,36 @@ def collect(now, write=False, since=lambda target: None, bench=lambda target: No
     hours = hours_of(cache, now, tool_rules(bench, known)) if write else cache.get("hours")
     marks = {"hours": hours, "built": sorted("adhoc/" + k for k in known if since("adhoc/" + k)
                              and (bench("adhoc/" + k) or {}).get("command")),
-             "parked": sorted("adhoc/" + k for k in known if parked("adhoc/" + k)),
+             "parked": sorted("adhoc/" + k for k in known if parked(rows.get("adhoc/" + k))),
              "unused": sorted(k for k, t in tools.items() if t["unused"])}
-    marks["kept"] = [k for k in marks["unused"] if k.startswith("skill/") or elsewhere(k[4:], tools[k]["path"])]
+    try:
+        present = set(os.listdir(reopen_dir()))
+    except OSError:
+        present = set()
+    marks["reopen"] = {t: fp for t, fp in (cache.get("reopen") or {}).items() if t in rows and fingerprint(rows[t]) == fp}
+    marks["reopen"].update((t, fingerprint(r)) for t, r in rows.items() if parked(r) and marker(t[6:]) in present)
+    today, clusters = time_budget.local_day(now), history[day]["clusters"]
+    reopen = {t: why for t, why in ((t, reopened(r, clusters.get(t[6:]), today, t in marks["reopen"]))
+                                    for t, r in sorted(rows.items())) if why}
+    nets, found = findings(history[day], history, since, bench, include={t[6:] for t in reopen})
+    for f in found:
+        f.update(parked=parked(rows.get(f["target"])), reopened=reopen.get(f["target"]))
+    doc = tools_document(dict(cache, **marks), history[day], found, nets, rows, reopen, tools, now)
+    marks["tools_days"] = {d: n for d, n in dict(cache.get("tools_days") or {}, **{today: doc["count"]}).items()
+                           if d >= time_budget.local_day(now - HISTORY_D * 86400)}
+    doc["by_day"] = marks["tools_days"]
     if write and (fresh or any(cache.get(k) != v for k, v in marks.items())):
         cache.update(marks)
         time_budget.write_json(cache_path(), cache)
-    nets, found = findings(history[day], history, since, bench)
+    for name in present if write else ():
+        try:
+            os.remove(os.path.join(reopen_dir(), name))
+        except OSError:
+            pass
     return {"day": day, "scan_s": cache.get("scan_s"), "bash_calls": history[day]["bash_calls"],
             "chars_s": history[day]["chars_s"], "floor_min_day": FLOOR_MIN_DAY, "findings": found, "net": nets,
-            "tools": tools, "unused": [dict(tools[k], key=k) for k in marks["unused"]], "hung": hung_findings(history[day])}
+            "tools": tools, "unused": [dict(tools[k], key=k) for k in marks["unused"]], "hung": hung_findings(history[day]),
+            "lifecycle": doc}
 
 
 def main(argv):

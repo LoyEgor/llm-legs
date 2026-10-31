@@ -11546,7 +11546,10 @@
       "note": "2026-10-29 (fixer 1a49) ruled out: the Edit tool is no faster than the script for this job. 24 h of transcripts to 17:30 UTC: 619 calls (508 by workers), 527 python .replace scripts, 92 sed/perl -i; of the 229 scripts with one .replace( 133 are a def rep()/for-loop helper doing many, 96 a single replace. End to end (gap from the previous tool result to the call, plus its run): an Edit call 3.6 + 0.77 s (2412 calls, 462 chars, 1 % errors), a single-replace script 5.6 + ~0.7 s (3.9 s median with the run it bundles), a partial Read 3.1 + 0.15 s (593 of 671 Edits after a Read follow a partial one, so offset/limit suffices). Edit saves 1.9 s only on a file already Read with nothing run after; 70 % of 1-2-replace targets were never Read, Written or Edited before (a Read first loses 1.3 s), a bundled run needs its own turn (loses ~1.6 s), and from two replaces on Edit is a turn each (2-replace script 8.7 s gap against 2 x 4.4 s). Tried: a once-per-session additionalContext nudge in claude-setup hooks/worker-edit-guard.sh for any session on one .replace( then a write: ~15 eligible calls/day x 1.9 s, about even net, 18 gate-replay rows turning notice; reverted, not landed (its bash 3.2 ${input#*...} took 2.6 s CPU on a 64 KB payload, regexes did not). The predicted 40 min/day prices the scripts' whole writing as removed (blind_spots covered-tool-turns). Found, not this row's: worker-edit-guard records a python write only by its literal path, so p='bin/x'; open(p,'w') reaches no shell-writes record. Earlier: the bypass-mode system prompt prefers sed/heredocs/short scripts; every worker brief's EDITS line already asks for Edit/Write; the graft.py and layers.py corruptions (run 2dc2) were such scripts.",
       "handoff": null,
       "depends_on": "2026-10-29 (fixer 1a49) ruled out: the Edit tool is no faster than the script for this job.",
-      "reread_by": "2026-11-02"
+      "reread_by": "2026-11-02",
+      "reason": "slower",
+      "min_day": 105.5,
+      "projects": 6
     },
     {
       "id": "hook_cut:launchagent-name-gate.sh",
@@ -11804,7 +11807,10 @@
       "last_reviewed": "2026-10-29",
       "reviewed_by": "night fixer harness-speed-time-hung-20261029T053342Z-113e",
       "depends_on": "unrecorded",
-      "reread_by": "2026-12-19"
+      "reread_by": "2026-12-19",
+      "reason": "costlier",
+      "min_day": 1.4,
+      "projects": 2
     },
     {
       "id": "speed-refusal-english-gate",

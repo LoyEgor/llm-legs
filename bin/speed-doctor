@@ -1214,9 +1214,13 @@ def test_opportunities(tests):
 def adhoc_opportunities(adhoc):
     """Tool mining's clusters over its floor (share/tool_mining.py), saving their writing minutes: a new command and
     its hint, or only the hint where a tool already does the job, or that tool extended where models run its chain by
-    hand (a bypass); each in the project a job recurring in fewer than FLOOR_PROJECTS projects belongs to."""
+    hand (a bypass); each in the project a job recurring in fewer than FLOOR_PROJECTS projects belongs to. A parked
+    one (ruled out or handed off) stays out until something reopens it (tool_mining.reopened), its fact then saying
+    what changed."""
     out = []
     for f in adhoc.get("findings") or ():
+        if f.get("parked") and not f.get("reopened"):
+            continue
         kind = ("bypass" if f["key"].startswith(tool_mining.MINED) else "hint") if f["covered_by"] else "tool"
         lever = dict(ADHOC_LEVERS[kind], saving=f["write_min_day"] / f["min_day"] if f["min_day"] else 0.0)
         if f.get("project") is not None:
@@ -1226,8 +1230,9 @@ def adhoc_opportunities(adhoc):
         fields.update(worker_min_day=round(f["worker_min_day"] * lever["saving"], 2), kind=kind,
                       what=ADHOC_WHAT[kind] % ((f["covered_by"], f["job"]) if f["covered_by"] else f["job"]),
                       calls_day=f["calls"], sessions=f["sessions"], per_1k=f["per_1k"], examples=f["examples"],
-                      project=f.get("project"))
-        o["fact"] = "%s · %d calls/day in %d sessions%s · %s → saves %s · %s%s" % (
+                      project=f.get("project"), reopened=f.get("reopened"))
+        o["fact"] = "%s%s · %d calls/day in %d sessions%s · %s → saves %s · %s%s" % (
+            f["reopened"] + " · " if f.get("reopened") else "",
             f["job"], f["calls"], f["sessions"], " of " + f["project"] if f.get("project") is not None else "",
             per_day(f["min_day"], f["worker_min_day"]),
             per_day(fields["saving"], fields["worker_min_day"]), fields["levers"][0],
@@ -1273,9 +1278,10 @@ def hung_opportunities(adhoc):
     return out
 
 
-def parked(ledger, target):
-    row = H.ledger_row(ledger, "opportunity", target) or {}
-    return row.get("status") == "ruled-out" or bool(row.get("handoff"))
+def adhoc_rows(ledger):
+    """{adhoc/<key>: ledger row} of every tool candidate's row."""
+    return {"adhoc/" + tool_mining.adhoc_key(r): r for r in ledger.get("rows") or ()
+            if isinstance(r, dict) and tool_mining.adhoc_key(r) is not None}
 
 
 def test_regressions(tests, ledger, now):
@@ -1305,15 +1311,17 @@ def net_line(target, n):
 
 
 def adhoc_regressions(adhoc, ledger, now):
-    """A landed adhoc fix whose job now costs more minutes or tokens than its scripts did (tool_mining.net) as a
-    regression row the night fixes or cuts, its expected gain the minutes a day over before."""
+    """A landed adhoc fix whose job now costs more minutes or tokens than its scripts did, with no win in the other
+    (worse) or against one (a trade, Egor's once the night cannot remove it) (tool_mining.net), as a regression row
+    the night fixes or cuts, its expected gain the minutes a day over before."""
     out = []
     for target, n in sorted((adhoc.get("net") or {}).items()):
-        if n["state"] != "worse":
+        if n["state"] not in ("worse", "trade"):
             continue
         row = H.ledger_row(ledger, "regression", target)
         out.append({"id": row["id"] if row else "regression:%s" % target, "rule": "regression",
-                    "state": H.ledger_state(row, 48, now), "fact": "tool worse than its scripts: " + net_line(target, n),
+                    "state": H.ledger_state(row, 48, now), "fact": "tool %s its scripts: %s" % (
+                        "worse than" if n["state"] == "worse" else "trades against", net_line(target, n)),
                     "value": n["min_after"], "limit": n["min_before"], "unit": "min/day", "window_h": 24,
                     "exposure": None, "count": None, "first_seen": None, "last_seen": None, "evidence": [],
                     "ledger": row["id"] if row else None, "group": "adhoc", "component": target,
@@ -1322,8 +1330,10 @@ def adhoc_regressions(adhoc, ledger, now):
 
 
 def last_bench(ledger, target):
+    """The landed tool's bench: its second attempt where there was one."""
     fixes = (H.ledger_row(ledger, "opportunity", target) or {}).get("fixes") or ()
-    return next((f["bench"] for f in reversed(fixes) if isinstance(f, dict) and isinstance(f.get("bench"), dict)), None)
+    return next((f["bench2"] if isinstance(f.get("bench2"), dict) else f["bench"] for f in reversed(fixes)
+                 if isinstance(f, dict) and isinstance(f.get("bench"), dict)), None)
 
 
 def moved_opportunities(component_om, days, now, covered=WINDOW_D):
@@ -1712,7 +1722,7 @@ def collect(write, now):
     try:
         adhoc = tool_mining.collect(now, write, since=lambda target: landed_end(ledger, target),
                                     bench=lambda target: last_bench(ledger, target),
-                                    parked=lambda target: parked(ledger, target))
+                                    rows=adhoc_rows(ledger))
     except Exception as exc:
         adhoc = {"status": "error", "head": H.error_line(exc), "findings": [], "net": {}}
     opportunities += adhoc_opportunities(adhoc) + unused_opportunities(adhoc) + hung_opportunities(adhoc)
@@ -1799,6 +1809,7 @@ def collect(write, now):
         "budget": budget,
         "tests": tests,
         "adhoc": adhoc,
+        "tools": tools_row(adhoc),
         "media_phases": phases,
         "meters": meter_spots(opportunities),
     }
@@ -1862,6 +1873,24 @@ def leaf_line(leaves, top=3):
     return " · ".join("%s %s" % (leaf, fmt(v)) for leaf, v in sorted(leaves.items(), key=lambda x: -x[1])[:top])
 
 
+def adhoc_lines(adhoc):
+    """Tool mining's head line, then each landed tool's net, as [depth, text, red]: the Harness menu's and the Tools
+    row's details."""
+    found = adhoc.get("findings") or ()
+    head = "Ad-hoc scripts: %d jobs over %s min/day writing · %s min/day · %d of %d Bash calls · scan %s s" % (
+        len(found), fmt(adhoc.get("floor_min_day")), fmt(sum(f["write_min_day"] for f in found)),
+        sum(f["calls"] for f in found), adhoc.get("bash_calls") or 0, adhoc.get("scan_s")) if "bash_calls" in adhoc \
+        else "Ad-hoc scripts: " + str(adhoc.get("head") or "not measured")
+    return [[0, head, adhoc.get("status") == "error"]] + [
+        [1, net_line(target, n), n["state"] in ("worse", "trade")] for target, n in sorted((adhoc.get("net") or {}).items())]
+
+
+def tools_row(adhoc):
+    """The Tools row's document (tool_mining.tools_document) with its details; None while tool mining has none."""
+    doc = adhoc.pop("lifecycle", None)
+    return dict(doc, details=[text for _, text, _ in adhoc_lines(adhoc)]) if doc else None
+
+
 def menu_lines(document):
     """The Speed block's own lines as [depth, flags, red, text] under its header line; harness-doctor's menu_text
     lays them out at the top of the Harness menu."""
@@ -1891,15 +1920,8 @@ def menu_lines(document):
     for depth, flags, red, text in tests.get("menu") or [[0, "", tests.get("status") == "error",
                                                            "Test health: " + str(tests.get("head") or "not measured")]]:
         emit(depth, text, flags, red)
-    adhoc = document.get("adhoc") or {}
-    emit(0, "Ad-hoc scripts: %d jobs over %s min/day writing · %s min/day · %d of %d Bash calls · scan %s s" % (
-        len(adhoc.get("findings") or ()), fmt(adhoc.get("floor_min_day")),
-        fmt(sum(f["write_min_day"] for f in adhoc.get("findings") or ())),
-        sum(f["calls"] for f in adhoc.get("findings") or ()), adhoc.get("bash_calls") or 0, adhoc.get("scan_s"))
-         if "bash_calls" in adhoc else
-         "Ad-hoc scripts: " + str(adhoc.get("head") or "not measured"), red=adhoc.get("status") == "error")
-    for target, n in sorted((adhoc.get("net") or {}).items()):
-        emit(1, net_line(target, n), "d", red=n["state"] == "worse")
+    for depth, text, red in adhoc_lines(document.get("adhoc") or {}):
+        emit(depth, text, "d" if depth else "", red=red)
     last = document["night"]["last"]
     emit(0, "Night: last %s · first landing %s" % (hours(last["wall_h"]), hours(last["first_landing_h"]))
          if last else "Night: no finished night")

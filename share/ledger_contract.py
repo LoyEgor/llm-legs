@@ -13,6 +13,7 @@ OWNER = "Harness Doctor"
 ROW_KEYS = frozenset({"id", "title", "match", "status", "fixes", "same_cause", "last_reviewed", "reviewed_by", "note",
                       "handoff"})
 ROW_OPTIONAL = frozenset({"ruled_at", "expected_min_day", "depends_on", "reread_by", "reread_note"})
+ADHOC_OPTIONAL = frozenset({"reason", "min_day", "projects", "bench", "bench2"})  # a rejected tool candidate (tool_mining)
 DECISIONS = ("kept", "trade", "ruled-out")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 BLIND_KEYS = frozenset({"id", "what", "reason", "since", "would_catch_if"})
@@ -47,7 +48,10 @@ def decision_faults(row):
 
 
 def row_faults(row, ids):
-    faults = key_fault("a row's", row, ROW_KEYS, ROW_OPTIONAL) + decision_faults(row)
+    match = row.get("match") if isinstance(row.get("match"), dict) else {}
+    adhoc = match.get("rule") == "opportunity" and str(match.get("ident") or "").startswith("adhoc/")
+    faults = key_fault("a row's", row, ROW_KEYS, ROW_OPTIONAL | (ADHOC_OPTIONAL if adhoc else frozenset())) \
+        + decision_faults(row)
     if not isinstance(row.get("expected_min_day", 0), (int, float)):
         faults.append("expected_min_day is a number")
     same = row.get("same_cause")
@@ -58,13 +62,11 @@ def row_faults(row, ids):
         return faults + ["fixes is a list"]
     if row.get("status") in ("fixed", "fixed-pending") and not fixes:
         faults.append("a %s row names its fix" % row["status"])
-    match = row.get("match") if isinstance(row.get("match"), dict) else {}
-    adhoc = match.get("rule") == "opportunity" and str(match.get("ident") or "").startswith("adhoc/")
     for i, fix in enumerate(fixes):
         if not isinstance(fix, dict):
             faults.append("fixes[%d] is an object" % i)
             continue
-        faults += key_fault("fixes[%d]" % i, fix, FIX_KEYS, frozenset({"equivalence"} | ({"bench"} if adhoc else set())))
+        faults += key_fault("fixes[%d]" % i, fix, FIX_KEYS, frozenset({"equivalence"} | ({"bench", "bench2"} if adhoc else set())))
         files = fix.get("files")
         if not isinstance(files, list) or not files:
             faults.append("fixes[%d] names its files" % i)

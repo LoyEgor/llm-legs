@@ -930,8 +930,6 @@ def document(now, hours=24.0, write=True):
         rows.append([scale(tools["seconds"]), "our tools", [list(r) for r in named[:TOOL_ROWS] if r[0] >= 0.1]
                      + ([[rest, "the rest"]] if rest >= 0.1 else []), {"dim": True}])
     rows = frozen(rows, write) + ["-", [scale(b["active_s"]), "system active", []]]
-    unused = tool_mining.unused_row(cache)
-    rows += ["-", unused] if unused else []
     doc = {"window_h": hours, "as_of_s": int(now), "lost_min_day": scale(b["overhead_s"]) if measured(b) else None,
            "rows": rows, "classes_min_day": {k: scale(v) for k, v in b["seconds"].items()},
            "waits_min_day": {"overshoot": scale(waits["seconds"]), "end_unknown": scale(sum(waits["unknown"].values())),
@@ -952,7 +950,7 @@ def document(now, hours=24.0, write=True):
         prune_days(now)
     doc["lines"] = ["%d min/day %s" % (round(r[0]), r[1]) + "".join(
         " · %s %d" % (part[0], round(scale(b["parts"][part[0]]))) for part in dict(ROWS).get(r[1], ()) if r[1] != part[0])
-        for r in rows if r != "-" and not r[3:4] == [{"count": True}]] if doc["lost_min_day"] is not None else [
+        for r in rows if r != "-"] if doc["lost_min_day"] is not None else [
         "Lost time: nothing measured in the last %d h" % hours]
     return doc
 

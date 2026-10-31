@@ -2,7 +2,8 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/tool_mining.py off fixture transcripts (a chat, a RUN-TOKEN worker, a subagent, a codex rollout): which Bash
 # calls are ad hoc, their clusters, exec, writing time and output, substitutes, a benched tool's calls, the floor, the
-# once-a-day cache, a landed fix's net (proven, worse, load-matched, drift), the bench gate, Speed's adhoc opportunities
+# once-a-day cache, a landed fix's net (proven, trade, worse, the noise band, load-matched, drift), the bench gate and
+# its second attempt, rejections and reopens, the Tools row's document, Speed's adhoc opportunities
 # and regressions and Harness's net proof; chains of short calls (a hand landing), a covered one a bypass of its tool
 # (`land`) counted in that tool's net. Fixture directories only.
 set -u
@@ -177,10 +178,22 @@ check(good["state"] == "proven" and good["days"] == [3, 2] and good["min_before"
       "a tool cutting the job's minutes and tokens per 1000 Bash calls is proven, a day without substitutes left out: %s"
       % good)
 wordy = t.net(hist(at(2, RESIDUAL, part(8, 240, 0.3, 40000))), "ledger-query", landed, BENCH)
-check(wordy["state"] == "worse" and wordy["min_after"] < wordy["min_before"] and wordy["cost"] > 1,
-      "a faster tool whose output the model reads costs more tokens is worse: %s" % wordy)
-check(t.net(hist(at(2, RESIDUAL, LEAN)), "ledger-query", landed, dict(BENCH, hint_b=3000))["state"] == "worse",
-      "the hint's bytes in every session count against the tool")
+check(wordy["state"] == "trade" and wordy["min_after"] < wordy["min_before"] and wordy["cost"] > 1,
+      "a faster tool whose output the model reads costs more tokens is a trade, never proven: %s" % wordy)
+check(t.net(hist(at(2, RESIDUAL, LEAN)), "ledger-query", landed, dict(BENCH, hint_b=3000))["state"] == "trade",
+      "the hint's bytes in every session count against the tool: a proven tool with a heavy hint is a trade")
+check(t.band([1.0, 1.0, 1.0]) == 0 and t.band([5.0]) == 0 and abs(t.band([90.0, 100.0, 110.0]) - 0.1 / 3 ** 0.5) < 1e-9
+      and [t.judged(*m) for m in ((-1, 0), (0, -1), (-1, -1), (-1, 1), (1, -1), (0, 0), (1, 0), (0, 1), (1, 1))]
+      == ["proven", "proven", "proven", "trade", "trade", "even", "worse", "worse", "worse"],
+      "a win in one is enough, the other the same; worse in one with no win in the other, or in both, fails; the noise "
+      "band is the before days' relative spread over the root of their count, none under two days")
+SPREAD = {"d1": at(5, SCRIPTS), "d2": at(4, part(10, 3300, 1.0, 22000)), "d3": at(3, part(10, 2700, 1.0, 18000))}
+WORDIER = part(8, 240, 0.3, 24000)
+noisy, flat = (t.net(dict(b, a0=at(2, RESIDUAL, WORDIER)), "ledger-query", landed, BENCH) for b in (SPREAD, hist()))
+check(noisy["state"] == "proven" and noisy["tok_after"] > noisy["tok_before"] and noisy["band"] == [0.056, 0.058]
+      and flat["state"] == "trade" and flat["tok_after"] == noisy["tok_after"],
+      "a token rise inside the before days' day-to-day spread is the same: the faster tool is proven, and a trade over "
+      "flat before days: %s %s" % (noisy, flat))
 dodged = t.net(hist(at(2, None, part(2, 60, 0.3, 600), part(10, 3500, 1.0, 20000))), "ledger-query", landed, BENCH)
 check(dodged["state"] == "worse" and dodged["saved_min_day"] < 0,
       "scripts doing the job under another cluster's shape count against the tool: %s" % dodged)
@@ -191,7 +204,7 @@ check(busy["state"] == "proven" and busy["load"] == 3.0 and busy["min_after"] < 
 drift = t.net(hist(*[at(2.0 - 0.1 * i, RESIDUAL, LEAN) for i in range(10)]
                    + [at(1.0 - 0.1 * i, RESIDUAL, part(8, 240, 0.3, 24000)) for i in range(t.NET_DAYS)]),
               "ledger-query", landed, BENCH)
-check(drift["state"] == "worse", "a proven tool drifting worse over its last %d days reads worse: %s" % (t.NET_DAYS, drift))
+check(drift["state"] == "trade", "a proven tool drifting wordier over its last %d days reads a trade: %s" % (t.NET_DAYS, drift))
 check(t.net(before, "ledger-query", landed, BENCH)["state"] == "pending", "no whole day after landing is pending")
 nets, found = t.findings(day, history, since=lambda target: HI - 3600 if target == "adhoc/ledger-query" else None)
 check(not found and nets["adhoc/ledger-query"]["state"] == "pending",
@@ -204,23 +217,46 @@ check(t.bench_faults(FAIR) == [] and t.bench_faults(dict(FAIR, command=""), hint
 check(t.bench_faults(None) and t.bench_faults({k: v for k, v in FAIR.items() if k != "hint_b"})
       == ["the bench lacks hint_b"] and t.bench_faults(dict(FAIR, command="")) and t.bench_faults(dict(FAIR, calls=" ")),
       "no bench, a missing key, a tool row with no command or no named calls is refused")
-check(t.bench_faults(dict(FAIR, tool_wall_s=0.5)) == ["the tool's wall 0.5 s is over the ad-hoc median's 0.4 s"]
-      and t.bench_faults(dict(FAIR, tool_out_b=901, reason="x")) == []
-      and t.bench_faults(dict(FAIR, tool_out_b=901)) == ["the tool prints 901 bytes, over the ad-hoc median's 900, with no reason"],
-      "a slower tool is refused; a wordier one only with a stated reason")
+ASK = ": where does it go, can the tool be faster or cheaper? Try again and record the second attempt as bench2"
+check(t.bench_faults(dict(FAIR, tool_wall_s=0.5)) == ["tool 0.5 s vs script 0.4 s, 300 vs 900 bytes (trade)" + ASK]
+      and t.bench_faults(dict(FAIR, tool_out_b=901, reason="x")) == t.bench_faults(dict(FAIR, tool_out_b=901))
+      == ["tool 0.1 s vs script 0.4 s, 901 vs 900 bytes (trade)" + ASK]
+      and t.bench_faults(dict(FAIR, tool_wall_s=0.5, tool_out_b=901))
+      == ["tool 0.5 s vs script 0.4 s, 901 vs 900 bytes (worse)" + ASK]
+      and t.bench_faults(dict(FAIR, tool_wall_s=0.42, tool_out_b=905), widths=(0.1, 0.01))
+      == ["tool 0.42 s vs script 0.4 s, 905 vs 900 bytes (even)" + ASK]
+      and t.bench_faults(dict(FAIR, tool_wall_s=0.42, tool_out_b=500), widths=(0.1, 0.01)) == [],
+      "a first bench losing either measure is refused with both numbers and the question, a stated reason no excuse; "
+      "a change inside the band is the same, so the same time and fewer bytes lands")
+check(t.bench_faults(dict(FAIR, tool_wall_s=0.5), bench2=dict(FAIR, tool_wall_s=0.3)) == []
+      and t.bench_faults(dict(FAIR, tool_wall_s=0.5), bench2=dict(FAIR, tool_wall_s=0.45))
+      == ["try 2 trades, tool 0.45 s vs script 0.4 s, 300 vs 900 bytes: a real trade goes to Egor (docs/doctor-fix.md "
+          "§7, Cost:/Loss:/Recommendation: with these numbers), the row handed off, never landed"]
+      and t.bench_faults(dict(FAIR, tool_wall_s=0.5), bench2=dict(FAIR, tool_wall_s=0.45, tool_out_b=950))
+      == ["try 2 fails too (tool 0.45 s vs script 0.4 s, 950 vs 900 bytes, worse): rule the row out, reason slower or "
+          "costlier, carrying both benches"],
+      "the second attempt decides: a pass lands, a trade goes to Egor, worse again is ruled out")
 LOOKUP = dict(FAIR, adhoc_wall_s=0.029, tool_wall_s=0.034)
 check(t.bench_faults(dict(LOOKUP, adhoc_write_s=2.459)) == []
       and t.bench_faults(dict(FAIR, tool_wall_s=0.5, adhoc_write_s=0.05))
-      == ["the tool's wall 0.5 s is over the ad-hoc median's 0.4 s plus its writing 0.05 s"]
+      == ["tool 0.5 s vs script 0.45 s, 300 vs 900 bytes (trade)" + ASK]
       and t.bench_faults(dict(FAIR, adhoc_write_s="2 s")) == ["bench adhoc_write_s is no number >= 0"],
-      "the ad-hoc side's wall counts the model's writing of the script: the dropped ledger lookup (5 ms over bare jq, "
-      "2.46 s to write) lands")
+      "the script's time is its run plus the model's writing of it, the tool's its run only: the dropped ledger lookup "
+      "(5 ms over bare jq, 2.46 s to write) lands")
+DAYS = {"d%d" % i: {"to_s": i, "clusters": {"q": part(10, 0, 1.0 + 0.1 * (i % 2), 9000)}} for i in range(9)}
+check(t.bench_widths(DAYS, "q") == (t.band([1.0 + 0.1 * (i % 2) for i in range(9 - t.NET_DAYS, 9)]), 0) and t.bench_widths({}, "q") == (0, 0),
+      "the bench's band is the cluster's spread of daily median exec and bytes a call over its last %d days: %s"
+      % (t.NET_DAYS, t.bench_widths(DAYS, "q")))
 ledger = {"rows": [{"id": "A", "match": {"rule": "opportunity", "ident": "adhoc/file-edit"}, "fixes": [{"bench": dict(FAIR, command="")}]},
                    {"id": "B", "match": {"rule": "opportunity", "ident": "adhoc/ledger-query"}, "fixes": [{}, {"bench": FAIR}]},
                    {"id": "C", "match": {"rule": "opportunity", "ident": "chat/hooks"}, "fixes": [{}]}]}
 check(t.ledger_faults(ledger) == [("B", 0, "no bench {%s}" % ", ".join(t.BENCH))],
       "every fix on an adhoc row carries its bench, a covered row's without a command; other rows are not benched: %s"
       % t.ledger_faults(ledger))
+retry = {"rows": [{"id": "B", "match": {"rule": "opportunity", "ident": "adhoc/ledger-query"}, "fixes": [{"bench": dict(FAIR, tool_wall_s=0.5), "bench2": FAIR}]}]}
+check(t.ledger_faults(retry) == [] and [f[2][:12] for f in t.ledger_faults({"rows": [dict(retry["rows"][0], fixes=[
+          {"bench": dict(FAIR, tool_wall_s=0.5)}])]})] == ["tool 0.5 s v"],
+      "a fix whose first bench failed lands on its passing second attempt, never without it")
 
 speed_doctor = os.path.join(root, "bin", "speed-doctor")
 spec = importlib.util.spec_from_loader("speed_doctor", importlib.machinery.SourceFileLoader("speed_doctor", speed_doctor))
@@ -241,6 +277,13 @@ own = s.adhoc_opportunities({"findings": [dict(f, project="/x/bench")]})[0]
 check(own["fact"].startswith("read doctor ledger rows · 3 calls/day in 3 sessions of /x/bench · ")
       and own["opportunity"]["project"] == "/x/bench" and "in /x/bench, its hint in that project's CLAUDE.md" in own["fact"],
       "a project's own job puts its command and hint in that project, a handoff outside the night's: %s" % own["fact"])
+WHY = "reopened: 1 → 3 projects, 12 → 30 min/day"
+back = s.adhoc_opportunities({"findings": [dict(f, parked=True), dict(f, key="tokenmap", target="adhoc/tokenmap",
+                                                                      parked=True, reopened=WHY)]})
+check([r["id"] for r in back] == ["opportunity:adhoc/tokenmap"] and back[0]["fact"].startswith(WHY + " · read doctor ledger")
+      and back[0]["opportunity"]["reopened"] == WHY,
+      "a parked candidate stays out of the night until something reopens it, its fact then opening on what changed: %s"
+      % [r["fact"] for r in back])
 
 h = s.H
 entry = {"match": {"rule": "opportunity", "ident": "adhoc/ledger-query"}, "fixes": [{"in": "x"}]}
@@ -248,12 +291,14 @@ speed = lambda state: {"adhoc": {"net": {"adhoc/ledger-query": dict(good, state=
 check(h.speed_proof(entry, speed("proven"), 0)[0] is True and h.speed_proof(entry, speed("worse"), 0)[0] is False
       and h.speed_proof(entry, speed("even"), 0)[0] is False,
       "Harness proves an adhoc fix by its net, not by a replay")
-regs = s.adhoc_regressions({"net": {"adhoc/ledger-query": wordy, "adhoc/tokenmap": good}}, {}, NOW)
+regs = s.adhoc_regressions({"net": {"adhoc/ledger-query": wordy, "adhoc/tokenmap": good, "adhoc/limits": dodged}}, {}, NOW)
 check([(r["id"], r["rule"], r["state"], r["component"]) for r in regs]
-      == [("regression:adhoc/ledger-query", "regression", "new", "adhoc/ledger-query")]
-      and regs[0]["fact"].startswith("tool worse than its scripts: adhoc/ledger-query · ") and "cost ×" in regs[0]["fact"]
+      == [("regression:adhoc/ledger-query", "regression", "new", "adhoc/ledger-query"),
+          ("regression:adhoc/limits", "regression", "new", "adhoc/limits")]
+      and regs[0]["fact"].startswith("tool trades against its scripts: adhoc/ledger-query · ") and "cost ×" in regs[0]["fact"]
+      and regs[1]["fact"].startswith("tool worse than its scripts: adhoc/limits · ")
       and regs[0]["expected_min_day"] == 0.0,
-      "Speed turns a worse tool into a regression row the night fixes or cuts, a proven one into none: %s" % regs)
+      "Speed turns a trading or worse tool into a regression row the night fixes or cuts, a proven one into none: %s" % regs)
 line = s.net_line("adhoc/ledger-query", good)
 check(line == "adhoc/ledger-query · 5.2 → 1.5 min/day · saves 3.7 · cost ×0.39 · proven",
       "Speed shows each landed tool's minutes a day before and after, the saving and the cost ratio: %s" % line)
@@ -337,16 +382,9 @@ cache = {"history": {day0: {"chars_s": 10.0, "tools": {"adhoc/ledger-query": {"c
                                          "limits": C(4.6, 1.0, 1), "json-other": C(23.8), "text-other": C(49.8, 20.0, 9),
                                          "file-edit": C(217.4)}}},
          "built": ["adhoc/ledger-query", "adhoc/doctor-state"], "parked": ["adhoc/logo-bench"], "unused": ["skill/s", "bin/foo"], "kept": ["skill/s"]}
-check(t.menu_row(cache) == [164.9, "model-written scripts", [
-    [41.2, "repeated jobs", [[2.0, "ledger-query", [], 16.8], [0.0, "doctor-state", [], 0.0], ["–", "tokenmap", [], 24.4]]],
-    [123.7, "one-off", [[45.5, "logo-bench", []], [78.2, "other", []]]]]],
-      "the model-written scripts row: repeated jobs (each built tool's min/day beside its residual, then unbuilt "
-      "clusters over the floor), one-off (ruled-out or handed-off clusters, catch-alls and the rest as one row): %s"
-      % t.menu_row(cache))
-check(t.unused_row(cache) == [2, "Unused tools", [[0, "/s", [], "○"], [0, "foo", [], "🗑"]], {"count": True}]
-      and t.unused_row(dict(cache, unused=[])) is None,
-      "the unused tools under a row counting them, ○ where the fix keeps the file, 🗑 where it deletes it: %s"
-      % t.unused_row(cache))
+check(t.menu_row(cache) == [164.9, "model-written scripts", []] and not hasattr(t, "unused_row"),
+      "Lost time keeps only the model-written scripts minutes (every cluster but the edits and reads the Edit and Read "
+      "tools own), no candidate list under it and no unused tools: those live in the Tools row: %s" % t.menu_row(cache))
 unused = s.unused_opportunities({"unused": [dict(got["skill/s"], key="skill/s")]})
 check([o["id"] for o in unused] == ["opportunity:tool/skill/s"] and unused[0]["group"] == "tool"
       and unused[0]["fact"].startswith("skill/s · 0 calls in 30 days · 40 d old · hint 9 B in 10 sessions/day")
@@ -492,8 +530,7 @@ check(KEY in t.chain_rows(alone, 10.0, {KEY: lday["clusters"][KEY]["chain"]})
 cache = {"history": {day0: {"chars_s": 10.0, "clusters": {"tokenmap": C(24.4), "chain/a+b+c": C(30.0, 0.0, 9),
                                                           "chain/d+e+f": C(12.0)}}},
          "hours": {"0": {"clusters": {"tokenmap": 24.4}, "tools": {}}}}
-MENU = [36.4, "model-written scripts", [
-    [36.4, "repeated jobs", [["–", "tokenmap", [], 24.4], ["–", "chain/d+e+f", [], 12.0]]], [0, "one-off", []]]]
+MENU = [36.4, "model-written scripts", []]
 check(t.menu_row(cache) == MENU,
       "a chain over the floor shows at its last day's minutes where the hours lack it; a chain under the floor "
       "is no row and no part of the total: %s" % t.menu_row(cache))
@@ -569,6 +606,12 @@ brief = open(os.path.join(root, "bin", "doctor-fix")).read()
 check("one naming no tool gets one command that does the whole chain" in brief
       and "is a bypass of that tool" in brief and "extend or fix the tool itself" in brief,
       "the fixer brief: an uncovered chain gets one command, a covered one the bypassed tool extended or fixed")
+check("A win in one is enough" in brief and "record the retry as the fix" in brief and "`bench2`" in brief
+      and "a real trade: a §7 handoff to Egor" in brief and "carries `reason` (slower|costlier|one-off" in brief
+      and "Need decides where, never whether" in brief and "Speed reopens a parked row" in brief
+      and "reason: only for a longer output" not in brief,
+      "the fixer brief carries the candidate rules: a win in one, the second attempt, a trade to Egor, what a "
+      "rejection records, need deciding where, the reopen; no longer-output excuse")
 
 # The tool index (share/tool_index.py, bin/tools) and the near-unused check over it.
 ix = os.path.join(work, "ix")
@@ -717,6 +760,108 @@ t.collect(NOW + 9000, write=True)
 redone = t.time_budget.read_json(mining, {})
 check(redone.get("uses_v") == t.USES_V and "bin/x" not in redone["history"][days30[0]]["uses"],
       "a cache counted under the old rules is backfilled again once")
+
+# Rule 5: a rejected candidate carries why and the numbers it was rejected at; Speed reopens a parked one by itself.
+QUERY_ROW = {"rule": "opportunity", "ident": "adhoc/ledger-query"}
+REJ = {"id": "R", "status": "ruled-out", "match": QUERY_ROW, "reason": "slower", "min_day": 12.0, "projects": 1,
+       "reread_by": "2026-11-02", "bench": dict(FAIR, tool_wall_s=0.5), "bench2": dict(FAIR, tool_wall_s=0.6, tool_out_b=950)}
+check(t.rejection_faults(REJ) == [] and t.rejection_faults(dict(REJ, reason="one-off", bench=None, bench2=None)) == [],
+      "a slower rejection carrying both failed benches passes; a one-off needs no bench")
+check(t.rejection_faults({"match": QUERY_ROW, "status": "ruled-out"}) == [
+          "reason is one of slower|costlier|one-off", "min_day is its min/day at rejection",
+          "projects is the count of projects it recurs in at rejection", "reread_by is the YYYY-MM-DD the night re-reads it"]
+      and t.rejection_faults(dict(REJ, bench2=None)) == ["no bench2 {%s}" % ", ".join(t.BENCH)]
+      and t.rejection_faults(dict(REJ, bench2=dict(FAIR, tool_wall_s=0.45)))
+      == ["try 2 trades (tool 0.45 s vs script 0.4 s, 300 vs 900 bytes): a real trade goes to Egor as a "
+          "docs/doctor-fix.md §7 trade handoff, never a rejection"]
+      and t.rejection_faults(dict(REJ, bench2=FAIR))[0].startswith("try 2 passes"),
+      "a rejection without its reason, numbers, date or second bench is refused, and so is one whose second bench "
+      "trades (Egor's) or passes (land it)")
+grown = lambda m, n: {"min": m, "projects": {p: 3 for p in "abcdefg"[:n]}}
+check(t.reopened(REJ, grown(12.0, 1), "2026-11-01") is None
+      and t.reopened(REJ, grown(30.0, 3), "2026-11-01") == "reopened: 1 → 3 projects, 12 → 30 min/day"
+      and t.reopened(REJ, grown(24.0, 1), "2026-11-01") == "reopened: 1 → 1 projects, 12 → 24 min/day"
+      and t.reopened(REJ, grown(23.9, 2), "2026-11-01") is None
+      and t.reopened(REJ, grown(12.0, 1), "2026-11-02") == "reopened: 1 → 1 projects, 12 → 12 min/day · re-read by Nov 2 passed"
+      and t.reopened(REJ, grown(12.0, 1), "2026-11-01", asked=True) == "reopened: 1 → 1 projects, 12 → 12 min/day · Egor asked"
+      and t.reopened(dict(REJ, projects=4), grown(12.0, 5), "2026-11-01") is None
+      and t.reopened(dict(REJ, status="open", handoff="docs/handoffs/x.md"), grown(12.0, 3), "2026-11-01")
+      == "reopened: 1 → 3 projects, 12 → 12 min/day"
+      and t.reopened(dict(REJ, status="open"), grown(99.0, 9), "2027-01-01") is None,
+      "a parked candidate (ruled out or handed off) reopens when its projects reach %d, its min/day doubles, its "
+      "re-read date comes or Egor asks, saying what changed; an open one never 'reopens'" % t.FLOOR_PROJECTS)
+
+# The Tools row's document: each candidate in one group with its min/day, detail and up to four lines.
+tools_root, doctors = os.path.join(work, "tools-root"), os.path.join(work, "doctors")
+os.environ["DOCTORS_DIR"] = doctors
+os.makedirs(os.path.join(tools_root, "docs", "handoffs"))
+os.makedirs(os.path.join(doctors, "nights"))
+with open(os.path.join(tools_root, "docs", "handoffs", "2026-10-01-logo.md"), "w") as handle:
+    handle.write("# x\n\nStatus: open\nTo: «Logo chat» (/x/logo)\n\nadhoc/logo-bench\n")
+with open(os.path.join(tools_root, "docs", "handoffs", "2026-10-02-logo-too.md"), "w") as handle:
+    handle.write("# x\n\nStatus: open\nTo: «Logo bench»\n\nthe adhoc/logo-bench job\n")
+with open(os.path.join(tools_root, "docs", "handoffs", "2026-10-30-verdict.md"), "w") as handle:
+    handle.write("# y\n\nStatus: open\nTo: Egor\n\nCost: a\n")
+TC = lambda m: {"min": m, "write_min": m, "sessions": 3, "projects": {"a": 3}}
+LAST = {"chars_s": 10.0, "clusters": {"ledger-query": TC(1.5), "tokenmap": TC(24.4), "logo-bench": TC(45.5),
+                                      "logo-verdict": TC(9.0), "file-edit": TC(80.0)}}
+ROWS = {"adhoc/ledger-query": {"id": "L", "status": "fixed", "fixes": [{"bench": FAIR}]},
+        "adhoc/logo-bench": {"id": "B", "status": "open", "handoff": "docs/handoffs/2026-10-01-logo.md", "min_day": 45.0,
+                             "projects": 1, "reread_by": "2026-12-01"},
+        "adhoc/logo-verdict": {"id": "V", "status": "open", "handoff": "docs/handoffs/2026-10-30-verdict.md"},
+        "adhoc/file-edit": {"id": "E", "status": "ruled-out", "reason": "slower", "min_day": 105.5, "projects": 6,
+                            "reread_by": "2026-11-02", "bench": dict(FAIR, tool_wall_s=2.1, adhoc_wall_s=1.9),
+                            "bench2": dict(FAIR, tool_wall_s=2.0, adhoc_wall_s=1.9)}}
+AT = time.mktime((2026, 10, 31, 12, 0, 0, 0, 0, -1))
+tdoc = lambda: t.tools_document({"history": {"2026-10-31": LAST}, "unused": ["bin/foo"]}, LAST,
+                                [{"target": "adhoc/tokenmap"}], {"adhoc/ledger-query": {"min_before": 5.17, "min_after": 1.47}},
+                                ROWS, {}, {"bin/foo": {"hint_min_day": 0.4, "cause": "unknown"}}, AT, root=tools_root)
+got = tdoc()
+items = {g["glyph"]: [(i["name"], i["min_day"], i["detail"]) for i in g["items"]] for g in got["groups"]}
+check([(g["glyph"], g["label"]) for g in got["groups"]] == [("✓", "built"), ("●", "night queue"), ("→", "with project chats"),
+                                                          ("✕", "rejected"), ("○", "unused")]
+      and items == {"✓": [("ledger-query", 1.5, "−72%")], "●": [("tokenmap", 24.4, ""), ("logo-verdict", 9.0, "your call")],
+                    "→": [("logo-bench", 45.5, "2 chats")], "✕": [("file-edit", 80.0, "slower  Nov 2")],
+                    "○": [("foo", 0.4, "unknown")]}
+      and got["count"] == 3,
+      "built shows its residual's fall, a trade to Egor sits in the queue as your call, a handoff its chats (every open "
+      "doc naming it), a rejection its reason and re-read date, an unused tool its cause; the count is ● and →: %s" % items)
+edit = got["groups"][3]["items"][0]
+check(edit["lines"] == ["edit a file", "tool    2.1 s   try 2  2.0 s", "script  1.9 s   try 2  1.9 s",
+                        "reopens  Nov 2 · 211 min/day"] and edit["marker"] == "file-edit"
+      and got["groups"][2]["items"][0]["lines"][-1] == "reopens  Dec 1 · 90 min/day · 3 projects"
+      and "marker" not in got["groups"][1]["items"][0] and len(got["groups"][0]["items"][0]["lines"]) <= 4,
+      "a candidate's lines: its job in four words at most, the tool and script beside each try, what reopens a parked "
+      "one; only a parked one gets a reopen marker: %s" % edit)
+check(got["red"] == ["logo-bench: handoff undelivered 7+ days", "logo-verdict: your call"],
+      "the name reads RED while a trade waits on Egor or a handoff sits 7+ days with no night carrying it: %s" % got["red"])
+with open(os.path.join(doctors, "nights", "n1.json"), "w") as handle:
+    json.dump({"jobs": [{"state": "failed-launch", "path": "/r/docs/handoffs/2026-10-01-logo.md"}]}, handle)
+check(tdoc()["red"] == got["red"], "a night whose launch failed delivered nothing")
+with open(os.path.join(doctors, "nights", "n2.json"), "w") as handle:
+    json.dump({"jobs": [{"state": "done", "handoffs": ["/r/docs/handoffs/2026-10-01-logo.md",
+                                                        "/r/docs/handoffs/2026-10-02-logo-too.md"]}]}, handle)
+check(tdoc()["red"] == ["logo-verdict: your call"], "a handoff a night carried to its chat is no longer RED")
+
+# collect: a menu marker reopens a parked row, consumed by the run; the day's count kept for the bars.
+reopen_dir = os.path.join(doctors, "tools-reopen")
+os.makedirs(reopen_dir)
+open(os.path.join(reopen_dir, "file-edit"), "w").close()
+PARKED = {"adhoc/file-edit": dict(ROWS["adhoc/file-edit"], reread_by="2099-01-01")}
+first = t.collect(NOW + 9000, write=True, rows=PARKED)
+kept = t.time_budget.read_json(mining, {})
+check(not os.listdir(reopen_dir) and set(kept["reopen"]) == {"adhoc/file-edit"}
+      and first["lifecycle"]["by_day"] == kept["tools_days"] and kept["tools_days"][t.time_budget.local_day(NOW + 9000)]
+      == first["lifecycle"]["count"] and first["lifecycle"]["groups"][1]["items"][0]["detail"] == "reopened",
+      "a Reopen tonight marker reopens the row in the queue, is consumed, and the day's count is kept: %s %s"
+      % (kept.get("reopen"), first["lifecycle"]["groups"][1]))
+again = t.collect(NOW + 9100, write=True, rows=PARKED)
+decided = t.collect(NOW + 9200, write=True, rows={"adhoc/file-edit": dict(PARKED["adhoc/file-edit"], min_day=106.0)})
+check(again["lifecycle"]["groups"][1]["items"][0]["name"] == "file-edit"
+      and [i["name"] for i in decided["lifecycle"]["groups"][3]["items"]] == ["file-edit"]
+      and "file-edit" not in [i["name"] for i in decided["lifecycle"]["groups"][1]["items"]]
+      and t.time_budget.read_json(mining, {})["reopen"] == {},
+      "the reopen holds until the night decides the row again (its decision changed), then the row is parked again")
 print(count[0])
 EOF
 ) || exit 1

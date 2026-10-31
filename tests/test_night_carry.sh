@@ -334,6 +334,13 @@ row = decision_reread.renew("share/spend-ledger.json", "fee:a", "2999-02-02", "s
 print(late, row["reread_by"], row["reread_note"].split(": ", 1)[1], row["depends_on"], decision_reread.due(sys.argv[2]).get("share/spend-ledger.json"))
 RENEW
 )" = "refused 2999-02-02 still cheap a stays under 1 % None" ]
+# A rejected tool candidate is Speed's to reopen on its date (share/tool_mining.py `reopened`): no reread job doubles it.
+jq -n '{rows: [{id: "speed-adhoc-x", status: "ruled-out", match: {rule: "opportunity", ident: "adhoc/x"}, depends_on: "x",
+  reread_by: "2026-01-01"}, {id: "hook-y", status: "ruled-out", match: {rule: "hook_p50", ident: "y"}, depends_on: "y",
+  reread_by: "2026-01-01"}]}' >"$P/share/harness-ledger.json"
+assert [ "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import decision_reread
+print([r["id"] for r in decision_reread.due(sys.argv[2])["share/harness-ledger.json"]])' "$ROOT/share" "$P")" = "['hook-y']" ]
+rm "$P/share/harness-ledger.json"
 assert [ "$(python3 "$ROOT/share/night_priority.py" job vendor-watch v | jq -c '[.direction, .priority]')" = '["updater","P2"]' ]
 export DOCTORS_DIR="$WORK/doctors"; NIGHTS="$DOCTORS_DIR/nights"
 fi

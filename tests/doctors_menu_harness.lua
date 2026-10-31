@@ -308,12 +308,26 @@ local metadata = { status = "problems", issues = { { 3, "Hooks" } }, problems = 
       { 75, "unmeasured", {} },
       { 35, "hooks and gates", { { 24.5, "hooks" }, { 9.5, "gate refusals" }, { 6, "  write-gate.sh" }, { 1.6, "locks" }, "-",
         { 13, "commit-report.sh" } } },
-      { 310, "model-written scripts", { { 156, "repeated jobs", { { 0.4, "doctor-state", {}, 18.6 }, { "–", "tokenmap", {}, 24.4 } } } },
-        { dim = true } },
-      { 26, "usage walls", {} }, { 19, "compaction", {} }, "-", { 1051, "system active", {} },
-      "-", { 1, "Unused tools", { { 0, "/trash", {}, "○" } }, { count = true } } } },
+      { 310, "model-written scripts", {}, { dim = true } },
+      { 26, "usage walls", {} }, { 19, "compaction", {} }, "-", { 1051, "system active", {} } } },
   spend = { status = "watch", as_of_s = now, index = 0.46, index_by_day = spendDays(series),
     issues = { { 1.888, "compaction summaries" } } } }
+do
+local toolDays = {}
+for index, count in ipairs({ 0, 1, 2, 3, 4, 6, 2 }) do toolDays[trendDay(index - 7)] = count end
+metadata.tools = { as_of_s = now, count = 2, red = { "logo-verdict: your call" }, by_day = toolDays,
+  details = { "Ad-hoc scripts: 3 jobs over 8.6 min/day writing" }, groups = {
+    { glyph = "✓", label = "built", items = { { name = "doctor-state", min_day = 0.4, detail = "−37%",
+      lines = { "look up doctor problems", "tool    0.033 s", "script  0.034 s" } } } },
+    { glyph = "●", label = "night queue", items = {
+      { name = "tokenmap", min_day = 24.4, detail = "", lines = { "query token-map spend" } },
+      { name = "logo-verdict", min_day = 9, detail = "your call", red = true, lines = { "append a judge verdict" } } } },
+    { glyph = "→", label = "with project chats", items = {} },
+    { glyph = "✕", label = "rejected", items = { { name = "file-edit", min_day = 106, detail = "slower  Nov 2",
+      marker = "file-edit", lines = { "edit a file", "tool    2.1 s   try 2  2.0 s", "script  1.9 s   try 2  1.9 s",
+        "reopens  Nov 2 · 211 min/day" } } } },
+    { glyph = "○", label = "unused", items = { { name = "/trash", min_day = 0, detail = "unknown", lines = {} } } } } }
+end
 local function trendHarness()
   write("/harness-doctor/menu.txt", "T\t3\t" .. now .. "\tHarness doctor: 3 problems\nH\t" .. hs.json.encode(metadata)
     .. "\n0\t\t\tLost time: ok · 573 min/day overhead\n1\t\t\tChat turns: 103 min/day · model 64\n"
@@ -354,14 +368,14 @@ local function aligned(rows)
   end
   return true
 end
-check(aligned({ table.unpack(trendItems, 1, 7) }), "summary columns line up at the same cells in every doctor row")
+check(aligned({ table.unpack(trendItems, 1, 8) }), "summary columns line up at the same cells in every doctor row")
 for index = 1, 7 do
   local title = trendItems[index].title
   check(not span(title, VALUE_AT - 3, USUAL_AT):match("[%a%%/]"),
     "summary rows carry no unit, Lost time's min/day lives inside its menu: " .. text(title))
 end
-check(#trendItems == 10 and trendItems[8].title == "-" and text(trendItems[9].title) == "Land night branches now"
-  and text(trendItems[10].title) == "Run everything now", "top level: seven summaries, System last, then the actions")
+check(#trendItems == 11 and trendItems[9].title == "-" and text(trendItems[10].title) == "Land night branches now"
+  and text(trendItems[11].title) == "Run everything now", "top level: eight summaries, Tools after System, then the actions")
 check(span(trendItems[5].title, 1, 9) == "Lost time" and span(trendItems[6].title, 1, 5) == "Spend"
   and sameColor(colorAt(trendItems[6].title, 1), palette.GREEN),
   "the time row reads Lost time; Spend beside it, GREEN while an audit is due: Spend only watches")
@@ -399,13 +413,45 @@ check(plainRow(lost[2].menu[4], "   0 min/day  dead, hung") and plainRow(rulesRo
   "waiting for workers and hooks and gates open their parts, a gate under its refusals, the heaviest hooks last")
 local adhoc = lost[5]
 check(plainRow(adhoc, " 310 min/day  model-written scripts") and sameColor(colorAt(adhoc.title, 1), palette.DIM)
-  and sameColor(colorAt(adhoc.title, 14), palette.DIM) and plainRow(adhoc.menu[1], " 156 min/day  repeated jobs")
-  and plainRow(adhoc.menu[1].menu[1], " 0.4   19 min/day  doctor-state") and plainRow(adhoc.menu[1].menu[2], "   –   24 min/day  tokenmap"),
-  "a row outside the index is DIM whole; a built tool's min/day beside its job's residual, a dash where no tool is built: "
-  .. text(adhoc.menu[1].menu[1].title))
-check(lost[10].title == "-" and plainRow(lost[11], "   1  Unused tools") and lost[11].menu
-  and plainRow(lost[11].menu[1], "   0    ○ min/day  /trash") and lost[11].menu[1].disabled,
-  "Unused tools open under a row counting them, an unused tool 0 beside its glyph: " .. text(lost[11].title))
+  and sameColor(colorAt(adhoc.title, 14), palette.DIM) and adhoc.disabled and not adhoc.menu
+  and not rowMatching(lost, "Unused tools"),
+  "a row outside the index is DIM whole; the model-written scripts minutes open no candidate list, and no unused "
+  .. "tools sit in Lost time: the Tools row holds them: " .. text(adhoc.title))
+do
+  local tools = trendItems[8]
+  check(text(tools.title) == row("Tools", "2", "▁▂▃▄▆█▃", "3") and red(tools.title)
+    and sameColor(colorAt(tools.title, BAR_AT), palette.DIM) and sameColor(colorAt(tools.title, USUAL_AT), palette.DIM),
+    "Tools after System: the candidates in work, their count a day as bars, the median usual, RED while a trade "
+    .. "waits on Egor: " .. text(tools.title))
+  local first = tools.menu
+  local want = { "   1  ✓ built", "   2  ● night queue", "   0  → with project chats", "   1  ✕ rejected",
+    "   1  ○ unused" }
+  for index, label in ipairs(want) do
+    check(first[index] and text(first[index].title) == label
+      and (first[index].menu ~= nil) == (label:sub(4, 4) ~= "0") and not red(first[index].title),
+      "Tools' first level: each group's count, a submenu where it has candidates: " .. tostring(first[index] and text(first[index].title)))
+  end
+  check(first[6].title == "-" and text(first[7].title) == "LLM details" and #first == 7
+    and text(first[7].menu[1].title) == "Ad-hoc scripts: 3 jobs over 8.6 min/day writing",
+    "a separator, then LLM details holding Speed's ad-hoc lines")
+  local queue = first[2].menu
+  check(text(queue[1].title) == "  24  tokenmap" and text(queue[2].title) == "   9  logo-verdict  your call"
+    and red(queue[2].title) and not red(queue[1].title) and queue[1].menu and text(queue[1].menu[1].title) == "query token-map spend",
+    "a group lists min/day aligned, the name, the detail, RED where it waits on Egor: " .. text(queue[2].title))
+  local rejected = first[4].menu[1]
+  local lines = {}
+  for _, item in ipairs(rejected.menu) do lines[#lines + 1] = text(item.title) end
+  check(text(rejected.title) == " 106  file-edit  slower  Nov 2" and table.concat(lines, "|")
+    == "edit a file|tool    2.1 s   try 2  2.0 s|script  1.9 s   try 2  1.9 s|reopens  Nov 2 · 211 min/day|Reopen tonight"
+    and rejected.menu[1].disabled and rejected.menu[5].fn and not first[1].menu[1].menu[4],
+    "a candidate's submenu: its job, tool and script per try, what reopens it, Reopen tonight on a parked one only: "
+    .. table.concat(lines, "|"))
+  rejected.menu[5].fn()
+  local marker = io.open(dir .. "/doctors/tools-reopen/file-edit")
+  check(marker ~= nil, "Reopen tonight leaves its marker under $DOCTORS_DIR/tools-reopen for the next Speed run")
+  if marker then marker:close() end
+  os.remove(dir .. "/doctors/tools-reopen/file-edit")
+end
 check(trendItems[6].menu[1] and text(trendItems[6].menu[1].title) == " 1.9 %  compaction summaries"
   and not red(trendItems[6].menu[1].title) and dimmed(trendItems[6].menu[1].title),
   "Spend issue row: the due component by its share, DIM")
@@ -530,6 +576,9 @@ do
       print("FIXTURE " .. text(trendDoctor.title()))
       for _, item in ipairs(rendered) do print("FIXTURE " .. text(item.title) .. (item.menu and " ▸" or "")) end
       for _, item in ipairs(rendered[1].menu) do print("SUBMENU " .. text(item.title) .. (item.menu and " ▸" or "")) end
+      for _, menu in ipairs({ rendered[8].menu, rendered[8].menu[2].menu, rendered[8].menu[4].menu[1].menu }) do
+        for _, item in ipairs(menu) do print("TOOLS " .. (item.title == "-" and "-" or text(item.title)) .. (item.menu and " ▸" or "")) end
+      end
     end
   end
 end
@@ -693,11 +742,12 @@ local doctors = loadDoctors()
 local title = doctors.title()
 check(title == "Doctors", "all ok: " .. text(title))
 local items = doctors.menuItems()
-check(#items == 10 and text(items[1].title) == summary("LLM", 0) and text(items[2].title) == summary("Harness", 0)
+check(#items == 11 and text(items[1].title) == summary("LLM", 0) and text(items[2].title) == summary("Harness", 0)
   and text(items[3].title) == summary("Updater", 0) and text(items[4].title) == summary("Code", nil)
   and sameColor(colorAt(items[4].title, 1), palette.DIM) and sameColor(colorAt(items[4].title, VALUE_AT), palette.DIM)
-  and text(items[7].title) == summary("System", 0) and sameColor(colorAt(items[7].title, 1), palette.GREEN),
-  "the five doctors in order, System after Lost time and Spend")
+  and text(items[7].title) == summary("System", 0) and sameColor(colorAt(items[7].title, 1), palette.GREEN)
+  and text(items[8].title) == summary("Tools", nil) and sameColor(colorAt(items[8].title, 1), palette.DIM),
+  "the five doctors in order, System after Lost time and Spend, then Tools, DIM without Speed's document")
 check(text(items[3].title) == summary("Updater", 0) and sameColor(colorAt(items[3].title, 1), palette.GREEN), "a clean Updater doctor: " .. text(items[3].title))
 local pendingRow = { id = "cli-behind:codex", rule = "cli-behind", state = "watch",
   fact = "codex 0.159.0 → 0.159.2 waiting: busy since 00:14" }
@@ -1020,7 +1070,7 @@ tasks = {}
 doctors = loadDoctors()
 items = doctors.menuItems()
 local nightTask = tasks[1]
-check(#items == 10 and nightTask and nightTask.path == "/fixture/bin/night-run"
+check(#items == 11 and nightTask and nightTask.path == "/fixture/bin/night-run"
   and table.concat(nightTask.args, " ") == "latest --menu", "the Night row reads bin/night-run latest --menu")
 doctors.menuItems()
 check(#tasks == 1, "a second build started a second night-run")
@@ -1031,8 +1081,8 @@ nightTask:finish(0, "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you\t1\
   .. "codex update · unfinished · deadline\t2\t" .. reason .. "\n"
   .. "cleanup p1 · needs you · step 10 needs his word\t1\tstep 10 needs his word\n")
 items = doctors.menuItems()
-local nightRow = items[8]
-check(#items == 11 and text(nightRow.title) == "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you"
+local nightRow = items[9]
+check(#items == 12 and text(nightRow.title) == "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you"
   and red(nightRow.title) and not nightRow.disabled and allMenlo({ nightRow }),
   "a red night: " .. (nightRow and text(nightRow.title) or "missing"))
 local jobs = nightRow.menu or {}
@@ -1047,14 +1097,14 @@ check(table.concat(reasonRows, " ") == reason and widest(jobs[2].menu) <= 64, "a
 check(text(doctors.title()) == quietTitle, "the Night row changed the Doctors title")
 doctors.refreshNight()
 tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4\t0\t0\n")
-nightRow = doctors.menuItems()[8]
+nightRow = doctors.menuItems()[9]
 check(nightRow and text(nightRow.title) == "Last night 30 Sep: 4 of 4" and dimmed(nightRow.title)
   and nightRow.disabled, "a clean night with no job rows is dim")
 -- The last good reading outlives a failed refresh and a reload: Last night never blinks out (P1, 2026-10-20).
 doctors.refreshNight()
 tasks[#tasks]:finish(1, "", "killed\n")
-check(text((doctors.menuItems()[8] or {}).title or "") == "Last night 30 Sep: 4 of 4", "a failed refresh keeps Last night")
-check(text((loadDoctors().menuItems()[8] or {}).title or "") == "Last night 30 Sep: 4 of 4",
+check(text((doctors.menuItems()[9] or {}).title or "") == "Last night 30 Sep: 4 of 4", "a failed refresh keeps Last night")
+check(text((loadDoctors().menuItems()[9] or {}).title or "") == "Last night 30 Sep: 4 of 4",
   "a reload shows the last good night before its own refresh returns")
 -- Handoffs under the night: a glyph, an aligned count and a word per phase, each title one level down, its doc below.
 do
@@ -1063,7 +1113,7 @@ do
   for index = 1, 10 do handoffLines[#handoffLines + 1] = "handoff\tqueued\tnext " .. index .. "\t/r/docs/handoffs/n" .. index .. ".md\n" end
   doctors.refreshNight()
   tasks[#tasks]:finish(0, table.concat(handoffLines))
-  local nightJobs = doctors.menuItems()[8].menu or {}
+  local nightJobs = doctors.menuItems()[9].menu or {}
   local done, queued, egor = nightJobs[3] or {}, nightJobs[4] or {}, nightJobs[5] or {}
   check(#nightJobs == 5 and nightJobs[2].title == "-" and text(done.title) == "✓  1  done" and dimmed(done.title)
     and text(queued.title) == "→ 10  queued" and not dimmed(queued.title) and not red(queued.title)
@@ -1084,7 +1134,7 @@ do
     .. "suite x · nothing to do\t0\t\ts-x\tsuite\t0\ttests\n"
     .. "cleanup · needs you\t1\tword\tdebt\tdebt\t0\tfit\n"
     .. "handoff\tegor\this call\t/r/docs/handoffs/b.md\n")
-  local rows = doctors.menuItems()[8].menu or {}
+  local rows = doctors.menuItems()[9].menu or {}
   local titles = {}
   for _, item in ipairs(rows) do titles[#titles + 1] = text(item.title) end
   check(table.concat(titles, "|") == "! 1  To: Egor|-|fit              ! 1|speed  ✓ 2  → 1|tests  ✓ 1|-|"
@@ -1101,7 +1151,7 @@ do
   doctors.refreshNight()
   tasks[#tasks]:finish(0, "Last night 30 Sep: 1 of 1\t0\t0\tn-1\nHarness fixer: a\t0\t\th-a\tfixer\t0\tspeed\n"
     .. "speed\t2.5\t3\t1\t4\n")
-  local rows = doctors.menuItems()[8].menu or {}
+  local rows = doctors.menuItems()[9].menu or {}
   local first = rows[1] or {}
   local runs = first.title and first.title:asTable() or {}
   check(#rows == 3 and text(first.title) == "+2.5 min/day  ✓ 3  ! 1  → 4" and first.disabled and rows[2].title == "-"
@@ -1111,7 +1161,7 @@ do
     "the speed row heads the night: " .. text(first.title or ""))
   doctors.refreshNight()
   tasks[#tasks]:finish(0, "Last night 30 Sep: 0 of 0\t0\t0\tn-1\nspeed\t0.0\t0\t0\t7\n")
-  local only = doctors.menuItems()[8]
+  local only = doctors.menuItems()[9]
   check(only and not only.disabled and #(only.menu or {}) == 1 and text(only.menu[1].title) == "+0.0 min/day  → 7"
     and colorAt(only.menu[1].title, 1) == nil, "a night whose proofs all pend: plain zero and the pending count")
 end
@@ -1150,10 +1200,10 @@ doctors.runEverything()
 check(#dialogs == dialogCount and #tasks == 2, "a running night asked or started again")
 doctors.refreshNight()
 tasks[#tasks]:finish(4, "", "night-run: cannot read\n")
-check(#doctors.menuItems() == 11, "a failed night-run keeps the last good row")
+check(#doctors.menuItems() == 12, "a failed night-run keeps the last good row")
 doctors.refreshNight()
 tasks[#tasks]:finish(0, "")
-check(#doctors.menuItems() == 10, "an empty night-run hides the row")
+check(#doctors.menuItems() == 11, "an empty night-run hides the row")
 
 -- Land night branches now: bin/night-run start --cleanup behind the same Cancel-first confirmation; off while a night runs.
 doctors.refreshNight()
@@ -1186,7 +1236,7 @@ tasks[#tasks]:finish(0, "Last night 30 Sep: 1 of 3 · 2 unfinished\t2\t0\tn-1\n"
   .. "codex update · unfinished · deadline\t2\t" .. reason .. "\tcodex-e1\tvendor\t1\n"
   .. "cleanup · unfinished · deadline\t2\t\tdebt\tdebt\t1\n")
 tasks, dialogs, answer = {}, {}, "Continue"
-jobs = doctors.menuItems()[8].menu
+jobs = doctors.menuItems()[9].menu
 check(#jobs == 5 and jobs[1].disabled and jobs[4].title == "-", "three jobs, then a separator: " .. #jobs)
 local codexMenu = jobs[2].menu or {}
 local continueJob = codexMenu[#codexMenu]
@@ -1201,13 +1251,13 @@ tasks[1]:finish(0, "night n-1 resumed: orchestrator on acct\n")
 doctors.menuItems()
 tasks[#tasks]:finish(0, "Last night 30 Sep: 2 unfinished\t0\t0\tn-1\ncodex update · unfinished\t0\t\tcodex-e1\tvendor\t1\n")
 tasks = {}
-jobs = doctors.menuItems()[8].menu
+jobs = doctors.menuItems()[9].menu
 jobs[#jobs].fn()
 check(#tasks == 1 and table.concat(tasks[1].args, " ") == "start --resume n-1", "Continue unfinished resumes the whole night")
 tasks[1]:finish(0, "night n-1 resumed\n")
 doctors.menuItems()
 tasks[#tasks]:finish(0, "Night run since 12:00: 1 in progress\t0\t1\tn-1\ncodex update · in progress\t0\t\tcodex-e1\tvendor\t0\n")
-jobs = doctors.menuItems()[8].menu
+jobs = doctors.menuItems()[9].menu
 check(#jobs == 1 and jobs[1].disabled, "a running night offers no Continue")
 
 -- Known, quiet: an open ledger row no problem names is one dim row per doctor, the ids one level down.

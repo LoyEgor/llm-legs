@@ -354,7 +354,8 @@ def snapshot(doctor, doc_file, night=None):
             audits.append(str(pid))
             continue
         fixed_at = max([t for t in (epoch(f.get("at")) for f in dicts((rows.get(problem.get("ledger")) or {}).get("fixes"))) if t] or [0])
-        if pid in ruled and (state != "regressed" or ruled[pid][0] > fixed_at > 0) and held_since(problem, ruled[pid], now):
+        if pid in ruled and (state != "regressed" or ruled[pid][0] > fixed_at > 0) and held_since(problem, ruled[pid], now) \
+                and not (problem.get("opportunity") or {}).get("reopened"):
             holds.append({"id": pid, "state": "held", "run": ruled[pid][1]})
             continue
         row = rows.get(problem.get("ledger")) or (rows.get(pid[7:]) if str(pid).startswith("ledger:") else None)
@@ -861,14 +862,26 @@ def knobs(record_file):
                       "so it holds no run open; Egor checks it" % (site, where, fit(line, 120)), file=sys.stderr)
 
 
-def fix_faults(record_file, doctor):
+def ruled_candidates(decisions):
+    """The tool candidates (`opportunity:adhoc/<key>`) a decisions file rules out: their `adhoc/<key>` idents."""
+    try:
+        with open(decisions) as handle:
+            lines = [line.rstrip("\n").split("\t") for line in handle]
+    except (OSError, TypeError):
+        return []
+    return [f[0][12:] for f in lines if len(f) > 1 and f[1] == "ruled-out" and f[0].startswith("opportunity:adhoc/")]
+
+
+def fix_faults(record_file, doctor, decisions=None):
     """Each fix record breaking the fix contract in the ledger of the run: its worktree copy where one exists,
-    else the ledger the doctor reads."""
+    else the ledger the doctor reads; each tool candidate the run rules out without what a rejection carries."""
     path = ledger_path(doctor)
     if not path:
         return
     rel = os.path.relpath(os.path.realpath(path), os.path.realpath(ROOT))
     trees = [] if rel.startswith("..") else strings(read_json(record_file, {}).get("worktrees"))
+    import tool_mining
+    history = (read_json(tool_mining.cache_path(), {}) or {}).get("history") or {}
     for ledger in [p for p in (os.path.join(tree, rel) for tree in trees) if os.path.isfile(p)] or [path]:
         for row, index, missing in fix_record_faults(read_json(ledger, {})):
             print("ledger %s: row %s fixes[%d] lacks %s: every fix record is {%s}"
@@ -876,10 +889,18 @@ def fix_faults(record_file, doctor):
         for row, index, unrooted in fix_root_faults(read_json(ledger, {}), repos_dir(doctor)):
             print("ledger %s: row %s fixes[%d] files %s name no repository under %s: every fix file is repo/path"
                   % (ledger, row, index, ", ".join(map(str, unrooted)), repos_dir(doctor)))
-        import tool_mining
-        for row, index, fault in tool_mining.ledger_faults(read_json(ledger, {})):
-            print("ledger %s: row %s fixes[%d]: %s: an adhoc fix lands only with its bench {%s}, the tool at most the "
-                  "wall and output bytes of the ad-hoc median" %(ledger, row, index, fault, ", ".join(tool_mining.BENCH)))
+        for row, index, fault in tool_mining.ledger_faults(read_json(ledger, {}), history):
+            print("ledger %s: row %s fixes[%d]: %s: an adhoc fix lands only with its bench {%s}, the tool beating the "
+                  "script in time or output bytes and losing in neither" % (ledger, row, index, fault,
+                                                                           ", ".join(tool_mining.BENCH)))
+        rows = {"adhoc/" + tool_mining.adhoc_key(r): r for r in dicts(read_json(ledger, {}).get("rows"))
+                if tool_mining.adhoc_key(r) is not None}
+        for ident in ruled_candidates(decisions):
+            faults = tool_mining.rejection_faults(rows[ident], history) if ident in rows else ["no ledger row"]
+            if faults:
+                print("ledger %s: opportunity:%s ruled-out refused: %s: a rejected tool candidate carries its reason "
+                      "(slower|costlier|one-off), min_day, projects, reread_by and, slower or costlier, both benches "
+                      "(bench, bench2)" % (ledger, ident, "; ".join(faults)))
 
 
 if __name__ == "__main__":
@@ -893,12 +914,12 @@ if __name__ == "__main__":
     elif command == "knob-lines":
         print(json.dumps(knob_lines()))
     elif command == "close-checks":
-        record_file, doctor, pairs = sys.argv[2], sys.argv[3], sys.argv[4:]
+        record_file, doctor, decisions, pairs = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
         print(" ".join(str(touches(record_file, pairs[i], pairs[i + 1])) for i in range(0, len(pairs), 2)))
         print("\x1f".join(owed_measurement(read_json(record_file, {}))))
         if doctor in ("harness", "system"):
             knobs(record_file)
-        fix_faults(record_file, doctor)
+        fix_faults(record_file, doctor, decisions)
     elif command == "levels":
         print("\n".join("\t".join(row) for row in levels(read_json(sys.argv[2], {}))))
     elif command == "owed":
@@ -1040,7 +1061,7 @@ write_brief() { # id worktree -> the brief file
     ! jq -e --arg rules "$NIGHT_FIX_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Speed and floor rows (`floor`, `opportunity`, `regression`) are this run'"'"'s to fix: `close` refuses a handoff on one unless it cites a trade to Egor or its lever lives in a repository outside the night'"'"'s: then it is a handoff to that repository'"'"'s owner chat (`To: «<chat>»`, the repository'"'"'s absolute path in it, set as the ledger row'"'"'s `handoff`), never an open row with a note. A floor'"'"'s target is zero, never a limit: `close` refuses `ruled-out` on a `floor` row unless its evidence prices the cheapest cut as `cut <what> saves <N> ms × <M>/day, costs <Y>`.\n\n'
     ! jq -e '[.problems[].id | strings | select(test("^(opportunity|regression):adhoc/"))] | length > 0' "$file" >/dev/null ||
-      printf 'Ad-hoc script rows (`opportunity:adhoc/<cluster>`, `share/tool_mining.py`): models write a script for one job again and again; the quotes are its shortest calls, `share/tool_mining.py --calls` lists the day'"'"'s. A row naming a tool that already does the job gets only the hint; any other gets one command in the repository that owns the data (a subcommand of the owning tool before a new bin), then its hint. A chain row (`adhoc/chain/<heads>`) is those commands run by hand, a Bash call each, the quotes its runs: one naming no tool gets one command that does the whole chain; one naming a tool that already does it (`land` for a hand landing) is a bypass of that tool, as is its `regression:adhoc/chain/<tool>` row (the tool'"'"'s net, the hand runs its substitutes): find in the quoted sessions why models bypassed it (a step it lacks, a refusal, an error, a hint they never saw) and extend or fix the tool itself, never a second tool or a hint alone. A tool exists to cut tokens and minutes, never for its own sake: terse output, no flags the model must look up. The hint goes where the script would start: the command'"'"'s --help, a PreToolUse nudge on the Bash pattern, a tool description; md prose last. Bench before landing: run the cluster'"'"'s example calls and the tool on the same inputs and record on the fix record `bench` {command: a pattern matching the tool'"'"'s Bash calls, hint_b: the hint'"'"'s bytes loaded in every session, calls: which calls on which inputs, adhoc_wall_s, adhoc_out_b: the ad-hoc median, adhoc_write_s: one example call'"'"'s characters at the day'"'"'s write rate, tool_wall_s, tool_out_b, reason: only for a longer output}; `close` refuses a tool slower than the median plus that writing, or wordier than the median. Proof is the doctor'"'"'s net: the job'"'"'s minutes and tokens per 1000 Bash calls (residual scripts, substitutes, the tool'"'"'s calls, the hint) both below before. Any other `regression:adhoc/<cluster>` row is a landed tool now costing more: make it cheaper or cut it with its hint. The cluster'"'"'s pattern in `CLUSTERS` is the measure, never the fix. A one-off cluster (research no command serves) is `ruled-out` with that evidence. A row whose fact reads `sessions of <repo>` recurs in fewer than 3 projects: that project owns the job, its command and hint go there (its CLAUDE.md or a skill, never a harness always-loaded file); a repository outside the night'"'"'s is a handoff to its owner chat.\n\n'
+      printf 'Ad-hoc script rows (`opportunity:adhoc/<cluster>`, `share/tool_mining.py`): models write a script for one job again and again; the quotes are its shortest calls, `share/tool_mining.py --calls` lists the day'"'"'s. A row naming a tool that already does the job gets only the hint; any other gets one command in the repository that owns the data (a subcommand of the owning tool before a new bin), then its hint. A chain row (`adhoc/chain/<heads>`) is those commands run by hand, a Bash call each, the quotes its runs: one naming no tool gets one command that does the whole chain; one naming a tool that already does it (`land` for a hand landing) is a bypass of that tool, as is its `regression:adhoc/chain/<tool>` row (the tool'"'"'s net, the hand runs its substitutes): find in the quoted sessions why models bypassed it (a step it lacks, a refusal, an error, a hint they never saw) and extend or fix the tool itself, never a second tool or a hint alone. A tool exists to cut tokens and minutes, never for its own sake: terse output, no flags the model must look up. The hint goes where the script would start: the command'"'"'s --help, a PreToolUse nudge on the Bash pattern, a tool description; md prose last. Bench before landing: run the cluster'"'"'s example calls and the tool on the same inputs and record on the fix record `bench` {command: a pattern matching the tool'"'"'s Bash calls, hint_b: the hint'"'"'s bytes loaded in every session, calls: which calls on which inputs, adhoc_wall_s, adhoc_out_b: the ad-hoc median, adhoc_write_s: one example call'"'"'s characters at the day'"'"'s write rate, tool_wall_s, tool_out_b}. A win in one is enough: time (script = median run plus that writing, tool = its run) or bytes fell and the other did not rise, a change inside the noise band (the cluster'"'"'s day-to-day spread) the same. A failed first bench is never final: `close` names the numbers and asks where they go; make the tool faster or terser and record the retry as the fix'"'"'s `bench2`. After it, one clearly better and the other clearly worse is a real trade: a §7 handoff to Egor (`Cost:`/`Loss:`/`Recommendation:`, both benches), never landed; worse again is ruled out. Proof is the doctor'"'"'s net: the job'"'"'s minutes or tokens per 1000 Bash calls (residual scripts, substitutes, the tool'"'"'s calls, the hint) below before, the other not above. Any other `regression:adhoc/<cluster>` row is a landed tool now costing more: make it cheaper or cut it with its hint. The cluster'"'"'s pattern in `CLUSTERS` is the measure, never the fix. A ruled-out row carries `reason` (slower|costlier|one-off: research no command serves), `min_day`, `projects`, `reread_by` and, slower or costlier, `bench` and `bench2`; `close` refuses one without them. Need decides where, never whether: a row whose fact reads `sessions of <repo>` recurs in fewer than 3 projects: a handoff to that project'"'"'s owner chat with its min_day and projects (command and hint in its CLAUDE.md or a skill, never a harness always-loaded file); 3 or more is a shared tool. Speed reopens a parked row when its projects reach 3, its min/day doubles, its reread_by passes or Egor asks: the fact opens `reopened:`.\n\n'
     ! jq -e '[.problems[].id | strings | select(startswith("opportunity:tool/"))] | length > 0' "$file" >/dev/null ||
       printf 'Near-unused tool rows (`opportunity:tool/<bin|skill>/<name>`, `share/tool_mining.py` `adoption`, over the `tools` index): a tool models called under the floor in 30 days, or not in the last 7, night automation'"'"'s calls not counted; the row names its likely cause. Review it by that cause, then delete it or fix it: `unknown` (no text tells models of it) gets its hint where the job starts (its --help, a hook on the Bash pattern, a tool description), never an always-loaded list, or folds into a used tool; `access` (its link missing, most calls failing) gets the access fixed; `obsolete` (hinted, still unused) is deleted, but only after reading the tool'"'"'s own log or state: a tool for a rare occasion (a usage reset coming due) that ran each time the occasion came is in use, whatever its weekly count. A deletion takes the tool and its hint whole (the CLAUDE.md lines naming it, the skill or command file), every mention with them. A skill is a command Egor can type, used or not: it keeps its file and only its hint goes (`disable-model-invocation: true`), never a line of an instruction file. A bin tool another script, LaunchAgent, Hammerspoon or Egor himself runs (grep the sweep repositories, ~/Library/LaunchAgents and ~/.hammerspoon) keeps its file and loses only the hint; record those callers as the fix'"'"'s equivalence. The proof is the doctor'"'"'s: the row leaves the unused list.\n\n'
     ! jq -e '[.problems[].id | strings | select(startswith("opportunity:hung-bash/"))] | length > 0' "$file" >/dev/null ||
@@ -1452,7 +1473,7 @@ close_run() { # id --decisions <file> note...
   while IFS=$'\x1f' read -r pid verdict purpose evidence; do
     pairs+=("$pid" "$purpose")
   done < <(awk -F'\t' '{ printf "%s\037%s\037%s\037%s\n", $1, $2, $3, $4 }' "$decisions")
-  checks=$(py close-checks "$file" "$doctor" ${pairs[@]+"${pairs[@]}"}) || bad+=("close checks failed (exit $?): the purpose, knob and fix-record checks did not finish")
+  checks=$(py close-checks "$file" "$doctor" "$decisions" ${pairs[@]+"${pairs[@]}"}) || bad+=("close checks failed (exit $?): the purpose, knob and fix-record checks did not finish")
   read -ra codes <<<"${checks%%$'\n'*}"
   case $checks in *$'\n'*) checks=${checks#*$'\n'} ;; *) checks='' ;; esac
   owed=$'\x1f'${checks%%$'\n'*}$'\x1f'

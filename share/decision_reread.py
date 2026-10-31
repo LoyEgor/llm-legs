@@ -48,13 +48,20 @@ def entries(path):
     return out
 
 
+def candidate(row):
+    """A rejected tool candidate (`opportunity` `adhoc/<key>`): Speed reopens it on its reread_by itself
+    (share/tool_mining.py `reopened`), so no re-read job doubles it."""
+    match = row.get("match") if isinstance(row.get("match"), dict) else {}
+    return match.get("rule") == "opportunity" and str(match.get("ident") or "").startswith("adhoc/")
+
+
 def decisions(repo):
     """{source: [{id, title, depends_on, reread_by, note}]} of every decision the repository holds."""
     found = {}
     for source in LEDGERS:
         ledger = read_ledger(os.path.join(repo, source))
         for row in ledger["rows"] if ledger else ():
-            if isinstance(row, dict) and ledger_contract.decision(row):
+            if isinstance(row, dict) and ledger_contract.decision(row) and not candidate(row):
                 found.setdefault(source, []).append({
                     "id": row.get("id"), "title": row.get("title") or row.get("id"),
                     "depends_on": row.get("depends_on"), "reread_by": row.get("reread_by"),
