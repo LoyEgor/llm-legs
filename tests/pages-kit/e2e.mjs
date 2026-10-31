@@ -82,7 +82,7 @@ try {
   const send = (data, kind = "paste", sel = note) => tab.evaluate(({ sel, data, kind }) => {
     const el = document.querySelector(sel), dt = new DataTransfer();
     el.focus();
-    for (const f of data.files || []) dt.items.add(new File([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))], f.name, { type: f.type }));
+    for (const f of data.files || []) dt.items.add(new File([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))], f.name, { type: f.type, lastModified: f.at }));
     for (const [t, v] of Object.entries(data.text || {})) dt.setData(t, v);
     const e = kind === "paste" ? new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })
       : new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true });
@@ -100,6 +100,7 @@ try {
     "text/html": new Blob(['<meta charset=utf-8><img src="https://example.test/a.png">'], { type: "text/html" }) })]), b64(F.a));
   await tab.keyboard.press("ControlOrMeta+V");
   check("a keyboard paste of a copied picture puts its name at the caret", await until(async () => (await value()) === "на [img1.png] куст"), await value());
+  check("…and says nothing", await tab.$eval('.card[data-id="c11"] .atm', (m) => m.textContent === ""));
   const ihdr = (p) => { const b = fs.readFileSync(p); return b.subarray(1, 4).toString() === "PNG" && [b.readUInt32BE(16), b.readUInt32BE(20)].join("x"); };
   check("the pasted picture is stored whole", await until(() => stored().includes("img1.png")) && ihdr(path.join(files, "img1.png")) === "480x240");
   check("page state prints the named picture's path", await until(() => page(["state", "seams", "--all"]).includes(`img1.png=${path.join(files, "img1.png")}`), 4000), page(["state", "seams", "--all"]));
@@ -128,6 +129,11 @@ try {
   }
   await send({ files: [{ b64: b64(path.join(files, "img1.png")), name: "image.png", type: "image/png" }] });
   check("the same picture again keeps its first name", await until(async () => (await value()).match(/\[img1\.png\]/g)?.length === 2) && !stored().includes("img6.png"), await value());
+  const twice = (await value()).split("[img3.png]").length;
+  await send({ files: [1, 2].map((at) => ({ b64: b64(F.b), name: "image.png", type: "image/png", at })) });
+  check("one picture handed over as two files is one name and no error",
+    await until(async () => (await value()).split("[img3.png]").length === twice + 1)
+    && await tab.$eval('.card[data-id="c11"] .atm', (m) => m.textContent === ""), await value());
   const chips = stored().length;
   const tiles = await tab.$$eval('.card[data-id="c11"] .att .atc', (c) => c.map((e) => `${e.offsetWidth}x${e.offsetHeight}`));
   check("every picture is a tile of one square size", tiles.length === chips && tiles.every((t) => t === tiles[0]) && /^(\d+)x\1$/.test(tiles[0]), JSON.stringify(tiles));

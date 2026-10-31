@@ -395,10 +395,9 @@ function put(el, text, start = el.selectionStart ?? el.value.length, end = el.se
 // rich selection with words in it stays text even when it carries pictures.
 function pictures(dt) {
   const plain = dt.getData("text/plain") || "", html = dt.getData("text/html") || "";
-  const files = [];
-  for (const f of [...(dt.files || []), ...[...(dt.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile())])
-    if (f && /^image\//.test(f.type) && f.type !== "image/svg+xml"
-        && !files.some((g) => g.name === f.name && g.size === f.size && g.lastModified === f.lastModified)) files.push(f);
+  // files and items list the same files, as distinct File objects, so only one of them is read
+  const files = (dt.files && dt.files.length ? [...dt.files] : [...(dt.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile()))
+    .filter((f) => f && /^image\//.test(f.type) && f.type !== "image/svg+xml");
   const names = plain.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const finder = files.filter((f) => names.includes(f.name));
   if (finder.length) return { files: finder };
@@ -432,8 +431,8 @@ async function attach(el, got, start, end) {
     names.push(blob ? await upload(el, blob, blob.type || "application/octet-stream")
       : await upload(el, JSON.stringify({ url: u }), "application/json"));
   }
-  const ok = [...new Set(names.filter(Boolean))];
-  say(el, ok.length < names.length ? (ok.length ? "не все картинки сохранились" : "картинка не сохранилась") : "", ok.length < names.length);
+  const ok = [...new Set(names.filter(Boolean))], lost = names.filter((n) => !n).length;
+  say(el, lost ? (ok.length ? "не все картинки сохранились" : "картинка не сохранилась") : "", lost > 0);
   if (!ok.length) return;
   if (el.value !== was) start = end = el.selectionEnd;
   put(el, ok.map((n) => `[${n}]`).join(" "), start, end);
