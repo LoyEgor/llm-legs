@@ -4,7 +4,8 @@
 //   state()                      {id: {field: value}} with the same overlay
 //   save(id, fields)             one gesture's changed fields, sent at once (null clears a field)
 //   saveText(id, field, value)   the same, debounced 400 ms (sent at once on blur)
-//   textBox(id, field, props)    a <textarea> bound to saveText, refreshed when the state moves
+//   textBox(id, field, props)    a <textarea> bound to saveText, refreshed when the state moves; it
+//                                sits in a .atw box that also holds its pictures
 //   onState(cb)                  cb(Set of item ids) when the server state changed them
 //   doneWhen(fn)                 fn(id) → answered; feeds «N из M» and sitting_cap (null: no count)
 //   firstOpen(ids), nextOpen(ids, from)   the first answered-nor-skipped id after index `from`
@@ -116,7 +117,7 @@ export function textBox(id, field, props) {
   el.addEventListener("input", () => saveText(id, field, el.value));
   el.addEventListener("blur", () => commit(id + "\t" + field));
   boxes.add(el);
-  requestAnimationFrame(() => strip(el));
+  requestAnimationFrame(() => { if (el.isConnected) { slot(el); strip(el); } });
   return el;
 }
 
@@ -322,9 +323,10 @@ function onZoomClick(e) {
 // Pictures in text. A picture pasted or dropped into any text field (a screenshot, an image copied in a
 // browser or an app, an image file copied in Finder or dragged in) is stored by the server and its short
 // name, [img3.png], goes in at the caret, so Egor writes «on [img1.png] the bush slides» and the chat's
-// `page state` prints img1.png=<absolute path> beside the text. Under the field a strip shows its
-// pictures: a click opens one full screen, its name button puts the name back at the caret, and a
-// picture whose name is no longer in the text is dimmed. Text-only clipboards paste as text.
+// `page state` prints img1.png=<absolute path> beside the text. The field sits in a box that shows its
+// pictures above the text as equal tiles: a click opens one full screen, the name on a tile puts the name
+// back at the caret, and a tile whose name is no longer in the text is dimmed. Text-only clipboards
+// paste as text.
 const FIELD = "textarea,input[type=text],input:not([type])";
 const TOKEN = /\[(img[1-9][0-9]{0,4}\.(?:png|jpg|gif|webp))\]/g;
 const strips = new WeakMap();
@@ -339,10 +341,16 @@ async function loadFiles() {
   } catch (e) { /* no pictures shown until a paste */ }
 }
 
+// The field moves into its box once; one that has the focus keeps it and its selection.
 function slot(el) {
   let s = strips.get(el);
-  if (!s) strips.set(el, s = { box: h("div", { class: "att" }), msg: h("span", { class: "atm" }), chips: new Map() });
-  if (!s.box.isConnected) el.after(s.box);
+  if (!s) strips.set(el, s = { box: h("div", { class: "att", hidden: true }), msg: h("span", { class: "atm" }), chips: new Map() });
+  if (!s.box.isConnected) {
+    const had = document.activeElement === el, a = el.selectionStart, b = el.selectionEnd, wrap = h("div", { class: "atw" });
+    el.before(wrap);
+    wrap.append(s.box, el);
+    if (had) { el.focus({ preventScroll: true }); el.setSelectionRange(a, b); }
+  }
   return s;
 }
 

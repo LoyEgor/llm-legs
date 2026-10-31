@@ -1,5 +1,6 @@
 # compare: pictures side by side — an original + variants, or a pair; vote, tags, note, or a view grid
-Synced loupes: drag pans all, wheel zooms at the pointer.
+Synced loupes: drag pans all, wheel zooms at the pointer. From three frames up a checkbox on each
+preview hides or shows its loupe, for every item of the visit.
 
 ## Spec (CONTRACT.md, schema 1)
 - **mode:** `vote` (default) or `view`, a numbered grid with no vote widget.

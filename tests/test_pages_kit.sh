@@ -8,7 +8,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Pictures in text live in the shell's textBox; a module's own text field would miss them after a reload.
-raw=$(grep -nE 'h\("(textarea|input)"|createElement\("(textarea|input)"|contenteditable' "$ROOT"/share/pages/kit/*.js | grep -v '/shell\.js:')
+raw=$(grep -nE 'h\("(textarea|input)"|createElement\("(textarea|input)"|contenteditable' "$ROOT"/share/pages/kit/*.js | grep -v '/shell\.js:' | grep -vE 'h\("input", \{ type: "(checkbox|radio|range|color|button)"')
 [ -z "$raw" ] || fail "a kit module builds its own text field — use textBox from shell.js: $raw"
 command -v node >/dev/null 2>&1 || { echo "SKIP: pages kit — no node"; exit 0; }
 main=$(cd "$(git -C "$ROOT" rev-parse --git-common-dir)/.." 2>/dev/null && pwd) || main=$ROOT

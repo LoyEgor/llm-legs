@@ -76,7 +76,7 @@ try {
   await tab.click('.card[data-id="c11"] .row[data-f="heard"] button[data-v="1"]');
   check("cards vote reaches the store", await until(() => page(["state", "seams", "--all"]).includes("c11 heard=1 by=egor"), 4000));
   // Pictures in text: every way a picture reaches a field, read back by the chat as a path.
-  const origin = `http://127.0.0.1:${port}`, note = '.card[data-id="c11"] > textarea', files = path.join(env.PAGES_DIR, crd, "files");
+  const origin = `http://127.0.0.1:${port}`, note = '.card[data-id="c11"] > .atw > textarea', files = path.join(env.PAGES_DIR, crd, "files");
   const conv = (fmt, ext) => { const out = path.join(tmp, `a.${ext}`); return spawnSync("/usr/bin/sips", ["-s", "format", fmt, F.a, "--out", out]).status === 0 ? out : null; };
   const jpg = conv("jpeg", "jpg"), tiff = conv("tiff", "tiff"), b64 = (p) => fs.readFileSync(p).toString("base64");
   const send = (data, kind = "paste", sel = note) => tab.evaluate(({ sel, data, kind }) => {
@@ -103,7 +103,8 @@ try {
   const ihdr = (p) => { const b = fs.readFileSync(p); return b.subarray(1, 4).toString() === "PNG" && [b.readUInt32BE(16), b.readUInt32BE(20)].join("x"); };
   check("the pasted picture is stored whole", await until(() => stored().includes("img1.png")) && ihdr(path.join(files, "img1.png")) === "480x240");
   check("page state prints the named picture's path", await until(() => page(["state", "seams", "--all"]).includes(`img1.png=${path.join(files, "img1.png")}`), 4000), page(["state", "seams", "--all"]));
-  check("the field shows the picture under it", await until(() => tab.$eval('.card[data-id="c11"] > .att img', (im) => im.naturalWidth > 0).catch(() => false)));
+  check("the field's box shows the picture above its text", await until(() => tab.$eval('.card[data-id="c11"] > .atw', (w) =>
+    w.firstElementChild.matches(".att") && w.lastElementChild.matches("textarea") && w.querySelector(".att img").naturalWidth > 0).catch(() => false)));
   await tab.keyboard.press("End");
   check("a file copied in Finder is attached, its file name is not typed",
     (await send({ files: [{ b64: b64(jpg), name: "photo.jpg", type: "image/jpeg" }], text: { "text/plain": "photo.jpg" } }))
@@ -128,19 +129,21 @@ try {
   await send({ files: [{ b64: b64(path.join(files, "img1.png")), name: "image.png", type: "image/png" }] });
   check("the same picture again keeps its first name", await until(async () => (await value()).match(/\[img1\.png\]/g)?.length === 2) && !stored().includes("img6.png"), await value());
   const chips = stored().length;
+  const tiles = await tab.$$eval('.card[data-id="c11"] .att .atc', (c) => c.map((e) => `${e.offsetWidth}x${e.offsetHeight}`));
+  check("every picture is a tile of one square size", tiles.length === chips && tiles.every((t) => t === tiles[0]) && /^(\d+)x\1$/.test(tiles[0]), JSON.stringify(tiles));
   await tab.$eval(note, (el) => { el.focus(); el.select(); });
   await tab.keyboard.press("Backspace");
   check("a name deleted from the text leaves its picture dimmed under the field",
-    await until(() => tab.$$eval('.card[data-id="c11"] > .att .atc.off', (c) => c.length)) === chips);
-  await tab.click('.card[data-id="c11"] > .att button:text-is("img2.jpg")');
+    await until(() => tab.$$eval('.card[data-id="c11"] .att .atc.off', (c) => c.length)) === chips);
+  await tab.click('.card[data-id="c11"] .att button:text-is("img2.jpg")');
   check("its name button puts the name back", await until(async () => (await value()) === "[img2.jpg]") &&
-    await tab.$$eval('.card[data-id="c11"] > .att .atc:not(.off)', (c) => c.length) === 1, await value());
+    await tab.$$eval('.card[data-id="c11"] .att .atc:not(.off)', (c) => c.length) === 1, await value());
   check("page state names only the pictures the text still names", await until(() => {
     const st = page(["state", "seams", "--all"]); return st.includes("img2.jpg=") && !st.includes("img1.png="); }, 4000));
   await tab.reload();
   check("after a reload the field still shows every picture pasted into it",
-    await until(() => tab.$$eval('.card[data-id="c11"] > .att .atc', (c) => c.length).catch(() => 0)) === chips);
-  await tab.click('.card[data-id="c11"] > .att img');
+    await until(() => tab.$$eval('.card[data-id="c11"] .att .atc', (c) => c.length).catch(() => 0)) === chips);
+  await tab.click('.card[data-id="c11"] .att img');
   check("a click on a picture opens it full screen among the field's pictures only",
     await until(() => tab.$eval(".zoom .zpos", (z) => z.textContent).catch(() => "")) === `1 / ${chips}` &&
     (await tab.$eval(".zoom > img", (im) => im.src)).endsWith("/f/img1.png"));

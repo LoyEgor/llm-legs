@@ -16,13 +16,14 @@ const CSS = `
 .pc{position:relative;overflow:hidden;border-radius:6px;cursor:crosshair;background:#fff;outline:1px solid var(--line)}
 .pc img{width:100%;height:100%;display:block;pointer-events:none}
 .pc i{position:absolute;border:2px solid var(--accent);box-shadow:0 0 0 1px #fff;pointer-events:none}
+.pc input{position:absolute;left:4px;top:4px;z-index:1;margin:0;width:16px;height:16px;cursor:pointer;accent-color:var(--accent)}.pc.off img{opacity:.35}
 .side{flex:1 1 340px;min-width:340px;display:flex;flex-direction:column;gap:8px}
 .ttl{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px}.nav{display:flex;gap:6px;align-items:center}
 .q{padding:6px 10px;border-left:3px solid var(--accent);background:var(--card);border-radius:6px;font-size:14px;white-space:pre-line}
 .votes{display:flex;gap:8px;flex-wrap:wrap}.votes button{flex:1 0 auto;font-size:17px;font-weight:600;padding:8px;white-space:nowrap}
 .trow,.tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.trow b{width:16px}.trow button,.tools button{padding:3px 10px;font-size:13px}
 .lrow{display:grid;gap:8px;margin-top:10px}
-.vp{position:relative;overflow:hidden;height:var(--lh,480px);background:#fff;border-radius:6px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;outline:1px solid var(--line)}
+.vp[hidden]{display:none}.vp{position:relative;overflow:hidden;height:var(--lh,480px);background:#fff;border-radius:6px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;outline:1px solid var(--line)}
 body.drag,body.drag .vp{cursor:grabbing}
 .vp img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;pointer-events:none;-webkit-user-drag:none}
 .bd{position:absolute;left:6px;top:4px;display:flex;gap:4px;z-index:1;pointer-events:none;font:600 12px/1.4 system-ui}
@@ -37,7 +38,7 @@ body.drag,body.drag .vp{cursor:grabbing}
 const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)";
 const app = document.getElementById("app");
 let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false;
-const hot = new Map(), inked = new WeakSet();
+const hot = new Map(), inked = new WeakSet(), off = new Set(); // off: frames whose loupe is hidden, by badge
 
 export function render(spec) {
   S = spec;
@@ -88,7 +89,9 @@ function show(id, keepView) {
     h("div", { class: "bd" }, h("span", {}, f.side || f.name), f.side && f.name ? h("span", {}, f.name) : null,
       f.meta ? h("span", {}, f.meta) : null, h("span", { class: "dim" })),
     h("img", { src: f.src, alt: "", draggable: false }), h("canvas")));
-  const cells = fs.map(() => h("div", { class: "pc", onclick: aim }, h("img", { alt: "", draggable: false }), h("i")));
+  const cells = fs.map((f, k) => h("div", { class: "pc", onclick: aim }, h("img", { alt: "", draggable: false }), h("i"),
+    fs.length > 2 ? h("input", { type: "checkbox", title: "показывать внизу", onclick: (e) => e.stopPropagation(),
+      onchange: (e) => { e.target.blur(); pane(k, e.target.checked); } }) : null));
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
     hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
     gb: S.pixel_grid || it.grid ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
@@ -106,9 +109,9 @@ function show(id, keepView) {
     h("div", { class: "side" }, h("div", { class: "ttl" }, h("strong", {}, `${num(it, i)}${it.title ? " · " + it.title : ""}`), nav),
       it.q ? h("div", { class: "q" }, it.q) : null, E.votes, E.sg, E.tags, tools,
       textBox(id, "note", { placeholder: "заметка" }))),
-    h("div", { class: "lrow", style: `grid-template-columns:repeat(${fs.length},1fr)` }, vps));
+    h("div", { class: "lrow" }, vps));
   vps.forEach(wire);
-  paintSide(); strip(); layout();
+  panes(); paintSide(); strip(); layout();
   Promise.all(E.imgs.map((im) => im.complete ? 0 : new Promise((r) => { im.onload = im.onerror = r; }))).then(() => {
     if (my !== token) return;
     const ref = it.original ? E.imgs[0] : E.imgs.reduce((a, b) => (b.naturalWidth * b.naturalHeight > a.naturalWidth * a.naturalHeight ? b : a));
@@ -163,9 +166,30 @@ function tag(side, t) {
   paintSide();
 }
 
+// From three frames up a preview's checkbox hides or shows its loupe, for every item of the visit; the
+// last loupe shown stays, and an item whose frames would all be hidden shows them all.
+const badge = (f) => f.side || f.name;
+function panes() {
+  const fs = frames(item(cur)), hide = fs.map((f) => fs.length > 2 && off.has(badge(f)));
+  if (hide.every(Boolean)) hide.fill(false);
+  E.vps.forEach((v, k) => {
+    v.hidden = hide[k];
+    E.cells[k].classList.toggle("off", hide[k]);
+    const cb = E.cells[k].querySelector("input");
+    if (cb) cb.checked = !hide[k];
+  });
+  E.vps[0].parentNode.style.gridTemplateColumns = `repeat(${hide.filter((x) => !x).length},1fr)`;
+}
+function pane(k, on) {
+  const name = badge(frames(item(cur))[k]);
+  if (on) off.delete(name); else if (E.vps.filter((v) => !v.hidden).length > 1) off.add(name);
+  panes(); reflow();
+}
+
 function go(d) { if (cur !== null) show(ids[(ids.indexOf(cur) + d + ids.length) % ids.length]); }
 
-const size = () => ({ W: E.vps[0].clientWidth, H: E.vps[0].clientHeight });
+const shown = () => E.vps.find((v) => !v.hidden) || E.vps[0];
+const size = () => ({ W: shown().clientWidth, H: shown().clientHeight });
 function fit() { const { W, H } = size(); return { cx: geo.w / 2, cy: geo.h / 2, z: Math.min(W / geo.w, H / geo.h) }; }
 const clampZ = (z) => Math.min(64, Math.max(fit().z / 4, z));
 function setL(v) { if (geo) { L = v; draw(); } }
@@ -215,13 +239,15 @@ addEventListener("pointermove", (e) => {
 addEventListener("pointerup", endDrag);
 addEventListener("pointercancel", endDrag);
 addEventListener("blur", endDrag);
-addEventListener("resize", () => {
+// a loupe that changes width keeps showing the same span of the picture
+function reflow() {
   if (!E) return;
   const w = lastW;
   layout();
-  if (L && w) L.z *= E.vps[0].clientWidth / w;
+  if (L && w) L.z *= shown().clientWidth / w;
   draw();
-});
+}
+addEventListener("resize", reflow);
 
 function layout() {
   if (!E) return;
@@ -233,7 +259,7 @@ function layout() {
   // measured after the previews take their height, which moves the loupe row
   const row = E.vps[0].parentNode, top = row.getBoundingClientRect().top + scrollY;
   document.documentElement.style.setProperty("--lh", Math.max(300, innerHeight - top - 16) + "px");
-  lastW = E.vps[0].clientWidth;
+  lastW = shown().clientWidth;
 }
 
 function draw() {

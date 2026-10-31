@@ -144,6 +144,20 @@ try {
   await page.keyboard.press("Digit0");
   await page.waitForTimeout(100);
   check("0 fits", (await xf(page))[0] !== out3[0]);
+  // a preview's checkbox (three frames up) hides its loupe and widens the rest; the last one shown stays
+  const hidden = () => page.$$eval(".vp", (v) => v.map((e) => +e.hidden).join(""));
+  const cbs = await page.$$(".pc input[type=checkbox]"), w3 = await page.$eval(".vp", (v) => v.clientWidth);
+  check("three frames: a checkbox on each preview", cbs.length === 3);
+  await cbs[0].click();
+  check("a checkbox off hides its loupe and widens the rest", await hidden() === "100"
+    && (await page.$eval(".vp:not([hidden])", (v) => v.clientWidth)) > w3 * 1.3, await hidden());
+  check("the keys still work after a checkbox click", await page.evaluate(() => document.activeElement.type !== "checkbox"));
+  await cbs[1].click(); await cbs[2].click();
+  check("the last loupe shown stays", await hidden() === "110" && await cbs[2].isChecked(), await hidden());
+  await page.click("text=→"); await ready(page);
+  check("hidden loupes stay hidden on the next item", await hidden() === "110", await hidden());
+  for (const cb of await page.$$(".pc input[type=checkbox]:not(:checked)")) await cb.click();
+  check("a checkbox on brings its loupe back", await hidden() === "000", await hidden());
   await page.close();
 
   // 3. outbox: 503 → «не сохранилось», reload keeps the gesture, the server recovering gets it once
@@ -220,7 +234,7 @@ try {
   await ready(page);
   const badges = await page.$$eval(".bd span:first-child", (x) => x.map((e) => e.textContent));
   check("blind page shows slots A/B only", JSON.stringify(badges) === '["A","B"]' && !(await page.content()).includes("champ"), JSON.stringify(badges));
-  check("pairwise page: two loupes, no original", (await page.$$eval(".vp", (x) => x.length)) === 2);
+  check("pairwise page: two loupes, no original, no checkboxes", (await page.$$eval(".vp", (x) => x.length)) === 2 && !(await page.$(".pc input")));
   await page.click('.votes button[data-v="B"]');
   await until(() => posts("blind1").length, 2000);
   check("blind vote writes the slot letter", posts("blind1")[0]?.fields.choice === "B");
@@ -273,7 +287,7 @@ try {
   await page.click(`${c} .row[data-f="kind"] button[data-v="click"]`);
   await page.click(`${c} .row[data-f="kind"] button[data-v="gap"]`);
   await page.click(`${c} .row[data-f="score"] button[data-v="7"]`);
-  await page.type(`${c} > textarea`, "щелчок", { delay: 30 });
+  await page.type(`${c} textarea`, "щелчок", { delay: 30 });
   await until(() => posts("cards1").length >= 5, 3000);
   check("cards save changed fields only", JSON.stringify(posts("cards1").map((p) => p.fields)) === JSON.stringify([{ heard: "1" }, { kind: ["click"] }, { kind: ["click", "gap"] }, { score: 7 }, { note: "щелчок" }]), JSON.stringify(posts("cards1")));
   check("card done turns its number", await page.$eval(c, (e) => e.classList.contains("done")));

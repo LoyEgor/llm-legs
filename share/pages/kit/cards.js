@@ -14,7 +14,7 @@ const CSS = `
 .card img,.card video{max-width:100%;min-height:40px;border-radius:6px;display:block;margin:4px 0}.card audio{width:100%;margin:4px 0}
 .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0}.row>span:first-child{min-width:72px;color:var(--mute)}
 .row button{padding:3px 12px}.row button.on{background:var(--on);border-color:var(--on);color:#fff}
-.card>textarea{margin-top:4px}`;
+.card>.atw{margin-top:4px}`;
 const TAG = { image: "img", audio: "audio", video: "video" };
 const app = document.getElementById("app");
 let S, ids, cards = new Map(), first = true;
