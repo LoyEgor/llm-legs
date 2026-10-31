@@ -1835,9 +1835,9 @@ local function toolsEntry(doc, now, stale)
       local lines = {}
       for _, line in ipairs(list(item.lines)) do lines[#lines + 1] = dim(tostring(line)) end
       if item.marker then lines[#lines + 1] = { title = infoTitle("Reopen tonight"), fn = reopen(tostring(item.marker)) } end
-      local minutes = tonumber(item.min_day) or 0
-      sub[#sub + 1] = fitRow({ title = styled({ { padded(minutes < 9.95 and string.format("%.1f", minutes)
-          or rounded(minutes), 4), item.red and style.RED or nil },
+      local minutes = tonumber(item.min_day)
+      sub[#sub + 1] = fitRow({ title = styled({ { padded(not minutes and "" or minutes < 9.95
+          and string.format("%.1f", minutes) or rounded(minutes), 4), item.red and style.RED or nil },
         { ("  " .. name .. string.rep(" ", width - cells(name)) .. "  " .. tostring(item.detail or "")):gsub("%s+$", ""),
           item.red and style.RED or nil } }),
         menu = #lines > 0 and lines or nil, disabled = #lines == 0 or nil })

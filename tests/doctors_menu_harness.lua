@@ -326,7 +326,7 @@ metadata.tools = { as_of_s = now, count = 2, red = { "logo-verdict: your call" }
     { glyph = "✕", label = "rejected", items = { { name = "file-edit", min_day = 106, detail = "slower  Nov 2",
       marker = "file-edit", lines = { "edit a file", "tool    2.1 s   try 2  2.0 s", "script  1.9 s   try 2  1.9 s",
         "reopens  Nov 2 · 211 min/day" } } } },
-    { glyph = "○", label = "unused", items = { { name = "/trash", min_day = 0, detail = "unknown", lines = {} } } } } }
+    { glyph = "○", label = "unused", items = { { name = "/trash", detail = "unknown", lines = {} } } } } }
 end
 local function trendHarness()
   write("/harness-doctor/menu.txt", "T\t3\t" .. now .. "\tHarness doctor: 3 problems\nH\t" .. hs.json.encode(metadata)
@@ -434,6 +434,8 @@ do
   check(first[6].title == "-" and text(first[7].title) == "LLM details" and #first == 7
     and text(first[7].menu[1].title) == "Ad-hoc scripts: 3 jobs over 8.6 min/day writing",
     "a separator, then LLM details holding Speed's ad-hoc lines")
+  check(text(first[5].menu[1].title) == "      /trash  unknown",
+    "an unused tool with no number leaves its minutes cell blank: " .. text(first[5].menu[1].title))
   local queue = first[2].menu
   check(text(queue[1].title) == "  24  tokenmap" and text(queue[2].title) == " 9.0  logo-verdict  your call"
     and red(queue[2].title) and not red(queue[1].title) and queue[1].menu and text(queue[1].menu[1].title) == "query token-map spend",

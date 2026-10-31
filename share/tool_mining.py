@@ -91,7 +91,7 @@ CLUSTERS = (
     ("module-probe", "import a harness module to probe it", None,
      r"sys\.path\.(?:insert|append)|importlib|SourceFileLoader"),
     ("hook-replay", "replay a hook on a JSON payload", None, r"tool_input|hook_event_name|payloads?\.jsonl?\b"),
-    ("file-read", "print part of a text file", "the Read and Grep tools",
+    ("file-read", "print a file's lines", "the Read and Grep tools",
      r"open\([^)]*\.(?:md|sh|py|lua|txt|tsv)['\"]?\)\.read\(\)|read_text\(\)\.split|\.split\(['\"]\\n['\"]\)\["),
     ("json-other", "read some other JSON", None, r"json\.load|JSON\.parse|\bjq\b"),
     ("text-other", "other text processing", None, r""),
@@ -1293,6 +1293,7 @@ def tools_document(cache, last, found, nets, rows, reopen, tools, now, root=None
                 100.0 * (n["min_after"] - n["min_before"]) / n["min_before"]))) if n.get("min_before") else "pending"
         elif target in reopen or not parked(row):
             group, item["detail"] = "queue", "reopened" if target in reopen else ""
+            item["lines"] += [reopen[target].replace("reopened: ", "reopened  ", 1)] if target in reopen else []
         elif row.get("handoff"):
             egor, chats, stale = handed(row, key, root, folders, carried, now)
             group = "queue" if egor else "handed"
@@ -1310,10 +1311,10 @@ def tools_document(cache, last, found, nets, rows, reopen, tools, now, root=None
     for key in cache.get("unused") or ():
         tool = tools.get(key) or {}
         groups["unused"].append({"name": ("/" if key.startswith("skill/") else "") + key.split("/", 1)[1],
-                                 "min_day": round(tool.get("hint_min_day") or 0, 1), "detail": tool.get("cause") or "–",
+                                 "min_day": round(tool.get("hint_min_day") or 0, 1) or None, "detail": tool.get("cause") or "–",
                                  "lines": []})
     return {"as_of_s": int(now), "count": len(groups["queue"]) + len(groups["handed"]), "red": red,
-            "groups": [{"glyph": glyph, "label": label, "items": sorted(groups[g], key=lambda i: (-i["min_day"], i["name"]))}
+            "groups": [{"glyph": glyph, "label": label, "items": sorted(groups[g], key=lambda i: (-(i["min_day"] or 0), i["name"]))}
                        for g, glyph, label in GROUPS]}
 
 

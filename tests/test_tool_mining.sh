@@ -833,6 +833,15 @@ check(edit["lines"] == ["edit a file", "tool    2.1 s   try 2  2.0 s", "script  
       and "marker" not in got["groups"][1]["items"][0] and len(got["groups"][0]["items"][0]["lines"]) <= 4,
       "a candidate's lines: its job in four words at most, the tool and script beside each try, what reopens a parked "
       "one; only a parked one gets a reopen marker: %s" % edit)
+back = t.tools_document({"history": {"2026-10-31": LAST}, "unused": ["bin/foo", "bin/bar"]}, LAST, [], {}, ROWS,
+                        {"adhoc/logo-bench": "reopened: 1 → 3 projects, 45 → 45.5 min/day"},
+                        {"bin/foo": {"hint_min_day": 0.4, "cause": "unknown"}, "bin/bar": {"cause": "obsolete"}}, AT,
+                        root=tools_root)
+queued = [i for i in back["groups"][1]["items"] if i["name"] == "logo-bench"]
+check(queued and queued[0]["detail"] == "reopened"
+      and queued[0]["lines"][-1] == "reopened  1 → 3 projects, 45 → 45.5 min/day"
+      and [(i["name"], i["min_day"]) for i in back["groups"][4]["items"]] == [("foo", 0.4), ("bar", None)],
+      "a reopened candidate shows what reopened it; an unused tool whose hint costs nothing shows no number: %s" % back["groups"])
 check(got["red"] == ["logo-bench: handoff undelivered 7+ days", "logo-verdict: your call"],
       "the name reads RED while a trade waits on Egor or a handoff sits 7+ days with no night carrying it: %s" % got["red"])
 with open(os.path.join(doctors, "nights", "n1.json"), "w") as handle:
