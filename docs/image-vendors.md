@@ -292,11 +292,11 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   512 on 11 of 16 clean 1024 logos, but above 512 only the core steps apply; `--size 512` fits the long side
   into 512 px, where every champion step is tuned and judged (JPEG, soft-edged or gradient-heavy art). The SVG keeps the source's pixel size as width/height. ~2–5 min an image,
   independent images run in parallel. Prints `svg= champion= source= traced= seconds= auto=on`, then a `colcheck:` line when
-  colours look lost or mixed. By default it detects flat art and its colour count (`tracers/halo-a1` = `tracers/hints-a7` plus a pixel-art step, a background keep and a faint-shadow cleanup): flat art takes a
+  colours look lost or mixed. By default it detects flat art and its colour count (`tracers/gutter-a2` = `tracers/hints-a7` plus a pixel-art step, a background keep, a faint-shadow cleanup and a grey-bar sliver fix): flat art takes a
   palette path that keeps colours apart, gradients/JPEG/transparency/blur/<300 px get the champion; rough print art
   (linocut, stamp, woodcut: a few inks with grain and ragged edges), JPEG included, is detected and traced flat with its
   roughness kept, without the champion; pixel art (8-bit logos on a coarse square grid, JPEG included) is traced as exact
-  square cells in about a second; a pale tinted background keeps its input colour, white details stay white; a faint soft shadow beside dark letters stays white ground instead of a hard grey band. `--auto no` runs the champion alone. `--gradient`/`--colors`/`--palette` are the
+  square cells in about a second; a pale tinted background keeps its input colour, white details stay white; a faint soft shadow beside dark letters stays white ground instead of a hard grey band; a grey edge bar no longer shows through as grey slivers along lines inside the logo. `--auto no` runs the champion alone. `--gradient`/`--colors`/`--palette` are the
   fallback hints (`--help`); if the default still smoothed rough art, rerun with `--gradient no --palette <its inks>`.
 
   ```bash
