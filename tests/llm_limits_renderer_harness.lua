@@ -4897,6 +4897,7 @@ end)()
       { account = "apfree", five_hour = bucket(10), weekly = bucket(20) },
       { account = "apdead", five_hour = bucket(10), weekly = bucket(20) },
       { account = "apnone", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "apspend", five_hour = bucket(10), weekly = bucket(20) },
     } },
     gemini = { available = true, accounts = {} },
   }, openai_api = { as_of = now - 60, accounts = {
@@ -4904,6 +4905,7 @@ end)()
     { account = "apfree", renews_at = now + 20 * 86400 },
     { account = "apfree", held_until = now - 5, why = "quota" },
     { account = "apdead", held_until = now + 3600, why = "auth", renews_at = now + 20 * 86400 },
+    { account = "apspend", renews_at = now + 20 * 86400, spent = 6.8, credit = 17, used_pct = 40 },
   } }, elevenlabs = { as_of = now - 60, accounts = {
     { account = "q", name = "elquota", used = 10, limit = 100, reserve = 0, resets_at = now + 9 * 86400,
       held_until = now + 9 * 86400, why = "quota" },
@@ -4942,6 +4944,10 @@ end)()
       and not submenuItem(accountItem(menu, "apdead"), "Log in to ChatGPT web…"),
     "an OpenAI key refused for auth is not a red \"ap  key refused\" under an \"!\" without a ChatGPT login: "
       .. (dead[1] and titleText(dead[1]) or "none"))
+  local spent = only(under("apspend", "ap"))
+  assert(titleText(spent) == string.format("        ap  ▓▓░░░  %4s  %9s", "40%", day(now + 20 * 86400))
+      and #redRuns(spent.title) == 0,
+    "an OpenAI key read through an admin key is not its spend share to the renewal: " .. titleText(spent))
   assert(#under("apnone", "ap") == 0 and not titleText(accountItem(menu, "apnone")):find("!"),
     "a Codex account without an OpenAI key drew an ap row")
   local function el(name) local index = accountIndex(menu, name); return menu[index], menu[index + 1] end

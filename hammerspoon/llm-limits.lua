@@ -1202,8 +1202,9 @@ function owner.openaiKeys(limits, acct)
   return found
 end
 
--- An `ap` row per OpenAI API key, in the weekly row's columns. No spend reading exists: a quota hold is a full red bar
--- to its end, any other state an unmeasured scale to the credit grant's renewal; a refused key is its owner row.
+-- An `ap` row per OpenAI API key, in the weekly row's columns. A quota hold is a full red bar to its end; an account
+-- with an admin key (share/openai_api_keys.py) fills the bar with its spend against its credit, to the renewal;
+-- otherwise the scale is unmeasured; a refused key is its owner row.
 function owner.apRows(limits, acct, now)
   local rows = {}
   for _, key in ipairs(owner.openaiKeys(limits, acct)) do
@@ -1212,6 +1213,11 @@ function owner.apRows(limits, acct, now)
     if why == "quota" then
       rows[#rows + 1] = { disabled = true,
         title = rowTitle("", "ap", { effective_pct = 100, resets_at = untilEpoch }, false, true) }
+    elseif not owner.keyRefused(key, now) and tonumber(key.used_pct) then
+      local pct = tonumber(key.used_pct)
+      rows[#rows + 1] = { disabled = true,
+        title = rowTitle("", "ap", { effective_pct = pct, resets_at = renews }, false, pct >= 100, pct >= 80,
+          { reset = not renews and "" or nil }) }
     elseif not owner.keyRefused(key, now) then
       -- %4s pads bytes and the dot is two: three spaces keep it under the percent column's last cell.
       rows[#rows + 1] = { disabled = true,

@@ -564,8 +564,8 @@
     "unit": "s",
     "where": "llm-limits.sh:1874",
     "set_by": "worker",
-    "why": "The OpenAI API key rows read two local files; the ElevenLabs section's bound, never expected to bind.",
-    "normal": "Never."
+    "why": "The OpenAI API key rows read two local files and, per account with an admin key, its spend: costs GETs in parallel, 10 s each; the ElevenLabs section's bound.",
+    "normal": "Rare."
   },
   "llm-refresh.collector-timeout": {
     "value": 1800,
