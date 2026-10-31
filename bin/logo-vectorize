@@ -18,7 +18,8 @@ usage() {
   printf '  included, is detected and traced as exact square cells in about a second (preferred on 22 of 23 decided unseen\n' >&2
   printf '  tiles). A pale tinted background keeps its input colour instead of turning pure white; white details inside\n' >&2
   printf '  the logo stay white; a faint soft shadow beside dark letters stays white ground instead of a grey band; a grey\n' >&2
-  printf '  edge bar no longer shows through as grey slivers along lines inside the logo.\n' >&2
+  printf '  edge bar no longer shows through as grey slivers along lines inside the logo; flat art printed with a darker\n' >&2
+  printf '  rim and mottled fill (worn-print look) keeps its few flat colours instead of patches of extra shades.\n' >&2
   printf '  --auto no runs the champion alone\n' >&2
   printf '  --size native (default) traces up to 1024 px as given (finer edges). Flat opaque PNG of 300 px or more takes the\n' >&2
   printf '  palette path at any size; on the fallback most post-steps match the bench sizes (256/512/1024) exactly, so other\n' >&2
