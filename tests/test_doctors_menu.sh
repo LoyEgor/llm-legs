@@ -80,7 +80,7 @@ output=$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 </dev/null \
   -c "return dofile([[$ROOT/tests/lib/live_log_guard.lua]])(function()
     return loadfile([[$ROOT/tests/doctors_menu_harness.lua]])([[$VOCAB]], $source, $only, $baseline) end)") ||
   fail "the Hammerspoon harness threw or timed out: $output"
-printf '%s\n' "$output" | awk '/^(BENCH|FIXTURE|SUBMENU) /'
+printf '%s\n' "$output" | awk '/^(BENCH|FIXTURE|SUBMENU|TOOLS) /'
 result=$(printf '%s\n' "$output" | grep -v '^-- Loading extension: ' | awk '/^(PASS|FAIL)/ { found = 1 } found')
 case "$result" in
   PASS:*) echo "OK: $result" ;;

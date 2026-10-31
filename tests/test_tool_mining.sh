@@ -836,7 +836,8 @@ check(edit["lines"] == ["edit a file", "tool    2.1 s   try 2  2.0 s", "script  
 check(got["red"] == ["logo-bench: handoff undelivered 7+ days", "logo-verdict: your call"],
       "the name reads RED while a trade waits on Egor or a handoff sits 7+ days with no night carrying it: %s" % got["red"])
 with open(os.path.join(doctors, "nights", "n1.json"), "w") as handle:
-    json.dump({"jobs": [{"state": "failed-launch", "path": "/r/docs/handoffs/2026-10-01-logo.md"}]}, handle)
+    json.dump({"jobs": [{"state": "failed-launch", "path": "/r/docs/handoffs/2026-10-01-logo.md"},
+                        {"state": "failed-launch", "handoffs": ["/r/docs/handoffs/2026-10-02-logo-too.md"]}]}, handle)
 check(tdoc()["red"] == got["red"], "a night whose launch failed delivered nothing")
 with open(os.path.join(doctors, "nights", "n2.json"), "w") as handle:
     json.dump({"jobs": [{"state": "done", "handoffs": ["/r/docs/handoffs/2026-10-01-logo.md",

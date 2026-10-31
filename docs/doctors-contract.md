@@ -57,7 +57,7 @@ LLM ▸     8  reviewers crashed
        LLM details ▸   (the doctor's whole previous tree)
 
 Tools ▸   1  ✓ built ▸            ● ▸  24  tokenmap ▸            ✕ ▸ file-edit ▸ edit a file
-          2  ● night queue ▸            9  logo-verdict  your call ▸         tool    2.1 s   try 2  2.0 s
+          2  ● night queue ▸          9.0  logo-verdict  your call ▸         tool    2.1 s   try 2  2.0 s
           0  → with project chats                                            script  1.9 s   try 2  1.9 s
           1  ✕ rejected ▸                                                    reopens  Nov 2 · 211 min/day
           1  ○ unused ▸                                                      Reopen tonight

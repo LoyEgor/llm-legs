@@ -780,7 +780,8 @@ check(doc["budget"].get("lost_min_day_by_day") == first["budget"].get("lost_min_
                                           [None, "min per job · night"]],
                                "rows": first["budget"]["rows"]},
                      "spend": {"as_of_s": first["as_of_s"], "status": "nodata", "index": None, "index_by_day": {},
-                               "issues": []}}
+                               "issues": []}, "tools": first["tools"]}
+      and [g["glyph"] for g in first["tools"]["groups"]] == ["✓", "●", "→", "✕", "○"]
       and repeated["budget"].get("lost_min_day_by_day") == days_value,
       "the day history holds each day's value, today the latest and never a larger earlier reading kept in state; "
       "the compact header carries the budget rows and no OM/d history: %s" % header)

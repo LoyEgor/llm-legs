@@ -435,7 +435,7 @@ do
     and text(first[7].menu[1].title) == "Ad-hoc scripts: 3 jobs over 8.6 min/day writing",
     "a separator, then LLM details holding Speed's ad-hoc lines")
   local queue = first[2].menu
-  check(text(queue[1].title) == "  24  tokenmap" and text(queue[2].title) == "   9  logo-verdict  your call"
+  check(text(queue[1].title) == "  24  tokenmap" and text(queue[2].title) == " 9.0  logo-verdict  your call"
     and red(queue[2].title) and not red(queue[1].title) and queue[1].menu and text(queue[1].menu[1].title) == "query token-map spend",
     "a group lists min/day aligned, the name, the detail, RED where it waits on Egor: " .. text(queue[2].title))
   local rejected = first[4].menu[1]

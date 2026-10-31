@@ -307,8 +307,8 @@ printf 'opportunity:adhoc/ledger-query\truled-out\tllm-legs/bin/llm-doctor:40\ts
 jq '.rows[0] += {status: "ruled-out", fixes: []}' "$WORK/ledgers/llm.json" >"$WORK/l" && mv "$WORK/l" "$WORK/ledgers/llm.json"
 assert_fails fix close "$id2" --decisions "$WORK/rejecting" "x" 2>"$WORK/err"
 assert grep -qF "ledger $WORK/ledgers/llm.json: opportunity:adhoc/ledger-query ruled-out refused: reason is one of slower|costlier|one-off; min_day is its min/day at rejection; projects is the count of projects it recurs in at rejection; reread_by is the YYYY-MM-DD the night re-reads it: a rejected tool candidate carries" "$WORK/err"
-jq --argjson b "$(jq -c '.tool_wall_s = 0.9' <<<"$bench")" '.rows[0] += {reason: "slower", min_day: 12.5, projects: 1,
-  reread_by: "2026-11-02", bench: $b, bench2: $b}' "$WORK/ledgers/llm.json" >"$WORK/l" && mv "$WORK/l" "$WORK/ledgers/llm.json"
+jq --argjson b "$(jq -c '.tool_wall_s = 0.9 | .tool_out_b = 5000' <<<"$bench")" '.rows[0] += {reason: "slower",
+  min_day: 12.5, projects: 1, reread_by: "2026-11-02", bench: $b, bench2: $b}' "$WORK/ledgers/llm.json" >"$WORK/l" && mv "$WORK/l" "$WORK/ledgers/llm.json"
 assert_fails fix close "$id2" --decisions "$WORK/rejecting" "x" 2>"$WORK/err"
 assert_fails grep -qF "ruled-out refused" "$WORK/err" && assert grep -qF "row R2 fixes[0] lacks regressed_at" "$WORK/err"
 cp "$WORK/ledger-kept" "$WORK/ledgers/llm.json"
@@ -1552,6 +1552,7 @@ if suite_shard_owns 2 df-ruling-holds; then
 # ruling, its window_h passed with no times (168 h with none), or a 3-day-or-longer value at 1.5x the ruling's; a kept
 # spend or CPU audit (ruled-out) due again for a source change or a later load launches, never audited holds. A regressed
 # row holds only on a ruling after its ledger row's last fix (H13); one fixed since (H14) or with no row (H3) launches.
+# A tool candidate Speed reopened (H15, `opportunity.reopened`) launches whatever its ruling.
 for r in "$RUNS"/llm-*.json; do
   jq -e '.closed_at == null and .abandoned_at == null and .failed_at == null' "$r" >/dev/null || continue
   fix abandon "$(basename "$r" .json)" --reason "the ruling-holds case" >/dev/null || fail "abandon before the ruling-holds case failed"
@@ -1559,10 +1560,10 @@ done
 ago() { date -u -v-"$1"H +%Y-%m-%dT%H:%M:%SZ; }
 h1=llm-own-20260101T000000Z-h001 h2=llm-own-20260101T000000Z-h002
 jq -n --arg id "$h1" --arg c "$(ago 1)" '{id: $id, doctor: "llm", closed_at: $c, problems: [{id: "H5", value: 10}, {id: "H6", value: 10}],
-  decisions: [range(1; 7), range(9; 15) | {id: "H\(.)", verdict: (if . == 2 then "weather" else "ruled-out" end)}]}' >"$(record "$h1")"
+  decisions: [range(1; 7), range(9; 16) | {id: "H\(.)", verdict: (if . == 2 then "weather" else "ruled-out" end)}]}' >"$(record "$h1")"
 jq -n --arg id "$h2" --arg c "$(ago 30)" '{id: $id, doctor: "llm", closed_at: $c, problems: [],
   decisions: [{id: "H7", verdict: "ruled-out"}, {id: "H8", verdict: "weather"}]}' >"$(record "$h2")"
-jq -n --argjson s "$(now)" --arg t "$(ago 0)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "j", status: "problems", problem_count: 14,
+jq -n --argjson s "$(now)" --arg t "$(ago 0)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "j", status: "problems", problem_count: 15,
   blocks: [], problems: [{id: "H1", state: "open"}, {id: "H2", state: "new", window_h: 24}, {id: "H3", state: "regressed"},
     {id: "H4", state: "open", evidence: [{at: $t}]}, {id: "H5", state: "open", window_h: 168, value: 15},
     {id: "H6", state: "open", window_h: 24, value: 30}, {id: "H7", state: "open", window_h: 24}, {id: "H8", state: "open"},
@@ -1570,7 +1571,8 @@ jq -n --argjson s "$(now)" --arg t "$(ago 0)" '{contract: 1, doctor: "llm", as_o
     {id: "H10", state: "open", window_h: 168, evidence: [], spend: {due: "never audited"}},
     {id: "H11", state: "open", window_h: 168, evidence: [], spend: {due: "still loading after the cut"}},
     {id: "H12", state: "open", window_h: 168, evidence: [], cpu: {due: "source changed"}},
-    {id: "H13", state: "regressed", window_h: 24}, {id: "H14", state: "regressed", window_h: 24}]
+    {id: "H13", state: "regressed", window_h: 24}, {id: "H14", state: "regressed", window_h: 24},
+    {id: "H15", state: "open", window_h: 24, opportunity: {reopened: "reopened: 1 → 3 projects, 12 → 30 min/day"}}]
   | map(. + {rule: "leg-failure", fact: "f \(.id)", ledger: (if .id == "H13" or .id == "H14" then .id else null end)})}' >"$WORK/llm/latest.json"
 jq --arg t "$(ago 0)" '.rows = [["H13", "2026-09-01T00:00:00Z"], ["H14", $t] | {id: .[0], title: "a fixed row",
   match: {word: .[0]}, status: "fixed-pending", fixes: [{at: .[1], by: "c", files: ["llm-legs/bin/x"], in: null, regressed_at: null}],
@@ -1578,7 +1580,7 @@ jq --arg t "$(ago 0)" '.rows = [["H13", "2026-09-01T00:00:00Z"], ["H14", $t] | {
 night_ledger "$WORK/doctors" nH && git -C "$L" update-ref refs/night/nH/base HEAD
 fix launch llm --night nH >"$WORK/out" 2>"$WORK/err" || fail "ruling-holds night: $(cat "$WORK/err")"
 assert jqe --arg a "$h1" --arg b "$h2" '[.problems[] | [.id, .value]] == [["H3", null], ["H4", null], ["H5", 15], ["H7", null],
-    ["H9", null], ["H11", null], ["H12", null], ["H14", null]]
+    ["H9", null], ["H11", null], ["H12", null], ["H14", null], ["H15", null]]
   and .held == [{id: "H1", run: $a}, {id: "H2", run: $a}, {id: "H6", run: $a}, {id: "H8", run: $b}, {id: "H10", run: $a},
     {id: "H13", run: $a}]' "$(record "$(cut -f1 "$WORK/out")")"
 assert grep -qxF "doctor-fix: held, nothing new since the ruling: H1 ($h1); H2 ($h1); H6 ($h1); H8 ($h2); H10 ($h1); H13 ($h1)" "$WORK/err"
