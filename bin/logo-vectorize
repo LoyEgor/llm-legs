@@ -78,8 +78,8 @@ if [ -n "$grad$colors$palette" ]; then
   runner="$BENCH/tracers/hints-a7/run.sh"
   [ -x "$runner" ] || { printf 'logo-vectorize: no hints tracer at %s/tracers/hints-a7\n' "$BENCH" >&2; exit 1; }
   hints=" hints=gradient:${grad:-auto},colors:${colors:-auto}${palette:+,palette:$palette}"
-elif [ "$auto" = on ] && [ -x "$BENCH/tracers/bgkeep-a4/run.sh" ]; then
-  runner="$BENCH/tracers/bgkeep-a4/run.sh" hints=' auto=on' lvauto=1
+elif [ "$auto" = on ] && [ -x "$BENCH/tracers/pxskip-a1/run.sh" ]; then
+  runner="$BENCH/tracers/pxskip-a1/run.sh" hints=' auto=on' lvauto=1
 fi
 
 champion=$(basename "$(cd -P "$BENCH/tracers/stable" && pwd)")
