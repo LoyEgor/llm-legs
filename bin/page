@@ -43,6 +43,8 @@ UPLOAD_TYPES = ("image/", "application/octet-stream")
 # costs nothing; PAGES_LAN=0 keeps it to loopback.
 LAN = os.environ.get("PAGES_LAN", "1") != "0"
 COOKIE = "pages_k"
+# Python guesses audio/mp4a-latm for .m4a, which iOS Safari will not play.
+mimetypes.add_type("audio/mp4", ".m4a")
 BUILTIN_MODULES = {"compare": "N variants of an item side by side: synced loupes, blind vote, pairwise, view grid",
                    "cards": "numbered cards with choice/multi/scale/text fields and native image/audio/video"}
 
