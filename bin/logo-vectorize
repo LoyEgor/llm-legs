@@ -16,8 +16,9 @@ usage() {
   printf '  inks with grain and ragged edges), JPEG included, is detected and traced flat with its roughness kept, without\n' >&2
   printf '  the champion (judges preferred it on 21 of 21 unseen tiles). Pixel art (8-bit logos on a coarse square grid), JPEG\n' >&2
   printf '  included, is detected and traced as exact square cells in about a second (preferred on 22 of 23 decided unseen\n' >&2
-  printf '  tiles). A pale tinted background keeps its input colour instead of turning pure white; white details inside\n' >&2
-  printf '  the logo stay white; a faint soft shadow beside dark letters stays white ground instead of a grey band; a grey\n' >&2
+  printf '  tiles). A pale tinted background keeps its input colour instead of turning pure white, also where white\n' >&2
+  printf '  details touch it; white details inside the logo stay white; a faint soft shadow beside dark letters stays\n' >&2
+  printf '  white ground instead of a grey band; a grey\n' >&2
   printf '  edge bar no longer shows through as grey slivers along lines inside the logo; flat art printed with a darker\n' >&2
   printf '  rim and mottled fill (worn-print look) keeps its few flat colours instead of patches of extra shades; small\n' >&2
   printf '  parasitic specks and blobs, cracks and edge rims inside flat colours take the colour around them; flat\n' >&2
@@ -77,8 +78,8 @@ if [ -n "$grad$colors$palette" ]; then
   runner="$BENCH/tracers/hints-a7/run.sh"
   [ -x "$runner" ] || { printf 'logo-vectorize: no hints tracer at %s/tracers/hints-a7\n' "$BENCH" >&2; exit 1; }
   hints=" hints=gradient:${grad:-auto},colors:${colors:-auto}${palette:+,palette:$palette}"
-elif [ "$auto" = on ] && [ -x "$BENCH/tracers/thinline-a2/run.sh" ]; then
-  runner="$BENCH/tracers/thinline-a2/run.sh" hints=' auto=on' lvauto=1
+elif [ "$auto" = on ] && [ -x "$BENCH/tracers/bgkeep-a4/run.sh" ]; then
+  runner="$BENCH/tracers/bgkeep-a4/run.sh" hints=' auto=on' lvauto=1
 fi
 
 champion=$(basename "$(cd -P "$BENCH/tracers/stable" && pwd)")
