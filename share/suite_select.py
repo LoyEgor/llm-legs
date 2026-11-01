@@ -26,6 +26,9 @@ CATCH_D = test_catches.UNCAUGHT_D
 JOURNALED_D = 7
 WORKTREES = "/.claude/worktrees/"
 EDGE = r"(?<![\w.@+-])%s(?![\w.@+-])"
+# A path under a suite's scratch dir ($WORK/bin/claudeb, ${LIGHT_GATE_WORK}/...) is a stub it wrote, not the repo
+# file: spelled alike, it pulled every worker-run suite into each claudeb or worker-pick change.
+SCRATCH = r"(?<!WORK/)(?<!WORK}/)(?<!WORK\"/)"
 IMPORTS = r"^[ \t]*(?:import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*%s\b|from[ \t]+%s[ \t]+import\b)|" \
           r"import_module\(\s*['\"]%s['\"]"
 REQUIRE = r"""\brequire\s*\(?\s*["']%s["']"""
@@ -97,9 +100,9 @@ def stem(rel):
 def patterns(rel):
     """(a suite's hold, a repo file's load, the old word rule) of rel, each matched on a line holding its stem."""
     base, parent, mod = os.path.basename(rel), os.path.basename(os.path.dirname(rel)), re.escape(stem(rel))
-    held, load = [EDGE % re.escape(rel)], [r"/%s(?![\w.@+-])" % re.escape(base)]
+    held, load = [SCRATCH + EDGE % re.escape(rel)], [r"/%s(?![\w.@+-])" % re.escape(base)]
     if rel.startswith("tests/") and rel.count("/") > 1:
-        held.append(EDGE % re.escape(rel[6:]))
+        held.append(SCRATCH + EDGE % re.escape(rel[6:]))
     if parent:
         held.append(r"""["']%s["']\s*[,/]\s*["']%s["']""" % (re.escape(parent), re.escape(base)))
     extra = IMPORTS % ((mod,) * 3) if base.endswith(".py") else REQUIRE % mod if base.endswith(".lua") else \
