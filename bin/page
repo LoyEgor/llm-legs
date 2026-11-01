@@ -8,12 +8,15 @@ harness-doctor's DEPLOYS reruns `page install-agent` once an edit of either file
 
 import argparse
 import errno
+import hmac
 import html
+import http.cookies
 import json
 import mimetypes
 import os
 import plistlib
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -35,6 +38,11 @@ CHUNK = 1 << 20
 OPEN_RANGE_CAP = 8 << 20
 MAX_PATCH = 64 << 10
 UPLOAD_TYPES = ("image/", "application/octet-stream")
+# The server also answers the home network (an iPad reading a page the Mac made) for a client that
+# holds the token: `page lan` prints the link that sets it. One socket on every interface, so it
+# costs nothing; PAGES_LAN=0 keeps it to loopback.
+LAN = os.environ.get("PAGES_LAN", "1") != "0"
+COOKIE = "pages_k"
 BUILTIN_MODULES = {"compare": "N variants of an item side by side: synced loupes, blind vote, pairwise, view grid",
                    "cards": "numbered cards with choice/multi/scale/text fields and native image/audio/video"}
 
@@ -83,9 +91,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def host_ok(self):
         port = self.server.server_address[1]
-        return self.headers.get("Host") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+        if self.client_address[0] == "127.0.0.1" and self.headers.get("Host") in (
+                "127.0.0.1:%d" % port, "localhost:%d" % port):
+            return True
+        token = getattr(self.server, "lan_token", None)
+        held = http.cookies.SimpleCookie()
+        try:
+            held.load(self.headers.get("Cookie") or "")
+        except http.cookies.CookieError:
+            return False
+        return bool(token) and COOKIE in held and hmac.compare_digest(held[COOKIE].value, token)
 
     def do_GET(self):
+        token = getattr(self.server, "lan_token", None)
+        given = urllib.parse.parse_qs(self.path.partition("?")[2]).get("k", [""])[0]
+        if token and given and hmac.compare_digest(given, token):
+            # The link from `page lan`: the token moves into a cookie and leaves the address bar.
+            return self.reply(303, headers=[("Location", self.path.partition("?")[0]), (
+                "Set-Cookie", "%s=%s; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly" % (COOKIE, token))])
         if not self.host_ok():
             return self.reply(403, b"host refused\n")
         path = urllib.parse.unquote(self.path.partition("?")[0])
@@ -260,6 +283,32 @@ def index_html():
     return "".join(out)
 
 
+def lan_token():
+    """The home-network token, made once per pages dir (mode 600)."""
+    path = os.path.join(store.root(), ".lan-token")
+    for _ in range(2):
+        try:
+            with open(path) as handle:
+                token = handle.read().strip()
+            if token:
+                return token
+        except FileNotFoundError:
+            pass
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w") as handle:
+            handle.write(secrets.token_urlsafe(12) + "\n")
+    with open(path) as handle:
+        return handle.read().strip()
+
+
+def lan_host():
+    found = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True, text=True)
+    return (found.stdout.strip() + ".local") if found.returncode == 0 and found.stdout.strip() else None
+
+
 def ours(port):
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -274,7 +323,7 @@ def serve(port):
     said, delay = False, 1
     while True:
         try:
-            server = Server(("127.0.0.1", port), Handler)
+            server = Server(("0.0.0.0" if LAN else "127.0.0.1", port), Handler)
             break
         except OSError as error:
             if error.errno != errno.EADDRINUSE:
@@ -288,6 +337,7 @@ def serve(port):
         time.sleep(delay)
         delay = min(delay * 2, 60)
     server.timeout = None
+    server.lan_token = lan_token() if LAN else None
     print("page serve: http://127.0.0.1:%d %s" % (server.server_address[1], store.root()), flush=True)
     while True:
         server.handle_request()
@@ -405,6 +455,22 @@ def cmd_open(args):
     open_page(url(lookup(args)[0]))
 
 
+def cmd_lan(args):
+    """A link to a page (or the index) for another device on the home network; on the clipboard too."""
+    if not LAN:
+        raise store.Refused("PAGES_LAN=0: the server answers loopback only")
+    host = lan_host()
+    if not host:
+        raise store.Refused("no LocalHostName (scutil --get LocalHostName)")
+    path = "/p/%s/" % lookup(args)[0] if args.ref else "/"
+    link = "http://%s:%d%s?k=%s" % (host, PORT, path, lan_token())
+    print(link)
+    subprocess.run(["pbcopy"], input=link, text=True, check=False)
+    if shutil.which("qrencode") and not args.no_qr:
+        subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "1", link], check=False)
+    print("on the clipboard; the device needs the same network. A link without ?k= is refused.")
+
+
 def cmd_help(args):
     have = store.modules(KIT)
     if args.module:
@@ -423,7 +489,7 @@ def cmd_help(args):
         if first.startswith(module + ":"):
             first = first[len(module) + 1:].strip()
         print("%-8s %s" % (module, first if first and first != module else BUILTIN_MODULES.get(module, "")))
-    print("page new <module> --slug S --title T [--no-open] < spec.json; page state|set|list|open|doctor|report; "
+    print("page new <module> --slug S --title T [--no-open] < spec.json; page state|set|list|open|lan|doctor|report; "
           "page help <module> for its spec; a module lacks something: %s" % os.path.join(os.path.dirname(KIT), "EXTEND.md"))
 
 
@@ -528,6 +594,9 @@ def main(argv):
     p = sub.add_parser("list", parents=[chat])
     p.add_argument("--all", action="store_true")
     sub.add_parser("open", parents=[chat]).add_argument("ref")
+    p = sub.add_parser("lan", parents=[chat])
+    p.add_argument("ref", nargs="?")
+    p.add_argument("--no-qr", action="store_true")
     sub.add_parser("doctor")
     sub.add_parser("report").add_argument("--days", type=int, default=7)
     sub.add_parser("serve").add_argument("--port", type=int, default=PORT)

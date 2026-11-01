@@ -5,9 +5,14 @@ Plan: `docs/handoffs/2026-10-28-pages-plan.md`. A change here changes both sides
 on an incompatible change.
 
 ## Server
-- **Address:** `http://127.0.0.1:${PAGES_PORT:-4791}`. Loopback only; store root
-  `${PAGES_DIR:-~/Pages}`.
-- **Host check:** the `Host` header must be `127.0.0.1:<port>` or `localhost:<port>`, else 403.
+- **Address:** `http://127.0.0.1:${PAGES_PORT:-4791}`, store root `${PAGES_DIR:-~/Pages}`. The one
+  socket listens on every interface (`PAGES_LAN=0`: loopback only) so another device on the home
+  network can open a page.
+- **Host check:** a loopback client whose `Host` is `127.0.0.1:<port>` or `localhost:<port>` passes;
+  any other request needs the cookie `pages_k` equal to `<store root>/.lan-token` (made once, mode
+  600), else 403. A GET with `?k=<token>` sets that cookie and 303s to the same path without the
+  query; `page lan [ref]` prints that link (`http://<LocalHostName>.local:<port>/…`), copies it and
+  draws a QR code.
 - **POST** also requires `Content-Type: application/json` (the upload route also takes `image/*` and
   `application/octet-stream`) and, when an `Origin` header is present, an origin equal to the page's
   own; else 403.

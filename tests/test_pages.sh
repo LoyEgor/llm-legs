@@ -102,6 +102,22 @@ assert test "$(jq -c '.items.p02' "$WORK/body")" = null
 # Host, Origin and Content-Type refusals.
 assert test "$(get -H 'Host: evil.example:80' "$base/p/$pid/state")" = 403
 assert test "$(get -H "Host: localhost:$port" "$base/p/$pid/state")" = 200
+# Home network: a foreign Host needs the token cookie; ?k=<token> sets it and redirects; a LAN
+# client claiming a loopback Host is refused.
+token=$(cat "$PAGES_DIR/.lan-token")
+assert test "$(stat -f %Lp "$PAGES_DIR/.lan-token")" = 600
+assert test "$(get -H "Host: mac.local:$port" "$base/p/$pid/state")" = 403
+assert test "$(get -H "Host: mac.local:$port" -H "Cookie: pages_k=wrong" "$base/p/$pid/state")" = 403
+assert test "$(get -H "Host: mac.local:$port" -H "Cookie: pages_k=$token" "$base/p/$pid/state")" = 200
+assert test "$(get -H "Host: mac.local:$port" "$base/p/$pid/?k=wrong")" = 403
+assert test "$(curl -s -o /dev/null -D "$WORK/hdr" -w '%{http_code}' -H "Host: mac.local:$port" "$base/p/$pid/?k=$token")" = 303
+assert grep -q "^Set-Cookie: pages_k=$token; Path=/" "$WORK/hdr"
+assert grep -q "^Location: /p/$pid/" "$WORK/hdr"
+lan_ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)
+if [ -n "$lan_ip" ]; then
+  assert test "$(get -H "Host: 127.0.0.1:$port" "http://$lan_ip:$port/p/$pid/state")" = 403
+  assert test "$(get -H "Cookie: pages_k=$token" "http://$lan_ip:$port/p/$pid/state")" = 200
+fi
 assert test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: text/plain' -d '{}' "$base/p/$pid/patch")" = 403
 assert test "$(post '{"op": "x1", "item": "p01", "fields": {"note": "n"}}' -H 'Origin: http://evil.example')" = 403
 assert test "$(post '{"op": "x2", "item": "p01", "fields": {"note": "n"}}' -H "Origin: http://127.0.0.1:$port")" = 200
@@ -179,4 +195,4 @@ assert test "$(tail -1 "$PAGES_DIR/$pid/log.jsonl" | jq -cS '[.by, .item, .field
 assert test "$(get "$base/p/$pid/m/3")" = 404
 assert test "$(get "$base/p/$pid/m/2")" = 200
 
-echo "PASS: $asserts asserts; test_pages.sh: test guard, owner resolution, validation, served spec without key fields and with stable blind slots, per-field merge, op dedup, torn line, Host/Origin/Content-Type, path confinement, media Range/cap/ETag, state cursor and unblinding, update allowlist and --replace gate"
+echo "PASS: $asserts asserts; test_pages.sh: test guard, owner resolution, validation, served spec without key fields and with stable blind slots, per-field merge, op dedup, torn line, Host/Origin/Content-Type, home-network token, path confinement, media Range/cap/ETag, state cursor and unblinding, update allowlist and --replace gate"
