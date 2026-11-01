@@ -55,8 +55,7 @@ case "$worker" in
   gemini) pin_key=gemini_profile; vendor=gemini; limits_vendor=gemini; label=Gemini ;;
   grok) pin_key=grok_profile; vendor=grok; limits_vendor=grok; label=Grok ;;
 esac
-_load_wm() {
-  command -v worker_model_pin_first >/dev/null 2>&1 && return 0
+_share_dir() {
   local path=${BASH_SOURCE[0]} dir
   while [ -L "$path" ]; do
     dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
@@ -64,7 +63,13 @@ _load_wm() {
     [[ "$path" = /* ]] || path="$dir/$path"
   done
   dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
-  . "$dir/../share/worker-model.sh" 2>/dev/null
+  printf '%s\n' "$dir/../share"
+}
+_load_wm() {
+  command -v worker_model_pin_first >/dev/null 2>&1 && return 0
+  local share
+  share=$(_share_dir) || return 1
+  . "$share/worker-model.sh" 2>/dev/null
 }
 if [ "$worker" = light ]; then
   # An unreadable or unlisted `light_edit` row is worker-run's own MODEL_REFUSED to word, before
@@ -261,7 +266,10 @@ fi
 
 now=$(date +%s) ||
   deny "${fallback_reason}; local threshold fallback could not read the clock. Do not start ${worker}."
-decision=$(jq -c --arg worker "$vendor" --arg pin "$start_account" --argjson now "$now" --argjson warn "$WARN_AT" --argjson deny "$DENY_AT" "$eff_defs"'
+# limits_window_absent: a window the vendor does not report is skipped, never read as missing data.
+LIMITS_VIEW_JQ=''
+view_share=$(_share_dir) && . "$view_share/limits-view.sh" 2>/dev/null || true
+decision=$(jq -c --arg worker "$vendor" --arg pin "$start_account" --argjson now "$now" --argjson warn "$WARN_AT" --argjson deny "$DENY_AT" "$LIMITS_VIEW_JQ$eff_defs"'
   # Protective fallback, so stricter than worker-pick auth_ok: any status outside the live set the
   # vendor spec names, and any non-object .auth shape, is dead. Explicit branches — `.auth.status?`
   # on a string yields jq empty, which would either vanish the account or default it
@@ -316,7 +324,10 @@ decision=$(jq -c --arg worker "$vendor" --arg pin "$start_account" --argjson now
     else
       ([$accounts[] |
         . as $account |
-        ([$spec.buckets[] as $bucket | eff($account[$bucket]; $bucket)] | map(select(type == "number"))) as $values |
+        # An absent window is not missing data: Claude with no 5h is judged on its week instead.
+        ([$spec.buckets[] | select(limits_window_absent($account[.]) | not)]
+         | if length > 0 then . else ["weekly"] end) as $buckets |
+        ([$buckets[] as $bucket | eff($account[$bucket]; $bucket)] | map(select(type == "number"))) as $values |
         (($values | if length > 0 then max else $spec.missing end)) as $pressure |
         {
           name:(.account // "unknown"),

@@ -2620,5 +2620,24 @@ gate_family() { # argon weekly pct
 assert test -z "$(gate_family 31 | jq -r '.hookSpecificOutput.permissionDecision // empty')"
 assert grep -Fq 'Gemini argon account notcom is at effective 100%' <<<"$(gate_family 100)"
 
+# A window the vendor stops reporting is absent (null, or claudeb's `no_limit`), never missing
+# data: Claude Ultra lost its 5h on 2026-11-01. The fallback judges such a Claude account on its
+# week instead of reading the absent 5h as 100%, and a failed probe's placeholder still fails closed.
+gate_absent() { # claude five_hour json
+  jq -n --argjson five "$1" '{fetched_at:(now | todateiso8601),vendors:{claude:{available:true,
+    accounts:[{account:"ultra",enabled:true,five_hour:$five,weekly:{used_pct:20,effective_pct:20}}]}}}' >"$WORK/gate-absent.json"
+  HOME="$WORK/gate-home" LLM_LIMITS_FILE="$WORK/gate-absent.json" WORKER_PICK_CONFIG_FILE="$WORK/none" \
+    WORKER_GATE_WORKER_PICK=/usr/bin/false bash "$ROOT/bin/worker-limit-gate.sh" --start claudeb "$WORK/gate-family-brief" ultra |
+    jq -r '.hookSpecificOutput.permissionDecision // "allow"'
+}
+assert test "$(gate_absent null)" = allow
+assert test "$(gate_absent '{"used_pct":0,"resets_at":0,"no_limit":true}')" = allow
+assert test "$(gate_absent '{"used_pct":null,"resets_at":null,"stale":true}')" = deny
+# The same absence on a routing row is `–`, as grok's 5h: never `?`, which means nobody measured it.
+run_filter golden '.vendors.gemini = {available:true,accounts:[{account:"g1",group:"Gemini Models",
+  five_hour:{used_pct:40,effective_pct:40},weekly:null}]}'
+assert contains "$(vsection gemini)" '– 40% g1 f38·high'
+assert not_contains "$(vsection gemini)" 'WALLED'
+
 fi
 printf 'PASS:%s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the eight roles including chat, research, light, computer and browser without pins or role keys and light, image, computer and browser ignoring workers-off and the pin alike, a browser table over claude and codex alone, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"

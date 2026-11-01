@@ -288,6 +288,35 @@ jq -e '[.vendors.gemini.accounts[] | select(.account == "work")][0] |
   || fail "a family group listed first lost the account or its bucket: $(jq -c '[.vendors.gemini.accounts[] | select(.account == "work")]' <<<"$family_gemini")"
 env "${family_env[@]}" /bin/bash "$SCRIPT" --table --no-write | grep -Eq '^gemini/work zircon +- +30% +- +- +01-0[23] ' \
   || fail "the family bucket has no WK-only table row"
+# A window agy stops reporting is absent, never a failed read (Claude Ultra lost its 5h on
+# 2026-11-01): a weekly-only answer refreshes, its 5h is null and renders `-`, and the account stays
+# usable on its week, the weekly-only family group listed first notwithstanding. No window at all
+# is still a failed refresh.
+GEMINI_WEEKLY_HELPER="$WORK/fake-agy-weekly-only"
+cat >"$GEMINI_WEEKLY_HELPER" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"groups":[{"displayName":"Gemini Zircon","buckets":[{"window":"weekly","remainingFraction":0.7,"resetTime":"2099-01-03T00:00:00Z"}]},{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.5,"resetTime":"2099-01-01T00:00:00Z"}]}]}'
+EOF
+GEMINI_NO_WINDOW_HELPER="$WORK/fake-agy-no-window"
+cat >"$GEMINI_NO_WINDOW_HELPER" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"groups":[{"displayName":"Gemini Models","buckets":[]}]}'
+EOF
+chmod +x "$GEMINI_WEEKLY_HELPER" "$GEMINI_NO_WINDOW_HELPER"
+weekly_gemini=$(env "${family_env[@]}" LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_WEEKLY_HELPER" \
+  GEMINIB_SECURITY_CMD="$GEMINI_SECURITY_STUB" /bin/bash "$SCRIPT" --refresh-account gemini/work --json --no-write) \
+  || fail "weekly-only Gemini refresh failed"
+jq -e '.vendors.gemini.usable_now == true and
+  ([.vendors.gemini.accounts[] | select(.account == "work")][0] |
+   .group == "Gemini Models" and .five_hour == null and .weekly.used_pct == 50 and
+   .families.zircon.weekly.used_pct == 30 and (has("refresh_error") | not))' <<<"$weekly_gemini" >/dev/null \
+  || fail "a weekly-only Gemini answer was not a refreshed, usable account with an absent 5h: $(jq -c '[.vendors.gemini.accounts[] | select(.account == "work")]' <<<"$weekly_gemini")"
+env "${family_env[@]}" /bin/bash "$SCRIPT" --table --no-write | grep -Eq '^gemini/work +- +50% ' \
+  || fail "a weekly-only Gemini account has no WK-only table row"
+no_window_gemini=$(env "${family_env[@]}" LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_NO_WINDOW_HELPER" \
+  GEMINIB_SECURITY_CMD="$GEMINI_SECURITY_STUB" /bin/bash "$SCRIPT" --refresh-account gemini/work --json --no-write 2>/dev/null)
+jq -e '[.vendors.gemini.accounts[] | select(.account == "work")][0].refresh_error.cause == "live query failed"' \
+  <<<"$no_window_gemini" >/dev/null || fail "a Gemini answer with no window at all was taken as a reading"
 cp "$WORK/gemini-work-saved.json" "$GEMINI_ACCOUNTS_CACHE/work.json"
 
 # One failing gemini account named `main` is reported as a bare cause with no `main: ` prefix, so

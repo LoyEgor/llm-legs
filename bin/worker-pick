@@ -631,7 +631,9 @@ summary=$(jq -r \
   def cells($selected; $pins; $five_hour; $display):
     (.auth_ok | not) as $dead |
     {key: .name, budget: (if $dead then "-" else budget_cell end),
-     wk: (if $dead then "?" elif .wv == "weekly" then "100%" else pct_cell(.wk) end),
+     # A week the vendor stopped reporting beside a measured 5h is absent (`–`); no window at all is `?`.
+     wk: (if $dead then "?" elif .wv == "weekly" then "100%"
+          elif .wk_absent == true and .h5_absent != true then "–" else pct_cell(.wk) end),
      h5: (if $dead and $five_hour != "–" then "?" elif .wv == "five_hour" then "100%" else $five_hour end),
      name: (.name + (if .own then "*" else "" end)), display: $display,
      reset: (if .rs == "-" then "" else "↺ " + .rs end),
@@ -820,7 +822,7 @@ summary=$(jq -r \
     {name:(.account // "main"),
      own:($own_vendor == "codex" and (.account // "main") == $own),
      enabled:(.enabled != false),auth_ok:auth_ok,
-     h5_absent:limits_window_absent(.five_hour),
+     h5_absent:limits_window_absent(.five_hour),wk_absent:limits_window_absent(.weekly),
      h5:eff(.five_hour),wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),
      rs:wall_reset_str(.weekly),wv:limits_wall_view(.; $now).window} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
@@ -854,7 +856,7 @@ summary=$(jq -r \
      then . + (.families[$gm_bucket] | {five_hour, weekly, worker_wall}) else . end) |
     {name:(.account // "main"),
      enabled:(.enabled != false),auth_ok:auth_ok,
-     h5_absent:limits_window_absent(.five_hour),
+     h5_absent:limits_window_absent(.five_hour),wk_absent:limits_window_absent(.weekly),
      h5:eff(.five_hour),wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),
      rs:wall_reset_str(.weekly),wv:limits_wall_view(.; $now).window,
      observed:(limits_observed_wall(.; $now) != null)} |

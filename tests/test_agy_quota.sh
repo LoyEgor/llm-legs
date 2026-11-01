@@ -27,6 +27,12 @@ case "${STUB_MODE:-ok}" in
   nogemini)
     printf '%s\n' "${usage_payload//Gemini Models/Other Models}"
     ;;
+  weeklyonly)
+    printf '%s\n' "${usage_payload//\"window\":\"5h\"/\"window\":null}"
+    ;;
+  nowindow)
+    printf '%s\n' "${usage_payload//\"remaining_fraction\":/\"remaining_fraction_gone\":}"
+    ;;
   nologin)
     echo "$$" >"$STUB_PIDS"
     printf 'Authentication required. Please visit the URL to log in:\n' >&2
@@ -100,6 +106,16 @@ assert test "$rc" -eq 1
 assert test ! -s "$WORK/out"
 assert jq -e '.error | test("unexpected /usage response")' "$WORK/err" >/dev/null
 
+# A window the server stops reporting is absent, not a failed read (Claude Ultra lost its 5h on
+# 2026-11-01): the week alone is a real answer. A group with no window at all stays a failure.
+run_helper weeklyonly
+assert test "$rc" -eq 0
+assert jq -e '[.groups[0].buckets[] | select(.window == "weekly")][0].remainingFraction == 0.7032511234283447 and
+  ([.groups[0].buckets[] | select(.window == "5h")] | length) == 0' "$WORK/out" >/dev/null
+run_helper nowindow
+assert test "$rc" -eq 1
+assert jq -e '.error | test("unexpected /usage response")' "$WORK/err" >/dev/null
+
 # The login line on stderr is the verdict at once: waiting for the timeout would leave agy
 # holding an OAuth prompt open for the whole window.
 run_helper nologin AGY_QUOTA_TIMEOUT=60
@@ -144,4 +160,4 @@ assert test "$rc" -eq 1
 assert test ! -s "$WORK/out"
 assert jq -e '.error | test("agy exited with status 3")' "$WORK/err" >/dev/null
 
-echo "PASS: $asserts asserts; print-mode /usage yields the cache shape with the browser muzzled, a login line on stderr is the verdict in ${nologin_took%.*}s and kills agy with it, an account Google wants verified is a login verdict, and an unusable payload, a reported error, non-JSON output or a dead agy all stay failed queries"
+echo "PASS: $asserts asserts; print-mode /usage yields the cache shape with the browser muzzled, a login line on stderr is the verdict in ${nologin_took%.*}s and kills agy with it, an account Google wants verified is a login verdict, one reported window is a real answer, and an unusable payload, a reported error, non-JSON output or a dead agy all stay failed queries"

@@ -799,6 +799,20 @@ trap cleanup_gemini_refresh_results EXIT
 # A bare signal death skips the EXIT trap and would strand the store lock until the stale-break.
 trap 'exit 129' HUP INT TERM
 
+# The account's own group in an agy /usage cache: the one carrying both windows, as always. When
+# the server stops reporting a window, a group that is no family label ($labels, geminib's models
+# cache) stands in, "Gemini Models" first: a weekly-only family group listed first never takes
+# the account's row.
+gemini_group_jq='
+  def gemini_window($w): [.buckets[]? | select(.window == $w and (.remainingFraction | type) == "number")][0];
+  def gemini_primary($labels):
+    [.groups[]? | select(((.displayName // "") | ascii_downcase | contains("gemini")) and
+      (gemini_window("5h") != null or gemini_window("weekly") != null))] as $groups |
+    (first($groups[] | select(gemini_window("5h") != null and gemini_window("weekly") != null)) //
+     first($groups[] | select(.displayName == "Gemini Models")) //
+     first($groups[] | select(($labels[.displayName // ""] | type) != "string")) // null);
+'
+
 refresh_gemini_quota() {
   local account=$1 result_file=$2 gemini_cmd=${LLM_LIMITS_GEMINI_CMD:-$script_dir/agy-quota.py}
   local gemini_cache gemini_home gemini_tmp gemini_err detail auth_detail rc error=''
@@ -865,13 +879,8 @@ refresh_gemini_quota() {
       return 1
     fi
   elif [ "$rc" -eq 0 ] &&
-    jq -e '
-      (.groups | type) == "array" and
-      any(.groups[]?;
-        ((.displayName // "") | ascii_downcase | contains("gemini")) and
-        any(.buckets[]?; .window == "5h" and (.remainingFraction | type) == "number") and
-        any(.buckets[]?; .window == "weekly" and (.remainingFraction | type) == "number"))
-    ' "$gemini_tmp" >/dev/null 2>&1; then
+    # One measured window is a real reading; a window the server stopped reporting is absent.
+    jq -e "$gemini_group_jq"'(.groups | type) == "array" and gemini_primary({}) != null' "$gemini_tmp" >/dev/null 2>&1; then
     if mv -f "$gemini_tmp" "$gemini_cache"; then
       rm -f "$gemini_err"
       record_gemini_refresh "$result_file" "$account" true true ''
@@ -937,12 +946,15 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused ge
       gemini_ensure_keychain "$gemini_home"
       gemini_5h_reset=''
       if [ -r "$gemini_cache" ]; then
-        gemini_5h_reset=$(int_or_empty "$(jq -r "$iso_def"'
-          [.groups[]? | select(((.displayName // "") | ascii_downcase | contains("gemini")) and
-            any(.buckets[]?; .window == "5h" and (.remainingFraction | type) == "number") and
-            any(.buckets[]?; .window == "weekly" and (.remainingFraction | type) == "number"))][0] as $g |
-          [$g.buckets[]? | select(.window == "5h")][0].resetTime | iso2epoch // empty
-        ' "$gemini_cache" 2>/dev/null || true)")
+        # `absent`: the account has a reading but no 5h window, so there is none to open.
+        gemini_5h_reset=$(jq -r "$iso_def$gemini_group_jq"'
+          gemini_primary({}) as $g |
+          select($g != null) |
+          ($g | gemini_window("5h")) as $five |
+          if $five == null then "absent" else ($five.resetTime | iso2epoch // empty) end
+        ' "$gemini_cache" 2>/dev/null || true)
+        [ "$gemini_5h_reset" = absent ] && continue
+        gemini_5h_reset=$(int_or_empty "$gemini_5h_reset")
       fi
       if [ -z "$gemini_5h_reset" ]; then
         printf 'llm-limits.sh: gemini/%s 5h window state unknown; not starting a window\n' "$gemini_account" >&2
@@ -1533,7 +1545,7 @@ if [ -n "$codex_event" ]; then
       --arg as_of "$(epoch_iso "$codex_epoch")" --argjson as_of_epoch "$codex_epoch" \
       --arg origin "$codex_origin" --arg source "$codex_source" --argjson stale "$stale" \
       --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
-      --argjson pool_out "$(worker_pool_disabled_json "$codex_pool_dir")" "$iso_def"'
+      --argjson pool_out "$(worker_pool_disabled_json "$codex_pool_dir")" "$iso_def$LIMITS_VIEW_JQ"'
       def reset_iso:
         if type == "number" then todateiso8601
         elif type == "string" then (iso2epoch | if . == null then null else todateiso8601 end)
@@ -1555,9 +1567,12 @@ if [ -n "$codex_event" ]; then
             {auth_needed:true,status:"login needed"} +
             (if ($a.cause | type) == "string" then {cause:$a.cause} else {} end)
           else
+            # A window the plan does not report is absent (null), never a bucket that ages stale.
             {plan_type:($a.plan_type // $e.payload.rate_limits.plan_type // null),
-             five_hour:bucket(($a.five_hour // {}); null; $account_asof; $thr5),
-             weekly:bucket(($a.weekly // {}); null; $account_asof; $thrw),
+             five_hour:(if limits_window_absent($a.five_hour) then null
+                        else bucket($a.five_hour; null; $account_asof; $thr5) end),
+             weekly:(if limits_window_absent($a.weekly) then null
+                     else bucket($a.weekly; null; $account_asof; $thrw) end),
              as_of:($account_asof | todateiso8601),stale_seconds:$account_age}
           end) +
          (if ($a.reset_credits | type) == "number" then
@@ -1820,10 +1835,9 @@ while IFS= read -r gemini_account; do
     gemini_labels=$(jq -c '[.families[]? | select((.label | type) == "string" and (.slug | type) == "string")
       | {key:.label, value:.slug}] | from_entries' \
       "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}/models-$gemini_account.json" 2>/dev/null) || gemini_labels='{}'
-    gemini_data=$(jq -c --argjson labels "$gemini_labels" '
-      def window($w): [.buckets[]? | select(.window == $w and (.remainingFraction | type) == "number")][0];
-      [.groups[]? | select(((.displayName // "") | ascii_downcase | contains("gemini")) and
-        window("5h") != null and window("weekly") != null)][0] as $group |
+    gemini_data=$(jq -c --argjson labels "$gemini_labels" "$gemini_group_jq"'
+      def window($w): gemini_window($w);
+      gemini_primary($labels) as $group |
       ($group | window("5h")) as $five |
       ($group | window("weekly")) as $week |
       select($group != null) |
@@ -1849,9 +1863,10 @@ while IFS= read -r gemini_account; do
       def bucket($thr):
         {used_pct:used(.remainingFraction),resets_at:.resetTime,
          as_of:$as_of_epoch,origin:"usage",stale:($stale > $thr)};
+      # A window the server stopped reporting is absent (null), as Claude Ultra has no 5h.
       {account:$account,enabled:$enabled,source:"agy-print-usage",group:$d.group,
-       five_hour:($d.five | bucket($thr5)),
-       weekly:($d.week | bucket($thrw)),
+       five_hour:(if $d.five then ($d.five | bucket($thr5)) else null end),
+       weekly:(if $d.week then ($d.week | bucket($thrw)) else null end),
        as_of:$as_of,stale_seconds:$stale} +
       (if ($d.families // {}) == {} then {} else
          {families:($d.families | map_values({group} +
@@ -1876,7 +1891,8 @@ while IFS= read -r gemini_account; do
     # Only NAMED accounts reach this: a removed one is a profile whose creds went bad, so valid
     # creds again (owner re-logged in via agy) self-clear it. main never reaches it — its removal
     # is deliberate, and a self-clear would undo `geminib remove main` on the very next collect.
-    if printf '%s' "$gemini_account_json" | jq -e '.auth_needed != true and (.five_hour | type) == "object"' >/dev/null 2>&1; then
+    if printf '%s' "$gemini_account_json" | jq -e '.auth_needed != true and
+        ((.five_hour | type) == "object" or (.weekly | type) == "object")' >/dev/null 2>&1; then
       rm -f "$gemini_removed_marker"
     else
       gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
@@ -1971,11 +1987,11 @@ if gemini_main_removed; then gemini_main_removed_json=true; fi
 gemini=$(jq -cn --argjson accounts "$gemini_accounts" \
   --argjson main_removed "$gemini_main_removed_json" '
   [$accounts[] | select(.removed != true)] as $visible |
+  # Usable on the windows it has: an absent (null) window neither qualifies nor walls an account.
   [$visible[] |
-   select(.auth_needed != true and
-          (.five_hour.used_pct | type) == "number" and
-          (.weekly.used_pct | type) == "number" and
-          .five_hour.used_pct < 100 and .weekly.used_pct < 100)] as $usable |
+   [.five_hour, .weekly | select(. != null)] as $windows |
+   select(.auth_needed != true and ($windows | length) > 0 and
+          all($windows[]; (.used_pct | type) == "number" and .used_pct < 100))] as $usable |
   (first($accounts[] | select(.is_current)) // $visible[0] // null) as $current |
   ($usable | sort_by(if .account == "main" then 1 else 0 end,
                      ([.five_hour.used_pct,.weekly.used_pct] | max), .account) | .[0]) as $selected |
@@ -1993,7 +2009,7 @@ gemini=$(jq -cn --argjson accounts "$gemini_accounts" \
     $accounts[0]
     | del(.account,.is_current)
     | .available = (.removed != true and .auth_needed != true and
-                    (.five_hour | type) == "object" and (.weekly | type) == "object")
+                    ((.five_hour | type) == "object" or (.weekly | type) == "object"))
   else
     ({available:(($usable | length) > 0),accounts:$accounts,
       source:"agy-print-usage"} +
@@ -2211,8 +2227,8 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
        ((.auth.status? // "") != "expired" and (.auth.status? // "") != "failed")
      end) and
     (if $key == "gemini" then
-       (.five_hour.effective_pct | type) == "number" and
-       (.weekly.effective_pct | type) == "number"
+       # Measured on at least one window; an absent (null) one is not required.
+       any(.five_hour, .weekly; (.effective_pct | type) == "number")
      elif $key == "grok" then (.weekly.effective_pct | type) == "number"
      else true end) and
     under_limit(.five_hour) and under_limit(.weekly);

@@ -893,7 +893,11 @@ assert grep -Fq 'worker-pick --account claudeb --role "${LEGS_ROLE:-reviewers}"'
 
 # --- Row l: Gemini quota group matching --------------------------------------
 assert grep -Fq 'def gemini_group: ((.group // "") | ascii_downcase | contains("gemini"));' "$WORKERPICK"
-assert test "$(grep -Fc 'ascii_downcase | contains("gemini")' "$LLMLIMITS")" -ge 3
+# One matcher (gemini_group_jq) and every site through it: the refresh check, window start, collect.
+assert test "$(grep -Fc 'ascii_downcase | contains("gemini")' "$LLMLIMITS")" -eq 1
+assert test "$(grep -Fc 'gemini_primary({}) != null' "$LLMLIMITS")" -eq 1
+assert test "$(grep -Fc 'gemini_primary({}) as $g' "$LLMLIMITS")" -eq 1
+assert test "$(grep -Fc 'gemini_primary($labels) as $group' "$LLMLIMITS")" -eq 1
 assert doc_has 'case-insensitive group label contains `gemini`'
 assert doc_has 'Gemini quota group matching'
 

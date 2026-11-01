@@ -446,6 +446,17 @@ codex_null_expected=$(( ($(date +%s) - (now - 600)) / 60 ))
   [ "$codex_null_minutes" -ge "$((codex_null_expected - 1))" ] &&
   [ "$codex_null_minutes" -le "$codex_null_expected" ] \
   || fail "Codex AGE included a null window: $codex_null_table"
+# A window the plan does not report (no percentage, no reset) is absent: null, as Claude Ultra's 5h,
+# never a bucket that ages past the 5h threshold and brands a fresh week's vendor stale.
+CODEX_ABSENT_CACHE="$WORK/codex-absent-window.json"
+cat >"$CODEX_ABSENT_CACHE" <<EOF
+{"accounts":[{"account":"main","five_hour":{"used_pct":null,"resets_at":null},"weekly":{"used_pct":30,"resets_at":$week_reset_epoch},"as_of":$((now - 2400))}],"current":"main"}
+EOF
+codex_absent=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ABSENT_CACHE" \
+  LLM_LIMITS_CACHE="$WORK/codex-absent-store.json" bash "$SCRIPT" --json --no-write) || fail "Codex absent-window collection failed"
+jq -e '.vendors.codex | .accounts[0].five_hour == null and .five_hour == null and
+  .accounts[0].weekly.used_pct == 30 and .stale == false and .usable_now == true' <<<"$codex_absent" >/dev/null \
+  || fail "an absent Codex window was not null or aged the vendor stale: $(jq -c '.vendors.codex | del(.accounts)' <<<"$codex_absent")"
 # `codexb remove main` writes its marker beside main's legacy cache file — the one path the
 # menubar's `--codex-remove` writes too. main is the real ~/.codex and mirrors whatever account the
 # Codex app is signed into, so its removal is permanent: it leaves the store entirely — no row at

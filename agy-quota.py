@@ -156,12 +156,14 @@ def convert(data: dict[str, Any]) -> dict[str, Any]:
             "buckets": buckets,
         })
 
+    # A window the server stops reporting is absent, not a failed read: one measured window makes
+    # the answer real (as claudeb's usage_body_real), and none at all stays a failure.
     def usable(group: dict[str, Any]) -> bool:
         windows = {
             bucket["window"]: bucket["remainingFraction"]
             for bucket in group["buckets"]
         }
-        return all(
+        return any(
             isinstance(windows.get(window), (int, float))
             and not isinstance(windows.get(window), bool)
             for window in ("5h", "weekly")
@@ -171,7 +173,7 @@ def convert(data: dict[str, Any]) -> dict[str, Any]:
         "gemini" in (group["displayName"] or "").lower() and usable(group)
         for group in groups
     ):
-        raise RuntimeError("unexpected /usage response: no Gemini group with 5h and weekly fractions")
+        raise RuntimeError("unexpected /usage response: no Gemini group with a 5h or weekly fraction")
 
     return {"description": data.get("description"), "groups": groups}
 
