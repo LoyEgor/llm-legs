@@ -32,6 +32,8 @@ schema_errors=$(jq -r '
   to_entries[] | .key as $i | .value |
   [ (if (.id | type) == "string" and (.id | length) > 0 then empty else "entry \($i): missing id" end),
     (if (.what | type) == "string" and (.what | length) > 10 then empty else "entry \($i): missing what" end),
+    (if (.chat | type) == "string" and (.chat | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
+     then empty else "entry \($i): missing chat (the setting-up chat'"'"'s $CLAUDE_CODE_SESSION_ID; the menu opens it for the verdict)" end),
     (if (.started | type) == "string" then empty else "entry \($i): missing started" end),
     (if (.review_by | type) == "string" then empty else "entry \($i): missing review_by" end),
     (if (.how_to_remove | type) == "string" and (.how_to_remove | length) > 10 then empty else "entry \($i): missing how_to_remove" end),

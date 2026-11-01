@@ -11,12 +11,20 @@ experiments_registry_path() {
   printf '%s\n' "${EXPERIMENTS_REGISTRY:-$1/EXPERIMENTS.json}"
 }
 
+# The banner's lines alone, for text surfaces.
 experiments_active_lines() {
-  local registry="$1" today="${EXPERIMENTS_TODAY_OVERRIDE:-$(date '+%Y-%m-%d')}" line rest id review marker home
+  local row
+  while IFS= read -r row; do printf '%s\n' "${row#*$'\t'}"; done < <(experiments_active_rows "$1")
+}
+
+# One `<chat session id>\t<line>` row per announced experiment: the chat that set it up is where
+# its verdict gets decided, so every surface that can open a chat offers it (empty when unknown).
+experiments_active_rows() {
+  local registry="$1" today="${EXPERIMENTS_TODAY_OVERRIDE:-$(date '+%Y-%m-%d')}" line rest id review marker chat home
   [ -e "$registry" ] || return 0
   # A stray comma must not read as "no experiments running": say the registry is unreadable.
   if ! jq -e 'type == "array"' "$registry" >/dev/null 2>&1; then
-    printf 'EXPERIMENT registry unreadable (%s) — cannot tell whether a trial is live\n' "$registry"
+    printf '\tEXPERIMENT registry unreadable (%s) — cannot tell whether a trial is live\n' "$registry"
     return 0
   fi
   home="${HOME:-}"
@@ -24,11 +32,12 @@ experiments_active_lines() {
   # review_by would shift the marker path into the review field.
   while IFS= read -r line; do
     id=${line%%$'\t'*}; rest=${line#*$'\t'}
-    review=${rest%%$'\t'*}; marker=${rest#*$'\t'}
+    review=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    marker=${rest%%$'\t'*}; chat=${rest#*$'\t'}
     [ -n "$id" ] || continue
     if [ -n "$review" ]; then
       if [ "$review" \< "$today" ]; then
-        printf 'EXPERIMENT %s OVERDUE since %s — decide: remove or extend (EXPERIMENTS.json)\n' "$id" "$review"
+        printf '%s\tEXPERIMENT %s OVERDUE since %s — decide: remove or extend (EXPERIMENTS.json)\n' "$chat" "$id" "$review"
       fi
       continue
     fi
@@ -36,8 +45,8 @@ experiments_active_lines() {
       case "$marker" in "~/"*) marker="$home/${marker#\~/}" ;; esac
       experiments_marker_live "$marker" || continue
     fi
-    printf 'EXPERIMENT %s — temporary, see EXPERIMENTS.json\n' "$id"
-  done < <(jq -r '.[]? | [(.id // ""), (.review_by // ""), (.state_marker // "")] | @tsv' "$registry" 2>/dev/null)
+    printf '%s\tEXPERIMENT %s — temporary, see EXPERIMENTS.json\n' "$chat" "$id"
+  done < <(jq -r '.[]? | [(.id // ""), (.review_by // ""), (.state_marker // ""), (.chat // "")] | @tsv' "$registry" 2>/dev/null)
 }
 
 # Liveness is decided by jq, not by a digit pattern: `-1` and `1.5` are numbers too, and a

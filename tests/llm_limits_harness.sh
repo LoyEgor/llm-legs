@@ -23,6 +23,9 @@ export CLAUDEB_WEATHER_RETRY_DELAY=0
 export CLAUDEB_OAUTH_TOKEN_SPACING=0
 # Every collection reads the ElevenLabs balance live (~9 s) from the keys file under HOME.
 export ELEVENLABS_KEYS="$WORK/no-elevenlabs-keys"
+# The live registry's OVERDUE banner prints above the table; a suite that asks for one sets its own.
+printf '[]\n' >"$WORK/no-experiments.json"
+export EXPERIMENTS_REGISTRY="$WORK/no-experiments.json"
 
 HOME_FIXTURE="$WORK/home"
 mkdir -p "$HOME_FIXTURE/.claude" "$HOME_FIXTURE/.codex/sessions/2026/07/10" "$HOME_FIXTURE/.codex/sessions/2026/07/11"

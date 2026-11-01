@@ -210,6 +210,28 @@ assert jq -e '.five_hour.used_percentage == 12 and .seven_day.used_percentage ==
 assert jq -e 'all(.five_hour,.seven_day,.fable; (.as_of | type) == "number" and .origin == "usage")' "$snapshot" >/dev/null
 assert jq -e '.auth.status == "ok" and (.auth.checked_at | type) == "number"' "$snapshot" >/dev/null
 
+# An account with no session limit answers five_hour null or utilization null (2026-11-01,
+# locomthebest: every refresh was thrown away for 15 h). The week makes the body real; the 5h
+# reads 0% with no window and no_limit, so start-window never pings it; a body with neither is no reading.
+for no_session_body in '{"five_hour":null,"seven_day":{"utilization":31,"resets_at":null},"limits":[]}' \
+  '{"five_hour":{"utilization":null,"resets_at":null},"seven_day":{"utilization":31,"resets_at":null},"limits":[]}'; do
+  printf '%s' "$no_session_body" >"$usage"
+  assert usage_body_real "$usage"
+  assert merge_usage alpha "$usage"
+  assert jq -e '.five_hour.no_limit == true and .five_hour.used_percentage == 0 and .five_hour.resets_at == 0
+    and .five_hour.origin == "usage" and (.five_hour.as_of | type) == "number" and .seven_day.used_percentage == 31' "$snapshot" >/dev/null
+  assert five_hour_unlimited alpha
+done
+printf '%s' '{"five_hour":null,"seven_day":null,"limits":[]}' >"$usage"
+no_reading_before=$(cat "$snapshot")
+assert_fails usage_body_real "$usage"
+assert_fails merge_usage alpha "$usage"
+assert test "$(cat "$snapshot")" = "$no_reading_before"
+printf '%s' '{"five_hour":{"utilization":5,"resets_at":null},"seven_day":{"utilization":31,"resets_at":null},"limits":[]}' >"$usage"
+assert merge_usage alpha "$usage"
+assert jq -e '.five_hour.used_percentage == 5 and (.five_hour | has("no_limit") | not)' "$snapshot" >/dev/null
+assert_fails five_hour_unlimited alpha
+
 cached_as_of=$((now - 60))
 cat >"$snapshot" <<EOF
 {"fable":{"used_percentage":31,"resets_at":$((now + 3600)),"as_of":$cached_as_of,"origin":"usage"}}

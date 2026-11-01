@@ -1114,7 +1114,9 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
        week: ($d | meta(.seven_day; $thrw)),
        fable: ($d | meta(.fable; $thrf))} as $x |
       {account:$account,is_current:false,enabled:$enabled,
-       five_hour:(if $has_five == 0
+       # An account the server gives no 5h window (Ultra) has none, as grok has none: null, not 0%.
+       five_hour:(if $d.five_hour.no_limit? == true then null
+                  elif $has_five == 0
                   then {used_pct:null,resets_at:null,as_of:$mtime,stale:true}
                   else {used_pct:$d.five_hour.used_percentage,
                         resets_at:(if $five_reset == "" then null else $five_reset end)} + ($x.five // {}) end),
@@ -1151,7 +1153,7 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     ' < <(printf '%s\n' "$accounts"))
     claude_bundle=$(jq -cn --argjson accounts "$accounts" '
       (first($accounts[] | select(.is_current)) // $accounts[0]) as $current |
-      (if ($current.five_hour.used_pct | type) == "number" then $current
+      (if ($current.five_hour.used_pct | type) == "number" or $current.five_hour == null then $current
        else (first($accounts[] | select(.five_hour.used_pct | type == "number")) // $current)
        end) as $five_source |
       ({available:true,source:"claudeb-store",current_account:$current.account,accounts:$accounts,
@@ -2112,13 +2114,19 @@ for shield_vendor in claude codex gemini grok; do
   esac
 done
 
-# Live experiments travel with the data so consumers need no repo knowledge.
-experiments_all() {
-  experiments_active_lines "$(experiments_registry_path "$script_dir")"
+# Live experiments travel with the data so consumers need no repo knowledge: each line with the
+# chat that set it up ({text, chat}), which the menu opens for the verdict.
+experiments_all_rows() {
+  experiments_active_rows "$(experiments_registry_path "$script_dir")"
   # claude-setup's trials (its hooks) are announced here too; a test's own registry stands alone.
-  [ -n "${EXPERIMENTS_REGISTRY:-}" ] || experiments_active_lines "${script_dir%/*}/claude-setup/EXPERIMENTS.json"
+  [ -n "${EXPERIMENTS_REGISTRY:-}" ] || experiments_active_rows "${script_dir%/*}/claude-setup/EXPERIMENTS.json"
 }
-experiments_json=$(experiments_all | jq -Rsc 'split("\n") | map(select(length > 0))')
+experiments_all() {
+  local row
+  while IFS= read -r row; do printf '%s\n' "${row#*$'\t'}"; done < <(experiments_all_rows)
+}
+experiments_json=$(experiments_all_rows | jq -Rsc 'split("\n") | map(select(length > 0)
+  | index("\t") as $tab | {text: .[$tab + 1:]} + (.[:$tab] as $chat | if $chat == "" then {} else {chat: $chat} end))')
 [ -n "$experiments_json" ] || experiments_json='[]'
 
 # Every completed heartbeat tick rewrites its state file; a sleeping Mac runs no tick to miss.

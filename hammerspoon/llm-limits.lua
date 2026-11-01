@@ -403,10 +403,11 @@ local function appendOpenCode(menu, limits, paused)
   end
 end
 
+-- Mirrors limits_window_absent in share/limits-view.sh.
 local function windowAbsent(bucket)
-  return bucket == nil or (type(bucket) == "table"
-    and bucket.used_pct == nil and bucket.used_percentage == nil and bucket.resets_at == nil
-    and not (bucket.stale == true and bucket.origin == nil))
+  return bucket == nil or (type(bucket) == "table" and (bucket.no_limit == true
+    or (bucket.used_pct == nil and bucket.used_percentage == nil and bucket.resets_at == nil
+      and not (bucket.stale == true and bucket.origin == nil))))
 end
 
 local function observedWall(block, now)
@@ -2844,6 +2845,34 @@ local function openLoginTerminal(command)
   end
 end
 
+-- An experiment's verdict is decided in the chat that set it up: a chat still running gets its
+-- tab focused (a second resume would fork the session), any other reopens in a new Terminal window.
+local function openChatSession(session)
+  local snapshot = readChats()
+  for _, row in ipairs(type(snapshot) == "table" and type(snapshot.rows) == "table" and snapshot.rows or {}) do
+    if type(row) == "table" and row.session == session and row.pid then
+      focusChat({ session = session, pid = row.pid })
+      return
+    end
+  end
+  local path = M.chatsCmd or (repoRoot and repoRoot .. "/bin/chats")
+  if not path then return end
+  local task
+  task = hs.task.new(path, function(code, stdout, stderr)
+    task = nil
+    local command = code == 0 and (stdout or ""):match("^[^\r\n]+") or nil
+    if not command then
+      hs.alert.show("no chat to open: " .. ((stderr or ""):match("[^\r\n]+") or "unknown error"), 3)
+      return
+    end
+    openLoginTerminal(command)
+  end, { "--open-command", session })
+  if not task or not task:start() then
+    task = nil
+    hs.alert.show("could not start chats", 3)
+  end
+end
+
 function M.loginClaude(name)
   openLoginTerminal((M.claudebCmd or "claudeb") .. " profile " .. shellQuote(name))
 end
@@ -3199,12 +3228,21 @@ local function buildMenuItems()
     table.insert(menu, { title = "-" })
   end
   local limits, readErrorReason = readLlmLimits()
-  -- Lines come from the collector: this renderer never reads the registry itself.
+  -- Lines come from the collector: this renderer never reads the registry itself. Each carries
+  -- the chat that set the experiment up; a click opens it there.
   if limits and type(limits.experiments) == "table" then
     local announced = false
-    for _, line in ipairs(limits.experiments) do
+    for _, entry in ipairs(limits.experiments) do
+      local line, chat = entry, nil
+      if type(entry) == "table" then line, chat = entry.text, entry.chat end
       if type(line) == "string" and line ~= "" then
-        table.insert(menu, { title = infoTitle(line, true), disabled = true })
+        local item = { title = infoTitle(line, true) }
+        if type(chat) == "string" and chat ~= "" then
+          item.fn = function() openChatSession(chat) end
+        else
+          item.disabled = true
+        end
+        table.insert(menu, item)
         announced = true
       end
     end

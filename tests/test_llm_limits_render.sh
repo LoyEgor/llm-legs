@@ -408,16 +408,22 @@ exp_table=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV
 ! grep -Fq 'EXPERIMENT trial-x' <<<"$exp_table" || fail "--table announced an in-date experiment"
 printf '[{"id":"undated","what":"fixture experiment with no review date","started":"2026-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
 exp_undated=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
-jq -e '.experiments == ["EXPERIMENT undated — temporary, see EXPERIMENTS.json"]' <<<"$exp_undated" >/dev/null \
+jq -e '[.experiments[].text] == ["EXPERIMENT undated — temporary, see EXPERIMENTS.json"]' <<<"$exp_undated" >/dev/null \
   || fail "an experiment without review_by must keep announcing (it can never go OVERDUE)"
-printf '[{"id":"spent","what":"fixture experiment whose review date has passed","started":"2026-01-01","review_by":"2026-01-02","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
+printf '[{"id":"spent","what":"fixture experiment whose review date has passed","chat":"0a1b2c3d-0000-4000-8000-000000000001","started":"2026-01-01","review_by":"2026-01-02","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
 exp_past=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
-jq -e '.experiments == ["EXPERIMENT spent OVERDUE since 2026-01-02 — decide: remove or extend (EXPERIMENTS.json)"]' <<<"$exp_past" >/dev/null \
+jq -e '[.experiments[].text] == ["EXPERIMENT spent OVERDUE since 2026-01-02 — decide: remove or extend (EXPERIMENTS.json)"]' <<<"$exp_past" >/dev/null \
   || fail "an overdue-but-live experiment is not announced as OVERDUE"
+# The menu opens the chat that set the experiment up, so the line carries it; the text surface does not.
+jq -e '.experiments[0].chat == "0a1b2c3d-0000-4000-8000-000000000001"' <<<"$exp_past" >/dev/null \
+  || fail "an announced experiment lost the chat that set it up"
+exp_past_table=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --table --no-write 2>/dev/null)
+head -n 1 <<<"$exp_past_table" | grep -qx 'EXPERIMENT spent OVERDUE since 2026-01-02 — decide: remove or extend (EXPERIMENTS.json)' \
+  || fail "--table banner line changed shape or carries the chat id"
 
 printf '[{"id":"broken",,}]\n' >"$EXP_REG"
 exp_broken=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
-jq -e '.experiments | length == 1 and (.[0] | startswith("EXPERIMENT registry unreadable"))' <<<"$exp_broken" >/dev/null \
+jq -e '.experiments | length == 1 and (.[0].text | startswith("EXPERIMENT registry unreadable")) and (.[0] | has("chat") | not)' <<<"$exp_broken" >/dev/null \
   || fail "an unreadable experiment registry was silently reported as no experiments"
 
 printf '[{"id":"trial-x","what":"fixture experiment for the banner contract","started":"2026-01-01","review_by":"2999-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
@@ -436,7 +442,7 @@ printf '[{"id":"ended","what":"fixture experiment that ended by itself before it
 for marker_state in spent absent; do
   [ "$marker_state" = absent ] && rm -f "$EXP_MARKER"
   exp_ended=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
-  jq -e '.experiments == ["EXPERIMENT ended OVERDUE since 2026-01-02 — decide: remove or extend (EXPERIMENTS.json)"]' <<<"$exp_ended" >/dev/null \
+  jq -e '[.experiments[].text] == ["EXPERIMENT ended OVERDUE since 2026-01-02 — decide: remove or extend (EXPERIMENTS.json)"]' <<<"$exp_ended" >/dev/null \
     || fail "an experiment past its review date whose marker is $marker_state must still be announced OVERDUE"
 done
 fi

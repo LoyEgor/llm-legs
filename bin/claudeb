@@ -330,6 +330,15 @@ merge_headers() {
   )
 }
 
+usage_body_real() {
+  jq -e '(.five_hour.utilization | type) == "number" or (.seven_day.utilization | type) == "number"' "$1" >/dev/null 2>&1
+}
+
+# The 5h window an account has no session limit for: nothing to open, nothing to wall.
+five_hour_unlimited() {
+  jq -e '.five_hour.no_limit == true' "$limits_dir/$1.json" >/dev/null 2>&1
+}
+
 merge_usage() {
   local name="$1" body="$2" file="$limits_dir/$1.json" tmp lock cached='{}'
   mkdir -p "$limits_dir"
@@ -346,8 +355,14 @@ merge_usage() {
       capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.[0-9]+)?(?:Z|\\+00:00)$") |
       (.base + "Z") | fromdateiso8601;
     .cedar_ember as $cedar |
+    if ((.five_hour.utilization | type) != "number") and ((.seven_day.utilization | type) != "number")
+    then error("no usage reading") else . end |
+    # A null session reading is the server saying this account has no 5h limit, not a missing
+    # reading: 0% with no window, marked so start-window does not ping for a window that never opens.
     ($old + {
-      five_hour: {used_percentage: (.five_hour.utilization | round), resets_at: (.five_hour.resets_at | if . == null then 0 else epoch end), as_of: $now, origin: "usage"}
+      five_hour: (if (.five_hour.utilization | type) == "number"
+        then {used_percentage: (.five_hour.utilization | round), resets_at: (.five_hour.resets_at | if . == null then 0 else epoch end), as_of: $now, origin: "usage"}
+        else {used_percentage: 0, resets_at: 0, as_of: $now, origin: "usage", no_limit: true} end)
     } +
     (if (.seven_day.utilization | type) == "number" then
       {seven_day: {used_percentage: (.seven_day.utilization | round), resets_at: (.seven_day.resets_at | if . == null then 0 else epoch end), as_of: $now, origin: "usage"}}
@@ -1021,7 +1036,9 @@ probe_one() {
         rc=$?
       fi
       access_token=""
-      if [ "$rc" -eq 0 ] && [ "$http" = 200 ] && jq -e '.five_hour.utilization | type == "number"' "$dir/$name.usage" >/dev/null 2>&1; then
+      # An account with no session limit answers five_hour null (or utilization null), as the
+      # CLI's /usage shows by dropping its "Current session" line; the week still makes the body real.
+      if [ "$rc" -eq 0 ] && [ "$http" = 200 ] && usage_body_real "$dir/$name.usage"; then
         credentials=""
         printf 'usage 0 200\n' > "$dir/$name.result"
         return
@@ -1414,6 +1431,7 @@ probe_accounts_run() {
         continue
         ;;
     esac
+    ! five_hour_unlimited "$name" || continue
     hreset=$(jq -r '.five_hour.resets_at // 0' "$limits_dir/$name.json" 2>/dev/null) || hreset=0
     [[ "$hreset" =~ ^[0-9]+$ ]] || hreset=0
     [ "$hreset" -lt "$now" ] || continue
@@ -2256,7 +2274,7 @@ warm_accounts() {
       asof=$(jq -r '.five_hour.as_of // 0' "$limits_dir/$name.json" 2>/dev/null || printf '0')
       if [ "$asof" -ge "$started" ] 2>/dev/null && jq -e '.fable.as_of | type == "number"' "$limits_dir/$name.json" >/dev/null 2>&1; then
         CLAUDEB_JOURNAL_KIND=warm oauth_attempt_update "$name" success 0
-        if [ "$start_window" = true ]; then
+        if [ "$start_window" = true ] && ! five_hour_unlimited "$name"; then
           hreset=$(jq -r '.five_hour.resets_at // 0' "$limits_dir/$name.json" 2>/dev/null) || hreset=0
           [[ "$hreset" =~ ^[0-9]+$ ]] || hreset=0
           now=$(date +%s)
