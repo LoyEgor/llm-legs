@@ -1732,6 +1732,14 @@ def file_tags(paths) -> list[str]:
     return tags
 
 
+def video_request(plan: dict, args) -> dict:
+    """What a clip request sent, on its queued rows and on a failed send's row (a flag comes before any clip), so
+    share/flow_flags.py can set flagged sends beside clean ones."""
+    return {"mode": plan.get("mode"), "count": plan.get("count"), "prompt": getattr(args, "prompt", None),
+            "refs": file_tags([plan.get("first_frame"), plan.get("last_frame"), plan.get("edit"),
+                               *(plan.get("refs") or [])])}
+
+
 def ledger(entry: dict) -> None:
     ROOT.mkdir(parents=True, exist_ok=True)
     with open(ROOT / "jobs.jsonl", "a") as f:
@@ -2088,8 +2096,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             for index, media_id in enumerate(clips):
                 ledger({"account": account, "media_id": media_id, "project": project,
                         "dest": str(variant_path(dest, index)), "state": "queued", "model": plan["model"],
-                        "refs": file_tags([plan.get("first_frame"), plan.get("last_frame"), plan.get("edit"),
-                                           *(plan.get("refs") or [])])})
+                        **video_request(plan, args)})
             await_clips(page, watcher, clips, deadline, args.timeout, account, dest)
             rendered = time.time()
             phase("media")
@@ -2260,6 +2267,9 @@ def cmd_generate(args) -> None:
                 result = generate_on(account, plan, args)
             except Failure as failure:
                 report(account, failure)
+                ledger({"event": "failed", "kind": "flow-video", "account": account, "model": plan["model"],
+                        "code": failure.code, "flagged": bool(failure.extra.get("flagged")),
+                        "reason": failure.reason[:200], **video_request(plan, args)})
                 # A short balance is skipped by its cached credits; a wall would also refuse cheaper jobs.
                 if failure.code == 3 and "credits" not in failure.extra:
                     set_wall(account, wall_until(account, failure))

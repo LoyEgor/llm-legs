@@ -722,8 +722,11 @@ def flagged(account, plan, args):
     tried.append(account)
     raise g.Failure(3, "Flow flagged this account", wall_s=g.FLAG_WALL_S)
 g.generate_on = flagged
-code, reason = run(account="rich")
+code, reason = run(account="rich", prompt="a river")
 assert code == 3 and tried == ["rich"] and g.walls()["rich"] > time.time() + g.WALL_SECONDS, (code, tried, g.walls())
+row = [r for r in g.job_rows() if r.get("event") == "failed"][-1]
+assert (row["kind"], row["account"], row["code"], row["prompt"], row["count"], row["refs"]) \
+    == ("flow-video", "rich", 3, "a river", 1, []), row
 g.set_wall("rich", None)
 g.generate_on = signed_out
 tried.clear()
