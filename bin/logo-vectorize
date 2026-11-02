@@ -28,7 +28,7 @@ usage() {
   printf '  a solid fill that came out a shade off its input ink (a merged or edge-pulled colour) takes the input ink;\n' >&2
   printf '  a thin line inside another colour or between two colours (vein, stem, highlight streak, gap between\n' >&2
   printf '  rings) that came out broken or short is redrawn whole; small ground-coloured bites and cracks inside\n' >&2
-  printf '  dark letters and shapes are closed in their ink; thin strokes of a darker ink (fin rays, insect legs)\n' >&2
+  printf '  dark letters and shapes are closed in their ink (never at the canvas edge or across a blurred gap); thin strokes of a darker ink (fin rays, insect legs)\n' >&2
   printf '  keep their ink and length; pale hairline seams between two touching fills are closed.\n' >&2
   printf '  --auto no runs the champion alone\n' >&2
   printf '  --size native (default) traces up to 1024 px as given (finer edges). Flat opaque PNG of 300 px or more takes the\n' >&2
@@ -81,8 +81,8 @@ if [ -n "$grad$colors$palette" ]; then
   runner="$BENCH/tracers/hints-a7/run.sh"
   [ -x "$runner" ] || { printf 'logo-vectorize: no hints tracer at %s/tracers/hints-a7\n' "$BENCH" >&2; exit 1; }
   hints=" hints=gradient:${grad:-auto},colors:${colors:-auto}${palette:+,palette:$palette}"
-elif [ "$auto" = on ] && [ -x "$BENCH/tracers/pxskip-a8/run.sh" ]; then
-  runner="$BENCH/tracers/pxskip-a8/run.sh" hints=' auto=on' lvauto=1
+elif [ "$auto" = on ] && [ -x "$BENCH/tracers/pxskip-a9/run.sh" ]; then
+  runner="$BENCH/tracers/pxskip-a9/run.sh" hints=' auto=on' lvauto=1
 fi
 
 champion=$(basename "$(cd -P "$BENCH/tracers/stable" && pwd)")
