@@ -167,6 +167,16 @@ try {
   check("hidden loupes stay hidden on the next item", await hidden() === "1110", await hidden());
   for (const cb of await page.$$(".pc input[type=checkbox]:not(:checked)")) await cb.click();
   check("a checkbox on brings its loupe back", await hidden() === "0000", await hidden());
+  // the same checkbox sits on each loupe: one state, and a click on it neither drags nor fits
+  const lcb = () => page.$$(".vp>input[type=checkbox]"), pcb = () => page.$$(".pc input[type=checkbox]");
+  check("four frames: the same checkbox on each loupe", (await lcb()).length === 4, String((await lcb()).length));
+  await (await lcb())[1].click();
+  check("a loupe's checkbox hides it and unticks its preview's", await hidden() === "0100" && !(await (await pcb())[1].isChecked()), await hidden());
+  await (await pcb())[1].click();
+  check("its preview's checkbox brings it back, ticked on both", await hidden() === "0000" && await (await lcb())[1].isChecked());
+  check("a loupe checkbox click starts no drag", !(await page.evaluate(() => document.body.classList.contains("drag"))));
+  check("pictures take the right click («Save image as…»)",
+    await page.$$eval(".vp img, .pc img", (x) => x.every((i) => getComputedStyle(i).pointerEvents !== "none")));
   await page.close();
   // one options list for items of 2 and 3 variants: a letter with no variant is not offered, nor voted by its key
   page = await open("mixed1");

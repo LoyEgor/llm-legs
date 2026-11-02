@@ -174,6 +174,14 @@ assert cmp -s "$WORK/body" "$WORK/big.png"
 assert grep -qi '^cache-control: private, max-age=31536000, immutable' "$WORK/h"
 etag=$(sed -n 's/^[Ee][Tt][Aa][Gg]: //p' "$WORK/h" | tr -d '\r')
 assert test "$(get -H "If-None-Match: $etag" "$base/p/$pid/m/0")" = 304
+# «Save image as…» suggests the file's own name, except on a blind page (its names would give the slots away).
+assert_fails grep -qi '^content-disposition' "$WORK/h"
+cp "$WORK/c.png" "$WORK/нічна зірка.png"
+printf '{"items": [{"id": "p01", "variants": [{"id": "v", "src": "%s/нічна зірка.png"}]}]}' "$WORK" |
+  "$PAGE" new compare --slug named --no-open >"$WORK/named.out"
+named=$(awk '{print $2}' "$WORK/named.out")
+assert test "$(get -D "$WORK/h" "$base/p/$named/m/0")" = 200
+assert grep -qi "^content-disposition: inline; filename=\"_____ _____.png\"; filename\*=UTF-8''%D0%BD%D1%96%D1%87%D0%BD%D0%B0%20%D0%B7%D1%96%D1%80%D0%BA%D0%B0.png" "$WORK/h"
 
 # State: blind slots unblinded for the chat, suggest and _expected beside the answer; the cursor advances.
 "$PAGE" state calib >"$WORK/state1"

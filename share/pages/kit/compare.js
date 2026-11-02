@@ -14,9 +14,9 @@ const CSS = `
 .upper{display:flex;gap:16px;align-items:flex-start}
 .pv{display:flex;gap:6px;flex:none}
 .pc{position:relative;overflow:hidden;border-radius:6px;cursor:crosshair;background:#fff;outline:1px solid var(--line)}
-.pc img{width:100%;height:100%;display:block;pointer-events:none}
+.pc img{width:100%;height:100%;display:block;-webkit-user-drag:none}
 .pc i{position:absolute;border:2px solid var(--accent);box-shadow:0 0 0 1px #fff;pointer-events:none}
-.pc input{position:absolute;left:4px;top:4px;z-index:1;margin:0;width:16px;height:16px;cursor:pointer;accent-color:var(--accent)}.pc.off img{opacity:.35}
+.pc input,.vp>input{position:absolute;right:4px;top:4px;z-index:3;margin:0;width:16px;height:16px;cursor:pointer;accent-color:var(--accent)}.vp>input{right:6px;top:6px;width:18px;height:18px}.pc.off img{opacity:.35}
 .side{flex:1 1 340px;min-width:340px;display:flex;flex-direction:column;gap:8px}
 .ttl{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px}.nav{display:flex;gap:6px;align-items:center}
 .q{padding:6px 10px;border-left:3px solid var(--accent);background:var(--card);border-radius:6px;font-size:14px;white-space:pre-line}
@@ -25,9 +25,9 @@ const CSS = `
 .lrow{display:grid;gap:8px;margin-top:10px}
 .vp[hidden]{display:none}.vp{position:relative;overflow:hidden;height:var(--lh,480px);background:#fff;border-radius:6px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;outline:1px solid var(--line)}
 body.drag,body.drag .vp{cursor:grabbing}
-.vp img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;pointer-events:none;-webkit-user-drag:none}
+.vp img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;-webkit-user-drag:none}
 .bd{position:absolute;left:6px;top:4px;display:flex;gap:4px;z-index:1;pointer-events:none;font:600 12px/1.4 system-ui}
-.bd span{background:rgba(0,0,0,.6);color:#fff;padding:1px 6px;border-radius:4px}.bd span:first-child{font-size:14px}
+.vp:has(>input) .bd{right:30px}.bd span{background:rgba(0,0,0,.6);color:#fff;padding:1px 6px;border-radius:4px}.bd span:first-child{font-size:14px}
 .vp canvas{position:absolute;left:0;top:0;pointer-events:none}
 .pc .mk{position:absolute;border:2px solid #f0f;box-sizing:border-box;pointer-events:none}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
@@ -91,14 +91,17 @@ function show(id, keepView) {
   const it = item(id), i = ids.indexOf(id), fs = frames(it), my = ++token, voting = S.mode !== "view";
   if (cur !== id || !keepView) { L = null; geo = null; }
   cur = id;
-  const vps = fs.map((f) => h("div", { class: "vp", ondblclick: fitView },
+  // From four frames up each preview and each loupe carry one checkbox (top right, the same state): it hides or
+  // shows that loupe. A click on it never starts a drag or fits the view.
+  const toggle = (k) => fs.length > 3 ? h("input", { type: "checkbox", title: "показывать внизу", onclick: (e) => e.stopPropagation(),
+    onpointerdown: (e) => e.stopPropagation(), ondblclick: (e) => e.stopPropagation(),
+    onchange: (e) => { e.target.blur(); pane(k, e.target.checked); } }) : null;
+  const vps = fs.map((f, k) => h("div", { class: "vp", ondblclick: fitView },
     h("div", { class: "bd" }, h("span", {}, f.side || f.name), f.side && f.name ? h("span", {}, f.name) : null,
       f.meta ? h("span", {}, f.meta) : null, h("span", { class: "dim" })),
-    h("img", { src: f.src, alt: "", draggable: false }), h("canvas")));
+    h("img", { src: f.src, alt: "", draggable: false }), h("canvas"), toggle(k)));
   const cells = fs.map((f, k) => h("div", { class: "pc", onclick: aim }, h("img", { alt: "", draggable: false }), h("i"),
-    (it.marks || []).map(() => h("span", { class: "mk" })),
-    fs.length > 3 ? h("input", { type: "checkbox", title: "показывать внизу", onclick: (e) => e.stopPropagation(),
-      onchange: (e) => { e.target.blur(); pane(k, e.target.checked); } }) : null));
+    (it.marks || []).map(() => h("span", { class: "mk" })), toggle(k)));
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
     hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
     gb: S.pixel_grid || it.grid ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
@@ -174,8 +177,8 @@ function tag(side, t) {
   paintSide();
 }
 
-// From four frames up a preview's checkbox hides or shows its loupe, for every item of the visit; the
-// last loupe shown stays, and an item whose frames would all be hidden shows them all.
+// From four frames up the checkbox on a preview and on its loupe hides or shows that loupe, for every item of the
+// visit; the last loupe shown stays, and an item whose frames would all be hidden shows them all.
 const badge = (f) => f.side || f.name;
 function panes() {
   const fs = frames(item(cur)), hide = fs.map((f) => fs.length > 3 && off.has(badge(f)));
@@ -183,8 +186,7 @@ function panes() {
   E.vps.forEach((v, k) => {
     v.hidden = hide[k];
     E.cells[k].classList.toggle("off", hide[k]);
-    const cb = E.cells[k].querySelector("input");
-    if (cb) cb.checked = !hide[k];
+    for (const cb of [E.cells[k].querySelector("input"), E.vps[k].querySelector(":scope>input")]) if (cb) cb.checked = !hide[k];
   });
   E.vps[0].parentNode.style.gridTemplateColumns = `repeat(${hide.filter((x) => !x).length},1fr)`;
 }

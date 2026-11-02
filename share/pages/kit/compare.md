@@ -1,6 +1,7 @@
 # compare: pictures side by side — an original + variants, or a pair; vote, tags, note, or a view grid
-Synced loupes: drag pans all, wheel zooms at the pointer. From four frames up a checkbox on each
-preview hides or shows its loupe, for every item of the visit.
+Synced loupes: drag pans all, wheel zooms at the pointer. From four frames up one checkbox, top right on each
+preview and on its loupe, hides or shows that loupe, for every item of the visit. Right click a picture:
+«Save image as…» under its file's name (none on a blind page).
 
 ## Spec (CONTRACT.md, schema 1)
 - **mode:** `vote` (default) or `view`, a numbered grid with no vote widget.

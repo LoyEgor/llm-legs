@@ -152,9 +152,12 @@ class Handler(BaseHTTPRequestHandler):
         entries = store.meta(pid).get("media", [])
         if not n.isdigit() or int(n) >= len(entries):
             return self.reply(404, b"not found\n")
-        self.send_file(entries[int(n)]["path"])
+        entry = entries[int(n)]
+        # «Save image as…» suggests the file's own name; a blind page's names would give its slots away.
+        name = None if store.spec(pid).get("blind") else os.path.basename(entry.get("src") or entry["path"])
+        self.send_file(entry["path"], name)
 
-    def send_file(self, path):
+    def send_file(self, path, name=None):
         try:
             handle = open(path, "rb")
         except OSError:
@@ -173,6 +176,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", mimetypes.guess_type(handle.name)[0] or "application/octet-stream")
             self.send_header("Content-Length", str(end - start + 1))
             self.send_header("Accept-Ranges", "bytes")
+            if name:
+                plain = re.sub(r'[^A-Za-z0-9._ -]', "_", name)
+                self.send_header("Content-Disposition", "inline; filename=\"%s\"; filename*=UTF-8''%s" %
+                                 (plain, urllib.parse.quote(name)))
             if span:
                 self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, st.st_size))
             for name, value in cache:
