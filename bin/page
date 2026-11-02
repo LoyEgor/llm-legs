@@ -287,6 +287,7 @@ def index_html():
 
 def lan_token():
     """The home-network token, made once per pages dir (mode 600)."""
+    os.makedirs(store.root(), exist_ok=True)
     path = os.path.join(store.root(), ".lan-token")
     for _ in range(2):
         try:
