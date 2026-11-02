@@ -90,7 +90,7 @@ function show(id, keepView) {
       f.meta ? h("span", {}, f.meta) : null, h("span", { class: "dim" })),
     h("img", { src: f.src, alt: "", draggable: false }), h("canvas")));
   const cells = fs.map((f, k) => h("div", { class: "pc", onclick: aim }, h("img", { alt: "", draggable: false }), h("i"),
-    fs.length > 2 ? h("input", { type: "checkbox", title: "показывать внизу", onclick: (e) => e.stopPropagation(),
+    fs.length > 3 ? h("input", { type: "checkbox", title: "показывать внизу", onclick: (e) => e.stopPropagation(),
       onchange: (e) => { e.target.blur(); pane(k, e.target.checked); } }) : null));
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
     hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
@@ -166,11 +166,11 @@ function tag(side, t) {
   paintSide();
 }
 
-// From three frames up a preview's checkbox hides or shows its loupe, for every item of the visit; the
+// From four frames up a preview's checkbox hides or shows its loupe, for every item of the visit; the
 // last loupe shown stays, and an item whose frames would all be hidden shows them all.
 const badge = (f) => f.side || f.name;
 function panes() {
-  const fs = frames(item(cur)), hide = fs.map((f) => fs.length > 2 && off.has(badge(f)));
+  const fs = frames(item(cur)), hide = fs.map((f) => fs.length > 3 && off.has(badge(f)));
   if (hide.every(Boolean)) hide.fill(false);
   E.vps.forEach((v, k) => {
     v.hidden = hide[k];

@@ -31,6 +31,7 @@ const vote = () => ({ module: "compare", schema: 1, title: "Калибровка
     item("p03", "pixel", { variants: [{ id: "x", label: "px", src: F.px, meta: "4 px" }, { id: "y", label: "full", src: F.b }] })] });
 const srv = await serve({
   vote1: vote(), vote2: vote(), vote3: vote(), vote4: vote(),
+  four1: { ...vote(), items: ["f01", "f02"].map((id) => item(id, id, { variants: [...item(id).variants, { id: "v79", label: "px", src: F.px }] })) },
   view1: { ...vote(), mode: "view", title: "Обзор" },
   sq1: { ...vote(), pixel_grid: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
     : { ...it, grid: { x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) },
@@ -144,20 +145,24 @@ try {
   await page.keyboard.press("Digit0");
   await page.waitForTimeout(100);
   check("0 fits", (await xf(page))[0] !== out3[0]);
-  // a preview's checkbox (three frames up) hides its loupe and widens the rest; the last one shown stays
+  check("three frames: no checkboxes", !(await page.$(".pc input")));
+  await page.close();
+  // from four frames up a preview's checkbox hides its loupe and widens the rest; the last one shown stays
+  page = await open("four1");
+  await ready(page);
   const hidden = () => page.$$eval(".vp", (v) => v.map((e) => +e.hidden).join(""));
-  const cbs = await page.$$(".pc input[type=checkbox]"), w3 = await page.$eval(".vp", (v) => v.clientWidth);
-  check("three frames: a checkbox on each preview", cbs.length === 3);
+  const cbs = await page.$$(".pc input[type=checkbox]"), w4 = await page.$eval(".vp", (v) => v.clientWidth);
+  check("four frames: a checkbox on each preview", cbs.length === 4, String(cbs.length));
   await cbs[0].click();
-  check("a checkbox off hides its loupe and widens the rest", await hidden() === "100"
-    && (await page.$eval(".vp:not([hidden])", (v) => v.clientWidth)) > w3 * 1.3, await hidden());
+  check("a checkbox off hides its loupe and widens the rest", await hidden() === "1000"
+    && (await page.$eval(".vp:not([hidden])", (v) => v.clientWidth)) > w4 * 1.2, await hidden());
   check("the keys still work after a checkbox click", await page.evaluate(() => document.activeElement.type !== "checkbox"));
-  await cbs[1].click(); await cbs[2].click();
-  check("the last loupe shown stays", await hidden() === "110" && await cbs[2].isChecked(), await hidden());
+  for (const k of [1, 2, 3]) await cbs[k].click();
+  check("the last loupe shown stays", await hidden() === "1110" && await cbs[3].isChecked(), await hidden());
   await page.click("text=→"); await ready(page);
-  check("hidden loupes stay hidden on the next item", await hidden() === "110", await hidden());
+  check("hidden loupes stay hidden on the next item", await hidden() === "1110", await hidden());
   for (const cb of await page.$$(".pc input[type=checkbox]:not(:checked)")) await cb.click();
-  check("a checkbox on brings its loupe back", await hidden() === "000", await hidden());
+  check("a checkbox on brings its loupe back", await hidden() === "0000", await hidden());
   await page.close();
 
   // 3. outbox: 503 → «не сохранилось», reload keeps the gesture, the server recovering gets it once
