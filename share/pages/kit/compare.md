@@ -9,7 +9,10 @@ preview hides or shows its loupe, for every item of the visit.
 - **pixelated:** `true` (pixel art), `false`, or `auto` (pixelated at ≥3× zoom; the default).
 - **zoom_levels:** e.g. `[1, 2, 4]`, the original's magnifications as buttons; digits pick them, the
   first one again fits; no hotspot row or fit button then. Default none.
-- **options:** default `A`, `B` (one per variant) and `tie` (`=`); `label` is what the button shows.
+- **options:** default one letter per variant of the shown item (`A`, `B`, …) and `tie` (`=`); `label` is
+  what the button shows. A letter an item has no variant for is not shown on it, so one list (say
+  `A`–`D`, `=`, «все плохи») serves items of 2–4 variants. Leave it out unless a choice beyond these is needed.
+- **tags:** per-variant tag buttons. Only on Egor's ask: he seldom tags, and the rows push the loupes down.
 - **Keys:**
   - `options[].key` is an `event.code`; defaults A→`KeyA`, B→`KeyB`, tie→`KeyT`;
   - ←/→ move between items, 0 fits, 1..9 jump to hotspots, +/− zoom.
@@ -26,11 +29,7 @@ preview hides or shows its loupe, for every item of the visit.
 
 ## Example
 ```json
-{"module": "compare", "schema": 1, "title": "Pixel judges calibration",
- "blind": true, "pixelated": "auto",
- "options": [{"id": "A"}, {"id": "B"}, {"id": "tie", "label": "="},
-             {"id": "both_bad", "label": "оба плохи"}, {"id": "unsure", "label": "не понять"}],
- "tags": ["halo", "jaggies", "lost detail"],
+{"module": "compare", "schema": 1, "title": "Pixel judges calibration", "blind": true,
  "items": [{"id": "p01", "title": "frog", "original": "/abs/frog.png",
             "variants": [{"id": "v77", "label": "champ77", "src": "/abs/77/frog.png", "meta": "64 px"},
                          {"id": "v78", "label": "champ78", "src": "/abs/78/frog.png"}]}]}

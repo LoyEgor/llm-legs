@@ -365,7 +365,7 @@ function strip(el) {
     h("button", { type: "button", class: "atn", title: "вставить имя в текст", onmousedown: (e) => e.preventDefault(),
       onclick: () => put(el, `[${name}]`) }, name),
     h("button", { type: "button", class: "atx", title: "убрать картинку", "aria-label": "убрать картинку",
-      onmousedown: (e) => e.preventDefault(), onclick: () => remove(el, name) }, "×")));
+      onmousedown: (e) => e.preventDefault(), onclick: () => remove(el, name) })));
   s.chips.forEach((c, name) => { c.classList.toggle("off", !inText.has(name)); c.title = inText.has(name) ? "" : "имени нет в тексте"; });
   s.box.replaceChildren(...[...s.chips.keys()].sort(order).map((n) => s.chips.get(n)), s.msg);
   s.box.hidden = !s.chips.size && !s.msg.textContent;

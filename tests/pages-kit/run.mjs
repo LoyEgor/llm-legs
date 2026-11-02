@@ -31,6 +31,9 @@ const vote = () => ({ module: "compare", schema: 1, title: "Калибровка
     item("p03", "pixel", { variants: [{ id: "x", label: "px", src: F.px, meta: "4 px" }, { id: "y", label: "full", src: F.b }] })] });
 const srv = await serve({
   vote1: vote(), vote2: vote(), vote3: vote(), vote4: vote(),
+  mixed1: { module: "compare", schema: 1, title: "Смесь", options: ["A", "B", "C", "D"].map((id) => ({ id, key: "Key" + id }))
+    .concat([{ id: "tie", label: "=" }, { id: "all_bad", label: "все плохи" }]),
+    items: [item("m01", "two"), item("m02", "three", { variants: [...item("m02").variants, { id: "v79", label: "px", src: F.px }] })] },
   four1: { ...vote(), items: ["f01", "f02"].map((id) => item(id, id, { variants: [...item(id).variants, { id: "v79", label: "px", src: F.px }] })) },
   view1: { ...vote(), mode: "view", title: "Обзор" },
   sq1: { ...vote(), pixel_grid: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
@@ -163,6 +166,17 @@ try {
   check("hidden loupes stay hidden on the next item", await hidden() === "1110", await hidden());
   for (const cb of await page.$$(".pc input[type=checkbox]:not(:checked)")) await cb.click();
   check("a checkbox on brings its loupe back", await hidden() === "0000", await hidden());
+  await page.close();
+  // one options list for items of 2 and 3 variants: a letter with no variant is not offered, nor voted by its key
+  page = await open("mixed1");
+  await ready(page);
+  const offered = () => page.$$eval(".votes button", (b) => b.map((x) => x.dataset.v).join(" "));
+  check("a 2-variant item offers A B, not C D", await offered() === "A B tie all_bad", await offered());
+  await page.evaluate(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyC", key: "c", bubbles: true })));
+  await page.waitForTimeout(300);
+  check("…and its C key votes nothing", posts("mixed1").length === 0, JSON.stringify(posts("mixed1")));
+  await page.click("text=→"); await ready(page);
+  check("a 3-variant item offers A B C", await offered() === "A B C tie all_bad", await offered());
   await page.close();
 
   // 3. outbox: 503 → «не сохранилось», reload keeps the gesture, the server recovering gets it once

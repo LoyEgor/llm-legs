@@ -55,8 +55,13 @@ export function render(spec) {
 }
 
 const item = (id) => S.items.find((it) => it.id === id);
-const opts = () => (S.options || [...((item(cur) || S.items[0]).variants || []).map((v, i) => ({ id: v.slot || LETTERS[i] })),
+// One options list serves items of 2, 3 or 4 variants: a letter the shown item has no variant for is left out.
+const allOpts = () => (S.options || [...((item(cur) || S.items[0]).variants || []).map((v, i) => ({ id: v.slot || LETTERS[i] })),
   { id: "tie", label: "=" }]).map((o) => ({ ...o, key: o.key ?? KEYS[o.id] }));
+const opts = () => {
+  const sides = frames(item(cur) || S.items[0]).map((f) => f.side);
+  return allOpts().filter((o) => !/^[A-J]$/.test(o.id) || sides.includes(o.id));
+};
 
 function frames(it) {
   const vs = (it.variants || []).map((v, i) => ({ src: v.src, side: v.slot || LETTERS[i],
@@ -69,7 +74,7 @@ function keymap() {
     Equal: () => zoomBy(1.5), Minus: () => zoomBy(1 / 1.5), Escape: () => S.mode === "view" && grid(),
     KeyG: () => E && E.gb && toggleLines() };
   for (let k = 1; k <= 9; k++) m["Digit" + k] = (S.zoom_levels || [])[k - 1] != null ? () => level(k - 1) : () => jump(k - 1);
-  if (S.mode !== "view") for (const o of (S.items.length ? opts() : [])) if (o.key) m[o.key] = () => vote(o.id);
+  if (S.mode !== "view") for (const o of (S.items.length ? allOpts() : [])) if (o.key) m[o.key] = () => vote(o.id);
   return m;
 }
 
@@ -156,7 +161,7 @@ function vote_(o) {
   const at = cur;
   setTimeout(() => { const n = cur === at && nextOpen(ids, ids.indexOf(cur)); if (n && n !== cur) show(n); }, 350);
 }
-function vote(o) { if (E && E.votes) vote_(o); }
+function vote(o) { if (E && E.votes && opts().some((x) => x.id === o)) vote_(o); }
 
 function tag(side, t) {
   const all = { ...(get(cur, "tags") || {}) }, set = new Set(all[side] || []);
