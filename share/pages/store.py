@@ -465,6 +465,9 @@ def add_file(pid, data, item=None, field=None):
         index = read_json(os.path.join(folder, "index.json"), {}) or {}
         for name, entry in index.items():
             if entry.get("sha256") == digest and os.path.isfile(os.path.join(folder, name)):
+                if entry.get("item") is None and item:   # removed from its field, pasted again
+                    entry.update(item=item, field=field)
+                    write_json(os.path.join(folder, "index.json"), index)
                 return name
         n = 1 + max([int(re.sub(r"\D", "", name.split(".")[0])) for name in index] or [0])
         name = "img%d.%s" % (n, ext)
@@ -474,6 +477,24 @@ def add_file(pid, data, item=None, field=None):
         index[name] = {"sha256": digest, "item": item, "field": field, "at": now()}
         write_json(os.path.join(folder, "index.json"), index)
         return name
+    finally:
+        os.close(fd)
+
+
+def detach_file(pid, name, item, field):
+    """× on a picture: it leaves the field it was pasted into. The file stays, so ⌘Z bringing its name
+    back, or another field naming it, still finds it; the name is never given to other bytes."""
+    folder = os.path.join(root(), pid, "files")
+    if not FILE_RE.match(name or "") or not os.path.isdir(folder):
+        return
+    fd = os.open(os.path.join(folder, ".lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        index = read_json(os.path.join(folder, "index.json"), {}) or {}
+        entry = index.get(name)
+        if entry and entry.get("item") == item and entry.get("field") == field:
+            entry.update(item=None, field=None)
+            write_json(os.path.join(folder, "index.json"), index)
     finally:
         os.close(fd)
 

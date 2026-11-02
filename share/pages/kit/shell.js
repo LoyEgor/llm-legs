@@ -117,7 +117,7 @@ export function textBox(id, field, props) {
   el.addEventListener("input", () => saveText(id, field, el.value));
   el.addEventListener("blur", () => commit(id + "\t" + field));
   boxes.add(el);
-  requestAnimationFrame(() => { if (el.isConnected) { slot(el); strip(el); } });
+  requestAnimationFrame(() => { if (el.isConnected) { slot(el); strip(el); grow(el); } });
   return el;
 }
 
@@ -188,7 +188,7 @@ function merge(s) {
     if (!el.isConnected) boxes.delete(el);
     else if (changed.has(el.dataset.item) && el !== document.activeElement) {
       el.value = get(el.dataset.item, el.dataset.field) ?? "";
-      strip(el);
+      strip(el); grow(el);
     }
   }
   if (stateCb) stateCb(changed);
@@ -325,8 +325,8 @@ function onZoomClick(e) {
 // name, [img3.png], goes in at the caret, so Egor writes «on [img1.png] the bush slides» and the chat's
 // `page state` prints img1.png=<absolute path> beside the text. The field sits in a box that shows its
 // pictures above the text as equal tiles: a click opens one full screen, the name on a tile puts the name
-// back at the caret, and a tile whose name is no longer in the text is dimmed. Text-only clipboards
-// paste as text.
+// back at the caret, × takes the picture and its name out of the field (⌘Z brings both back), and a tile
+// whose name is no longer in the text is dimmed. Text-only clipboards paste as text.
 const FIELD = "textarea,input[type=text],input:not([type])";
 const TOKEN = /\[(img[1-9][0-9]{0,4}\.(?:png|jpg|gif|webp))\]/g;
 const strips = new WeakMap();
@@ -362,11 +362,45 @@ function strip(el) {
   const s = slot(el);
   for (const name of [...mine, ...inText]) if (!s.chips.has(name)) s.chips.set(name, h("span", { class: "atc" },
     h("img", { src: `/p/${pid}/f/${name}`, alt: name, title: "открыть" }),
-    h("button", { type: "button", title: "вставить имя в текст", onmousedown: (e) => e.preventDefault(),
-      onclick: () => put(el, `[${name}]`) }, name)));
+    h("button", { type: "button", class: "atn", title: "вставить имя в текст", onmousedown: (e) => e.preventDefault(),
+      onclick: () => put(el, `[${name}]`) }, name),
+    h("button", { type: "button", class: "atx", title: "убрать картинку", "aria-label": "убрать картинку",
+      onmousedown: (e) => e.preventDefault(), onclick: () => remove(el, name) }, "×")));
   s.chips.forEach((c, name) => { c.classList.toggle("off", !inText.has(name)); c.title = inText.has(name) ? "" : "имени нет в тексте"; });
   s.box.replaceChildren(...[...s.chips.keys()].sort(order).map((n) => s.chips.get(n)), s.msg);
   s.box.hidden = !s.chips.size && !s.msg.textContent;
+}
+
+// A textarea fits its text: two lines at least (the CSS min-height), seven at most, then it scrolls.
+function grow(el) {
+  if (el.tagName !== "TEXTAREA" || !el.isConnected) return;
+  const cs = getComputedStyle(el), px = (k) => parseFloat(cs[k]) || 0;
+  const border = px("borderTopWidth") + px("borderBottomWidth"), line = px("lineHeight") || px("fontSize") * 1.45;
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight + border, 7 * line + px("paddingTop") + px("paddingBottom") + border) + "px";
+}
+
+// × on a tile: every [name] leaves the text, with one space beside it, through the browser's editing
+// (⌘Z restores the text and with it the tile); a picture this field owns stops being shown under it.
+function remove(el, name) {
+  const s = slot(el), f = known.get(name), tag = `[${name}]`;
+  if (f && el.dataset.item && f.item === el.dataset.item && f.field === el.dataset.field) {
+    known.set(name, { ...f, item: null, field: null });
+    fetch(`/p/${pid}/drop`, { method: "POST", headers: json,
+      body: JSON.stringify({ name, item: el.dataset.item, field: el.dataset.field }) }).catch(() => {});
+  }
+  s.chips.delete(name);
+  el.focus();
+  for (let at = el.value.lastIndexOf(tag); at >= 0; at = at ? el.value.lastIndexOf(tag, at - 1) : -1) {
+    let a = at, b = at + tag.length;
+    if (el.value[a - 1] === " ") a--; else if (el.value[b] === " ") b++;
+    el.setSelectionRange(a, b);
+    if (!document.execCommand("delete")) {
+      el.setRangeText("", a, b, "end");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  }
+  strip(el);
 }
 
 function say(el, text, bad) {
@@ -477,5 +511,6 @@ export async function start(s, r) {
   document.addEventListener("paste", onPaste, true);
   document.addEventListener("dragover", onDragOver, true);
   document.addEventListener("drop", onDrop, true);
-  document.addEventListener("input", (e) => { const el = textField(e.target); if (el) strip(el); }, true);
+  document.addEventListener("input", (e) => { const el = textField(e.target); if (el) { strip(el); grow(el); } }, true);
+  addEventListener("resize", () => document.querySelectorAll("textarea").forEach(grow));
 }

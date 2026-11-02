@@ -154,6 +154,16 @@ try {
     await until(() => tab.$eval(".zoom .zpos", (z) => z.textContent).catch(() => "")) === `1 / ${chips}` &&
     (await tab.$eval(".zoom > img", (im) => im.src)).endsWith("/f/img1.png"));
   await tab.keyboard.press("Escape");
+  const tile = '.card[data-id="c11"] .atc:has(.atn:text-is("img2.jpg"))', shownTiles = () => tab.$$eval('.card[data-id="c11"] .att .atc', (c) => c.length).catch(() => 0);
+  await tab.hover(tile);
+  await tab.click(`${tile} .atx`);
+  check("× takes the picture and its name out of the field", await until(async () => (await value()) === "" && await shownTiles() === chips - 1), await value());
+  await tab.keyboard.press("ControlOrMeta+Z");
+  check("⌘Z brings both back", await until(async () => (await value()) === "[img2.jpg]" && await shownTiles() === chips), await value());
+  await tab.click(`${tile} .atx`);
+  check("a removed picture leaves its field for good", await until(async () => (await value()) === "") &&
+    await until(async () => (await (await fetch(`${origin}/p/${crd}/files`)).json()).find((f) => f.name === "img2.jpg")?.item === null) &&
+    (await tab.reload(), await until(async () => await shownTiles() === chips - 1)));
   await tab.goto(`${origin}/p/${cmp}/`);
   await tab.waitForSelector(".side textarea");
   await send({ files: [{ b64: b64(F.b), name: "image.png", type: "image/png" }] }, "paste", ".side textarea");

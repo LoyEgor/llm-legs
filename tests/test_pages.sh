@@ -137,6 +137,16 @@ assert test "$(get "$base/p/$pid/f/img1.png"; cmp -s "$WORK/body" "$WORK/pic.png
 for bad in "f/..%2Fmeta.json" "f/img1.png%2F..%2F..%2Fmeta.json" "f/meta.json" "f/img2.png"; do
   assert test "$(get "$base/p/$pid/$bad")$bad" = "404$bad"
 done
+# × detaches a picture from the field that owns it only; the file stays, the same bytes again re-attach it.
+drop() { curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$1" "$base/p/$pid/drop"; }
+assert test "$(drop '{"name": "img1.png", "item": "p02", "field": "note"}')" = 200
+assert test "$(get "$base/p/$pid/files"; jq -r '.[0].item' "$WORK/body")" = 200p01
+assert test "$(drop '{"name": "img1.png", "item": "p01", "field": "note"}')" = 200
+assert test "$(get "$base/p/$pid/files"; jq -c '.[0]' "$WORK/body")" = '200{"name":"img1.png","item":null,"field":null}'
+assert test "$(get "$base/p/$pid/f/img1.png"; cmp -s "$WORK/body" "$WORK/pic.png" && echo same)" = 200same
+assert test "$(up "$WORK/pic.png" -H 'Content-Type: image/png'; jq -r .name "$WORK/body")" = 200img1.png
+assert test "$(get "$base/p/$pid/files"; jq -r '.[0].item' "$WORK/body")" = 200p01
+assert test "$(drop 'nope')" = 400
 
 # Path confinement: bad pids 404 before any join, the kit never serves outside itself.
 for bad in "/p/..%2F..%2Fetc/spec" "/p/../m/0" "/p/%2e%2e/m/0""/p/CALIB/spec" "/kit/../secret.txt" "/kit/%2e%2e/secret.txt" \

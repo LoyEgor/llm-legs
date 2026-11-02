@@ -198,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin is not None and origin != "http://" + self.headers["Host"]:
             return self.reply(403, b"origin refused\n")
-        m = re.fullmatch(r"/p/([^/]+)/(patch|error|upload)", path)
+        m = re.fullmatch(r"/p/([^/]+)/(patch|error|upload|drop)", path)
         if not m or not store.page_dir(m.group(1)):
             return self.reply(404, b"not found\n")
         pid = m.group(1)
@@ -206,6 +206,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.browser_error(pid)
         if upload:
             return self.upload(pid, ctype, urllib.parse.parse_qs(query))
+        if m.group(2) == "drop":
+            return self.drop(pid)
         try:
             length = int(self.headers.get("Content-Length") or 0)
             patch = json.loads(self.rfile.read(length)) if 0 < length <= MAX_PATCH else None
@@ -248,6 +250,17 @@ class Handler(BaseHTTPRequestHandler):
         except store.Refused as error:
             return self.reply(415, ("%s\n" % error).encode())
         self.send_json(200, {"name": name, "url": "/p/%s/f/%s" % (pid, name)})
+
+    def drop(self, pid):
+        """× on a picture in a field: {name, item, field}."""
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(length)) if 0 < length <= MAX_PATCH else None
+            name, item, field = body["name"], body.get("item"), body.get("field")
+        except (ValueError, TypeError, KeyError):
+            return self.reply(400, b"expected {\"name\", \"item\", \"field\"}\n")
+        store.detach_file(pid, name, item, field)
+        self.send_json(200, {})
 
     def browser_error(self, pid):
         try:

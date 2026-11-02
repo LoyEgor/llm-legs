@@ -320,6 +320,19 @@ try {
   check("the wheel zooms the full-screen picture", (await scale()) > s0 * 1.3, JSON.stringify([s0, await scale()]));
   await page.keyboard.press("Escape");
   check("Esc closes it", (await page.$(".zoom")) === null);
+  // a textarea shows two lines at least, grows with its text to seven, then scrolls
+  const ta = '.card[data-id="c13"] textarea', lines = (n) => Array.from({ length: n }, (_, k) => "строка " + (k + 1)).join("\n");
+  const box = () => page.$eval(ta, (el) => { const l = parseFloat(getComputedStyle(el).lineHeight); return { rows: Math.round((el.clientHeight - 12) / l), scrolls: el.scrollHeight > el.clientHeight + 1 }; });
+  await page.fill(ta, "одна");
+  const one = await box();
+  await page.fill(ta, lines(4));
+  const four = await box();
+  await page.fill(ta, lines(12));
+  const twelve = await box();
+  await page.fill(ta, "");
+  const none = await box();
+  check("a textarea grows from two lines to seven, then scrolls", one.rows === 2 && !one.scrolls && four.rows === 4 && !four.scrolls
+    && twelve.rows === 7 && twelve.scrolls && none.rows === 2, JSON.stringify([one, four, twelve, none]));
   await page.evaluate(() => scrollTo(0, 0));
   await shot(page, "cards.png");
   await page.close();
