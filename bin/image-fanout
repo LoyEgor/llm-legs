@@ -213,6 +213,12 @@ else
     check_request "$j_prompt" "$j_aspect" "$j_size" "$j_edit" "$j_refs" || usage_error "--jobs line $line_n: $why"
     [[ "$j_dest" = /* ]] && [ -d "$(dirname "$j_dest")" ] && [[ "${j_dest##*/}" = *.* ]] ||
       usage_error "--jobs line $line_n: dest must be an absolute file path in an existing directory"
+    # Two lines on one dest overwrite each other's takes silently; one line naming several vendors gets
+    # its own -<vendor> suffix per vendor (2026-11-02: 3 vendors × 4 lines on 4 dests kept only Gemini's).
+    for ((d_r = 1; d_r <= rq_n; d_r++)); do
+      [ "${rq_dest[d_r]}" != "$j_dest" ] ||
+        usage_error "--jobs line $line_n: dest $j_dest repeats an earlier line; give each line its own dest, or put the vendors in one line (\"vendor\": \"a,b\" suffixes -<vendor>)"
+    done
     [ -n "$j_vendors" ] || j_vendors=$vendors_arg
     resolve_vendors "$j_vendors" >/dev/null || usage_error "--jobs line $line_n: unknown vendor in $j_vendors"
     case "$j_account" in

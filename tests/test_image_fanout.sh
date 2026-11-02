@@ -656,6 +656,15 @@ rc=0
 fanout --dest-dir "$DEST" --jobs "$WORK/bad.jsonl" || rc=$?
 assert test "$rc" -eq 2
 assert grep -Fq -- '--jobs line 1: dest' "$FANOUT_ERR"
+# Two lines on one dest would overwrite each other's takes: refused before any launch.
+jq -cn --arg d "$JOBS_DIR" '{prompt: "a", dest: ($d + "/same.png"), vendor: "grok"},
+  {prompt: "a", dest: ($d + "/same.png"), vendor: "gemini"}' >"$WORK/dup.jsonl"
+: >"$CALLS"
+rc=0
+fanout --dest-dir "$DEST" --jobs "$WORK/dup.jsonl" || rc=$?
+assert test "$rc" -eq 2
+assert grep -Fq -- '--jobs line 2: dest' "$FANOUT_ERR"
+assert test ! -s "$CALLS"
 rc=0
 fanout --dest-dir "$DEST" --jobs "$WORK/jobs.jsonl" --prompt x || rc=$?
 assert test "$rc" -eq 2
