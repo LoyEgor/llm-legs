@@ -29,15 +29,16 @@ body.drag,body.drag .vp{cursor:grabbing}
 .bd{position:absolute;left:6px;top:4px;display:flex;gap:4px;z-index:1;pointer-events:none;font:600 12px/1.4 system-ui}
 .bd span{background:rgba(0,0,0,.6);color:#fff;padding:1px 6px;border-radius:4px}.bd span:first-child{font-size:14px}
 .vp canvas{position:absolute;left:0;top:0;pointer-events:none}
+.pc .mk{position:absolute;border:2px solid #f0f;pointer-events:none}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
 .gc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;cursor:pointer}
 .gi{display:flex;gap:4px;margin-top:4px}.gi figure{margin:0;flex:1;min-width:0}
 .gi img{width:100%;max-height:240px;object-fit:contain;background:#fff;border-radius:4px;display:block}
 .gi figcaption{font-size:12px;color:var(--mute);text-align:center}
 @media (max-width:900px){.upper{flex-direction:column}}`;
-const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)";
+const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)", MARK = "#f0f";
 const app = document.getElementById("app");
-let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false;
+let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false, marked = true;
 const hot = new Map(), inked = new WeakSet(), off = new Set(); // off: frames whose loupe is hidden, by badge
 
 export function render(spec) {
@@ -72,7 +73,7 @@ function frames(it) {
 function keymap() {
   const m = { ArrowLeft: () => go(-1), ArrowRight: () => go(1), Digit0: fitView,
     Equal: () => zoomBy(1.5), Minus: () => zoomBy(1 / 1.5), Escape: () => S.mode === "view" && grid(),
-    KeyG: () => E && E.gb && toggleLines() };
+    KeyG: () => E && E.gb && toggleLines(), KeyM: () => E && E.mb && toggleMarks() };
   for (let k = 1; k <= 9; k++) m["Digit" + k] = (S.zoom_levels || [])[k - 1] != null ? () => level(k - 1) : () => jump(k - 1);
   if (S.mode !== "view") for (const o of (S.items.length ? allOpts() : [])) if (o.key) m[o.key] = () => vote(o.id);
   return m;
@@ -95,11 +96,13 @@ function show(id, keepView) {
       f.meta ? h("span", {}, f.meta) : null, h("span", { class: "dim" })),
     h("img", { src: f.src, alt: "", draggable: false }), h("canvas")));
   const cells = fs.map((f, k) => h("div", { class: "pc", onclick: aim }, h("img", { alt: "", draggable: false }), h("i"),
+    (it.marks || []).map(() => h("span", { class: "mk" })),
     fs.length > 3 ? h("input", { type: "checkbox", title: "показывать внизу", onclick: (e) => e.stopPropagation(),
       onchange: (e) => { e.target.blur(); pane(k, e.target.checked); } }) : null));
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
     hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
     gb: S.pixel_grid || it.grid ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
+    mb: it.marks && it.marks.length ? h("button", { onclick: toggleMarks, title: "M" }, "Рамка") : null,
     pos: h("span", { class: "mute num" }), votes: null, tags: [], sg: h("span", { class: "sg", hidden: true }),
     lv: (S.zoom_levels || []).map((z, k) => h("button", { onclick: () => level(k), title: k < 9 ? `${k + 1}` : null }, `${z}×`)) };
   E.votes = voting ? h("div", { class: "votes" }, opts().map((o) =>
@@ -109,7 +112,7 @@ function show(id, keepView) {
   const nav = h("span", { class: "nav" }, S.mode === "view" ? h("button", { onclick: grid, title: "Esc" }, "▦") : null,
     h("button", { onclick: () => go(-1) }, "←"), E.pos, h("button", { onclick: () => go(1) }, "→"));
   // with zoom_levels the first level fits and the digits are taken, so no fit button and no hotspots
-  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.gb);
+  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.gb, E.mb);
   app.replaceChildren(E.strip, h("div", { class: "upper" }, h("div", { class: "pv" }, cells),
     h("div", { class: "side" }, h("div", { class: "ttl" }, h("strong", {}, `${num(it, i)}${it.title ? " · " + it.title : ""}`), nav),
       it.q ? h("div", { class: "q" }, it.q) : null, E.votes, E.sg, E.tags, tools,
@@ -206,6 +209,7 @@ function jump(k) {
 }
 // zoom_levels[k] as the original's magnification; the first level pressed again fits the view
 function toggleLines() { lines = !lines; draw(); }
+function toggleMarks() { marked = !marked; draw(); }
 function level(k) {
   const z = (S.zoom_levels || [])[k];
   if (geo && L && z != null) setL(k === 0 && L.z === z ? fit() : { ...L, z });
@@ -280,11 +284,14 @@ function draw() {
     return nw ? { x, y, sx: w / nw, sy: hh / nh, nw, nh } : null;
   });
   E.lv.forEach((b, k) => b.classList.toggle("on", L.z === S.zoom_levels[k]));
-  if (E.gb) paintLines(W, H, at, first);
+  if (E.gb || E.mb) paintLines(W, H, at, first);
   const x0 = Math.max(0, L.cx - W / 2 / L.z), x1 = Math.min(geo.w, L.cx + W / 2 / L.z);
   const y0 = Math.max(0, L.cy - H / 2 / L.z), y1 = Math.min(geo.h, L.cy + H / 2 / L.z);
+  const mk = item(cur).marks || [];
   E.boxes.forEach((b) => {
     const k = b.parentNode.clientWidth / geo.w;
+    b.parentNode.querySelectorAll(".mk").forEach((m, j) => { const [a, c, a1, c1] = mk[j];
+      Object.assign(m.style, { display: marked ? "block" : "none", left: a * k + "px", top: c * k + "px", width: (a1 - a) * k + "px", height: (c1 - c) * k + "px" }); });
     Object.assign(b.style, { display: x1 > x0 && y1 > y0 ? "block" : "none", left: x0 * k + "px", top: y0 * k + "px",
       width: (x1 - x0) * k + "px", height: (y1 - y0) * k + "px" });
   });
@@ -293,9 +300,11 @@ function draw() {
 // «Сетка»: the item's `grid` (cell bounds in the original's pixels) over the original, and each variant's own
 // pixel grid in its loupe; a grid whose cells are under 5 screen px is left out. A canvas is resized only when the
 // loupe is (resizing reallocates it) and cleared only when it holds lines, since draw() runs on every drag move.
+// «Рамка» (M, on by default): the item's `marks`, boxes in the original's pixels, framed on every loupe and preview.
 function paintLines(W, H, at, first) {
   const d = devicePixelRatio || 1, it = item(cur), cw = Math.round(W * d), chh = Math.round(H * d);
-  E.gb.classList.toggle("on", lines);
+  if (E.gb) E.gb.classList.toggle("on", lines);
+  if (E.mb) E.mb.classList.toggle("on", marked);
   E.cvs.forEach((c, i) => {
     if (c.width !== cw || c.height !== chh) {
       Object.assign(c, { width: cw, height: chh });
@@ -304,7 +313,12 @@ function paintLines(W, H, at, first) {
     inked.delete(c);
     const a = at[i], step = (b) => (b.at(-1) - b[0]) / (b.length - 1) * L.z;
     let xs, ys;
-    if (!lines) return;
+    if (E.mb && marked) {
+      const g = c.getContext("2d");
+      g.strokeStyle = MARK; g.lineWidth = 2 * d; inked.add(c);
+      for (const [a, b, a1, b1] of it.marks) g.strokeRect((W / 2 + (a - L.cx) * L.z) * d, (H / 2 + (b - L.cy) * L.z) * d, (a1 - a) * L.z * d, (b1 - b) * L.z * d);
+    }
+    if (!lines || !E.gb) return;
     if (i < first) {
       if (!it.grid || Math.min(step(it.grid.x), step(it.grid.y)) < 5) return;
       xs = it.grid.x.map((v) => W / 2 + (v - L.cx) * L.z);

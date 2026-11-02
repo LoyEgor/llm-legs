@@ -39,6 +39,7 @@ const srv = await serve({
   sq1: { ...vote(), pixel_grid: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
     : { ...it, grid: { x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) },
       variants: [{ ...it.variants[0], box: [4, 2, 476, 238] }, it.variants[1]] }) },
+  mark1: { ...vote(), items: vote().items.map((it) => it.id === "p01" ? { ...it, marks: [[10, 10, 100, 80]] } : it) },
   blind1: { module: "compare", schema: 1, title: "Слепо", blind: true,
     items: [{ id: "b01", variants: [{ id: "v77", label: "champ77", src: F.a, meta: "64 px" }, { id: "v78", label: "champ78", src: F.b }] }] },
   cards1: { module: "cards", schema: 1, title: "Швы", sitting_cap: 2,
@@ -295,6 +296,26 @@ try {
   r = await sq();
   check("wheel zoom-out shrinks every loupe alike", r[0][2] < fitW && same(r), JSON.stringify(r));
   await shot(page, "compare-box.png");
+  await page.close();
+
+  // 6b. marks: framed on every loupe and preview by default, M hides and shows them, an item without marks has no «Рамка»
+  page = await open("mark1");
+  await ready(page);
+  const marks = () => page.evaluate(() => [[...document.querySelectorAll(".vp canvas")].map((c) => c.getContext("2d")
+    .getImageData(0, 0, c.width, c.height).data.some((v, k) => k % 4 === 3 && v)),
+    [...document.querySelectorAll(".pc .mk")].map((m) => m.style.display)]);
+  let mk = await marks();
+  check("marks on by default: every loupe inked, every preview framed", mk[0].length > 1 && mk[0].every(Boolean)
+    && mk[1].length === mk[0].length && mk[1].every((d) => d === "block")
+    && await page.$eval(".tools button.on", (b) => b.textContent) === "Рамка", JSON.stringify(mk));
+  await page.keyboard.press("KeyM");
+  mk = await marks();
+  check("M hides them", mk[0].every((v) => !v) && mk[1].every((d) => d === "none"), JSON.stringify(mk));
+  await page.keyboard.press("KeyM");
+  check("M again shows them", (await marks())[0].every(Boolean));
+  await page.keyboard.press("ArrowRight");
+  await ready(page);
+  check("an item without marks has no «Рамка»", await page.evaluate(() => ![...document.querySelectorAll("button")].some((b) => b.textContent === "Рамка")));
   await page.close();
 
   // 7. cards: choice/multi/scale/note save; one clip at a time

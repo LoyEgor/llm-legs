@@ -24,6 +24,8 @@ preview hides or shows its loupe, for every item of the visit.
 - **pixel_grid:** `true` adds «Сетка» (G): each variant's own pixel grid in its loupe. An item's
   `grid` (`{"x": [...], "y": [...]}`, cell bounds in the original's px, e.g. a detected lattice)
   adds it too, drawn over the original. Cells under 5 screen px stay undrawn.
+- **marks:** per item, `[[x0, y0, x1, y1], …]` in the original's px: framed on every loupe and preview,
+  with «Рамка» (M) to hide them; on by default.
 - **Common:** `title`, `intro`, `sitting_cap`; any `_` key is hidden, shown in `page state`.
 - **Fields written:** `choice` (an option id; the slot when blind), `tags` (`{"A": [...]}`), `note`.
 
