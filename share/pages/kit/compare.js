@@ -29,7 +29,7 @@ body.drag,body.drag .vp{cursor:grabbing}
 .bd{position:absolute;left:6px;top:4px;display:flex;gap:4px;z-index:1;pointer-events:none;font:600 12px/1.4 system-ui}
 .bd span{background:rgba(0,0,0,.6);color:#fff;padding:1px 6px;border-radius:4px}.bd span:first-child{font-size:14px}
 .vp canvas{position:absolute;left:0;top:0;pointer-events:none}
-.pc .mk{position:absolute;border:2px solid #f0f;pointer-events:none}
+.pc .mk{position:absolute;border:2px solid #f0f;box-sizing:border-box;pointer-events:none}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
 .gc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;cursor:pointer}
 .gi{display:flex;gap:4px;margin-top:4px}.gi figure{margin:0;flex:1;min-width:0}
@@ -210,6 +210,7 @@ function jump(k) {
 // zoom_levels[k] as the original's magnification; the first level pressed again fits the view
 function toggleLines() { lines = !lines; draw(); }
 function toggleMarks() { marked = !marked; draw(); }
+const markW = () => item(cur).mark_width ?? S.mark_width ?? 0; // the frame's thickness in the original's px
 function level(k) {
   const z = (S.zoom_levels || [])[k];
   if (geo && L && z != null) setL(k === 0 && L.z === z ? fit() : { ...L, z });
@@ -290,8 +291,10 @@ function draw() {
   const mk = item(cur).marks || [];
   E.boxes.forEach((b) => {
     const k = b.parentNode.clientWidth / geo.w;
+    const bw = Math.max(1, markW() * k);
     b.parentNode.querySelectorAll(".mk").forEach((m, j) => { const [a, c, a1, c1] = mk[j];
-      Object.assign(m.style, { display: marked ? "block" : "none", left: a * k + "px", top: c * k + "px", width: (a1 - a) * k + "px", height: (c1 - c) * k + "px" }); });
+      Object.assign(m.style, { display: marked ? "block" : "none", borderWidth: bw + "px", left: a * k - bw + "px", top: c * k - bw + "px",
+        width: (a1 - a) * k + 2 * bw + "px", height: (c1 - c) * k + 2 * bw + "px" }); });
     Object.assign(b.style, { display: x1 > x0 && y1 > y0 ? "block" : "none", left: x0 * k + "px", top: y0 * k + "px",
       width: (x1 - x0) * k + "px", height: (y1 - y0) * k + "px" });
   });
@@ -314,9 +317,10 @@ function paintLines(W, H, at, first) {
     const a = at[i], step = (b) => (b.at(-1) - b[0]) / (b.length - 1) * L.z;
     let xs, ys;
     if (E.mb && marked) {
-      const g = c.getContext("2d");
-      g.strokeStyle = MARK; g.lineWidth = 2 * d; inked.add(c);
-      for (const [a, b, a1, b1] of it.marks) g.strokeRect((W / 2 + (a - L.cx) * L.z) * d, (H / 2 + (b - L.cy) * L.z) * d, (a1 - a) * L.z * d, (b1 - b) * L.z * d);
+      const g = c.getContext("2d"), lw = Math.max(2, markW() * L.z) * d;  // drawn just outside the box, so it hides none of it
+      g.strokeStyle = MARK; g.lineWidth = lw; inked.add(c);
+      for (const [a, b, a1, b1] of it.marks) g.strokeRect((W / 2 + (a - L.cx) * L.z) * d - lw / 2, (H / 2 + (b - L.cy) * L.z) * d - lw / 2,
+        (a1 - a) * L.z * d + lw, (b1 - b) * L.z * d + lw);
     }
     if (!lines || !E.gb) return;
     if (i < first) {

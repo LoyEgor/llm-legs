@@ -39,7 +39,7 @@ const srv = await serve({
   sq1: { ...vote(), pixel_grid: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
     : { ...it, grid: { x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) },
       variants: [{ ...it.variants[0], box: [4, 2, 476, 238] }, it.variants[1]] }) },
-  mark1: { ...vote(), items: vote().items.map((it) => it.id === "p01" ? { ...it, marks: [[10, 10, 100, 80]] } : it) },
+  mark1: { ...vote(), items: vote().items.map((it) => it.id === "p01" ? { ...it, marks: [[10, 10, 100, 80]], mark_width: 8 } : it) },
   blind1: { module: "compare", schema: 1, title: "Слепо", blind: true,
     items: [{ id: "b01", variants: [{ id: "v77", label: "champ77", src: F.a, meta: "64 px" }, { id: "v78", label: "champ78", src: F.b }] }] },
   cards1: { module: "cards", schema: 1, title: "Швы", sitting_cap: 2,
@@ -303,10 +303,10 @@ try {
   await ready(page);
   const marks = () => page.evaluate(() => [[...document.querySelectorAll(".vp canvas")].map((c) => c.getContext("2d")
     .getImageData(0, 0, c.width, c.height).data.some((v, k) => k % 4 === 3 && v)),
-    [...document.querySelectorAll(".pc .mk")].map((m) => m.style.display)]);
+    [...document.querySelectorAll(".pc .mk")].map((m) => m.style.display), [...document.querySelectorAll(".pc .mk")].map((m) => parseFloat(m.style.borderWidth))]);
   let mk = await marks();
   check("marks on by default: every loupe inked, every preview framed", mk[0].length > 1 && mk[0].every(Boolean)
-    && mk[1].length === mk[0].length && mk[1].every((d) => d === "block")
+    && mk[1].length === mk[0].length && mk[1].every((d) => d === "block") && mk[2].every((w) => w > 2)
     && await page.$eval(".tools button.on", (b) => b.textContent) === "Рамка", JSON.stringify(mk));
   await page.keyboard.press("KeyM");
   mk = await marks();
