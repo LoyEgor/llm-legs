@@ -77,7 +77,6 @@ FLOW_DAY_S = 24 * 3600
 FLOW_CLIMB = 5
 FLOW_CLIMB_HOLD_S = 3 * FLOW_DAY_S
 FLOW_SPACING_S = 180
-TRUST = "flow-trust.json"
 BLOCK_ERRORS = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 # One generation rpc per composer mode: text, frames, ingredients, video edit, extend.
 GENERATE_RPCS = {"YhhmEf", "nprQif", "MZZa6b", "jIps6", "fZytfe"}
@@ -508,24 +507,6 @@ def note_flow_send(account: str, takes: int = 1) -> None:
 
 def note_saved(account: str) -> None:
     write_meta(account, saved_at=int(time.time()))
-
-
-# TEMP-FLOW-TRUST(gemini-web): the flow-trust experiment (EXPERIMENTS.json) gives accounts arms in its marker.
-def trust() -> dict:
-    data = read_json(ROOT / TRUST, {})
-    return data if data.get("until", 0) > time.time() else {}
-
-
-def trust_arm(account: str) -> str | None:
-    return trust().get("arms", {}).get(account)
-
-
-def trust_hand_done(account: str) -> None:
-    """A hand-first account waits walled until the owner closes his own session in its profile."""
-    if trust_arm(account) != "hand-first":
-        return
-    update_json(TRUST, lambda data: data["arms"].update({account: "hand-done"}))
-    set_wall(account, None)
 
 
 def least_recent(accounts: list[str]) -> list[str]:
@@ -2414,7 +2395,6 @@ def cmd_login(args) -> None:
         while chrome.poll() is None or profile_in_use(profile):
             time.sleep(LOGIN_POLL_S)
         ledger({"event": "hand", "account": args.account, "opened_at": int(opened)})
-        trust_hand_done(args.account)  # TEMP-FLOW-TRUST(gemini-web)
         if read_meta(args.account).get("owner_actions"):
             write_meta(args.account, owner_actions={})  # the owner just attended; a run still stopped marks it again
         emit({"ok": True, "account": args.account, "login": has_login(args.account)})
@@ -2432,8 +2412,7 @@ def cmd_accounts(args) -> None:
             rows.append({"account": p.name, "roster": p.name in roster(), "login": has_login(p.name),
                          "email": meta.get("email"), "credits": meta.get("credits"),
                          "walled_until": walls().get(p.name), "last_used": meta.get("generation_started_at"),
-                         "lock": str(lock_path(p.name)),
-                         "arm": trust_arm(p.name)})  # TEMP-FLOW-TRUST(gemini-web)
+                         "lock": str(lock_path(p.name))})
     emit({"ok": True, "accounts": rows})
 
 

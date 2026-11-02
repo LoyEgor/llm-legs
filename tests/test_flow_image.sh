@@ -808,16 +808,7 @@ assert len(slept) == 1 and 118 < slept[0] <= 120, slept
 assert 118 < gw.spaced <= 120, gw.spaced
 gw.FLOW_SPACING_S, gw.spaced = 0, 0.0
 gw.write_meta("old", flow_takes=[], flow_day_takes=gw.FLOW_DAY_TAKES)
-# TEMP-FLOW-TRUST(gemini-web): the experiment's arms.
-(gw.ROOT / gw.TRUST).write_text(json.dumps({"started": now - 10, "until": now + 3600,
-                                            "arms": {"new": "hand-first"}}))
-gw.set_wall("new", now + 7200)
-gw.trust_hand_done("new")
-assert "new" not in gw.walls() and gw.trust_arm("new") == "hand-done", (gw.walls(), gw.trust())
-gw.trust_hand_done("new")
 gw.set_wall("walled", time.time() + 3600)
-(gw.ROOT / gw.TRUST).unlink()
-assert gw.trust() == {} and gw.trust_arm("old") is None
 watcher = gw.Watcher.__new__(gw.Watcher)
 watcher.errors = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 assert watcher.blocked().extra.get("flagged") is True, watcher.blocked().extra
