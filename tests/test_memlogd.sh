@@ -1962,7 +1962,8 @@ for pid in $JOB_ROOT $JOB_KID; do assert gone "$pid"; done
 
 # An app a chat opened (LaunchServices runs it as launchd's application.<bundle id>.<n>.<n>: ppid 1, no chat's
 # environment) is billed to that chat by label, live and closed: named on its row with a Quit item of its own,
-# never the guard's and never ended by the row's Stop. Quit asks that bundle to quit and waits for the app.
+# never the guard's and never ended by the row's Stop. Quit asks that pid, never the bundle (a second
+# instance may be the owner's), to quit and waits for the app.
 clear_registry
 spawn_detached
 APP_ROOT=$DETACHED_ROOT APP_KID=$DETACHED_KID
@@ -1997,7 +1998,7 @@ assert alive "$APP_ROOT"
 assert test "$(STOP_STATE="$APP_DIR" PATH="$FAKE_LAUNCHD" LAUNCHCTL_JOBS="$WORK/app-jobs" APP_PIDS="$APP_ROOT=Blender" \
   OSASCRIPT_LOG="$WORK/osascript.log" OSASCRIPT_QUITS="$APP_ROOT" HEAVY_PIDS="$APP_KID=102400" chat_load_stop "$app_key")" = \
   'quit Blender · 0.1 GB'
-assert test "$(cat "$WORK/osascript.log")" = '-e tell application id "org.fixture.Blender" to quit'
+assert test "$(cat "$WORK/osascript.log")" = "-l JavaScript -e ObjC.import('AppKit'); const a = \$.NSRunningApplication.runningApplicationWithProcessIdentifier($APP_ROOT); a.isNil() || a.terminate"
 assert gone "$APP_ROOT"
 kill -KILL "$APP_KID" 2>/dev/null || :
 

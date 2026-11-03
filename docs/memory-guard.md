@@ -47,7 +47,7 @@ menu shows a red `⚠ HH:MM guard killed a job of <chat> · freed N GB` row for 
 
 Every process a chat launches inherits `CLAUDE_CODE_SESSION_ID`, and `worker-run` exports
 `CLAUDE_LAUNCHER_SESSION` into every worker it starts. chat-load reads both from the kernel
-(`KERN_PROCARGS2`, same user only), cached per pid, start time (reckoned from when `ps` ran) and command name, so an exec re-reads it. Order: the launcher, then the
+(`KERN_PROCARGS2`, same user only), cached per pid, kernel start time (`ps lstart`, UTC) and command name, so an exec re-reads it. Order: the launcher, then the
 process's own session, then the nearest ancestor that claims one or is a registered chat CLI, then
 the process's own registry entry (a top-level CLI carries neither variable). The session found is
 then walked up to the outermost chat, so a worker's job is billed to the chat that launched it.
@@ -57,10 +57,16 @@ After those, in order:
 - **held**: a pid+start once attributed keeps its chat while it lives, and its later children inherit
   it. A chat CLI is never held. An empty env read is final only after 3 ticks.
 - the **launch ledger**: `chat-load ledger` runs from statusline-workdir-hook.sh on a Bash call naming
-  simctl, xcodebuild, launchctl or `brew services`. It snapshots booted simulators and gui launchd
-  labels at Pre and Post into `ledger/<session>.jsonl`. A record is ambiguous when another chat's call
-  of that kind overlapped; a background call's boot goes to the one window still open. A simulator
-  bills its launchd_sim tree by UDID, a job its tree by label.
+  simctl, xcodebuild, launchctl, `brew services` or running `open` (a command word only). It snapshots
+  booted simulators, gui launchd labels and `application.*` labels (kind `app`) at Pre and Post into
+  `ledger/<session>.jsonl`. A record is ambiguous when another chat's call of that kind overlapped; a
+  background call's boot goes to the one window still open. A simulator bills its launchd_sim tree by
+  UDID, a job its tree by label.
+- an **app** (`open file.blend` starts Blender as launchd's `application.<bundle>.<n>.<n>`) bills its
+  label's tree to the chat's row, named there with `Quit <App> · <GB>` → `chat-load stop
+  app:<label>:<start>`: that pid's normal Quit (`NSRunningApplication terminate`, never the bundle,
+  since the owner's own instance may run beside it), a 10 s wait, never a signal. Never a guard
+  candidate nor part of the row's Stop; an ambiguous one is a dim row without Quit.
 - **cwd**: an unowned own ppid-1 root that is not a launchd job, whose cwd lies in exactly one chat's
   tree (the record's cwd cut to `.claude/worktrees/<branch>`). In several chats' trees it is
   `ambiguous`.
@@ -202,7 +208,7 @@ advice, hung for 3-5 days, 0.4 GB, invisible inside "other". A chat-launched dae
 session variables off its own environment (the nx daemon drops `CLAUDE_CODE_*`) stays its chat's by
 held ownership or by cwd, never an orphan.
 
-`chat-load stop chat:<s>|leftovers:<s>,…|sim:<udid>:<start>|orphan:<pid>:<start>` works the members out
+`chat-load stop chat:<s>|leftovers:<s>,…|sim:<udid>:<start>|app:<label>:<start>|orphan:<pid>:<start>` works the members out
 again from the live table, so a pid reused since the row was drawn is never touched: every process
 attributed to a chat that is not open (an open one is refused), or the orphan's tree when its start
 still matches. Teardown first (`simctl shutdown`; `launchctl bootout` only of labels that chat

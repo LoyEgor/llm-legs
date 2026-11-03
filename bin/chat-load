@@ -1365,8 +1365,12 @@ def quit_app(view, table, label, start):
     footprints(table, tree)
     mb = sum(table[pid]["kb"] for pid in tree) / 1024
     try:
-        # The reply waits on the app (a save dialog holds it), so osascript is not waited for: the app is.
-        asker = subprocess.Popen(["osascript", "-e", f'tell application id "{app["bundle"]}" to quit'],
+        # The quit goes to this pid, never to the bundle: `tell application id` picks any instance, so with the
+        # owner's own Blender open beside the chat's it could ask his to quit. `terminate` (a JXA property read
+        # calls it) sends the app's normal Quit and returns; the app is waited for, not osascript.
+        asker = subprocess.Popen(["osascript", "-l", "JavaScript", "-e",
+                                  "ObjC.import('AppKit'); const a = $.NSRunningApplication"
+                                  f".runningApplicationWithProcessIdentifier({int(app['pid'])}); a.isNil() || a.terminate"],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         print(f"{app['name']}: could not ask it to quit")

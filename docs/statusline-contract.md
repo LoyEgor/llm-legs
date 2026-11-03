@@ -75,7 +75,7 @@ one writer's line count and its own append. Kinds are informational; no reader b
 | `review-bench`, a progress document created `running` | `review-start` | its `repo`, for its `session` |
 | `review-bench`, the run itself stamping its document `done`/`dead` as it ends (never the reaper retiring a run nobody ended) | `review-end` | the same |
 
-Not a place writer: on a Bash call naming `simctl`, `xcodebuild`, `launchctl` or `brew services`,
+Not a place writer: on a Bash call naming `simctl`, `xcodebuild`, `launchctl`, `brew services`, or running `open` as a command word,
 Pre and Post alike, the hook also hands its payload to `chat-load ledger` (the Chats/other launch
 ledger, `docs/memory-guard.md`) before anything else; every other call pays one regex test. Its time
 is the hook's own row in the hook-time journal, so Lost time counts it.
