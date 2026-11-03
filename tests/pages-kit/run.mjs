@@ -37,7 +37,8 @@ const srv = await serve({
   four1: { ...vote(), items: ["f01", "f02"].map((id) => item(id, id, { variants: [...item(id).variants, { id: "v79", label: "px", src: F.px }] })) },
   view1: { ...vote(), mode: "view", title: "Обзор" },
   sq1: { ...vote(), pixel_grid: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
-    : { ...it, grid: { x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) },
+    : { ...it, grid: [{ x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) },
+      { paths: [[[0, 101], [240, 103], [480, 101]]], cell: 4, color: "rgb(255,255,0)" }],
       variants: [{ ...it.variants[0], box: [4, 2, 476, 238] }, { ...it.variants[1], grid: { x: [0, 120, 240, 360, 480], y: [0, 120, 240] } }] }) },
   mark1: { ...vote(), items: vote().items.map((it) => it.id === "p01" ? { ...it, marks: [[10, 10, 100, 80]], mark_width: 8 } : it) },
   blind1: { module: "compare", schema: 1, title: "Слепо", blind: true,
@@ -292,6 +293,8 @@ try {
   check("grid off by default", (await inked()).every((v) => !v));
   await page.keyboard.press("KeyG");
   const ink = await inked();
+  check("a bent `paths` lattice is drawn over the original in its own colour", await page.$eval(".vp canvas", (c) =>
+    c.getContext("2d").getImageData(0, 0, c.width, c.height).data.some((v, k, a) => k % 4 === 0 && v > 200 && a[k + 1] > 200 && a[k + 2] < 60)));
   check("G draws the item's lattice over the original, the 4 px variant's own pixel grid and the full one's `grid`", ink[0] && ink[1] && ink[2]
     && await page.$eval(".tools button.on:last-child", (b) => b.textContent) === "Сетка", JSON.stringify(ink));
   await page.keyboard.press("KeyG");

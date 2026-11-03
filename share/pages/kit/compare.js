@@ -302,7 +302,7 @@ function draw() {
   });
 }
 
-// «Сетка»: the item's `grid` (cell bounds in the original's pixels) over the original, and in each variant's loupe its
+// «Сетка»: the item's `grid` (cell bounds in the original's pixels, or `paths`: bent lines; several in a list) over the original, and in each variant's loupe its
 // own `grid` (cell bounds in its own pixels), else its own pixel grid; a grid whose cells are under 5 screen px is left out. A canvas is resized only when the
 // loupe is (resizing reallocates it) and cleared only when it holds lines, since draw() runs on every drag move.
 // «Рамка» (M, on by default): the item's `marks`, boxes in the original's pixels, framed on every loupe and preview.
@@ -325,10 +325,24 @@ function paintLines(W, H, at, first) {
         (a1 - a) * L.z * d + lw, (b1 - b) * L.z * d + lw);
     }
     if (!lines || !E.gb) return;
-    if (i < first) {
-      if (!it.grid || Math.min(step(it.grid.x), step(it.grid.y)) < 5) return;
-      xs = it.grid.x.map((v) => W / 2 + (v - L.cx) * L.z);
-      ys = it.grid.y.map((v) => H / 2 + (v - L.cy) * L.z);
+    const g = c.getContext("2d"), px = (v) => Math.round(v * d) + 0.5;
+    const lattice = (xs, ys, color) => {
+      const [x0, x1, y0, y1] = [Math.max(0, px(xs[0])), Math.min(c.width, px(xs.at(-1))), Math.max(0, px(ys[0])), Math.min(c.height, px(ys.at(-1)))];
+      inked.add(c); g.strokeStyle = color || LINE; g.lineWidth = 1; g.beginPath();
+      for (const x of xs) { const v = px(x); if (v >= 0 && v <= c.width) { g.moveTo(v, y0); g.lineTo(v, y1); } }
+      for (const y of ys) { const v = px(y); if (v >= 0 && v <= c.height) { g.moveTo(x0, v); g.lineTo(x1, v); } }
+      g.stroke();
+    };
+    if (i < first) {                                    // one lattice or several, straight (`x`/`y`) or bent (`paths`)
+      const ox = (v) => W / 2 + (v - L.cx) * L.z, oy = (v) => H / 2 + (v - L.cy) * L.z;
+      for (const gr of [].concat(it.grid || [])) {
+        if (!gr.paths) { if (Math.min(step(gr.x), step(gr.y)) >= 5) lattice(gr.x.map(ox), gr.y.map(oy), gr.color); continue; }
+        if ((gr.cell || 0) * L.z < 5) continue;
+        inked.add(c); g.strokeStyle = gr.color || LINE; g.lineWidth = 1; g.beginPath();
+        for (const p of gr.paths) p.forEach(([x, y], k) => g[k ? "lineTo" : "moveTo"](ox(x) * d, oy(y) * d));
+        g.stroke();
+      }
+      return;
     } else if (a && fs[i].grid) {
       const g = fs[i].grid, at = (b, s) => (b.at(-1) - b[0]) / (b.length - 1) * s;
       if (Math.min(at(g.x, a.sx), at(g.y, a.sy)) < 5) return;
@@ -338,13 +352,7 @@ function paintLines(W, H, at, first) {
       xs = Array.from({ length: a.nw + 1 }, (_, k) => a.x + k * a.sx);
       ys = Array.from({ length: a.nh + 1 }, (_, k) => a.y + k * a.sy);
     } else return;
-    inked.add(c);
-    const g = c.getContext("2d"), px = (v) => Math.round(v * d) + 0.5;
-    const [x0, x1, y0, y1] = [Math.max(0, px(xs[0])), Math.min(c.width, px(xs.at(-1))), Math.max(0, px(ys[0])), Math.min(c.height, px(ys.at(-1)))];
-    g.strokeStyle = LINE; g.lineWidth = 1; g.beginPath();
-    for (const x of xs) { const v = px(x); if (v >= 0 && v <= c.width) { g.moveTo(v, y0); g.lineTo(v, y1); } }
-    for (const y of ys) { const v = px(y); if (v >= 0 && v <= c.height) { g.moveTo(x0, v); g.lineTo(x1, v); } }
-    g.stroke();
+    lattice(xs, ys);
   });
 }
 
