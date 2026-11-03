@@ -17,6 +17,9 @@ Read this only when `page help <module>` has no key for what your page needs. Ev
   is a shell export, so the next module gets it too.
 - A text field is `textBox`: pictures pasted or dropped into it, their names in the text and their
   paths in `page state` come with it.
+- A view overlay Egor switches on (a grid, a heat map) is drawn onto the «Метка» sheet while it is on
+  and named in its caption as an overlay, so the reading model sees what he saw and never takes its
+  lines for the picture's own (compare's `sheetGrid`).
 - `kit/<module>.md` is what `page help <module>` prints and the only doc a page-making chat reads.
   - Its first line is `# <module>: <one line>` (the `page help` list).
   - Then the spec keys with their defaults, the fields written and one example.
