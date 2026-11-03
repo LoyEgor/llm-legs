@@ -457,7 +457,7 @@ fi
 if suite_shard_owns 5 rounds-sonnet-fixers; then
 DELEG_BENCHES="$HOME/.claude-profiles/.claudeb/worker-stats/benches"
 # A claudeb fixer of a fit or legacy round with no explicit model runs sonnet at the table's effort (Egor, 2026-10-13);
-# any other lens, an explicit model or an effort sonnet lacks keeps opus.
+# any other lens, an explicit model or an effort sonnet lacks keeps opus (sonnet has xhigh since Egor 2026-11-03).
 roster_add claudeb fixacct
 export PICK_RC=0 PICK_ACCOUNT=fixacct
 set_config 'claudeb_model=opus'
@@ -481,7 +481,7 @@ assert test "$(round_model 20260802T100000Z-1e9ac00 'EFFORT: high')" = "sonnet h
 assert test "$(round_model 20260802T100000Z-0b0950f)" = "opus high"
 assert test "$(round_model 20260802T100000Z-5eed000)" = "opus high"
 assert test "$(round_model 20260802T100000Z-1f17a00 'MODEL: opus')" = "opus high"
-assert test "$(round_model 20260802T100000Z-1f17a00 'EFFORT: xhigh')" = "opus xhigh"
+assert test "$(round_model 20260802T100000Z-1f17a00 'EFFORT: xhigh')" = "sonnet xhigh"
 fi
 
 echo "PASS: $asserts asserts; blank briefs, pinned walls, limits-driven picks, delegation and review rounds"

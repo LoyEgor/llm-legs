@@ -711,7 +711,7 @@ assert test -r "$WORKER_MODEL_SH"
 worker_table=$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")
 assert eq "$(grep -E '^(claudeb|codex) ' <<<"$worker_table")" 'claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
-claudeb sonnet high low,medium,high - no request
+claudeb sonnet high low,medium,high,xhigh max no request
 claudeb haiku high low,medium,high - yes request
 codex astra low low,medium,high xhigh no
 codex sol medium medium,high low,xhigh yes
