@@ -66,7 +66,7 @@ const opts = () => {
 
 function frames(it) {
   const vs = (it.variants || []).map((v, i) => ({ src: v.src, side: v.slot || LETTERS[i],
-    name: S.blind ? "" : v.label || "", meta: v.meta || "", box: v.box }));
+    name: S.blind ? "" : v.label || "", meta: v.meta || "", box: v.box, grid: v.grid }));
   return it.original ? [{ src: it.original, side: "", name: "оригинал", meta: "" }, ...vs] : vs;
 }
 
@@ -302,12 +302,12 @@ function draw() {
   });
 }
 
-// «Сетка»: the item's `grid` (cell bounds in the original's pixels) over the original, and each variant's own
-// pixel grid in its loupe; a grid whose cells are under 5 screen px is left out. A canvas is resized only when the
+// «Сетка»: the item's `grid` (cell bounds in the original's pixels) over the original, and in each variant's loupe its
+// own `grid` (cell bounds in its own pixels), else its own pixel grid; a grid whose cells are under 5 screen px is left out. A canvas is resized only when the
 // loupe is (resizing reallocates it) and cleared only when it holds lines, since draw() runs on every drag move.
 // «Рамка» (M, on by default): the item's `marks`, boxes in the original's pixels, framed on every loupe and preview.
 function paintLines(W, H, at, first) {
-  const d = devicePixelRatio || 1, it = item(cur), cw = Math.round(W * d), chh = Math.round(H * d);
+  const d = devicePixelRatio || 1, it = item(cur), fs = frames(it), cw = Math.round(W * d), chh = Math.round(H * d);
   if (E.gb) E.gb.classList.toggle("on", lines);
   if (E.mb) E.mb.classList.toggle("on", marked);
   E.cvs.forEach((c, i) => {
@@ -329,6 +329,11 @@ function paintLines(W, H, at, first) {
       if (!it.grid || Math.min(step(it.grid.x), step(it.grid.y)) < 5) return;
       xs = it.grid.x.map((v) => W / 2 + (v - L.cx) * L.z);
       ys = it.grid.y.map((v) => H / 2 + (v - L.cy) * L.z);
+    } else if (a && fs[i].grid) {
+      const g = fs[i].grid, at = (b, s) => (b.at(-1) - b[0]) / (b.length - 1) * s;
+      if (Math.min(at(g.x, a.sx), at(g.y, a.sy)) < 5) return;
+      xs = g.x.map((v) => a.x + v * a.sx);
+      ys = g.y.map((v) => a.y + v * a.sy);
     } else if (a && Math.min(a.sx, a.sy) >= 5) {
       xs = Array.from({ length: a.nw + 1 }, (_, k) => a.x + k * a.sx);
       ys = Array.from({ length: a.nh + 1 }, (_, k) => a.y + k * a.sy);

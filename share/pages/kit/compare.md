@@ -25,6 +25,7 @@ preview and on its loupe, hides or shows that loupe, for every item of the visit
 - **pixel_grid:** `true` adds «Сетка» (G): each variant's own pixel grid in its loupe. An item's
   `grid` (`{"x": [...], "y": [...]}`, cell bounds in the original's px, e.g. a detected lattice)
   adds it too, drawn over the original. Cells under 5 screen px stay undrawn.
+  A variant's own `grid` (cell bounds in its own px) replaces its pixel grid: a lattice laid on a big picture.
 - **marks:** per item, `[[x0, y0, x1, y1], …]` in the original's px: framed on every loupe and preview,
   with «Рамка» (M) to hide them; on by default. `mark_width` (top level or per item): the frame's thickness in
   the original's px, so it zooms like a pixel (e.g. one art cell); default 2 screen px.

@@ -38,7 +38,7 @@ const srv = await serve({
   view1: { ...vote(), mode: "view", title: "Обзор" },
   sq1: { ...vote(), pixel_grid: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
     : { ...it, grid: { x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) },
-      variants: [{ ...it.variants[0], box: [4, 2, 476, 238] }, it.variants[1]] }) },
+      variants: [{ ...it.variants[0], box: [4, 2, 476, 238] }, { ...it.variants[1], grid: { x: [0, 120, 240, 360, 480], y: [0, 120, 240] } }] }) },
   mark1: { ...vote(), items: vote().items.map((it) => it.id === "p01" ? { ...it, marks: [[10, 10, 100, 80]], mark_width: 8 } : it) },
   blind1: { module: "compare", schema: 1, title: "Слепо", blind: true,
     items: [{ id: "b01", variants: [{ id: "v77", label: "champ77", src: F.a, meta: "64 px" }, { id: "v78", label: "champ78", src: F.b }] }] },
@@ -292,7 +292,7 @@ try {
   check("grid off by default", (await inked()).every((v) => !v));
   await page.keyboard.press("KeyG");
   const ink = await inked();
-  check("G draws the item's lattice over the original and the 4 px variant's own pixel grid", ink[0] && ink[1]
+  check("G draws the item's lattice over the original, the 4 px variant's own pixel grid and the full one's `grid`", ink[0] && ink[1] && ink[2]
     && await page.$eval(".tools button.on:last-child", (b) => b.textContent) === "Сетка", JSON.stringify(ink));
   await page.keyboard.press("KeyG");
   check("G again clears them", (await inked()).every((v) => !v));
