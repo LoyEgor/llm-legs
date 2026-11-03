@@ -252,7 +252,7 @@ function wire(vp, k) {
     document.body.classList.add("drag");
     try { vp.setPointerCapture(e.pointerId); } catch (_) { /* pointer already gone */ }
   };
-  vp.onlostpointercapture = () => { endDrag(); endPin(false); };
+  vp.onlostpointercapture = () => { endDrag(); endPin(true); };   // Jump Desktop drops the capture just before its pointerup
   vp.addEventListener("wheel", (e) => {
     if (!L) return;
     e.preventDefault();
@@ -431,7 +431,7 @@ const toPx = (vp, [x, y]) => {
 };
 const far = (p) => Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1]) > 5;
 function movePin(e) {
-  if (!(e.buttons & 1)) return endPin(false);
+  if (!(e.buttons & 1)) return endPin(true);  // released (Jump sends the release as a move first): the mark ends where it was held
   const p = pinning, r = p.vp.getBoundingClientRect();
   p.b = [e.clientX, e.clientY];
   p.band.hidden = !far(p);

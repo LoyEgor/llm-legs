@@ -222,6 +222,15 @@ try {
   await pen(".vp", "pointerdown", ox + 20, oy + 20); await pen(null, "pointerup", ox + 20, oy + 20);
   check("a pen's tap on a loupe marks a point", await until(() => tab.$eval(".side textarea", (el) => el.value.endsWith("[img5.png]"))),
     await tab.$eval(".side textarea", (el) => el.value));
+  // Jump Desktop (an iPad's Pencil as a mouse) releases a drag as a buttons-0 move and a lost capture before its pointerup
+  await tab.evaluate(([x, y]) => {
+    const vp = document.querySelectorAll(".vp")[1], ev = (type, x, y, buttons, at = window) => at.dispatchEvent(new PointerEvent(type,
+      { pointerType: "mouse", pointerId: 9, button: type === "pointermove" ? -1 : 0, buttons, clientX: x, clientY: y, altKey: true, bubbles: true }));
+    ev("pointerdown", x, y, 1, vp); ev("pointermove", x + 40, y + 30, 1); ev("pointermove", x + 41, y + 30, 0);
+    ev("lostpointercapture", x + 41, y + 30, 0, vp); ev("pointerup", x + 41, y + 30, 0);
+  }, [ox - 30, oy - 30]);
+  check("a drag Jump Desktop releases with a buttons-0 move first still marks its box",
+    await until(() => tab.$eval(".side textarea", (el) => el.value.endsWith("[img6.png]"))), await tab.$eval(".side textarea", (el) => el.value));
   // «Скрыть метки» (H) hides every pin for the visit and shows them again
   const hideBtn = ".tools button[title=H]";
   await tab.click(hideBtn);
