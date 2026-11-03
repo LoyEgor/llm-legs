@@ -1461,7 +1461,8 @@ local function copyChatCommand(row)
 end
 
 -- A closed chat's leftovers, or an orphan nothing runs any more, end through bin/chat-load stop, which
--- works the processes out again from the live table; its one line is the answer.
+-- works the processes out again from the live table, and so does an app a chat opened ask to quit; its one
+-- line is the answer.
 local function stopChatRow(key)
   local path = M.chatLoadCmd or (repoRoot and repoRoot .. "/bin/chat-load")
   if not path then return end
@@ -2258,6 +2259,16 @@ local function appendChats(menu)
       items[#items + 1] = { title = "-" }
     elseif type(row) == "table" then
       local item = { title = infoTitle(tostring(row.text or ""), row.alarm == true, row.dim == true) }
+      -- An app the chat opened gets its own Quit (chat-load asks it to quit, no signal); the row's Stop never
+      -- quits one, and a live chat with apps keeps its tab click as the first item of the submenu.
+      local quits = {}
+      for _, app in ipairs(type(row.apps) == "table" and row.apps or {}) do
+        if type(app) == "table" and app.quit then
+          local key = tostring(app.quit)
+          quits[#quits + 1] = { title = infoTitle(string.format("Quit %s · %.1f GB", tostring(app.name or "app"),
+            tonumber(app.gb) or 0)), fn = function() stopChatRow(key) end }
+        end
+      end
       if row.stop then
         local key = tostring(row.stop)
         item.menu = { { title = infoTitle(string.format("Stop · %.1f GB", tonumber(row.gb) or 0)),
@@ -2266,11 +2277,15 @@ local function appendChats(menu)
           table.insert(item.menu, { title = infoTitle("Copy reopen command"),
             fn = function() copyChatCommand({ session = row.session }) end })
         end
+      elseif row.session and #quits > 0 then
+        item.menu = { { title = infoTitle("Show chat"),
+          fn = function() focusChat({ session = row.session, pid = row.pid }) end } }
       elseif row.session then
         item.fn = function() focusChat({ session = row.session, pid = row.pid }) end
       else
         item.disabled = true
       end
+      for _, quit in ipairs(item.menu and quits or {}) do table.insert(item.menu, quit) end
       items[#items + 1] = item
     end
   end

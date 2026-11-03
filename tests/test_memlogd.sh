@@ -113,16 +113,34 @@ case "$*" in
       printf '%8s %s\n' 900000 /Applications/Cursor.app/Contents/MacOS/Cursor
     fi
     ;;
-  *pid=,ppid=,pgid=,uid=,rss=,time=,etime=,state=,comm=*)
+  *pid=,ppid=,pgid=,uid=,rss=,time=,etime=,state=,lstart=,comm=*)
     # chat-load's table: the real ps cut down to the process groups a guard case spawned, so the
     # kills and the survivors are real and nothing outside the case is ever listed. Only the WEIGHT
     # is dictated, for the pids a case names — allocating 1.5 GB for real in a suite is not a test
-    # of the guard, it is the bug the guard is for.
+    # of the guard, it is the bug the guard is for. PS_LATE names a marker: while it exists, the next
+    # listing returns 3 s after ps ran (and removes it), as ps does under swap.
     [ -n "${GUARD_SCOPE:-}" ] || exit 0
-    /bin/ps -axo "$2" | awk -v scope="$GUARD_SCOPE" -v fat="${HEAVY_PIDS:-}" -v foreign="${FOREIGN_PIDS:-}" \
-      -v aged="${AGED_PIDS:-}" -v sims="${SIM_PIDS:-}" '
-      # Two hours added to the real etime, not a fixed one: the start chat-load derives (now - etime) has to
-      # hold still between the row a guard draws and the stop that names it, however slow the machine is.
+    listing=$(/bin/ps -axo "$2" | awk -v scope="$GUARD_SCOPE" -v fat="${HEAVY_PIDS:-}" -v foreign="${FOREIGN_PIDS:-}" \
+      -v aged="${AGED_PIDS:-}" -v sims="${SIM_PIDS:-}" -v apps="${APP_PIDS:-}" '
+      # Two hours added to the real etime and taken off the real lstart, not a fixed age: the kernel start
+      # chat-load reads has to hold still between the row a guard draws and the stop that names it.
+      function civil(y, m, d,   era, yoe, doy) {
+        y -= (m <= 2); era = int(y / 400); yoe = y - era * 400
+        doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1
+        return era * 146097 + yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy - 719468
+      }
+      function earlier(   t, s, z, era, doe, yoe, doy, mp, m, y) {
+        split($12, t, ":")
+        s = civil($13 + 0, month[$10], $11 + 0) * 86400 + t[1] * 3600 + t[2] * 60 + t[3] - 7200
+        z = int(s / 86400); s -= z * 86400
+        $9 = wday[(z + 4) % 7 + 1]
+        z += 719468; era = int(z / 146097); doe = z - era * 146097
+        yoe = int((doe - int(doe / 1460) + int(doe / 36524) - int(doe / 146096)) / 365)
+        doy = doe - (365 * yoe + int(yoe / 4) - int(yoe / 100)); mp = int((5 * doy + 2) / 153)
+        m = mp + (mp < 10 ? 3 : -9); y = yoe + era * 400 + (m <= 2)
+        $10 = mname[m]; $11 = doy - int((153 * mp + 2) / 5) + 1
+        $12 = sprintf("%02d:%02d:%02d", int(s / 3600), int(s % 3600 / 60), s % 60); $13 = y
+      }
       function older(e,   d, p, n, i, s) {
         d = 0
         if (index(e, "-")) { d = substr(e, 1, index(e, "-") - 1) + 0; e = substr(e, index(e, "-") + 1) }
@@ -145,12 +163,22 @@ case "$*" in
         # A booted simulator is a launchd_sim by its command name: these pids are shown as one.
         n = split(sims, list, " ")
         for (i = 1; i <= n; i++) sim[list[i] + 0] = 1
+        # An app is its bundle executable: `pid=Name` is shown as the one in /Applications/Name.app.
+        n = split(apps, list, " ")
+        for (i = 1; i <= n; i++) if (split(list[i], part, "=") == 2) app[part[1] + 0] = part[2]
+        split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", mname, " ")
+        for (i = 1; i <= 12; i++) month[mname[i]] = i
+        split("Sun Mon Tue Wed Thu Fri Sat", wday, " ")
       }
       (($3 + 0) in keep) {
-        if (($1 + 0) in heavy) $5 = heavy[$1 + 0]; if (($1 + 0) in root) $4 = 0; if (($1 + 0) in old) $7 = older($7)
-        if (($1 + 0) in sim) $9 = "/Library/Developer/CoreSimulator/launchd_sim"
+        if (($1 + 0) in heavy) $5 = heavy[$1 + 0]; if (($1 + 0) in root) $4 = 0
+        if (($1 + 0) in old) { $7 = older($7); earlier() }
+        if (($1 + 0) in sim) $14 = "/Library/Developer/CoreSimulator/launchd_sim"
+        if (($1 + 0) in app) $14 = "/Applications/" app[$1 + 0] ".app/Contents/MacOS/" app[$1 + 0]
         print
-      }'
+      }')
+    if [ -n "${PS_LATE:-}" ] && [ -e "$PS_LATE" ]; then rm -f "$PS_LATE"; sleep 3; fi
+    [ -z "$listing" ] || printf '%s\n' "$listing"
     ;;
   *pid,ppid,pgid,rss,etime,command*)
     printf '  PID  PPID  PGID    RSS  ELAPSED COMMAND\n'
@@ -1554,7 +1582,13 @@ case "${1:-}" in
   *) exit 64 ;;
 esac
 EOF
-chmod +x "$WORK/launchd-bin/launchctl"
+# osascript logs what it was asked and, as an app answering Quit would, ends OSASCRIPT_QUITS (a pid) by SIGTERM.
+cat >"$WORK/launchd-bin/osascript" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${OSASCRIPT_LOG:-/dev/null}"
+[ -z "${OSASCRIPT_QUITS:-}" ] || kill -TERM "$OSASCRIPT_QUITS"
+EOF
+chmod +x "$WORK/launchd-bin/launchctl" "$WORK/launchd-bin/osascript"
 FAKE_LAUNCHD="$WORK/launchd-bin:$PATH"
 
 # A root launchd adopted, in a group of its own, with one sleeper under it: what a detached job leaves once
@@ -1817,6 +1851,22 @@ calls_before=$(ls "$LEDGER_DIR/ledger/calls" | wc -l)
 assert ledger_call PreToolUse chat-l6 toolu_f 'ls -la'
 assert test "$(ls "$LEDGER_DIR/ledger/calls" | wc -l)" = "$calls_before"
 assert test ! -e "$LEDGER_DIR/ledger/chat-l6.jsonl"
+# An app LaunchServices starts on a chat's `open` is an `app` record off the same listing; one already running
+# makes no new label and no record; `open` counts only as a command word.
+printf '123\t0\tcom.apple.thing\n456\t0\tapplication.com.foo.1.2\n' >"$WORK/ledger-jobs"
+assert ledger_call PreToolUse chat-l8 toolu_h 'cd /tmp && open -a Blender scene.blend'
+printf '123\t0\tcom.apple.thing\n456\t0\tapplication.com.foo.1.2\n789\t0\tapplication.org.blenderfoundation.blender.3.4\n' \
+  >"$WORK/ledger-jobs"
+assert ledger_call PostToolUse chat-l8 toolu_h 'cd /tmp && open -a Blender scene.blend'
+assert test "$(ledger_of chat-l8)" = '[["app","application.org.blenderfoundation.blender.3.4",false]]'
+assert ledger_call PreToolUse chat-l9 toolu_i 'nohup open -a Blender'
+assert ledger_call PostToolUse chat-l9 toolu_i 'nohup open -a Blender'
+assert test ! -e "$LEDGER_DIR/ledger/chat-l9.jsonl"
+calls_before=$(ls "$LEDGER_DIR/ledger/calls" | wc -l)
+for command in 'opencode run x' 'openssl rand 4' 'xdg-open x.blend' 'echo "a; open x.blend"' "git log --open"; do
+  assert ledger_call PreToolUse chat-l10 toolu_j "$command"
+done
+assert test "$(ls "$LEDGER_DIR/ledger/calls" | wc -l)" = "$calls_before"
 # The Bash hook is what calls it, Pre and Post.
 hook_call() { # event
   jq -nc --arg e "$1" '{hook_event_name: $e, session_id: "chat-l7", tool_use_id: "toolu_g", tool_name: "Bash",
@@ -1828,6 +1878,12 @@ hook_call PreToolUse || :
 booted U1 U2 U3 U9
 hook_call PostToolUse || :
 assert test "$(ledger_of chat-l7)" = '[["sim","U9",false]]'
+# Its regex lets an `open` command word through, so the Pre writes the call's window.
+jq -nc '{hook_event_name: "PreToolUse", session_id: "chat-l11", tool_use_id: "toolu_k", tool_name: "Bash",
+  tool_input: {command: "cd /tmp\nopen -a Blender x.blend"}, cwd: "/tmp"}' |
+  env -u CLAUDE_LAUNCHER_SESSION HOME="$WORK/hook-home" STATUSLINE_CACHE_DIR="$WORK/hook-cache" PATH="$FAKE_LAUNCHD" \
+    MEMLOGD_DIR="$LEDGER_DIR" LAUNCHCTL_JOBS="$WORK/ledger-jobs" bash "$ROOT/bin/statusline-workdir-hook.sh" || :
+assert jq -e '.kinds == ["app"] and (.before.app | length) == 2' "$LEDGER_DIR/ledger/calls/chat-l11.toolu_k.json"
 
 # A simulator the ledger bills to a closed chat is on that chat's row, and the guard shuts it down as one job.
 clear_registry
@@ -1903,6 +1959,88 @@ assert test "$(STOP_STATE="$JOB_DIR" PATH="$FAKE_LAUNCHD" LAUNCHCTL_JOBS="$WORK/
   HEAVY_PIDS="$JOB_KID=102400" chat_load_stop chat:chat-job)" = 'stopped 2 processes · 0.1 GB · launchd job com.fixture.job booted out'
 assert test "$(cat "$WORK/launchctl.log")" = "bootout gui/$(id -u)/com.fixture.job"
 for pid in $JOB_ROOT $JOB_KID; do assert gone "$pid"; done
+
+# An app a chat opened (LaunchServices runs it as launchd's application.<bundle id>.<n>.<n>: ppid 1, no chat's
+# environment) is billed to that chat by label, live and closed: named on its row with a Quit item of its own,
+# never the guard's and never ended by the row's Stop. Quit asks that bundle to quit and waits for the app.
+clear_registry
+spawn_detached
+APP_ROOT=$DETACHED_ROOT APP_KID=$DETACHED_KID
+APP_LABEL=application.org.fixture.Blender.11.22
+printf '%s\t0\t%s\n' "$APP_ROOT" "$APP_LABEL" >"$WORK/app-jobs"
+spawn_leaf
+APP_CLI=$LEAF_ROOT
+register_session chat-app "$APP_CLI" idle
+APP_DIR="$WORK/guard-app"
+ledger_line "$APP_DIR" chat-app app "$APP_LABEL"
+app_run() { # avail extra-env...
+  local avail=$1; shift
+  probes "$avail" 1024
+  guard_run "$APP_DIR" MEMLOGD_MAX_TICKS=1 PATH="$FAKE_LAUNCHD" LAUNCHCTL_JOBS="$WORK/app-jobs" \
+    APP_PIDS="$APP_ROOT=Blender" "$@"
+}
+assert app_run 8192 HEAVY_PIDS="$APP_KID=102400"
+app_key="app:$APP_LABEL:$(jq -r --arg r "$APP_ROOT" '.procs[$r][0] | floor' "$APP_DIR/chat-load.state.json")"
+assert jq -e --arg k "$app_key" 'length == 1 and (.[0].text | test("^idle  .*  0\\.1 GB  .*  Blender$")) and (.[0].stop | not)
+  and .[0].apps == [{name: "Blender", gb: 0.1, quit: $k}]' <<<"$(row_of "$APP_DIR" chat-app)"
+assert app_run 2000 HEAVY_PIDS="$APP_KID=1700000"
+assert_fails grep -q '^KILLED ' "$(log_file "$APP_DIR")"
+for pid in $APP_ROOT $APP_KID; do assert alive "$pid"; done
+rm -f "$SESSIONS_DIR/$APP_CLI.json"
+assert app_run 8192 HEAVY_PIDS="$APP_KID=102400"
+assert jq -e --arg k "$app_key" 'length == 1 and .[0].stop == "chat:chat-app" and .[0].gb == 0
+  and .[0].apps == [{name: "Blender", gb: 0.1, quit: $k}]' <<<"$(row_of "$APP_DIR" chat-app)"
+: >"$WORK/osascript.log"
+assert test "$(STOP_STATE="$APP_DIR" PATH="$FAKE_LAUNCHD" LAUNCHCTL_JOBS="$WORK/app-jobs" APP_PIDS="$APP_ROOT=Blender" \
+  OSASCRIPT_LOG="$WORK/osascript.log" chat_load_stop chat:chat-app)" = 'nothing left to stop'
+assert alive "$APP_ROOT"
+assert test "$(STOP_STATE="$APP_DIR" PATH="$FAKE_LAUNCHD" LAUNCHCTL_JOBS="$WORK/app-jobs" APP_PIDS="$APP_ROOT=Blender" \
+  OSASCRIPT_LOG="$WORK/osascript.log" OSASCRIPT_QUITS="$APP_ROOT" HEAVY_PIDS="$APP_KID=102400" chat_load_stop "$app_key")" = \
+  'quit Blender · 0.1 GB'
+assert test "$(cat "$WORK/osascript.log")" = '-e tell application id "org.fixture.Blender" to quit'
+assert gone "$APP_ROOT"
+kill -KILL "$APP_KID" 2>/dev/null || :
+
+# One two chats' `open` calls overlapped on is display-only: an `ambiguous` row, no chat's, with no Quit.
+clear_registry
+spawn_detached
+APP_ROOT=$DETACHED_ROOT APP_KID=$DETACHED_KID
+printf '%s\t0\t%s\n' "$APP_ROOT" "$APP_LABEL" >"$WORK/app-jobs"
+APP_DIR="$WORK/guard-app-shared"
+ledger_line "$APP_DIR" chat-app app "$APP_LABEL" true
+assert app_run 8192 HEAVY_PIDS="$APP_KID=102400"
+assert test "$(row_of "$APP_DIR" chat-app)" = '[]'
+assert jq -e '[.rows[] | objects | select(.text | startswith("ambiguous   Blender "))]
+  | length == 1 and .[0].dim and (.[0].stop | not) and (.[0].apps | not)' "$(chats_json "$APP_DIR")"
+: >"$WORK/osascript.log"
+shared_key="app:$APP_LABEL:$(jq -r --arg r "$APP_ROOT" '.procs[$r][0] | floor' "$APP_DIR/chat-load.state.json")"
+assert test "$(STOP_STATE="$APP_DIR" PATH="$FAKE_LAUNCHD" LAUNCHCTL_JOBS="$WORK/app-jobs" APP_PIDS="$APP_ROOT=Blender" \
+  OSASCRIPT_LOG="$WORK/osascript.log" chat_load_stop "$shared_key")" = 'Blender: no one chat opened it, left alone'
+assert test ! -s "$WORK/osascript.log"
+assert alive "$APP_ROOT"
+
+# A ps that returns 3 s after it ran (swap) moves no start: held ownership and an orphan's Stop key still match.
+clear_registry
+spawn_detached
+LATE_ROOT=$DETACHED_ROOT LATE_KID=$DETACHED_KID
+spawn_detached
+LATE_ORPHAN=$DETACHED_ROOT LATE_ORPHAN_KID=$DETACHED_KID
+LATE_DIR="$WORK/guard-late"
+mkdir -p "$LATE_DIR"
+AGED_PIDS="$LATE_ORPHAN" HEAVY_PIDS="$LATE_ORPHAN_KID=102400" assert chat_load_sample "$LATE_DIR" "$(date +%s)"
+late_key=$(jq -r '[.rows[] | objects | select(.stop | strings | startswith("orphan:"))][0].stop' "$(chats_json "$LATE_DIR")")
+assert test "$(cut -d: -f2 <<<"$late_key")" = "$LATE_ORPHAN"
+jq --arg r "$LATE_ROOT" '.owned[$r] = [.procs[$r][0], "chat-late"]' "$LATE_DIR/chat-load.state.json" >"$WORK/late-state.json"
+mv "$WORK/late-state.json" "$LATE_DIR/chat-load.state.json"
+touch "$WORK/ps-late"
+PS_LATE="$WORK/ps-late" AGED_PIDS="$LATE_ORPHAN" assert chat_load_sample "$LATE_DIR" "$(date +%s)"
+assert test ! -e "$WORK/ps-late"
+assert jq -e --arg r "$LATE_ROOT" --arg k "$LATE_KID" '.owned[$r][1] == "chat-late" and .owned[$k][1] == "chat-late"' \
+  "$LATE_DIR/chat-load.state.json"
+touch "$WORK/ps-late"
+assert test "$(STOP_STATE="$LATE_DIR" PS_LATE="$WORK/ps-late" AGED_PIDS="$LATE_ORPHAN" HEAVY_PIDS="$LATE_ORPHAN_KID=102400" \
+  chat_load_stop "$late_key")" = 'stopped 2 processes · 0.1 GB'
+for pid in $LATE_ORPHAN $LATE_ORPHAN_KID; do assert gone "$pid"; done
 
 # Stop sends SIGCONT with SIGTERM: a stopped process hears the TERM and runs its own handler.
 clear_registry
@@ -2015,4 +2153,4 @@ assert test "$(plutil -extract ProcessType raw "$ROOT/launchd/com.egor.memlogd.p
 
 reap_trees
 
-echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one or one left by an earlier boot, a machine sampler that keeps sampling after the clock steps back, and an install-agent whose deployed bus queues a notice and that fails when launchctl cannot load the agent; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, available RAM counted the swap way once swap has under 4096 MB of room to grow into (the kernel's count of 2026-10-20 02:32 replayed: 3748 MB read as 1373 MB and its fattest job cut at the one 2048 MB threshold) but never with a roomy disk, an unknown room or a full disk with RAM free, a worker's notice landing in its run inbox and rendered by its hook instead of a bus it never flushes, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, weighed by footprint not RSS, no kill from any run but the LaunchAgent's (WOULD KILL instead), a memory row whose parts add up past RAM used, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, the MEMGUARD: line the run report renders from the record in every shape, a closed chat's Stop ending its every process (a SIGTERM-deaf one by SIGKILL) and refusing an open chat, and orphan rows (an hour old, unmanaged by launchd, no chat's work under them) whose Stop checks the start against a reused pid; plus attribution past detachment — a failed launchctl listing listing no orphan, a stale session record sparing nothing, procStart over mtime both ways, a closed chat's small leftovers on one leftovers row its Stop ends, a chat's groups weighed together with its largest cut first, ownership held after the parent died and inherited by a later child, an empty environment read retried, a working-directory claim live and closed with its Stop and an ambiguous one shown and never killed, the launch ledger's hook (clean in sequence, ambiguous on overlap, foreign launchd labels dropped, other commands untouched, called by the Bash hook), a ledgered simulator billed and shut down by the guard, an unsettled one on its own row with a shutting Stop, a background boot reconciled to its call window, a submitted launchd job billed, never guard-killed and booted out by Stop, SIGCONT reaching a stopped process, and a process born during a Stop taken when it is the chat's and named and left when not"
+echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one or one left by an earlier boot, a machine sampler that keeps sampling after the clock steps back, and an install-agent whose deployed bus queues a notice and that fails when launchctl cannot load the agent; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, available RAM counted the swap way once swap has under 4096 MB of room to grow into (the kernel's count of 2026-10-20 02:32 replayed: 3748 MB read as 1373 MB and its fattest job cut at the one 2048 MB threshold) but never with a roomy disk, an unknown room or a full disk with RAM free, a worker's notice landing in its run inbox and rendered by its hook instead of a bus it never flushes, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, weighed by footprint not RSS, no kill from any run but the LaunchAgent's (WOULD KILL instead), a memory row whose parts add up past RAM used, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, the MEMGUARD: line the run report renders from the record in every shape, a closed chat's Stop ending its every process (a SIGTERM-deaf one by SIGKILL) and refusing an open chat, and orphan rows (an hour old, unmanaged by launchd, no chat's work under them) whose Stop checks the start against a reused pid; plus attribution past detachment — a failed launchctl listing listing no orphan, a stale session record sparing nothing, procStart over mtime both ways, a closed chat's small leftovers on one leftovers row its Stop ends, a chat's groups weighed together with its largest cut first, ownership held after the parent died and inherited by a later child, an empty environment read retried, a working-directory claim live and closed with its Stop and an ambiguous one shown and never killed, the launch ledger's hook (clean in sequence, ambiguous on overlap, foreign launchd labels dropped, other commands untouched, called by the Bash hook), a ledgered simulator billed and shut down by the guard, an unsettled one on its own row with a shutting Stop, a background boot reconciled to its call window, a submitted launchd job billed, never guard-killed and booted out by Stop, SIGCONT reaching a stopped process, and a process born during a Stop taken when it is the chat's and named and left when not, an app a chat opened billed to its row live and closed with a Quit of its own that asks only that bundle (never the guard's nor the row's Stop), an already-running app and a non-command \`open\` making no record, an ambiguous app display-only, and starts read from the kernel so a ps returning 3 s late keeps held ownership and a Stop key"

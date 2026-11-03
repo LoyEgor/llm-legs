@@ -3933,6 +3933,40 @@ do
   chatsFake.snapshot = nil
 end
 
+-- An app a chat opened gets its own Quit item under that chat's row, live or closed: chat-load asks that app to
+-- quit; the row's Stop stays the first item and a live chat keeps its tab click first.
+do
+  local tasks = {}
+  chatsFake.snapshot = { as_of = os.time(), title = "Chats", rows = {
+    { text = "idle        Render chat  Blender ×2", session = "live-3", pid = 77,
+      apps = { { name = "Blender", gb = 1.2, quit = "app:application.org.blenderfoundation.blender.1.2:1793000000" },
+               { name = "Blender", gb = 0.8, quit = "app:application.org.blenderfoundation.blender.3.4:1793000100" } } },
+    { text = "closed      Old chat  TextEdit", session = "old-3", stop = "chat:old-3", gb = 0.3,
+      apps = { { name = "TextEdit", gb = 0.1, quit = "app:application.com.apple.TextEdit.5.6:1793000200" } } },
+  } }
+  local mod = loadModule({ schema = 1, vendors = {} }, driveTasks(tasks))
+  mod.chatsCmd, mod.chatLoadCmd = "/fixture/bin/chats", "/fixture/bin/chat-load"
+  local chats
+  for _, item in ipairs(mod.menuItems()) do
+    if titleText(item):match("^Chats") then chats = item end
+  end
+  local live, closed = chats.menu[1], chats.menu[2]
+  assert(live.menu and #live.menu == 3 and titleText(live.menu[1]) == "Show chat"
+    and titleText(live.menu[2]) == "Quit Blender · 1.2 GB" and titleText(live.menu[3]) == "Quit Blender · 0.8 GB",
+    "a live chat's apps did not get a Quit item each behind its tab click")
+  assert(closed.menu and #closed.menu == 3 and titleText(closed.menu[1]) == "Stop · 0.3 GB"
+    and titleText(closed.menu[2]) == "Copy reopen command" and titleText(closed.menu[3]) == "Quit TextEdit · 0.1 GB",
+    "a closed chat's app did not get its Quit item after Stop")
+  live.menu[3].fn()
+  assert(tasks[1] and tasks[1].path == "/fixture/bin/chat-load"
+    and table.concat(tasks[1].args, " ") == "stop app:application.org.blenderfoundation.blender.3.4:1793000100",
+    "a Quit item did not hand chat-load its app key")
+  closed.menu[3].fn()
+  assert(tasks[2] and table.concat(tasks[2].args, " ") == "stop app:application.com.apple.TextEdit.5.6:1793000200",
+    "a closed chat's Quit item did not hand chat-load its app key")
+  chatsFake.snapshot = nil
+end
+
 -- Light is one switch over both of its roles, written by the same locked writer as a vendor's Pause.
 do
   for _, case in ipairs({ { model = nil, checked = true, state = "on" },

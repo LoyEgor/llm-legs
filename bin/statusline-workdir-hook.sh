@@ -13,7 +13,9 @@ bash_tool='"tool_name"[[:space:]]*:[[:space:]]*"Bash"'
 bash_command='"command"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"'
 # A Bash call naming what starts outside the process tree (a simulator launchd spawns, a job it submits) is
 # snapshotted around by chat-load's launch ledger, Pre and Post, so the Chats/other menu bills it to this chat.
-ledger_words='simctl|xcodebuild|launchctl|brew[[:space:]]+services'
+# So is an app opened with `open` as a command word (chat-load's OPEN_WORD on the JSON text: a newline is `\n`
+# here, and a quoted `"a; open b"` still passes, for chat-load to drop once it has blanked the strings).
+ledger_words='simctl|xcodebuild|launchctl|brew[[:space:]]+services|(^|[;&|(]|\\n)[[:space:]]*((env([[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)*|nohup|command)[[:space:]]+)*open([[:space:]]|\\n|$)'
 if [[ $input =~ $bash_tool && $input =~ $bash_command ]]; then
   bash_text=${BASH_REMATCH[1]}
   if [[ $bash_text =~ $ledger_words ]]; then
