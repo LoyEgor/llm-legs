@@ -11,8 +11,18 @@ input=$(</dev/stdin)
 pre_event='"hook_event_name"[[:space:]]*:[[:space:]]*"PreToolUse"'
 bash_tool='"tool_name"[[:space:]]*:[[:space:]]*"Bash"'
 bash_command='"command"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"'
-if [[ $input =~ $pre_event && $input =~ $bash_tool && $input =~ $bash_command ]]; then
-  case ${BASH_REMATCH[1]} in *worktree*) ;; *) exit 0 ;; esac
+# A Bash call naming what starts outside the process tree (a simulator launchd spawns, a job it submits) is
+# snapshotted around by chat-load's launch ledger, Pre and Post, so the Chats/other menu bills it to this chat.
+ledger_words='simctl|xcodebuild|launchctl|brew[[:space:]]+services'
+if [[ $input =~ $bash_tool && $input =~ $bash_command ]]; then
+  bash_text=${BASH_REMATCH[1]}
+  if [[ $bash_text =~ $ledger_words ]]; then
+    ledger_self=$(realpath "${BASH_SOURCE[0]}") || ledger_self=${BASH_SOURCE[0]}
+    "${ledger_self%/*}/chat-load" ledger <<< "$input"
+  fi
+  if [[ $input =~ $pre_event ]]; then
+    case $bash_text in *worktree*) ;; *) exit 0 ;; esac
+  fi
 fi
 self=$(realpath "${BASH_SOURCE[0]}") || self=${BASH_SOURCE[0]}
 case $self in */*) bin_dir=${self%/*} ;; *) bin_dir=. ;; esac

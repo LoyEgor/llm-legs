@@ -2,9 +2,12 @@
 # memlogd runs `sample` every tick: it attributes every process to the chat that launched it, keeps
 # the machine's load per chat for the llm-limits menu (chats.json) and, when RAM runs out, kills the
 # fattest chat job (`docs/memory-guard.md`). `show` prints the last snapshot; `stop` ends what one of
-# its closed-chat or orphan rows counts, on Egor's click in the menu.
+# its closed-chat, leftover, simulator or orphan rows counts, on Egor's click in the menu; `ledger` is the
+# launch ledger statusline-workdir-hook.sh feeds around a Bash call that starts what no process tree holds.
+import calendar
 import ctypes
 import glob
+import importlib
 import json
 import os
 import re
@@ -28,11 +31,30 @@ KILLED_GRACE_S = 30
 SHOWN_KB = 51200
 ORPHAN_AGE_S = 3600
 STOP_GRACE_S = 5
+# A daemon a stopped command starts on its way out is adopted by launchd a moment after the command dies.
+STOP_SETTLE_S = 1
+ENV_TRIES = 3
+CHAT_KEEP_S = 2 * 86400
+CALL_OPEN_S = 1800
+BACKGROUND_OPEN_S = 900
+LEDGER_KEEP_S = 14 * 86400
+LABEL_TTL_S = 60
 # Apple's own processes and the extensions and XPC services macOS starts are never a leftover; an app is
 # a launchd job. Homebrew's python runs from a Python.app, so ".app/" itself would hide every python.
 SYSTEM_PARTS = (".xpc/", ".appex/")
 SPARK = "▁▂▃▄▅▆▇█"
 ENV_KEYS = (b"CLAUDE_LAUNCHER_SESSION=", b"CLAUDE_CODE_SESSION_ID=")
+# A booted simulator is one launchd_sim launchd spawns for CoreSimulatorService (ppid 1, no chat's environment);
+# its own environment names the device.
+SIM_COMM = "launchd_sim"
+SIM_KEYS = (b"SIMULATOR_UDID=", b"SIMULATOR_DEVICE_NAME=")
+SIMCTL = ["xcrun", "simctl"]
+# What the ledger hook snapshots, by the words of the command: the hook's own gate matches the same words.
+LEDGER_WORDS = (("sim", re.compile(r"simctl|xcodebuild")), ("launchd", re.compile(r"launchctl|brew\s+services")))
+# Jobs macOS and LaunchServices start by themselves: an app opened while a chat's call ran is not the chat's.
+FOREIGN_LABELS = ("com.apple.", "application.")
+WORKTREES = "/.claude/worktrees/"
+TOKEN = re.compile(r"[A-Za-z0-9._-]+")
 OTHER_KINDS = (("screen", {"WindowServer"}), ("kernel", {"kernel_task"}), ("signing", {"syspolicyd", "trustd"}))
 
 HOME = os.path.expanduser("~")
@@ -42,6 +64,8 @@ OUT_PATH = os.path.join(LOG_DIR, "chats.json")
 BENCHES_PATH = os.path.join(LOG_DIR, "chat-load.benches.json")
 LAUNCHERS_PATH = os.path.join(LOG_DIR, "chat-load.launchers.json")
 LAUNCHERS_TTL_S = 300
+LEDGER_DIR = os.path.join(LOG_DIR, "ledger")
+CALLS_DIR = os.path.join(LEDGER_DIR, "calls")
 HOLDS_DIR = os.environ.get("HARNESS_HOLDS_DIR") or os.path.join(
     os.environ.get("HARNESS_DOCTOR_DIR") or os.path.join(HOME, ".cache/harness-doctor"), "holds")
 SESSION_DIRS = (os.environ.get("CHAT_LOAD_SESSIONS")
@@ -77,7 +101,7 @@ def sysctl_int(name):
     return value.value
 
 
-def procargs(pid):
+def procargs(pid, keys=ENV_KEYS):
     mib = (ctypes.c_int * 3)(1, 49, pid)
     size = ctypes.c_size_t(0)
     if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value < 8:
@@ -98,11 +122,11 @@ def procargs(pid):
         if not entry:
             break
         env.append(entry)
-    found = ["", ""]
+    found = [""] * len(keys)
     for entry in env:
-        for index, key in enumerate(ENV_KEYS):
+        for index, key in enumerate(keys):
             if entry.startswith(key):
-                found[index] = entry[len(key):].decode("ascii", "replace")
+                found[index] = entry[len(key):].decode("utf-8", "replace")
     return [a.decode("utf-8", "replace") for a in argv], found
 
 
@@ -171,6 +195,15 @@ def write_json(path, value):
     os.replace(tmp, path)
 
 
+def proc_started(text):
+    """Claude Code's `procStart`, its CLI's C-locale UTC `ps -o lstart=` (bin/claude-chat-switch live_registry),
+    as an epoch; None when the record has none or it does not read."""
+    try:
+        return calendar.timegm(time.strptime(" ".join(text.split()), "%a %b %d %H:%M:%S %Y"))
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+
+
 def live_sessions(table):
     sessions = {}
     for pattern in SESSION_DIRS:
@@ -178,16 +211,22 @@ def live_sessions(table):
             record = read_json(path, {})
             pid, sid = record.get("pid"), record.get("sessionId")
             if isinstance(pid, int) and isinstance(sid, str) and pid in table:
-                try:
-                    written = os.path.getmtime(path)
-                except OSError:
-                    continue
-                # A CLI killed without deregistering leaves its record behind, and macOS hands its
-                # pid on: a record older than the process under that pid is a stranger's. It still
-                # spares that process (sample's `protected`) but claims nothing for the dead chat.
+                # A CLI killed without deregistering leaves its record behind, and macOS hands its pid on: a
+                # record of another process than the one under that pid is a stranger's, and claims nothing for
+                # the dead chat nor spares that process. The record's own procStart says which process wrote it;
+                # a record without one is judged by its mtime, which a copy or a touch moves.
                 row = table[pid]
-                own = row["age"] >= 0 and written >= time.time() - row["age"] - PID_SLACK_S
-                sessions[sid] = {"pid": pid, "status": str(record.get("status") or ""), "own": own}
+                began = proc_started(record.get("procStart"))
+                if began is not None:
+                    own = row["age"] >= 0 and abs(began - row["start"]) <= 2
+                else:
+                    try:
+                        written = os.path.getmtime(path)
+                    except OSError:
+                        continue
+                    own = row["age"] >= 0 and written >= time.time() - row["age"] - PID_SLACK_S
+                sessions[sid] = {"pid": pid, "status": str(record.get("status") or ""), "own": own,
+                                 "cwd": str(record.get("cwd") or "")}
     return sessions
 
 
@@ -264,13 +303,20 @@ def environments(table, cache):
         start = row["start"]
         hit = cache.get(str(pid))
         # exec keeps the pid and the start but not the command: a shell sampled before it exec'd its
-        # python showed no environment, and that empty read must not outlive the exec.
-        if hit and abs(hit[0] - start) <= 2 and hit[3:] == [row["comm"]]:
+        # python showed no environment, and that empty read must not outlive the exec. An empty read is
+        # final only after ENV_TRIES ticks ([start, "", "", comm, tries]) and a failed one is not kept: a
+        # process caught mid-start would otherwise be no chat's for its whole life.
+        same = bool(hit) and abs(hit[0] - start) <= 2 and hit[3:4] == [row["comm"]]
+        if same and (hit[1] or hit[2] or hit[4:] == [ENV_TRIES]):
             fresh[str(pid)] = hit
             continue
         parsed = procargs(pid)
-        found = parsed[1] if parsed else ["", ""]
+        if not parsed:
+            continue
+        found = parsed[1]
         fresh[str(pid)] = [start, found[0], found[1], row["comm"]]
+        if not (found[0] or found[1]):
+            fresh[str(pid)].append(min(ENV_TRIES, (hit[4] if same and hit[4:] else 0) + 1))
     return fresh
 
 
@@ -304,7 +350,115 @@ def attribute(table, envs, sessions):
         sid = claimed(pid) or launcher(pid) or cli.get(pid, "")
         if sid:
             tops[pid] = outermost(sid)
-    return tops
+    return tops, outermost
+
+
+def hold_owned(table, tops, held, protected):
+    """Once attributed, a process keeps its chat while it lives: reparented to launchd, or with the session
+    variables scrubbed off its environment (the nx daemon drops CLAUDE_CODE_*), it fell to "other". What it forks
+    later inherits through lineage. A chat's CLI and what runs it are never held: a CLI outliving its record would
+    be a closed chat's, and its Stop would end a live tab. `held` is the last tick's {pid: [start, session]};
+    returns this tick's."""
+    for pid, row in table.items():
+        hit = held.get(str(pid))
+        if pid not in tops and pid not in protected and hit and not row["zombie"] and abs(hit[0] - row["start"]) <= 2:
+            tops[pid] = hit[1]
+    for pid in table:
+        if pid not in tops:
+            sid = next((tops[ancestor] for ancestor in lineage(pid, table) if ancestor in tops), "")
+            if sid:
+                tops[pid] = sid
+    return {str(pid): [table[pid]["start"], sid] for pid, sid in tops.items()
+            if not table[pid]["zombie"] and table[pid]["age"] >= 0 and pid not in protected}
+
+
+def chat_tree(cwd):
+    """The directory a chat works in: its cwd, or the worktree that cwd sits in (Egor's worktrees live at
+    `<repo>/.claude/worktrees/<branch>`). None at or above HOME, under which every process of Egor's runs."""
+    path = os.path.realpath(cwd).rstrip(os.sep) if cwd else ""
+    cut = path.find(WORKTREES)
+    if cut > 0:
+        path = path[:cut + len(WORKTREES)] + path[cut + len(WORKTREES):].split(os.sep)[0]
+    return "" if not path or (HOME + os.sep).startswith(path + os.sep) else path
+
+
+def chat_trees(now, sessions, tops, outermost, known):
+    """{session: {cwd, tree, top, seen}} of every chat seen live or at work in the last CHAT_KEEP_S, from its
+    session record while it is live: what cwd_claims takes a process launchd adopted back by. `top` is the chat
+    it is billed to (a worker's launching chat)."""
+    fresh = {sid: entry for sid, entry in known.items()
+             if isinstance(entry, dict) and 0 <= now - entry.get("seen", 0) < CHAT_KEEP_S}
+    for sid, live in sessions.items():
+        held = fresh.get(sid) or {}
+        if held.get("cwd") != live["cwd"]:
+            held = {"cwd": live["cwd"], "tree": chat_tree(live["cwd"])}
+        fresh[sid] = dict(held, top=outermost(sid), seen=now)
+    for sid in set(tops.values()):
+        if sid in fresh:
+            fresh[sid]["seen"] = now
+    return fresh
+
+
+def shared_module(name):
+    """A module install-agent deploys beside this file (else the checkout's share/), imported on first use."""
+    sys.dont_write_bytecode = True
+    for directory in reversed(SHARED):
+        if directory not in sys.path:
+            sys.path.insert(0, directory)
+    return importlib.import_module(name)
+
+
+def deepest_owners(cwd, chats):
+    """The chats whose tree holds `cwd`, the deepest tree only (a worktree's chat over its repository's, as the
+    statusline's ports probe takes a server back), folded to the chat each is billed to."""
+    inside = [(len(entry["tree"]), entry.get("top") or sid) for sid, entry in chats.items()
+              if entry.get("tree") and (cwd == entry["tree"] or cwd.startswith(entry["tree"] + os.sep))]
+    deepest = max((depth for depth, _ in inside), default=0)
+    return sorted({top for depth, top in inside if depth == deepest})
+
+
+def cwd_claims(table, tops, skip, chats, cache, now):
+    """An own process launchd adopted (ppid 1) that nothing above claims is taken back by its working directory:
+    inside exactly one chat's tree, that chat's, its tree with it; inside several, ambiguous (shown, never a
+    guard's). A launchd job is never claimed: an agent of Egor's may run from a repository. One
+    PROC_PIDVNODEPATHINFO per candidate, kept per pid and start ([start, cwd, managed]). Returns
+    (claims {pid: session}, ambiguous {root: [sessions]}, cache)."""
+    uid, fresh, claims, ambiguous = os.getuid(), {}, {}, {}
+    for pid, row in table.items():
+        if (row["ppid"] != 1 or row["uid"] != uid or row["zombie"] or row["age"] < 0 or pid in tops or pid in skip
+                or row["path"].startswith("/System/") or any(part in row["path"] for part in SYSTEM_PARTS)):
+            continue
+        hit = cache.get(str(pid))
+        if hit and abs(hit[0] - row["start"]) <= 2:
+            fresh[str(pid)] = hit
+            continue
+        fresh[str(pid)] = [row["start"], shared_module("machine_probe").proc_cwd(pid) or "", None]
+    if any(hit[1] not in ("", "/") for hit in fresh.values()):
+        # A closed chat memlogd never saw live is placed by its transcript, once.
+        for sid in set(tops.values()) - set(chats):
+            try:
+                names = shared_module("chat_names")
+                path = names.transcript_path(sid)
+                cwd = names._transcript_cwd(path) if path else ""
+            except Exception:
+                cwd = ""
+            chats[sid] = {"cwd": cwd, "tree": chat_tree(cwd), "top": sid, "seen": now}
+    found = {int(key): deepest_owners(hit[1], chats) for key, hit in fresh.items()}
+    found = {pid: owners for pid, owners in found.items() if owners}
+    if any(fresh[str(pid)][2] is None for pid in found):
+        jobs = launchd_jobs()
+        for pid in found if jobs is not None else []:
+            fresh[str(pid)][2] = pid in jobs
+    for pid, owners in found.items():
+        if fresh[str(pid)][2] is not False:
+            continue
+        if len(owners) > 1:
+            ambiguous[pid] = owners
+            continue
+        for member in tree_of(pid, table):
+            if member not in tops and member not in skip:
+                claims[member] = owners[0]
+    return claims, ambiguous, fresh
 
 
 def tree_of(pid, table):
@@ -319,12 +473,249 @@ def tree_of(pid, table):
     return tree
 
 
-def launchd_jobs():
+def launchd_list():
+    """{label: pid or None} of this user's launchd jobs (`launchctl list`); None when the listing failed, which
+    is no evidence about any job: its empty answer once read as "launchd manages nothing" and listed every
+    candidate as an orphan."""
     try:
-        out = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=10).stdout
+        done = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
-    return {int(line.split()[0]) for line in out.splitlines()[1:] if line.split() and line.split()[0].isdigit()}
+    if done.returncode != 0:
+        return None
+    jobs = {}
+    for line in done.stdout.splitlines()[1:]:
+        fields = line.split("\t") if "\t" in line else line.split(None, 2)
+        if len(fields) >= 3 and fields[2].strip():
+            jobs[fields[2].strip()] = int(fields[0]) if fields[0].strip().isdigit() else None
+    return jobs
+
+
+def launchd_jobs():
+    jobs = launchd_list()
+    return None if jobs is None else {pid for pid in jobs.values() if pid}
+
+
+def booted_simulators():
+    """{udid: name} of every booted simulator (`simctl list -j devices booted`), None when it cannot be read."""
+    try:
+        done = subprocess.run(SIMCTL + ["list", "-j", "devices", "booted"], capture_output=True, text=True, timeout=30)
+        groups = json.loads(done.stdout)["devices"].values() if done.returncode == 0 else None
+        return None if groups is None else {
+            device["udid"]: str(device.get("name") or "") for group in groups for device in group
+            if isinstance(device, dict) and device.get("state") == "Booted" and isinstance(device.get("udid"), str)}
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def simctl_shutdown(udid):
+    try:
+        return subprocess.run(SIMCTL + ["shutdown", udid], capture_output=True, text=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def launchctl_bootout(label):
+    try:
+        return subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], capture_output=True,
+                              text=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+# --- the launch ledger: what a chat starts outside its process tree --------------------------------------
+# A simulator a chat boots runs under launchd (CoreSimulatorService spawns its launchd_sim), and a job it
+# submits under launchd too: neither carries the chat's environment nor has it for an ancestor (a chat's
+# simulator held 7.4 GB in 287 processes for 14 h after the chat closed, on no row at all). The hook snapshots both
+# kinds around a Bash call that names them and appends what appeared to ledger/<session>.jsonl as
+# {session, kind, id, at, ambiguous}; `at` is when the ledger found it, after the resource started.
+
+def ledger_snapshot(kinds):
+    shot = {}
+    if "sim" in kinds:
+        sims = booted_simulators()
+        shot["sim"] = None if sims is None else sorted(sims)
+    if "launchd" in kinds:
+        jobs = launchd_list()
+        shot["launchd"] = None if jobs is None else sorted(label for label in jobs if not label.startswith(FOREIGN_LABELS))
+    return shot
+
+
+def window_end(window, now):
+    """When a call window closes: at its Post, BACKGROUND_OPEN_S later for a call run in the background (what it
+    starts may come up after the Post), CALL_OPEN_S after its Pre for a call never posted."""
+    end = window.get("end")
+    if not isinstance(end, (int, float)):
+        return min(now, window["at"] + CALL_OPEN_S)
+    return end + BACKGROUND_OPEN_S if window.get("background") else end
+
+
+def call_windows():
+    windows = []
+    for name in listed(CALLS_DIR):
+        window = read_json(os.path.join(CALLS_DIR, name), None) if name.endswith(".json") else None
+        if isinstance(window, dict) and isinstance(window.get("at"), (int, float)) and isinstance(window.get("session"), str):
+            windows.append(dict(window, file=name))
+    return windows
+
+
+def ledger_append(records):
+    for sid in sorted({record["session"] for record in records}):
+        os.makedirs(LEDGER_DIR, exist_ok=True)
+        with open(os.path.join(LEDGER_DIR, f"{sid}.jsonl"), "a") as handle:
+            handle.write("".join(json.dumps({key: record[key] for key in ("session", "kind", "id", "at", "ambiguous")}) + "\n"
+                                 for record in records if record["session"] == sid))
+    if records:
+        # An append moves no directory mtime, and the tick stats nothing but the directory.
+        os.utime(LEDGER_DIR)
+
+
+def ledger_hook(payload):
+    """`chat-load ledger`: statusline-workdir-hook.sh hands it the Pre and Post payload of a Bash call naming
+    simctl, xcodebuild, launchctl or `brew services`. Pre writes the call window with a snapshot of the kinds the
+    command names; Post diffs, and what appeared while another chat's call of the same kind was open is
+    ambiguous. A worker's resources are its launching chat's (CLAUDE_LAUNCHER_SESSION, as attribute() bills)."""
+    tool = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    command = str(tool.get("command") or "")
+    sid = os.environ.get("CLAUDE_LAUNCHER_SESSION") or str(payload.get("session_id") or "")
+    call = str(payload.get("tool_use_id") or "")
+    kinds = [kind for kind, words in LEDGER_WORDS if words.search(command)]
+    if not (kinds and TOKEN.fullmatch(sid) and TOKEN.fullmatch(call)):
+        return 0
+    path, now = os.path.join(CALLS_DIR, f"{sid}.{call}.json"), time.time()
+    if payload.get("hook_event_name") == "PreToolUse":
+        os.makedirs(CALLS_DIR, exist_ok=True)
+        for window in call_windows():
+            if window_end(window, now) < now - 3600:
+                try:
+                    os.remove(os.path.join(CALLS_DIR, window["file"]))
+                except OSError:
+                    pass
+        for name in listed(LEDGER_DIR):
+            try:
+                if name.endswith(".jsonl") and os.path.getmtime(os.path.join(LEDGER_DIR, name)) < now - LEDGER_KEEP_S:
+                    os.remove(os.path.join(LEDGER_DIR, name))
+            except OSError:
+                pass
+        background = tool.get("run_in_background") is True or bool(re.search(r"(^|[^&>|])&($|[^&>])", command))
+        write_json(path, {"session": sid, "call": call, "at": now, "end": None, "kinds": kinds,
+                          "background": background, "before": ledger_snapshot(kinds)})
+        return 0
+    window = read_json(path, None)
+    if not isinstance(window, dict) or not isinstance(window.get("at"), (int, float)):
+        return 0
+    after, before = ledger_snapshot(window.get("kinds") or []), window.get("before") or {}
+    rivals = [other for other in call_windows() if other["session"] != sid
+              and other["at"] <= now and window_end(other, now) >= window["at"]]
+    records = []
+    for kind in window.get("kinds") or []:
+        if before.get(kind) is None or after.get(kind) is None:
+            continue
+        ambiguous = any(kind in (other.get("kinds") or []) for other in rivals)
+        records += [{"session": sid, "kind": kind, "id": ident, "at": now, "ambiguous": ambiguous}
+                    for ident in sorted(set(after[kind]) - set(before[kind]))]
+    ledger_append(records)
+    write_json(path, dict(window, end=now))
+    return 0
+
+
+def ledger_records(cache):
+    """Every ledger line, re-read only once the ledger directory's mtime moved. Returns (records, cache)."""
+    try:
+        mtime = os.stat(LEDGER_DIR).st_mtime_ns
+    except OSError:
+        return [], {}
+    if cache.get("mtime") == mtime and isinstance(cache.get("records"), list):
+        return cache["records"], cache
+    records = []
+    for name in sorted(listed(LEDGER_DIR)):
+        try:
+            with open(os.path.join(LEDGER_DIR, name)) as handle:
+                lines = handle.read().splitlines() if name.endswith(".jsonl") else []
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if (isinstance(record, dict) and record.get("kind") in ("sim", "launchd") and isinstance(record.get("id"), str)
+                    and isinstance(record.get("session"), str) and isinstance(record.get("at"), (int, float))):
+                records.append({"session": record["session"], "kind": record["kind"], "id": record["id"],
+                                "at": record["at"], "ambiguous": bool(record.get("ambiguous"))})
+    return records, {"mtime": mtime, "records": records}
+
+
+def owner_of(records):
+    """The one chat a resource's ledger lines name, "" for none; ambiguous when they disagree or say so."""
+    sessions = {record["session"] for record in records}
+    if len(sessions) == 1 and not any(record["ambiguous"] for record in records):
+        return next(iter(sessions)), False
+    return "", bool(records)
+
+
+def simulators(table, records, cache, now):
+    """Each booted simulator in the table -> {pid: {udid, name, start, tree, owner, ambiguous}}. Its UDID and name
+    are read off its launchd_sim's environment once per pid and start; its owner is the ledger's lines for that
+    UDID written since it booted. One no line names is matched once to the call windows open when it booted (a
+    command run in the background boots it after its Post): exactly one chat's window makes it that chat's, several
+    make it ambiguous. Nothing here runs unless a launchd_sim is in the table."""
+    uid, fresh, found, added = os.getuid(), {}, {}, []
+    for pid, row in table.items():
+        if row["comm"] != SIM_COMM or row["uid"] != uid or row["zombie"] or row["age"] < 0:
+            continue
+        hit = cache.get(str(pid))
+        if not (hit and abs(hit[0] - row["start"]) <= 2):
+            parsed = procargs(pid, SIM_KEYS)
+            if not parsed or not parsed[1][0]:
+                continue
+            hit = [row["start"], parsed[1][0], parsed[1][1], False]
+        mine = [record for record in records + added
+                if record["kind"] == "sim" and record["id"] == hit[1] and record["at"] >= hit[0] - 2]
+        if not mine and not hit[3]:
+            hit[3] = True
+            booted = hit[0]
+            owners = sorted({window["session"] for window in call_windows() if "sim" in (window.get("kinds") or [])
+                             and window["at"] <= booted + 2 and window_end(window, now) >= booted - 2})
+            mine = [{"session": sid, "kind": "sim", "id": hit[1], "at": now, "ambiguous": len(owners) > 1}
+                    for sid in owners]
+            added += mine
+        fresh[str(pid)] = hit
+        owner, ambiguous = owner_of(mine)
+        found[pid] = {"udid": hit[1], "name": hit[2] or hit[1], "start": hit[0], "tree": tree_of(pid, table),
+                      "owner": owner, "ambiguous": ambiguous}
+    ledger_append(added)
+    return found, fresh
+
+
+def labelled(table, records, cache, now):
+    """Each launchd job a chat submitted (`launchctl load|bootstrap|submit`, `brew services start`) -> {label: {pid,
+    owner}}. `launchctl list` runs only while a ledger line names a label, at most every LABEL_TTL_S or once a
+    job's pid is gone; a label a listing no longer has was unloaded, and its lines up to then with it."""
+    gone = {label: at for label, at in (cache.get("gone") or {}).items() if now - at < LEDGER_KEEP_S}
+    mine = {}
+    for record in records:
+        if record["kind"] == "launchd" and record["at"] > gone.get(record["id"], 0):
+            mine.setdefault(record["id"], []).append(record)
+    pids = {label: pid for label, pid in (cache.get("pids") or {}).items() if label in mine}
+    held = {"at": cache.get("at", 0), "pids": pids, "gone": gone}
+    if not mine:
+        return {}, held
+    if (now - held["at"] >= LABEL_TTL_S or set(mine) - set(pids)
+            or any(isinstance(pid, int) and pid not in table for pid in pids.values())):
+        jobs = launchd_list()
+        if jobs is not None:
+            for label in [label for label in mine if label not in jobs]:
+                gone[label] = now
+                del mine[label]
+            held = {"at": now, "pids": {label: jobs[label] for label in mine}, "gone": gone}
+    found = {}
+    for label, lines in mine.items():
+        owner, ambiguous = owner_of(lines)
+        pid = held["pids"].get(label)
+        found[label] = {"pid": pid if isinstance(pid, int) and pid in table else None, "owner": owner,
+                        "ambiguous": ambiguous}
+    return found, held
 
 
 def orphans(table, tops, protected, weigh):
@@ -409,26 +800,34 @@ def post_inboxes(inboxes, text):
     return told
 
 
-def guard(now, avail, room, measure, table, envs, tops, sessions, protected, roots, titles, last):
+def guard(now, avail, room, measure, table, envs, tops, sessions, protected, roots, titles, last, resources=None,
+          sims=None):
     """`measure` is how memlogd counted `avail`: "swap" when the swap volume had no room left and
-    inactive anonymous pages counted as used (`docs/memory-guard.md`)."""
+    inactive anonymous pages counted as used (`docs/memory-guard.md`). `resources` maps a member of a
+    ledgered resource to (kind, id, pid): a simulator is one job, shut down; a launchd job is never one."""
     if avail < 0 or avail >= GUARD_AVAIL_MB:
         return None
-    uid = os.getuid()
+    uid, resources, sims = os.getuid(), resources or {}, sims or {}
     # A SIGKILLed process can take longer than a tick to go away under swapping: it is not a new job.
     spent = set(last.get("killed", [])) if last and now - last.get("at", 0) < KILLED_GRACE_S else set()
-    jobs = {}
+    chats = {}
     for pid, top in tops.items():
-        row = table[pid]
-        if pid in protected or row["zombie"] or row["uid"] != uid or pid in spent:
+        row, resource = table[pid], resources.get(pid)
+        if pid in protected or row["zombie"] or row["uid"] != uid or pid in spent or (resource and resource[0] != "sim"):
             continue
-        jobs.setdefault((top, row["pgid"]), []).append(pid)
-    if not jobs:
+        chats.setdefault(top, {}).setdefault(resource or row["pgid"], []).append(pid)
+    if not chats:
         return None
-    (top, pgid), members = max(jobs.items(), key=lambda item: (sum(table[p]["kb"] for p in item[1]), -item[0][1]))
-    job_mb = sum(table[p]["kb"] for p in members) // 1024
-    if job_mb <= GUARD_JOB_MB:
+    weight = lambda pids: sum(table[p]["kb"] for p in pids)
+    # A chat's jobs are weighed together: a setsid fan-out runs each worker in a group of its own, and four
+    # 1 GB groups never tripped a ceiling weighed per group. Its largest job goes first.
+    top, groups = max(chats.items(), key=lambda item: (sum(weight(pids) for pids in item[1].values()), item[0]))
+    if sum(weight(pids) for pids in groups.values()) // 1024 <= GUARD_JOB_MB:
         return None
+    group, members = max(groups.items(), key=lambda item: (weight(item[1]), -min(item[1])))
+    sim = sims.get(group[2]) if isinstance(group, tuple) else None
+    pgid = table[group[2]]["pgid"] if isinstance(group, tuple) else group
+    job_mb = weight(members) // 1024
     if os.environ.get("XPC_SERVICE_NAME") != DAEMON_LABEL:
         print(f"WOULD KILL {now} chat={top} job_pgid={pgid} footprint_mb={job_mb} avail_mb={avail} "
               f"swap_room_mb={room} trigger={measure} pids={','.join(map(str, sorted(members)))}", flush=True)
@@ -439,15 +838,16 @@ def guard(now, avail, room, measure, table, envs, tops, sessions, protected, roo
     if len(command) > 160:
         command = command[:159] + "…"
     why = {
-        "ram": f"the Mac was down to {avail} MB of available RAM and this was the largest job any chat was "
-               "running; left alone it would have frozen the machine into a forced reboot",
+        "ram": f"the Mac was down to {avail} MB of available RAM and this was the largest job of the chat whose "
+               "jobs weighed the most; left alone it would have frozen the machine into a forced reboot",
         "swap": f"the Mac was down to {avail} MB of RAM it could still free (swap had {room} MB of room left on "
-                "the disk, so memory waiting to be swapped out counted as used) and this was the largest job any "
-                "chat was running; past that point macOS kills its own services and the machine hangs",
+                "the disk, so memory waiting to be swapped out counted as used) and this was the largest job of the "
+                "chat whose jobs weighed the most; past that point macOS kills its own services and the machine hangs",
     }[measure]
+    what = (f"the simulator {sim['name']} ({sim['udid']}), shut down" if sim else
+            f"{command} (pid {heaviest}) and the rest of its process group {pgid}")
     rows = [
-        ["stopped", f"{command} (pid {heaviest}) and the rest of its process group {pgid}: "
-                    f"{len(members)} processes, {job_mb / 1024:.1f} GB of memory"],
+        ["stopped", f"{what}: {len(members)} processes, {job_mb / 1024:.1f} GB of memory"],
         ["why", why],
         ["this is", "not a crash and not a broken system: the machine is healthy and the task is still solvable"],
         ["next", "do not start it again at that size or in any variant near it: this Mac cannot hold it beside "
@@ -473,8 +873,20 @@ def guard(now, avail, room, measure, table, envs, tops, sessions, protected, roo
     posted += post_inboxes(inboxes, "memory guard — " + "; ".join(f"{label}: {value}" for label, value in rows))
     notify += sorted(inboxes)
     killed = []
+    if sim:
+        # A simulator ends by its own shutdown (launchd would read a killed launchd_sim as a crash); what of its
+        # tree outlives that is SIGKILLed, and a member already gone went with the shutdown.
+        simctl_shutdown(sim["udid"])
+        for pid in sorted(members):
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed.append(pid)
+            except ProcessLookupError:
+                killed.append(pid)
+            except OSError:
+                pass
     # The whole group at once when nothing else is in it, so what it forked during the notice goes too.
-    if all(p in members or row["zombie"] for p, row in table.items() if row["pgid"] == pgid):
+    elif all(p in members or row["zombie"] for p, row in table.items() if row["pgid"] == pgid):
         try:
             os.killpg(pgid, signal.SIGKILL)
             killed = sorted(members)
@@ -603,14 +1015,20 @@ def spark(buckets, minute, top_cores):
     return "".join(cells)
 
 
-def render(now, avail, swap, table, tops, sessions, state, prev, holds, protected=frozenset()):
+def command_name(pid, table):
+    parsed = procargs(pid)
+    name = " ".join([os.path.basename(parsed[0][0])] + parsed[0][1:]) if parsed and parsed[0] else table[pid]["comm"]
+    return " ".join(name.split())
+
+
+def render(now, avail, swap, table, tops, sessions, state, prev, holds, protected=frozenset(), view=None):
     ncpu = os.cpu_count() or 1
     top_cores = sysctl_int("hw.perflevel0.physicalcpu") or ncpu
     total_mb = (sysctl_int("hw.memsize") or 0) // 1048576
     dt = now - prev.get("at", 0)
     rated = 0 < dt <= 120
     before = prev.get("procs", {})
-    procs, spent, chat_cpu, chat_kb, machine = {}, {}, {}, {}, 0.0
+    procs, spent, chat_cpu, chat_kb, chat_count, machine = {}, {}, {}, {}, {}, 0.0
     other = dict.fromkeys([k for k, _ in OTHER_KINDS], 0.0)
     other_kb = 0
     for pid, row in table.items():
@@ -632,6 +1050,7 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds, protecte
             chat_cpu[top] = chat_cpu.get(top, 0.0) + used
             if not row["zombie"]:
                 chat_kb[top] = chat_kb.get(top, 0) + row["kb"]
+                chat_count[top] = chat_count.get(top, 0) + 1
         else:
             if not row["zombie"]:
                 other_kb += row["kb"]
@@ -690,13 +1109,16 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds, protecte
                              f"{who} · freed {event['mb'] / 1024:.1f} GB"
                              + ("" if event.get("told", True) else " · chat not told"), "alarm": True})
     rows.append("-")
-    listed = []
+    listed, leftovers = [], []
     for sid in chats:
         now_cores = rate(chat_cpu.get(sid, 0.0))
         live = sessions.get(sid)
         wait = held.get(sid)
         if not live:
+            # A closed chat's own leftovers show at once; under the floor they share one `leftovers` row.
             if (now_cores or 0.0) < 0.05 and chat_kb.get(sid, 0) < SHOWN_KB and not wait:
+                if chat_count.get(sid):
+                    leftovers.append(sid)
                 continue
             word = "closed"
         elif now_cores is not None and now_cores >= BUSY_CORES:
@@ -715,11 +1137,36 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds, protecte
             **({} if live else {"stop": f"chat:{sid}", "gb": round(chat_kb.get(sid, 0) / 1048576, 1)})}))
     rows += [row for _, _, row in sorted(listed, key=lambda item: (-item[0], -item[1]))]
     weigh = lambda tree: (rate(sum(spent.get(pid, 0.0) for pid in tree)), sum(table[pid]["kb"] for pid in tree))
-    for pid, tree, now_cores, kb in sorted(orphans(table, tops, protected, weigh), key=lambda item: -item[3]):
-        parsed = procargs(pid)
-        name = " ".join([os.path.basename(parsed[0][0])] + parsed[0][1:]) if parsed and parsed[0] else table[pid]["comm"]
-        name = " ".join(name.split())
-        rows.append({"text": f"{'orphan':<10}  {short(name):<{TITLE_WIDTH}}  {cores(now_cores, 4)} cores  "
+    if leftovers:
+        members = [pid for pid, top in tops.items() if top in leftovers and not table[pid]["zombie"]]
+        now_cores, kb = weigh(members)
+        rows.append({"text": f"{'leftovers':<10}  {short(f'{len(members)} processes · {len(leftovers)} chats'):<{TITLE_WIDTH}}  "
+                             f"{cores(now_cores, 4)} cores  {gb(kb / 1024, 4)} GB",
+                     "stop": "leftovers:" + ",".join(leftovers), "gb": round(kb / 1048576, 1)})
+    view = view or {}
+    sims, ambiguous = view.get("sims", {}), view.get("ambiguous", {})
+    # A booted simulator no chat's ledger names, or two chats' do, is a row of its own; its Stop shuts it down.
+    for pid, sim in sorted(sims.items(), key=lambda item: item[1]["udid"]):
+        if sim["owner"]:
+            continue
+        now_cores, kb = weigh(sim["tree"])
+        rows.append({"text": f"{'simulator':<10}  {short(sim['name']):<{TITLE_WIDTH}}  {cores(now_cores, 4)} cores  "
+                             f"{gb(kb / 1024, 4)} GB  {waited(table[pid]['age'])}",
+                     "stop": f"sim:{sim['udid']}:{int(sim['start'])}", "gb": round(kb / 1048576, 1)})
+    # A root launchd adopted inside several chats' trees is shown, never stopped from here nor a guard's.
+    shown = set()
+    for pid, owners in sorted(ambiguous.items()):
+        tree = [member for member in tree_of(pid, table) if member not in tops]
+        shown.update(tree)
+        now_cores, kb = weigh(tree)
+        if (now_cores or 0.0) >= 0.05 or kb >= SHOWN_KB:
+            rows.append({"text": f"{'ambiguous':<10}  {short(command_name(pid, table)):<{TITLE_WIDTH}}  "
+                                 f"{cores(now_cores, 4)} cores  {gb(kb / 1024, 4)} GB  {waited(table[pid]['age'])}",
+                         "dim": True})
+    for sim in sims.values():
+        shown.update(sim["tree"])
+    for pid, tree, now_cores, kb in sorted(orphans(table, tops, set(protected) | shown, weigh), key=lambda item: -item[3]):
+        rows.append({"text": f"{'orphan':<10}  {short(command_name(pid, table)):<{TITLE_WIDTH}}  {cores(now_cores, 4)} cores  "
                              f"{gb(kb / 1024, 4)} GB  {waited(table[pid]['age'])}",
                      "stop": f"orphan:{pid}:{int(table[pid]['start'])}", "gb": round(kb / 1048576, 1)})
     for queue in queued:
@@ -739,33 +1186,64 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds, protecte
             "queue_stuck_s": QUEUE_STUCK_S, "error": ""}
 
 
+def attribution(table, prev, now):
+    """Who each process belongs to, the one answer sample and stop share: the environment, ancestry and registry
+    (attribute), what those settled on while the process lived (hold_owned), the resources the launch ledger
+    names (simulators, launchd jobs) and the working directory of a root launchd adopted (cwd_claims), in that
+    order. Returns the view and what it keeps for the next tick."""
+    envs = environments(table, prev.get("env", {}))
+    sessions = {sid: entry for sid, entry in live_sessions(table).items() if entry["own"]}
+    roots = registered_roots(table)
+    protected = set()
+    # Only a record of the process now under its pid spares it: a stale one on a reused pid hid a leftover's tree.
+    for pid in list(roots) + [entry["pid"] for entry in sessions.values()]:
+        protected.add(pid)
+        protected.update(lineage(pid, table))
+    tops, outermost = attribute(table, envs, sessions)
+    owned = hold_owned(table, tops, prev.get("owned", {}), protected)
+    chats = chat_trees(now, sessions, tops, outermost, prev.get("chats", {}))
+    records, ledger = ledger_records(prev.get("ledger", {}))
+    sims, sim_cache = simulators(table, records, prev.get("sims", {}), now)
+    labels, label_cache = labelled(table, records, prev.get("labels", {}), now)
+    resources = {}
+    for pid, sim in sims.items():
+        for member in sim["tree"] if sim["owner"] else []:
+            if member not in tops:
+                tops[member], resources[member] = outermost(sim["owner"]), ("sim", sim["udid"], pid)
+    for label, job in labels.items():
+        for member in tree_of(job["pid"], table) if job["owner"] and job["pid"] else []:
+            if member not in tops:
+                tops[member], resources[member] = outermost(job["owner"]), ("launchd", label, job["pid"])
+    skip = set(protected).union(*(sim["tree"] for sim in sims.values()))
+    claims, ambiguous, cwds = cwd_claims(table, tops, skip, chats, prev.get("cwd", {}), now)
+    tops.update(claims)
+    view = {"envs": envs, "sessions": sessions, "roots": roots, "protected": protected, "tops": tops,
+            "outermost": outermost, "chats": chats, "sims": sims, "labels": labels, "resources": resources,
+            "ambiguous": ambiguous}
+    return view, {"env": envs, "owned": owned, "chats": chats, "ledger": ledger, "sims": sim_cache,
+                  "labels": label_cache, "cwd": cwds}
+
+
 def sample(now, avail, swap, room, measure):
     os.makedirs(LOG_DIR, exist_ok=True)
     prev = read_json(STATE_PATH, {})
     state = {"guard": prev.get("guard"), "titles": prev.get("titles", {}), "hist": prev.get("hist", {}),
              "queues": prev.get("queues", {})}
     table = process_table()
-    envs = environments(table, prev.get("env", {}))
-    state["env"] = envs
-    registered = live_sessions(table)
-    sessions = {sid: entry for sid, entry in registered.items() if entry["own"]}
-    roots = registered_roots(table)
-    protected = set()
-    for pid in list(roots) + [entry["pid"] for entry in registered.values()]:
-        protected.add(pid)
-        protected.update(lineage(pid, table))
-    tops = attribute(table, envs, sessions)
+    view, kept = attribution(table, prev, now)
+    state.update(kept)
+    tops, sessions, protected = view["tops"], view["sessions"], view["protected"]
     footprints(table, [pid for pid, row in table.items() if not row["zombie"]])
     failure = ""
     try:
-        event = guard(now, avail, room, measure, table, envs, tops, sessions, protected, roots, state["titles"],
-                      prev.get("guard"))
+        event = guard(now, avail, room, measure, table, view["envs"], tops, sessions, protected, view["roots"],
+                      state["titles"], prev.get("guard"), view["resources"], view["sims"])
         if event:
             state["guard"] = event
     except Exception as error:
         failure = f"guard: {error!r}"
     try:
-        snapshot = render(now, avail, swap, table, tops, sessions, state, prev, live_holds(now, table), protected)
+        snapshot = render(now, avail, swap, table, tops, sessions, state, prev, live_holds(now, table), protected, view)
     except Exception as error:
         snapshot = {"as_of": now, "title": "Chats: error", "alarm": False, "rows": []}
         failure = failure or f"render: {error!r}"
@@ -778,22 +1256,42 @@ def sample(now, avail, swap, room, measure):
     return 0
 
 
+def born_owner(pid, view):
+    """The chat a process born during a Stop belongs to by its own environment or its working directory, "" for
+    none: it has no ancestry left to read once launchd adopted it."""
+    parsed = procargs(pid)
+    sid = (parsed[1][0] or parsed[1][1]) if parsed else ""
+    if sid:
+        return view["outermost"](sid)
+    owners = deepest_owners(shared_module("machine_probe").proc_cwd(pid) or "", view["chats"])
+    return owners[0] if len(owners) == 1 else ""
+
+
 def stop(key):
     """Ends what one menu row counts, worked out again from the live table, so a pid reused since the row was
-    drawn is never touched: `chat:<session>` every process of a closed chat, `orphan:<pid>:<start>` an orphan's
-    tree. SIGTERM first; a child they spawn while shutting down goes too (2026-10-28: a stopped `nx serve` started
-    a fresh nx daemon on its way out); what still runs after STOP_GRACE_S is SIGKILLed."""
-    table = process_table()
+    drawn is never touched: `chat:<session>` every process of a closed chat, `leftovers:<session>,...` those of
+    several, `sim:<udid>:<start>` a simulator no chat owns, `orphan:<pid>:<start>` an orphan's tree. A resource the
+    ledger bills to the chat ends by its own teardown first (`simctl shutdown`, `launchctl bootout` of a label that
+    chat submitted). Then SIGTERM with SIGCONT, so a stopped process hears it; a child they spawn while shutting
+    down goes too, and so does a process launchd adopted meanwhile that is the same chat's by its environment or
+    working directory (2026-10-28: a stopped `nx serve` started a fresh nx daemon on its way out); one that is not
+    is named and left. What still runs after STOP_GRACE_S is SIGKILLed."""
+    table, began = process_table(), time.time()
     uid, me = os.getuid(), {os.getpid(), *lineage(os.getpid(), table)}
-    registered = live_sessions(table)
-    sessions = {sid: entry for sid, entry in registered.items() if entry["own"]}
-    tops = attribute(table, environments(table, read_json(STATE_PATH, {}).get("env", {})), sessions)
+    view = attribution(table, read_json(STATE_PATH, {}), int(began))[0]
+    sessions, tops, outermost = view["sessions"], view["tops"], view["outermost"]
     kind, _, rest = key.partition(":")
-    if kind == "chat" and rest:
-        if rest in sessions:
+    chats, teardown = set(), []
+    if kind in ("chat", "leftovers") and rest:
+        chats = set(rest.split(","))
+        if chats & set(sessions):
             print("that chat is open: close it in its tab")
             return 1
-        members = {pid for pid, top in tops.items() if top == rest}
+        members = {pid for pid, top in tops.items() if top in chats}
+        teardown = [("simulator", sim["name"], sim["udid"]) for sim in view["sims"].values()
+                    if sim["owner"] and outermost(sim["owner"]) in chats]
+        teardown += [("launchd job", label, label) for label, job in sorted(view["labels"].items())
+                     if job["owner"] and outermost(job["owner"]) in chats]
     elif kind == "orphan" and re.fullmatch(r"\d+:\d+", rest):
         pid, start = (int(part) for part in rest.split(":"))
         row = table.get(pid)
@@ -804,39 +1302,71 @@ def stop(key):
         if members & set(tops):
             print("a chat's work runs under it now: left alone")
             return 1
+    elif kind == "sim" and re.fullmatch(r"[0-9A-Fa-f-]+:\d+", rest):
+        udid, _, start = rest.rpartition(":")
+        sim = next((sim for sim in view["sims"].values() if sim["udid"] == udid and abs(sim["start"] - int(start)) <= 2), None)
+        if not sim:
+            print("already gone")
+            return 0
+        if sim["owner"] and outermost(sim["owner"]) in sessions:
+            print("an open chat's simulator: left alone")
+            return 1
+        members, teardown = set(sim["tree"]), [("simulator", sim["name"], udid)]
     else:
-        print("usage: chat-load stop chat:<session> | orphan:<pid>:<start>", file=sys.stderr)
+        print("usage: chat-load stop chat:<session> | leftovers:<session>,... | sim:<udid>:<start> | orphan:<pid>:<start>",
+              file=sys.stderr)
         return 2
     members = {pid for pid in members if table[pid]["uid"] == uid and not table[pid]["zombie"] and pid not in me}
-    if not members:
+    if not members and not teardown:
         print("nothing left to stop")
         return 0
     footprints(table, members)
     mb = sum(table[pid]["kb"] for pid in members) / 1024
+    notes, failed = [], False
+    for what, name, ident in teardown:
+        done = simctl_shutdown(ident) if what == "simulator" else launchctl_bootout(ident)
+        failed = failed or not done
+        notes.append(f"{what} {name} " + ("would not stop" if not done else "shut down" if what == "simulator" else "booted out"))
 
-    def send(pids, sig):
+    def send(pids, *sigs):
         for pid in pids:
-            try:
-                os.kill(pid, sig)
-            except OSError:
-                pass
+            for sig in sigs:
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
 
     def running():
         live = process_table()
         return live, {pid for pid in members if pid in live and not live[pid]["zombie"]
                       and abs(live[pid]["start"] - table[pid]["start"]) <= 2}
 
-    send(members, signal.SIGTERM)
-    deadline = time.monotonic() + STOP_GRACE_S
+    def adopted(pid, row):
+        known = table.get(pid)
+        return (row["ppid"] == 1 and row["uid"] == uid and not row["zombie"] and row["start"] >= began - 2
+                and not (known and abs(known["start"] - row["start"]) <= 2) and pid not in me
+                and not row["path"].startswith("/System/") and not any(part in row["path"] for part in SYSTEM_PARTS))
+
+    send(members, signal.SIGTERM, signal.SIGCONT)
+    judged, left = set(), []
+    deadline, settled = time.monotonic() + STOP_GRACE_S, time.monotonic() + STOP_SETTLE_S
     while True:
         live, alive = running()
         born = {pid for pid, row in live.items() if row["ppid"] in alive and pid not in members
                 and row["uid"] == uid and not row["zombie"] and pid not in me}
+        for pid, row in live.items():
+            if pid in members or pid in judged or not adopted(pid, row):
+                continue
+            judged.add(pid)
+            if chats and born_owner(pid, view) in chats:
+                born.update(member for member in tree_of(pid, live) if member not in members and member not in me)
+            else:
+                left.append(pid)
         for pid in born:
             table[pid] = live[pid]
         members |= born
-        send(born, signal.SIGTERM)
-        if not (alive or born) or time.monotonic() >= deadline:
+        send(born, signal.SIGTERM, signal.SIGCONT)
+        if (not (alive or born) and time.monotonic() >= settled) or time.monotonic() >= deadline:
             break
         time.sleep(0.2)
     if alive or born:
@@ -847,9 +1377,11 @@ def stop(key):
                 break
             time.sleep(0.1)
     count = len(members) - len(alive)
-    print(f"stopped {count} process{'es' if count != 1 else ''} · {mb / 1024:.1f} GB"
-          + (f" · {len(alive)} would not stop: pid {', '.join(map(str, sorted(alive)))}" if alive else ""))
-    return 1 if alive else 0
+    print(f"stopped {count} process{'es' if count != 1 else ''} · {mb / 1024:.1f} GB" + "".join(f" · {note}" for note in notes)
+          + (f" · {len(alive)} would not stop: pid {', '.join(map(str, sorted(alive)))}" if alive else "")
+          + (f" · {len(left)} started meanwhile, not this chat's, left: pid {', '.join(map(str, sorted(left)[:3]))}"
+             if left else ""))
+    return 1 if alive or failed else 0
 
 
 def show():
@@ -868,6 +1400,12 @@ def main(argv):
         return show()
     if argv[:1] == ["stop"] and len(argv) == 2:
         return stop(argv[1])
+    if argv == ["ledger"]:
+        try:
+            payload = json.load(sys.stdin)
+        except ValueError:
+            return 0
+        return ledger_hook(payload) if isinstance(payload, dict) else 0
     if (argv[:1] == ["sample"] and len(argv) == 11
             and argv[1::2] == ["--now", "--avail", "--swap", "--room", "--measure"] and argv[10] in ("ram", "swap")):
         try:
@@ -881,7 +1419,8 @@ def main(argv):
                 print(f"CHAT-LOAD-ERROR {now} sample: {error!r}", flush=True)
                 return 1
     print("usage: chat-load sample --now EPOCH --avail MB --swap MB --room MB --measure ram|swap | chat-load show"
-          " | chat-load stop chat:<session>|orphan:<pid>:<start>", file=sys.stderr)
+          " | chat-load stop chat:<session>|leftovers:<session>,...|sim:<udid>:<start>|orphan:<pid>:<start>"
+          " | chat-load ledger <hook payload", file=sys.stderr)
     return 2
 
 

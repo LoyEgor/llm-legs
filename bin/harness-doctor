@@ -4882,6 +4882,8 @@ DEPLOYS = (
     ("bin/memlogd install-agent", (("libexec", "memlogd", "copy", "bin/memlogd"),
                                    ("libexec", "chat-load", "copy", "bin/chat-load"),
                                    ("libexec", "chat_names.py", "copy", "share/chat_names.py"),
+                                   ("libexec", "machine_probe.py", "copy", "share/machine_probe.py"),
+                                   ("libexec", "limit_hit.py", "copy", "share/limit_hit.py"),
                                    ("libexec", "report-bus", "copy", "bin/report-bus"),
                                    ("libexec", "report_frame.py", "copy", "share/report_frame.py"),
                                    ("libexec", "store-lock.sh", "copy", "share/store-lock.sh"),

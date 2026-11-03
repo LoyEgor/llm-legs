@@ -120,7 +120,7 @@ case "$*" in
     # of the guard, it is the bug the guard is for.
     [ -n "${GUARD_SCOPE:-}" ] || exit 0
     /bin/ps -axo "$2" | awk -v scope="$GUARD_SCOPE" -v fat="${HEAVY_PIDS:-}" -v foreign="${FOREIGN_PIDS:-}" \
-      -v aged="${AGED_PIDS:-}" '
+      -v aged="${AGED_PIDS:-}" -v sims="${SIM_PIDS:-}" '
       # Two hours added to the real etime, not a fixed one: the start chat-load derives (now - etime) has to
       # hold still between the row a guard draws and the stop that names it, however slow the machine is.
       function older(e,   d, p, n, i, s) {
@@ -142,9 +142,13 @@ case "$*" in
         # An orphan counts from an hour old: these pids are shown two hours old instead of waited for.
         n = split(aged, list, " ")
         for (i = 1; i <= n; i++) old[list[i] + 0] = 1
+        # A booted simulator is a launchd_sim by its command name: these pids are shown as one.
+        n = split(sims, list, " ")
+        for (i = 1; i <= n; i++) sim[list[i] + 0] = 1
       }
       (($3 + 0) in keep) {
         if (($1 + 0) in heavy) $5 = heavy[$1 + 0]; if (($1 + 0) in root) $4 = 0; if (($1 + 0) in old) $7 = older($7)
+        if (($1 + 0) in sim) $9 = "/Library/Developer/CoreSimulator/launchd_sim"
         print
       }'
     ;;
@@ -164,6 +168,19 @@ case "$*" in
   *)
     printf 'UNEXPECTED-PS %s\n' "$*"
     ;;
+esac
+EOF
+
+# simctl answers from a case's fixture (SIMCTL_BOOTED, a `list -j devices booted` answer) and logs a shutdown:
+# no case boots or shuts down a real simulator.
+cat >"$FAKE_BIN/xcrun" <<'EOF'
+#!/usr/bin/env bash
+set -u
+[ "${1:-}" = simctl ] || exit 64
+case "${2:-}" in
+  list) if [ -n "${SIMCTL_BOOTED:-}" ]; then cat "$SIMCTL_BOOTED"; else printf '{"devices":{}}\n'; fi ;;
+  shutdown) printf 'shutdown %s\n' "${3:-}" >>"${SIMCTL_LOG:-/dev/null}" ;;
+  *) exit 64 ;;
 esac
 EOF
 
@@ -220,7 +237,7 @@ fi
 exec /bin/date "$@"
 EOF
 chmod +x "$FAKE_BIN/vm_stat" "$FAKE_BIN/sysctl" "$FAKE_BIN/df" "$FAKE_BIN/ps" "$SEAM_BIN/date" "$SEAM_BIN/stat" \
-  "$FAKE_BIN/notifyutil" "$SEAM_BIN/jq"
+  "$FAKE_BIN/notifyutil" "$SEAM_BIN/jq" "$FAKE_BIN/xcrun"
 PATH="$FAKE_BIN:$PATH"
 export PATH
 
@@ -846,9 +863,9 @@ gone() {
 
 # A live chat, in the shape Claude Code writes `<config>/sessions/<pid>.json`, and its transcript
 # carrying the title the real resolver (share/chat_names.py) names it by.
-register_session() { # session pid [status]
-  jq -n --arg sid "$1" --argjson pid "$2" --arg status "${3:-busy}" \
-    '{pid: $pid, sessionId: $sid, cwd: "/tmp", startedAt: 0, status: $status}' >"$SESSIONS_DIR/$2.json"
+register_session() { # session pid [status] [cwd]
+  jq -n --arg sid "$1" --argjson pid "$2" --arg status "${3:-busy}" --arg cwd "${4:-/tmp}" \
+    '{pid: $pid, sessionId: $sid, cwd: $cwd, startedAt: 0, status: $status}' >"$SESSIONS_DIR/$2.json"
   retitle "$1" "Chat $1"
 }
 retitle() { # session title ('' = untitled)
@@ -1308,8 +1325,9 @@ assert test "$(jq -r .error "$menu")" = ''
 # A closed chat's row carries its stop key; `chat-load stop` ends every process the row counts, a child
 # that ignores SIGTERM included (SIGKILL after the grace), and refuses while the chat is open.
 chat_load_stop() { # key
-  env MEMLOGD_DIR="$WORK/stop-state" WORKER_RUN_DIR="$GUARD_ROOT/runs" WORKER_STATS_DIR="$GUARD_ROOT/stats" \
-    CHAT_LOAD_SESSIONS="$SESSIONS_DIR" GUARD_SCOPE="$GUARD_SCOPE" AGED_PIDS="${AGED_PIDS:-}" HEAVY_PIDS="${HEAVY_PIDS:-}" \
+  env MEMLOGD_DIR="${STOP_STATE:-$WORK/stop-state}" WORKER_RUN_DIR="$GUARD_ROOT/runs" WORKER_STATS_DIR="$GUARD_ROOT/stats" \
+    CHAT_LOAD_SESSIONS="$SESSIONS_DIR" CHAT_NAME_ROOTS="$WORK/transcripts" CHAT_NAMES_CACHE="$WORK/chat-names.json" \
+    GUARD_SCOPE="$GUARD_SCOPE" AGED_PIDS="${AGED_PIDS:-}" HEAVY_PIDS="${HEAVY_PIDS:-}" SIM_PIDS="${SIM_PIDS:-}" \
     python3 "$ROOT/bin/chat-load" stop "$1"
 }
 clear_registry
@@ -1522,6 +1540,436 @@ assert jq -e --slurpfile a "$WORK/skew-before.json" '
   (.env | length) == 3 and ([.env | to_entries[] | apart(.value[0]; $a[0].env[.key][0]) <= 2] | all)
   and ([.procs | to_entries[] | apart(.value[0]; $a[0].procs[.key][0]) <= 2] | all)' "$SKEW_DIR/chat-load.state.json"
 
+# --- attribution past detachment, launchd and the launch ledger ---------------------------------------
+# launchctl answers from a case's job list (LAUNCHCTL_JOBS, `PID<tab>Status<tab>Label` lines) and logs a
+# bootout; on PATH only for the cases naming it, so no case lists, loads or boots out a real job.
+mkdir -p "$WORK/launchd-bin"
+cat >"$WORK/launchd-bin/launchctl" <<'EOF'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  list) [ -z "${LAUNCHCTL_LIST_FAILS:-}" ] || exit 1
+    printf 'PID\tStatus\tLabel\n'; cat "${LAUNCHCTL_JOBS:-/dev/null}" ;;
+  bootout) printf 'bootout %s\n' "${2:-}" >>"${LAUNCHCTL_LOG:-/dev/null}" ;;
+  *) exit 64 ;;
+esac
+EOF
+chmod +x "$WORK/launchd-bin/launchctl"
+FAKE_LAUNCHD="$WORK/launchd-bin:$PATH"
+
+# A root launchd adopted, in a group of its own, with one sleeper under it: what a detached job leaves once
+# its shell is gone. Asked, it writes a marker and touches a go file when SIGTERM reaches it, then exits.
+cat >"$WORK/detached.py" <<'PY'
+import os, signal, subprocess, sys, time
+report, cwd, marker, go = sys.argv[1:5]
+if os.fork():
+    sys.exit(0)
+os.setpgrp()
+if cwd:
+    os.chdir(cwd)
+
+def ended(*_):
+    for path in (marker, go):
+        if path:
+            open(path, "w").close()
+    os._exit(0)
+
+if marker or go:
+    signal.signal(signal.SIGTERM, ended)
+kid = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+open(report + ".tmp", "w").write(f"{os.getpid()} {kid.pid}\n"); os.rename(report + ".tmp", report)
+while True:
+    time.sleep(300)
+PY
+spawn_detached() { # [session] [cwd] [marker] [go] [VAR=value...] -> sets DETACHED_ROOT / DETACHED_KID
+  rm -f "$WORK/detached.pids"
+  session_env "${1:-}" ''
+  "${GROUP_ENV[@]}" "${@:5}" "$FIXTURE_PY" "$WORK/detached.py" "$WORK/detached.pids" "${2:-}" "${3:-}" "${4:-}" \
+    >/dev/null 2>&1
+  local waited=0
+  while [ ! -s "$WORK/detached.pids" ] && [ "$waited" -lt 200 ]; do sleep 0.05; waited=$((waited + 1)); done
+  read -r DETACHED_ROOT DETACHED_KID <"$WORK/detached.pids"
+  TREE_PIDS+=("$DETACHED_ROOT" "$DETACHED_KID")
+  GUARD_SCOPE="${GUARD_SCOPE:+$GUARD_SCOPE }$DETACHED_ROOT"
+}
+project_dir() { mkdir -p "$WORK/$1" && (cd "$WORK/$1" && pwd -P); }
+row_of() { jq -c --arg sid "$2" '[.rows[] | objects | select(.session == $sid or .stop == "chat:" + $sid)]' "$(chats_json "$1")"; }
+ledger_line() { # dir session kind id [ambiguous]
+  mkdir -p "$1/ledger"
+  jq -nc --arg s "$2" --arg k "$3" --arg id "$4" --argjson at "$(date +%s)" --argjson amb "${5:-false}" \
+    '{session: $s, kind: $k, id: $id, at: $at, ambiguous: $amb}' >>"$1/ledger/$2.jsonl"
+}
+
+# A launchctl listing that failed is no evidence that launchd manages nothing: no orphan rows from it.
+clear_registry
+spawn_orphan
+BLIND_ROOT=$ORPHAN_ROOT BLIND_KID=$ORPHAN_KID
+probes 8192 1024
+: >"$WORK/no-jobs"
+assert guard_run "$WORK/guard-blind-launchd" MEMLOGD_MAX_TICKS=1 PATH="$FAKE_LAUNCHD" LAUNCHCTL_LIST_FAILS=1 \
+  HEAVY_PIDS="$BLIND_KID=102400" AGED_PIDS="$BLIND_ROOT"
+assert test "$(orphan_rows "$WORK/guard-blind-launchd")" = '[]'
+probes 8192 1024
+assert guard_run "$WORK/guard-read-launchd" MEMLOGD_MAX_TICKS=1 PATH="$FAKE_LAUNCHD" LAUNCHCTL_JOBS="$WORK/no-jobs" \
+  HEAVY_PIDS="$BLIND_KID=102400" AGED_PIDS="$BLIND_ROOT"
+assert test "$(jq length <<<"$(orphan_rows "$WORK/guard-read-launchd")")" = 1
+
+# A session record of another process than the one now under its pid spares nothing: a stale record on a
+# reused pid hid the orphan's tree.
+clear_registry
+spawn_orphan
+register_session chat-stale "$ORPHAN_ROOT"
+touch -t "$(date -v-1d +%Y%m%d%H%M)" "$SESSIONS_DIR/$ORPHAN_ROOT.json"
+probes 8192 1024
+assert guard_run "$WORK/guard-stale-record" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$ORPHAN_KID=102400" AGED_PIDS="$ORPHAN_ROOT"
+assert jq -e --arg root "$ORPHAN_ROOT" 'length == 1 and (.[0].stop | startswith("orphan:" + $root + ":"))' \
+  <<<"$(orphan_rows "$WORK/guard-stale-record")"
+
+# A record's procStart says which process wrote it, whatever its mtime: a mismatch with a fresh mtime is a
+# closed chat, a match with an old one a live chat.
+clear_registry
+spawn_leaf
+register_session chat-moved "$LEAF_ROOT"
+jq '.procStart = "Mon Jan  1 00:00:00 2024"' "$SESSIONS_DIR/$LEAF_ROOT.json" >"$WORK/record.json"
+mv "$WORK/record.json" "$SESSIONS_DIR/$LEAF_ROOT.json"
+spawn_tree chat-moved
+MOVED_KIDS=$TREE_KIDS
+spawn_leaf
+register_session chat-kept "$LEAF_ROOT"
+jq --arg began "$(LC_ALL=C TZ=UTC /bin/ps -o lstart= -p "$LEAF_ROOT")" '.procStart = $began' \
+  "$SESSIONS_DIR/$LEAF_ROOT.json" >"$WORK/record.json"
+mv "$WORK/record.json" "$SESSIONS_DIR/$LEAF_ROOT.json"
+touch -t "$(date -v-1d +%Y%m%d%H%M)" "$SESSIONS_DIR/$LEAF_ROOT.json"
+probes 8192 1024
+assert guard_run "$WORK/guard-proc-start" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="${MOVED_KIDS// /=102400 }=102400"
+assert jq -e 'length == 1 and (.[0].text | startswith("closed  "))' <<<"$(row_of "$WORK/guard-proc-start" chat-moved)"
+assert jq -e 'length == 1 and (.[0] | has("stop") | not) and (.[0].text | startswith("wait model  "))' \
+  <<<"$(row_of "$WORK/guard-proc-start" chat-kept)"
+
+# A closed chat's own leftovers show at once, however small: under the floor they share one `leftovers` row
+# whose Stop ends them all.
+clear_registry
+spawn_tree chat-small1
+SMALL_PIDS="$TREE_ROOT $TREE_KIDS"
+spawn_tree chat-small2
+SMALL_PIDS="$SMALL_PIDS $TREE_ROOT $TREE_KIDS"
+probes 8192 1024
+assert guard_run "$WORK/guard-leftovers" MEMLOGD_MAX_TICKS=1
+leftovers=$(jq -c '[.rows[] | objects | select(.stop | strings | startswith("leftovers:"))]' "$(chats_json "$WORK/guard-leftovers")")
+assert jq -e 'length == 1 and .[0].stop == "leftovers:chat-small1,chat-small2"
+  and (.[0].text | test("^leftovers   6 processes · 2 chats +\\S+ cores +[0-9.]+ GB$"))' <<<"$leftovers"
+assert jq -e '[.rows[] | objects | select(.session | strings | startswith("chat-small"))] == []' \
+  "$(chats_json "$WORK/guard-leftovers")"
+assert grep -qE '^stopped 6 processes · [0-9.]+ GB$' <<<"$(chat_load_stop leftovers:chat-small1,chat-small2)"
+for pid in $SMALL_PIDS; do assert gone "$pid"; done
+
+# A chat's jobs are weighed together: two groups of 977 and 781 MB outweigh another chat's one of 1400 MB, and
+# the heavier chat's larger group goes first; no single group is over the ceiling.
+clear_registry
+spawn_tree chat-split
+SPLIT_A=$TREE_ROOT SPLIT_A_KIDS=$TREE_KIDS
+spawn_tree chat-split
+SPLIT_B=$TREE_ROOT SPLIT_B_KIDS=$TREE_KIDS
+spawn_tree chat-solo
+SOLO_ROOT=$TREE_ROOT SOLO_KIDS=$TREE_KIDS
+probes 2000 1024
+assert guard_run "$WORK/guard-split" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="${SPLIT_A_KIDS// /=500000 }=500000 \
+${SPLIT_B_KIDS// /=400000 }=400000 ${SOLO_KIDS// /=716800 }=716800"
+assert grep -qE "^KILLED [0-9]{10} chat=chat-split job_pgid=$SPLIT_A " "$(log_file "$WORK/guard-split")"
+for pid in $SPLIT_A $SPLIT_A_KIDS; do assert gone "$pid"; done
+for pid in $SPLIT_B $SPLIT_B_KIDS $SOLO_ROOT $SOLO_KIDS; do assert alive "$pid"; done
+
+# Ownership outlives detachment: a job attributed once keeps its chat after its parent died and it lost the
+# session variables, and what it forks later inherits it.
+clear_registry
+cat >"$WORK/durable.py" <<'PY'
+import os, subprocess, sys
+report, go = sys.argv[1:3]
+os.setpgrp()
+env = {key: value for key, value in os.environ.items() if not key.startswith("CLAUDE")}
+child = subprocess.Popen([sys.executable, "-c", """import os, subprocess, sys, time
+go, report = sys.argv[1:3]
+while not os.path.exists(go):
+    time.sleep(0.05)
+late = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+open(report + ".tmp", "w").write(f"{late.pid}\\n"); os.rename(report + ".tmp", report)
+time.sleep(300)""", go, report + ".late"], env=env)
+open(report + ".tmp", "w").write(f"{os.getpid()} {child.pid}\n"); os.rename(report + ".tmp", report)
+child.wait()
+PY
+session_env chat-dur ''
+"${GROUP_ENV[@]}" "$FIXTURE_PY" "$WORK/durable.py" "$WORK/durable.pids" "$WORK/durable.go" >/dev/null 2>&1 &
+disown
+waited=0
+while [ ! -s "$WORK/durable.pids" ] && [ "$waited" -lt 200 ]; do sleep 0.05; waited=$((waited + 1)); done
+read -r DUR_PARENT DUR_CHILD <"$WORK/durable.pids"
+TREE_PIDS+=("$DUR_PARENT" "$DUR_CHILD")
+GUARD_SCOPE="$DUR_PARENT"
+DUR_DIR="$WORK/guard-durable"
+mkdir -p "$DUR_DIR"
+assert chat_load_sample "$DUR_DIR" "$(date +%s)"
+kill -KILL "$DUR_PARENT"
+assert gone "$DUR_PARENT"
+touch "$WORK/durable.go"
+waited=0
+while [ ! -s "$WORK/durable.pids.late" ] && [ "$waited" -lt 200 ]; do sleep 0.05; waited=$((waited + 1)); done
+read -r DUR_LATE <"$WORK/durable.pids.late"
+TREE_PIDS+=("$DUR_LATE")
+assert test "$(/bin/ps -o ppid= -p "$DUR_CHILD" | tr -d ' ')" = 1
+HEAVY_PIDS="$DUR_CHILD=102400" assert chat_load_sample "$DUR_DIR" "$(date +%s)"
+assert jq -e --arg c "$DUR_CHILD" --arg l "$DUR_LATE" '.owned[$c][1] == "chat-dur" and .owned[$l][1] == "chat-dur"' \
+  "$DUR_DIR/chat-load.state.json"
+assert jq -e 'length == 1 and .[0].stop == "chat:chat-dur" and .[0].gb == 0.1' <<<"$(row_of "$DUR_DIR" chat-dur)"
+assert test "$(STOP_STATE="$DUR_DIR" HEAVY_PIDS="$DUR_CHILD=102400" chat_load_stop chat:chat-dur)" = 'stopped 2 processes · 0.1 GB'
+for pid in $DUR_CHILD $DUR_LATE; do assert gone "$pid"; done
+
+# An empty environment read is not final until ENV_TRIES ticks said so: a process read mid-start would
+# otherwise be no chat's for its whole life.
+clear_registry
+spawn_tree chat-retry
+RETRY_KIDS=$TREE_KIDS
+RETRY_DIR="$WORK/guard-retry"
+probes 8192 1024
+assert guard_run "$RETRY_DIR" MEMLOGD_MAX_TICKS=1
+jq '.env |= map_values([.[0], "", "", .[3]]) | del(.owned)' "$RETRY_DIR/chat-load.state.json" >"$WORK/retry-state.json"
+mv "$WORK/retry-state.json" "$RETRY_DIR/chat-load.state.json"
+probes 2000 1024
+assert guard_run "$RETRY_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$RETRY_KIDS"
+assert grep -qE '^KILLED .* chat=chat-retry ' "$(log_file "$RETRY_DIR")"
+
+# A root launchd adopted with no session variables left is taken back by its working directory: inside one
+# chat's tree it is that chat's, live and after the chat closed, and its Stop ends it.
+clear_registry
+CWD_TREE=$(project_dir proj-cwd)
+mkdir -p "$CWD_TREE/sub"
+spawn_leaf
+CWD_CLI=$LEAF_ROOT
+register_session chat-cwd "$CWD_CLI" busy "$CWD_TREE"
+spawn_detached '' "$CWD_TREE/sub"
+CWD_ROOT=$DETACHED_ROOT CWD_KID=$DETACHED_KID
+CWD_DIR="$WORK/guard-cwd"
+probes 8192 1024
+assert guard_run "$CWD_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$CWD_KID=102400" AGED_PIDS="$CWD_ROOT"
+assert jq -e 'length == 1 and (.[0].text | test("^wait model  .*  0\\.1 GB  "))' <<<"$(row_of "$CWD_DIR" chat-cwd)"
+assert test "$(orphan_rows "$CWD_DIR")" = '[]'
+rm -f "$SESSIONS_DIR/$CWD_CLI.json"
+probes 8192 1024
+assert guard_run "$CWD_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$CWD_KID=102400" AGED_PIDS="$CWD_ROOT"
+assert jq -e 'length == 1 and .[0].stop == "chat:chat-cwd" and .[0].gb == 0.1' <<<"$(row_of "$CWD_DIR" chat-cwd)"
+assert test "$(STOP_STATE="$CWD_DIR" HEAVY_PIDS="$CWD_KID=102400" AGED_PIDS="$CWD_ROOT" chat_load_stop chat:chat-cwd)" = \
+  'stopped 2 processes · 0.1 GB'
+for pid in $CWD_ROOT $CWD_KID; do assert gone "$pid"; done
+assert alive "$CWD_CLI"
+
+# Inside two chats' trees it is ambiguous: its own dim row, no Stop, never the guard's.
+clear_registry
+AMB_TREE=$(project_dir proj-amb)
+spawn_leaf
+register_session chat-amb1 "$LEAF_ROOT" idle "$AMB_TREE"
+spawn_leaf
+register_session chat-amb2 "$LEAF_ROOT" idle "$AMB_TREE"
+spawn_detached '' "$AMB_TREE"
+AMB_ROOT=$DETACHED_ROOT AMB_KID=$DETACHED_KID
+probes 2000 1024
+assert guard_run "$WORK/guard-amb" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$AMB_KID=1700000" AGED_PIDS="$AMB_ROOT"
+assert_fails grep -q '^KILLED ' "$(log_file "$WORK/guard-amb")"
+assert jq -e '[.rows[] | objects | select(.text | startswith("ambiguous  "))] | length == 1 and (.[0].dim) and (.[0] | has("stop") | not)' \
+  "$(chats_json "$WORK/guard-amb")"
+assert test "$(orphan_rows "$WORK/guard-amb")" = '[]'
+for pid in $AMB_ROOT $AMB_KID; do assert alive "$pid"; done
+
+# The launch ledger: the hook snapshots what a simctl or launchctl call names, Pre and Post, and what appeared
+# while another chat's call of the same kind was open is ambiguous. A call naming neither writes nothing.
+LEDGER_DIR="$WORK/ledger-hook"
+booted() { # udid... -> the simctl fixture lists them booted
+  jq -n '{devices: {"com.apple.CoreSimulator.SimRuntime.iOS-26-0":
+    [$ARGS.positional[] | {udid: ., name: "iPhone Fixture", state: "Booted"}]}}' --args "$@" >"$WORK/booted.json"
+}
+ledger_call() { # event session call command
+  jq -nc --arg e "$1" --arg s "$2" --arg c "$3" --arg cmd "$4" \
+    '{hook_event_name: $e, session_id: $s, tool_use_id: $c, tool_name: "Bash", tool_input: {command: $cmd}}' |
+    env -u CLAUDE_LAUNCHER_SESSION MEMLOGD_DIR="$LEDGER_DIR" PATH="$FAKE_LAUNCHD" SIMCTL_BOOTED="$WORK/booted.json" \
+      LAUNCHCTL_JOBS="$WORK/ledger-jobs" python3 "$ROOT/bin/chat-load" ledger
+}
+ledger_of() { jq -sc 'map([.kind, .id, .ambiguous])' "$LEDGER_DIR/ledger/$1.jsonl"; }
+booted
+assert ledger_call PreToolUse chat-l1 toolu_a 'xcrun simctl boot U1'
+booted U1
+assert ledger_call PostToolUse chat-l1 toolu_a 'xcrun simctl boot U1'
+assert ledger_call PreToolUse chat-l2 toolu_b 'xcrun simctl boot U2'
+booted U1 U2
+assert ledger_call PostToolUse chat-l2 toolu_b 'xcrun simctl boot U2'
+assert test "$(ledger_of chat-l1)" = '[["sim","U1",false]]'
+assert test "$(ledger_of chat-l2)" = '[["sim","U2",false]]'
+assert ledger_call PreToolUse chat-l3 toolu_c 'xcodebuild test -destination id=U3'
+assert ledger_call PreToolUse chat-l4 toolu_d 'xcrun simctl boot U3'
+booted U1 U2 U3
+assert ledger_call PostToolUse chat-l3 toolu_c 'xcodebuild test -destination id=U3'
+assert ledger_call PostToolUse chat-l4 toolu_d 'xcrun simctl boot U3'
+assert test "$(ledger_of chat-l3)" = '[["sim","U3",true]]'
+assert test "$(ledger_of chat-l4)" = '[["sim","U3",true]]'
+printf '123\t0\tcom.apple.thing\n' >"$WORK/ledger-jobs"
+assert ledger_call PreToolUse chat-l5 toolu_e 'launchctl bootstrap gui/501 ~/Library/LaunchAgents/x.plist'
+printf '123\t0\tcom.apple.thing\n-\t0\tcom.fixture.agent\n456\t0\tapplication.com.foo.1\n' >"$WORK/ledger-jobs"
+assert ledger_call PostToolUse chat-l5 toolu_e 'launchctl bootstrap gui/501 ~/Library/LaunchAgents/x.plist'
+assert test "$(ledger_of chat-l5)" = '[["launchd","com.fixture.agent",false]]'
+calls_before=$(ls "$LEDGER_DIR/ledger/calls" | wc -l)
+assert ledger_call PreToolUse chat-l6 toolu_f 'ls -la'
+assert test "$(ls "$LEDGER_DIR/ledger/calls" | wc -l)" = "$calls_before"
+assert test ! -e "$LEDGER_DIR/ledger/chat-l6.jsonl"
+# The Bash hook is what calls it, Pre and Post.
+hook_call() { # event
+  jq -nc --arg e "$1" '{hook_event_name: $e, session_id: "chat-l7", tool_use_id: "toolu_g", tool_name: "Bash",
+    tool_input: {command: "xcrun simctl boot U9"}, cwd: "/tmp"}' |
+    env -u CLAUDE_LAUNCHER_SESSION HOME="$WORK/hook-home" STATUSLINE_CACHE_DIR="$WORK/hook-cache" \
+      MEMLOGD_DIR="$LEDGER_DIR" SIMCTL_BOOTED="$WORK/booted.json" bash "$ROOT/bin/statusline-workdir-hook.sh"
+}
+hook_call PreToolUse || :
+booted U1 U2 U3 U9
+hook_call PostToolUse || :
+assert test "$(ledger_of chat-l7)" = '[["sim","U9",false]]'
+
+# A simulator the ledger bills to a closed chat is on that chat's row, and the guard shuts it down as one job.
+clear_registry
+SIM_UDID=11111111-2222-3333-4444-555555555555
+spawn_detached '' '' '' '' SIMULATOR_UDID="$SIM_UDID" "SIMULATOR_DEVICE_NAME=iPhone Fixture"
+SIM_ROOT=$DETACHED_ROOT SIM_KID=$DETACHED_KID
+SIM_DIR="$WORK/guard-sim"
+ledger_line "$SIM_DIR" chat-sim sim "$SIM_UDID"
+probes 8192 1024
+assert guard_run "$SIM_DIR" MEMLOGD_MAX_TICKS=1 SIM_PIDS="$SIM_ROOT" HEAVY_PIDS="$SIM_KID=102400"
+assert jq -e 'length == 1 and .[0].stop == "chat:chat-sim" and .[0].gb == 0.1' <<<"$(row_of "$SIM_DIR" chat-sim)"
+probes 2000 1024
+: >"$WORK/simctl.log"
+assert guard_run "$SIM_DIR" MEMLOGD_MAX_TICKS=1 SIM_PIDS="$SIM_ROOT" HEAVY_PIDS="$SIM_KID=1700000" SIMCTL_LOG="$WORK/simctl.log"
+assert grep -qE "^KILLED [0-9]{10} chat=chat-sim job_pgid=$SIM_ROOT " "$(log_file "$SIM_DIR")"
+assert test "$(cat "$WORK/simctl.log")" = "shutdown $SIM_UDID"
+for pid in $SIM_ROOT $SIM_KID; do assert gone "$pid"; done
+
+# One the ledger cannot settle (two chats' calls were open) is a `simulator` row of its own, never the
+# guard's; its Stop shuts it down.
+clear_registry
+spawn_detached '' '' '' '' SIMULATOR_UDID="$SIM_UDID" "SIMULATOR_DEVICE_NAME=iPhone Fixture"
+SIM_ROOT=$DETACHED_ROOT SIM_KID=$DETACHED_KID
+SIM_DIR="$WORK/guard-sim-shared"
+ledger_line "$SIM_DIR" chat-sim sim "$SIM_UDID" true
+probes 2000 1024
+assert guard_run "$SIM_DIR" MEMLOGD_MAX_TICKS=1 SIM_PIDS="$SIM_ROOT" HEAVY_PIDS="$SIM_KID=1700000" AGED_PIDS="$SIM_ROOT"
+assert_fails grep -q '^KILLED ' "$(log_file "$SIM_DIR")"
+for pid in $SIM_ROOT $SIM_KID; do assert alive "$pid"; done
+sim_rows=$(jq -c '[.rows[] | objects | select(.stop | strings | startswith("sim:"))]' "$(chats_json "$SIM_DIR")")
+assert jq -e --arg u "$SIM_UDID" 'length == 1 and (.[0].stop | startswith("sim:" + $u + ":"))
+  and (.[0].text | test("^simulator   iPhone Fixture +\\S+ cores +[0-9.]+ GB  2h00$"))' <<<"$sim_rows"
+assert test "$(row_of "$SIM_DIR" chat-sim)" = '[]'
+: >"$WORK/simctl.log"
+assert test "$(STOP_STATE="$SIM_DIR" SIM_PIDS="$SIM_ROOT" AGED_PIDS="$SIM_ROOT" HEAVY_PIDS="$SIM_KID=102400" \
+  SIMCTL_LOG="$WORK/simctl.log" chat_load_stop "$(jq -r '.[0].stop' <<<"$sim_rows")")" = \
+  'stopped 2 processes · 0.1 GB · simulator iPhone Fixture shut down'
+assert test "$(cat "$WORK/simctl.log")" = "shutdown $SIM_UDID"
+for pid in $SIM_ROOT $SIM_KID; do assert gone "$pid"; done
+
+# A command run in the background boots its simulator after its Post: one no ledger line names is matched to
+# the one chat whose call window was open when it booted, and the ledger keeps that answer.
+clear_registry
+SIM_DIR="$WORK/guard-sim-background"
+mkdir -p "$SIM_DIR/ledger/calls"
+jq -n --argjson at "$(($(date +%s) - 5))" '{session: "chat-bg", call: "toolu_bg", at: $at, end: ($at + 2),
+  kinds: ["sim"], background: true, before: {sim: []}}' >"$SIM_DIR/ledger/calls/chat-bg.toolu_bg.json"
+spawn_detached '' '' '' '' SIMULATOR_UDID="$SIM_UDID" "SIMULATOR_DEVICE_NAME=iPhone Fixture"
+SIM_ROOT=$DETACHED_ROOT SIM_KID=$DETACHED_KID
+probes 8192 1024
+assert guard_run "$SIM_DIR" MEMLOGD_MAX_TICKS=1 SIM_PIDS="$SIM_ROOT" HEAVY_PIDS="$SIM_KID=102400"
+assert jq -e 'length == 1 and .[0].stop == "chat:chat-bg"' <<<"$(row_of "$SIM_DIR" chat-bg)"
+assert test "$(jq -sc 'map([.kind, .id, .ambiguous])' "$SIM_DIR/ledger/chat-bg.jsonl")" = "[[\"sim\",\"$SIM_UDID\",false]]"
+
+# A launchd job a chat submitted is billed to it by label, never the guard's (launchd would restart it), and
+# the chat's Stop boots it out before it signals.
+clear_registry
+spawn_detached
+JOB_ROOT=$DETACHED_ROOT JOB_KID=$DETACHED_KID
+printf '%s\t0\tcom.fixture.job\n' "$JOB_ROOT" >"$WORK/fixture-jobs"
+JOB_DIR="$WORK/guard-job"
+ledger_line "$JOB_DIR" chat-job launchd com.fixture.job
+probes 8192 1024
+assert guard_run "$JOB_DIR" MEMLOGD_MAX_TICKS=1 PATH="$FAKE_LAUNCHD" LAUNCHCTL_JOBS="$WORK/fixture-jobs" \
+  HEAVY_PIDS="$JOB_KID=102400"
+assert jq -e 'length == 1 and .[0].stop == "chat:chat-job" and .[0].gb == 0.1' <<<"$(row_of "$JOB_DIR" chat-job)"
+probes 2000 1024
+assert guard_run "$JOB_DIR" MEMLOGD_MAX_TICKS=1 PATH="$FAKE_LAUNCHD" LAUNCHCTL_JOBS="$WORK/fixture-jobs" HEAVY_PIDS="$JOB_KID=1700000"
+assert_fails grep -q '^KILLED ' "$(log_file "$JOB_DIR")"
+for pid in $JOB_ROOT $JOB_KID; do assert alive "$pid"; done
+: >"$WORK/launchctl.log"
+assert test "$(STOP_STATE="$JOB_DIR" PATH="$FAKE_LAUNCHD" LAUNCHCTL_JOBS="$WORK/fixture-jobs" LAUNCHCTL_LOG="$WORK/launchctl.log" \
+  HEAVY_PIDS="$JOB_KID=102400" chat_load_stop chat:chat-job)" = 'stopped 2 processes · 0.1 GB · launchd job com.fixture.job booted out'
+assert test "$(cat "$WORK/launchctl.log")" = "bootout gui/$(id -u)/com.fixture.job"
+for pid in $JOB_ROOT $JOB_KID; do assert gone "$pid"; done
+
+# Stop sends SIGCONT with SIGTERM: a stopped process hears the TERM and runs its own handler.
+clear_registry
+rm -f "$WORK/cont.marker"
+spawn_detached chat-cont '' "$WORK/cont.marker"
+CONT_ROOT=$DETACHED_ROOT CONT_KID=$DETACHED_KID
+kill -STOP "$CONT_ROOT"
+assert grep -qE '^stopped 2 processes · [0-9.]+ GB$' <<<"$(chat_load_stop chat:chat-cont)"
+assert test -e "$WORK/cont.marker"
+for pid in $CONT_ROOT $CONT_KID; do assert gone "$pid"; done
+
+# What launchd adopts while a Stop runs (a stopped `nx serve` starting a fresh nx daemon) goes with it when it
+# is the same chat's by its working directory; one that is not is named and left.
+clear_registry
+BORN_TREE=$(project_dir born-tree)
+ELSEWHERE=$(project_dir elsewhere)
+cat >"$WORK/spawner.py" <<'PY'
+import os, sys, time
+go, report, *dirs = sys.argv[1:]
+os.setpgrp()
+while not os.path.exists(go):
+    time.sleep(0.05)
+pids = []
+for directory in dirs:
+    read, write = os.pipe()
+    if os.fork() == 0:
+        os.chdir(directory)
+        if os.fork():
+            os._exit(0)
+        os.write(write, f"{os.getpid()}\n".encode())
+        time.sleep(300)
+        os._exit(0)
+    os.close(write)
+    pids.append(os.read(read, 64).decode().strip())
+    os.wait()
+open(report + ".tmp", "w").write(" ".join(pids) + "\n"); os.rename(report + ".tmp", report)
+time.sleep(300)
+PY
+rm -f "$WORK/born.go" "$WORK/born.pids"
+session_env '' ''
+"${GROUP_ENV[@]}" "$FIXTURE_PY" "$WORK/spawner.py" "$WORK/born.go" "$WORK/born.pids" "$BORN_TREE" "$ELSEWHERE" \
+  >/dev/null 2>&1 &
+SPAWNER=$!
+disown
+TREE_PIDS+=("$SPAWNER")
+waited=0
+while [ "$(/bin/ps -o pgid= -p "$SPAWNER" 2>/dev/null | tr -d ' ')" != "$SPAWNER" ] && [ "$waited" -lt 200 ]; do
+  sleep 0.05; waited=$((waited + 1))
+done
+GUARD_SCOPE="$SPAWNER"
+spawn_leaf
+BORN_CLI=$LEAF_ROOT
+register_session chat-born "$BORN_CLI" busy "$BORN_TREE"
+spawn_detached '' "$BORN_TREE" '' "$WORK/born.go"
+BORN_ROOT=$DETACHED_ROOT BORN_KID=$DETACHED_KID
+BORN_DIR="$WORK/guard-born"
+probes 8192 1024
+assert guard_run "$BORN_DIR" MEMLOGD_MAX_TICKS=1
+rm -f "$SESSIONS_DIR/$BORN_CLI.json"
+born_out=$(STOP_STATE="$BORN_DIR" chat_load_stop chat:chat-born)
+read -r BORN_MINE BORN_FOREIGN <"$WORK/born.pids"
+TREE_PIDS+=("$BORN_MINE" "$BORN_FOREIGN")
+assert grep -qxE "stopped 3 processes · [0-9.]+ GB · 1 started meanwhile, not this chat's, left: pid $BORN_FOREIGN" <<<"$born_out"
+for pid in $BORN_ROOT $BORN_KID $BORN_MINE; do assert gone "$pid"; done
+assert alive "$BORN_FOREIGN"
+assert alive "$BORN_CLI"
+
 # --- MEMGUARD surfacing in worker-run report/wait -------------------------------------------------
 # The record is written by this daemon and read by worker-run, so the two ends are checked against
 # one another here rather than each against its own idea of the format.
@@ -1552,7 +2000,7 @@ assert grep -q '^GUARD_JOB_MB = 1536$' "$ROOT/bin/chat-load"
 assert grep -q '^swap_reserve_mb=4096$' "$SCRIPT"
 assert grep -qF 'chat_load="$(dirname "$script_path")/chat-load"' "$SCRIPT"
 # So are the resolver and the bus it runs: macOS denies the daemon's Python /Volumes/Work.
-assert grep -qF 'for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py share/store-lock.sh share/limiter-hold.sh share/limit-hit.sh; do' "$SCRIPT"
+assert grep -qF 'for source in bin/chat-load share/chat_names.py share/machine_probe.py share/limit_hit.py bin/report-bus share/report_frame.py share/store-lock.sh share/limiter-hold.sh share/limit-hit.sh; do' "$SCRIPT"
 assert grep -qF 'mv -f "$deployed_tmp" "$(dirname "$wrapper")/${source##*/}"' "$SCRIPT"
 assert grep -q '2048' "$ROOT/docs/memory-guard.md"
 assert grep -q '1536' "$ROOT/docs/memory-guard.md"
@@ -1567,4 +2015,4 @@ assert test "$(plutil -extract ProcessType raw "$ROOT/launchd/com.egor.memlogd.p
 
 reap_trees
 
-echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one or one left by an earlier boot, a machine sampler that keeps sampling after the clock steps back, and an install-agent whose deployed bus queues a notice and that fails when launchctl cannot load the agent; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, available RAM counted the swap way once swap has under 4096 MB of room to grow into (the kernel's count of 2026-10-20 02:32 replayed: 3748 MB read as 1373 MB and its fattest job cut at the one 2048 MB threshold) but never with a roomy disk, an unknown room or a full disk with RAM free, a worker's notice landing in its run inbox and rendered by its hook instead of a bus it never flushes, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, weighed by footprint not RSS, no kill from any run but the LaunchAgent's (WOULD KILL instead), a memory row whose parts add up past RAM used, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, the MEMGUARD: line the run report renders from the record in every shape, a closed chat's Stop ending its every process (a SIGTERM-deaf one by SIGKILL) and refusing an open chat, and orphan rows (an hour old, unmanaged by launchd, no chat's work under them) whose Stop checks the start against a reused pid"
+echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one or one left by an earlier boot, a machine sampler that keeps sampling after the clock steps back, and an install-agent whose deployed bus queues a notice and that fails when launchctl cannot load the agent; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, available RAM counted the swap way once swap has under 4096 MB of room to grow into (the kernel's count of 2026-10-20 02:32 replayed: 3748 MB read as 1373 MB and its fattest job cut at the one 2048 MB threshold) but never with a roomy disk, an unknown room or a full disk with RAM free, a worker's notice landing in its run inbox and rendered by its hook instead of a bus it never flushes, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, weighed by footprint not RSS, no kill from any run but the LaunchAgent's (WOULD KILL instead), a memory row whose parts add up past RAM used, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, the MEMGUARD: line the run report renders from the record in every shape, a closed chat's Stop ending its every process (a SIGTERM-deaf one by SIGKILL) and refusing an open chat, and orphan rows (an hour old, unmanaged by launchd, no chat's work under them) whose Stop checks the start against a reused pid; plus attribution past detachment — a failed launchctl listing listing no orphan, a stale session record sparing nothing, procStart over mtime both ways, a closed chat's small leftovers on one leftovers row its Stop ends, a chat's groups weighed together with its largest cut first, ownership held after the parent died and inherited by a later child, an empty environment read retried, a working-directory claim live and closed with its Stop and an ambiguous one shown and never killed, the launch ledger's hook (clean in sequence, ambiguous on overlap, foreign launchd labels dropped, other commands untouched, called by the Bash hook), a ledgered simulator billed and shut down by the guard, an unsettled one on its own row with a shutting Stop, a background boot reconciled to its call window, a submitted launchd job billed, never guard-killed and booted out by Stop, SIGCONT reaching a stopped process, and a process born during a Stop taken when it is the chat's and named and left when not"
