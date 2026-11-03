@@ -12,6 +12,9 @@ assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly held: $*"; }
 export HARNESS_HOLDS_DIR="$WORK/holds" HARNESS_WAITS_DIR="$WORK/waits" SLOTS_POLL_S=0.2 STATUSLINE_CACHE_DIR="$WORK/sl" RUN_SUITES_TIMES="$WORK/times.tsv"
+# The fixture runs' `_supervise` journals a runs.jsonl row each: without these it went to the live account store, and
+# 522 rows started at epoch 1 (10-29…11-03) put ~24 h of unmeasured time into every Lost time day.
+export CLAUDEB_DIR="$WORK/claudeb" WORKER_STATS_DIR="$WORK/claudeb/worker-stats"
 unset RUN_SUITES_SLOT WORKER_SLOT WORKER_RUN_RECORD WORKER_RUN_ID
 enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 . "$ROOT/share/slots.sh"
@@ -515,6 +518,7 @@ printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/gate-calls"\n' "$WORK" >"$WORK/fak
 chmod +x "$WORK/fake/bin/night-run"
 jq '.launcher_pid = 4242' "$WORK/run-hs-in/meta.json" >"$WORK/meta.tmp" && mv "$WORK/meta.tmp" "$WORK/run-hs-in/meta.json"
 for r in run run-plain run-hs-in; do bash "$WORK/fake/bin/worker-run" _supervise "$WORK/$r" >/dev/null 2>&1; done
+assert jqe -s 'map(.run) | index("run-plain") != null' "$WORKER_STATS_DIR/runs.jsonl"
 assert [ "$(grep -v '^admit ' "$WORK/gate-calls")" = 'speed-gate nopen hs-in 4242' ]
 assert [ "$(grep -Ec '^admit nopen hs-in [^ ]+ [0-9]+ [^ ]*$' "$WORK/gate-calls")" = 1 ]
 assert [ "$(head -n 1 "$WORK/gate-calls" | cut -d ' ' -f 1)" = admit ]
