@@ -26,7 +26,7 @@ Source: `share/worker-model.sh` (`worker_model_table`); first model per vendor i
 | codex / astra | low | low, medium, high | xhigh | no |
 | codex / sol | medium | medium, high | low, xhigh | yes |
 | claudeb / sonnet | high | low, medium, high, xhigh | max | no |
-| claudeb / haiku | high | low, medium, high | — | yes |
+| claudeb / haiku | high | low, medium, high, xhigh | max | yes |
 | codex / luna, terra | medium | low, medium, high | — | no |
 | gemini / each Flash slug of `geminib families --union` | high | high | — | no |
 | gemini / each other slug | high | high | — | yes |
