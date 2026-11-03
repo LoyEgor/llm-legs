@@ -181,20 +181,25 @@ instruction_repo_root() { # cwd
 # `<repo>/.claude/worktrees/`, and matched on the absolute path every markdown file in it read as
 # instruction content, which instruction_carved_out says it is not. A `.claude/projects/` tree is
 # never instruction content, as the home walk prunes it: in a repository it is a memory backup.
-_instruction_find_files() { # dir [repo-root] [dirs]
+_instruction_find_files() { # dir [repo-root]
   local e
   local -a md_args=(-name review-debt-ignore)
   for e in $INSTRUCTION_MD_EXTENSIONS; do md_args+=(-o -iname "*.$e"); done
-  if [ "${3:-}" = dirs ]; then
-    find "$1" \( "${_instruction_pruned[@]}" \) -prune -o -type d -print0 2>/dev/null |
-      _instruction_emit_paths
-    return
-  fi
   find "$1" \( "${_instruction_pruned[@]}" \) -prune -o \
     -type f \( -iname CLAUDE.md -o -iname CLAUDE.local.md -o -iname SKILL.md -o \
     \( -path '*/.claude/*' ! -path '*/.claude/local/*' ! -path '*/.claude/projects/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null |
     perl -0ne 'BEGIN { $n = length shift } print if m{/(?:claude|claude\.local|skill)\.md\0$}i || substr($_, $n) =~ m{/\.claude/}' \
       "${2:-$1}" | _instruction_emit_paths
+}
+
+# Every directory below the given ones, dependency trees pruned. One find per 512 roots (ARG_MAX), never one
+# per root: a repository with 2,300 untracked experiment directories paid 12 s of process starts for its
+# stamps, and every check paid it again whenever a run added a directory.
+_instruction_find_dirs() { # dir...
+  while [ "$#" -gt 0 ]; do
+    find "${@:1:512}" \( "${_instruction_pruned[@]}" \) -prune -o -type d -print0 2>/dev/null
+    shift "$(($# < 512 ? $# : 512))"
+  done | _instruction_emit_paths
 }
 
 # Which listed file is an instruction file, for every perl reader: $base is its name, $rel its path
@@ -263,15 +268,17 @@ instruction_repo_files() { # repo-root [outer-root]
         push @out, "f\t$full\n" if lstat "$root/$_" and -f _;
         END { exit 1 if $part != $parts; print @out }
       ' "$root" "$top" "$INSTRUCTION_MD_EXTENSIONS" "$parts" "$INSTRUCTION_DEPENDENCY_DIRS"); then
+    local -a walked=()
     while IFS=$'\t' read -r kind p; do
       case "$kind" in
         f) printf '%s\n' "$p" ;;
         r) instruction_repo_files "$p" "$top" ;;
         d) _instruction_find_files "$p" "$top"
-           [ -z "$stamps" ] || _instruction_find_files "$p" "" dirs >>"$stamps" ;;
-        u) _instruction_find_files "$p" "" dirs >>"$stamps" ;;
+           [ -z "$stamps" ] || walked+=("$p") ;;
+        u) walked+=("$p") ;;
       esac
     done <<<"$listing"
+    [ "${#walked[@]}" -eq 0 ] || _instruction_find_dirs "${walked[@]}" >>"$stamps"
     return 0
   fi
   [ -z "$stamps" ] || printf '?\n' >>"$stamps"

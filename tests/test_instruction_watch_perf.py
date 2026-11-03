@@ -411,6 +411,24 @@ class InstructionPerformance(unittest.TestCase):
             self.assertIn('ADDED ', context)
             self.assertIn(new, context)
 
+    def test_untracked_directories_are_stamped_by_one_find(self):
+        self.git('init', '-q')
+        self.put(self.repo / 'CLAUDE.md')
+        self.put(self.repo / 'runs/README')
+        self.git('add', 'runs/README')
+        for i in range(40):
+            self.put(self.repo / f'runs/r{i}/out/log.txt')
+        log = self.work / 'exec.log'
+        path = self.shim('find', 'echo "$*" >> "$PROBE_LOG"\nexec @REAL@ "$@"\n')
+        self.assertEqual(0, self.hook('baseline', PATH=path, PROBE_LOG=str(log)).returncode)
+        walks = [line for line in log.read_text().splitlines() if str(self.repo / 'runs') in line]
+        self.assertEqual(1, len(walks), f'{len(walks)} finds stamped 40 untracked directories')
+        self.assertEqual('', self.hook('check').stdout)
+        added = self.put(self.repo / 'runs/r7/out/deep/CLAUDE.md')
+        context = self.context(self.hook('check'))
+        self.assertTrue(any('ADDED ' + str(p) in context for p in (added, added.resolve())), context)
+        self.assertEqual('', self.hook('check').stdout)
+
     def test_spent_budget_leaves_the_rest_for_the_next_call(self):
         self.git('init', '-q')
         docs = [self.put(self.home / f'.claude/docs/{n}.md') for n in 'abc']
