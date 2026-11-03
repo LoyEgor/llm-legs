@@ -712,25 +712,22 @@ def budget(lo, hi):
         elif not r.get("worker_run"):
             outside.append((r["queued_at"], r["ended_at"]))
     # Hooks are the journal's blocking runs (`hook_runs.blocking_runs`), each its agent's through its ppid, a bench
-    # worker's left out like its other classes. Harness's `h` rows (a hook that printed) stay: a Stop one in the stop
-    # class, every one in its agent's spans, so `overhead_s` keeps its pre-journal method and a stratum's `hooks_s` is
-    # what the journal adds beyond it (`paasche`).
+    # worker's left out like its other classes; a Stop hook's runs only split its `stop` class by hook, their seconds
+    # its turn's stop part. Harness's `h` rows (a hook that printed) stay in their agent's spans alone, so `overhead_s`
+    # keeps its pre-journal method and a stratum's `hooks_s` is what the journal adds beyond it (`paasche`).
     by_hook, session_of = collections.defaultdict(list), {c[7]: str(c[8])[:8] for c in events.get("c", ())}
     for h in events.get("h", ()):
-        span = (h[1] - h[5] / 1000.0, h[1])
-        if h[3] == "Stop":
-            spans["stop"].append(span)
-            by_hook["stop/" + hook_key(str(h[4]))].append(span)
-        agents[owner.get(session_of.get(h[7]))].append(span)
+        agents[owner.get(session_of.get(h[7]))].append((h[1] - h[5] / 1000.0, h[1]))
     journal, first = hook_journal()
     hooked = collections.defaultdict(list)
-    for run, session in hook_runs.blocking_runs(journal, events.get("c", ()), lo, hi):
+    for run, session, family in hook_runs.blocking_runs(journal, events.get("c", ()), lo, hi):
         if session and str(session)[:8] in benched:
             continue
         span = (run[4], run[0])
-        spans["hooks"].append(span)
-        by_hook["hooks/" + run[1]].append(span)
-        hooked[owner.get(str(session)[:8]) if session else None].append(span)
+        by_hook[family + "/" + run[1]].append(span)
+        if family == "hooks":
+            spans["hooks"].append(span)
+            hooked[owner.get(str(session)[:8]) if session else None].append(span)
     held, holds = collections.defaultdict(list), collections.defaultdict(list)
     for w in wait_rows(lo, hi):
         span, by = (w["started"], w["started"] + w["seconds"]), str(w.get("caller") or "")
@@ -1269,11 +1266,6 @@ def counted(item):
         r"opportunity:test-health/(?:retests|serial|flaky|fan-out)(?:/|$)", str(i)) for i in item.get("ids") or ())
 
 
-def hook_key(command):
-    word, _, rest = command.partition(" ")
-    return (os.path.basename(word) + " " + rest).strip()
-
-
 def bookkeeping(path):
     base = os.path.basename(path)
     return path.endswith(".md") or path.startswith("docs/") or (base.endswith(".json") and "ledger" in base)
@@ -1385,8 +1377,9 @@ def day_totals_text(item, landed, now):
 
 
 def unit_samples(item, lo, hi, memo=None):
-    """{key: [values]} of the class's natural unit in [lo, hi): per suite (repo/label), per hook (its script's base
-    name and arguments); read once a window into `memo`."""
+    """{key: [values]} of the class's natural unit in [lo, hi): per suite (repo/label), per hook (its journal
+    key: the ms of every run of a blocking or Stop key, `hook_runs.family_runs`, printed or silent); read once a
+    window into `memo`."""
     if memo is None:
         return read_samples(item, lo, hi)
     key = (item["class"], lo, hi)
@@ -1400,9 +1393,9 @@ def read_samples(item, lo, hi):
         return suite_audit.samples(suites_path(), lo, hi, timed=True)
     out = collections.defaultdict(list)
     if item["class"] in ("hooks", "stop"):
-        for h in event_rows(lo, hi, ("h",)).get("h", ()):
-            if len(h) > 5 and lo <= h[1] < hi and num(h[5]) is not None and (h[3] == "Stop") == (item["class"] == "stop"):
-                out[hook_key(str(h[4]))].append(h[5])
+        calls = event_rows(lo, hi, ("c",)).get("c", ())
+        for run in hook_runs.family_runs(hook_journal()[0], calls, lo, hi, item["class"]):
+            out[run[1]].append(run[2])
     return out
 
 

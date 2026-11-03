@@ -17,6 +17,7 @@ SYNC_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "Subagen
 TOOL_EVENTS = ("PreToolUse", "PostToolUse")
 # A Stop hook's seconds are its turn's `stop` part, and a SessionEnd one blocks no model: neither is a blocking run.
 UNBLOCKING_EVENTS = ("Stop", "SubagentStop", "SessionEnd")
+STOP_EVENTS = ("Stop", "SubagentStop")
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 OTHER_TOOL = "(other)"
 STOP_PART = "stop.d/"
@@ -195,6 +196,23 @@ def blocking_slots(slots):
     return {key: slot for key, slot in slots.items() if any(event not in UNBLOCKING_EVENTS for event, _ in slot)}
 
 
+def family_slots(calls):
+    """{family: {key: slots}} of the settings keys Lost time counts: `hooks` the blocking ones (`blocking_slots`),
+    `stop` the rest that run when a turn stops (Stop, SubagentStop), whose seconds are their turn's `stop` part."""
+    slots = call_slots(settings_hooks(), calls)
+    blocking = blocking_slots(slots)
+    return {"hooks": blocking, "stop": {key: slot for key, slot in slots.items() if key not in blocking
+                                        and any(event in STOP_EVENTS for event, _ in slot)}}
+
+
+def family_runs(runs, calls, lo, hi, family):
+    """The runs of one family's keys (`family_slots`) ending in [lo, hi), by their end: the runs `blocking_runs`
+    batches, with no owner to find."""
+    keys = family_slots(calls)[family]
+    return sorted((r for r in runs if lo <= r[0] < hi and r[1] in keys and not r[1].startswith(STOP_PART)),
+                  key=lambda r: r[0])
+
+
 def hook_batches(runs, slots, now):
     """Hooks of one event run together: runs of one Claude process (ppid) that start within BATCH_SPAN_S
     of the batch's first run, no key twice, and share at least one (event, tool) they could all run for."""
@@ -287,14 +305,17 @@ def join_calls(batches, calls):
 
 
 def blocking_runs(runs, calls, lo, hi):
-    """`(run, session)` of every blocking journal run (`blocking_slots`) overlapping [lo, hi): its session the one of
-    the call its batch joined, else its ppid's (`join_calls`), else None (no owner)."""
-    slots = blocking_slots(call_slots(settings_hooks(), calls))
-    batches = hook_batches([r for r in runs if r[0] > lo and r[4] < hi], slots, float("inf"))
+    """`(run, session, family)` of every journal run of a `family_slots` key overlapping [lo, hi): its session the one
+    of the call its batch joined, else its ppid's (`join_calls`), else None (no owner). A Stop key shares no slot with
+    a blocking one, so its runs batch apart and never move a blocking run's owner."""
+    found = family_slots(calls)
+    family = {key: name for name, keys in found.items() for key in keys}
+    batches = hook_batches([r for r in runs if r[0] > lo and r[4] < hi], dict(found["hooks"], **found["stop"]),
+                           float("inf"))
     owner = join_calls(batches, calls)
     out = []
     for batch in batches:
         call = batch.get("call")
         session = call[8] if call is not None and len(call) > 8 else owner.get(batch["ppid"])
-        out += [(run, session) for run in batch["runs"].values()]
+        out += [(run, session, family[run[1]]) for run in batch["runs"].values()]
     return out

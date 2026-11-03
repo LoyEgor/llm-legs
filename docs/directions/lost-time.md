@@ -54,6 +54,10 @@ join it once measured (Open). Watched only: suites the last full run left red, c
 - `latest.json` → `speed.tests`; `share/suite_audit.py` `due()`; `suite:` rows of `share/spend-ledger.json` (removed
   never-red, vacuous or covered checks with their mutation; full nights only); the harness ledger;
   dead test units: Code doctor `candidates.jsonl` (refresh 10-14).
+- Hooks: the hook-time journal (`~/.cache/harness-doctor/hooks/`, `share/hook_runs.py` `blocking_runs`): every run of
+  a non-async settings hook but Stop and SessionEnd, owned by its ppid. Any hook sourcing `hooks/lib/hook-time.sh`
+  counts with no further work (the statusline-workdir launch-ledger branch too); one that does not is invisible.
+  Strata `hooks_s` enter the index once both windows carry them (BUDGET_VERSION 8).
 
 ## Recurring classes
 
@@ -93,11 +97,6 @@ Net
 lines: `git diff --numstat <base>..<merge>` of the goal's commits, legacy.md's buckets, code and tests apart.
 Breakages' `bash-cap`, this block's largest wait, is not repeated. Proofs replay fixed journals: a 7-day window
 after landing moves with the pilot's volume and tests-once.
-
-Dropped, 10-09…22: full-night slot queues (917 worker-min/day), memory and load; run-suites `limit` waits (CPU busy
-in all 88 samples); 10-20's 63 fixers, CPU-bound, fan-out's; chats testing while iterating (13 min/day, a rule
-exists); chat compaction 19.6 min/day, a spend trade; worker compaction 3.6 min/day; API retries 7; model-written
-scripts, beside the index.
 
 ## Held goals
 

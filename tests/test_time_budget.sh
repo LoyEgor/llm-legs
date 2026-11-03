@@ -847,10 +847,12 @@ hook_rows(silent_dir, [(D0 - 3600, D0 - 3599, "other.sh", "1"), (S + 1, S + 3, "
                        (S + 95, S + 99, "stopper.sh", "4242"), (S + 200, S + 204, "silent.sh", "999")])
 os.environ["HARNESS_DOCTOR_DIR"] = silent_dir
 heard = T.budget(D0, D0 + 86400)
-check(heard["seconds"]["hooks"] == 12 and heard["hooks_by_hook"] == {"hooks/silent.sh": 10, "hooks/starter.sh": 2}
+check(heard["seconds"]["hooks"] == 12 and heard["hooks_by_hook"] == {"hooks/silent.sh": 10, "hooks/starter.sh": 2,
+                                                                     "stop/stopper.sh": 4}
       and heard["seconds"]["stop"] == 0,
       "every blocking journal run is a hook second though no transcript shows it; an async hook, a detached child, a "
-      "SessionEnd and a Stop hook (its turn's stop part) are not: %s %s" % (heard["seconds"], heard["hooks_by_hook"]))
+      "SessionEnd and a Stop hook (its turn's stop part, which its journal runs only split by hook) are not: %s %s"
+      % (heard["seconds"], heard["hooks_by_hook"]))
 check(heard["strata"]["chat"]["hooks_s"] == 8 and heard["strata"]["workers"]["hooks_s"] == 0
       and heard["strata"]["out_s"]["unowned"] == 4,
       "a run joined to its chat's calls, or of a ppid they own (SessionStart), is that chat's; a ppid no call owns "

@@ -411,8 +411,31 @@ check(time_budget.unit_proof(gone, NOW - 30, NOW, NOW + 600)["gone"]
       == "roi · night-x · alpha/test_gone · 1.5M · +3/-9 lines · pending a full day",
       "a named suite that no longer exists proves nothing per unit: a measurement fix, or the day totals when the fix "
       "changed runtime code")
-events = os.path.join(work, "harness", "events")
-os.makedirs(events)
+settings_keys = {}
+
+
+def append_events(rows):
+    """Hook runs in Harness's `h` row shape `[h, end, _, event, command, ms, tool, _]`, written as hook-time.sh writes
+    them, silent or not: a journal run `start_us end_us key exit ppid cpu_us` keyed by the script's base name and
+    first word, in its end's epoch-day file, its key a settings hook of its event (Bash for a tool event)."""
+    for r in rows:
+        words = r[4].split()
+        key = " ".join([os.path.basename(words[0])] + words[1:2])
+        settings_keys[key] = r[3]
+        os.makedirs(os.path.join(work, "harness", "hooks"), exist_ok=True)
+        with open(os.path.join(work, "harness", "hooks", "%d.tsv" % (r[1] // 86400)), "a") as handle:
+            end = round(r[1] * 1e6)
+            handle.write("%d\t%d\t%s\t0\t7\t\n" % (end - round(r[5] * 1000), end, key))
+    settings = {}
+    for key, event in settings_keys.items():
+        settings.setdefault(event, []).append(dict({"hooks": [{"type": "command", "command": key}]},
+                                                   **({"matcher": "Bash"} if event == "PreToolUse" else {})))
+    os.makedirs(os.path.join(work, "home", ".claude"), exist_ok=True)
+    with open(os.path.join(work, "home", ".claude", "settings.json"), "w") as handle:
+        json.dump({"hooks": settings}, handle)
+    time_budget._JOURNAL.clear()
+
+
 hooks = [["h", NOW - 3600 + i, "~", "PreToolUse", "gate.sh", 200, "Bash", "x"] for i in range(50)]
 hooks += [["h", NOW + 60 + i, "~", "PreToolUse", "gate.sh", 80, "Bash", "x"] for i in range(50)]
 hooks += [["h", t + i, "~", "Stop", "stop.sh", 900, "", "x"] for t in (NOW - 3600, NOW + 60) for i in range(50)]
@@ -423,18 +446,27 @@ hooks += [["h", NOW + 60 + i, "~", "PreToolUse", "~/.claude/hooks/other.sh fast"
 hooks += [["h", NOW - 3000 + i, "~", "PreToolUse", "~/.claude/hooks/gone.sh", 1000, "Bash", "x"] for i in range(50)]
 hooks += [["h", t + i, "~", "PreToolUse", c, 100, "Bash", "x"] for c in ("s1.sh", "s2.sh", "s3.sh")
           for t in (NOW - 3600, NOW + 60) for i in range(50)]
-for day in {time_budget.local_day(r[1]) for r in hooks}:
-    with open(os.path.join(events, day + ".jsonl"), "w") as handle:
-        handle.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in hooks
-                             if time_budget.local_day(r[1]) == day))
-def append_events(rows):
-    by_day = {}
-    for r in rows:
-        by_day.setdefault(time_budget.local_day(r[1]), []).append(r)
-    for day, day_rows in by_day.items():
-        with open(os.path.join(events, day + ".jsonl"), "a") as handle:
-            handle.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in day_rows))
-
+append_events(hooks)
+# The per-hook unit is every run the journal holds of a blocking key, a Stop key's apart: a run that printed nothing
+# (no transcript attachment, so no `h` row) counts; an async hook and a SessionEnd one block nobody.
+settings_keys["end.sh"] = "SessionEnd"
+append_events([["h", NOW - 1800, "~", "PreToolUse", "quiet.sh", 40, "Bash", "x"],
+               ["h", NOW - 1700, "~", "SessionEnd", "end.sh", 70, "", "x"]])
+with open(os.path.join(work, "home", ".claude", "settings.json")) as handle:
+    async_settings = json.load(handle)
+async_settings["hooks"]["PreToolUse"].append({"matcher": "Bash", "hooks": [
+    {"type": "command", "command": "bg.sh", "async": True}]})
+with open(os.path.join(work, "home", ".claude", "settings.json"), "w") as handle:
+    json.dump(async_settings, handle)
+with open(os.path.join(work, "harness", "hooks", "%d.tsv" % ((NOW - 1600) // 86400)), "a") as handle:
+    handle.write("%d\t%d\tbg.sh\t0\t7\t\n" % (round((NOW - 1601) * 1e6), round((NOW - 1600) * 1e6)))
+time_budget._JOURNAL.clear()
+ms = lambda found: {k: [round(v, 3) for v in values] for k, values in found.items()}
+silent = ms(time_budget.unit_samples({"class": "hooks"}, NOW - 2000, NOW - 1000))
+check(silent == {"quiet.sh": [40.0]}
+      and ms(time_budget.unit_samples({"class": "stop"}, NOW - 3601, NOW - 3599.5)) == {"stop.sh": [900.0]},
+      "a hook fix's per-hook ms come from the hook-time journal: a silent run counts, an async or SessionEnd one does "
+      "not, a Stop hook's runs are the stop class's: %s" % silent)
 
 both = ["opportunity:hooks/gate.sh", "opportunity:hooks/other.sh fast"]
 shown = time_budget.unit_proof({"class": "hooks", "ids": both}, NOW - 30, NOW, NOW + 600)
