@@ -12,6 +12,7 @@
 //   skip(id), capped()           skip for this sitting; sitting_cap answers given this sitting
 //   keys(map)                    {event.code: fn}; ignored in text fields and with Cmd/Ctrl/Alt
 //   lazy(el)                     el's data-src loads near the viewport and is released far away
+//   attachPicture(el, blob)      a picture the module drew, stored and named at el's caret like a paste → [names]
 //   num(item, i), h(tag, props, ...kids)   the shown number; a DOM element
 // render, onState, doneWhen and keys replace their previous value, so a re-render is idempotent.
 // Every text field on every page takes pictures (the picture section below): no module wires them.
@@ -455,7 +456,7 @@ async function upload(el, body, type) {
 }
 
 async function attach(el, got, start, end) {
-  if (got.finder) return say(el, "файл из Finder так не вставляется — перетащи его в поле мышкой", true);
+  if (got.finder) { say(el, "файл из Finder так не вставляется — перетащи его в поле мышкой", true); return []; }
   const was = el.value, names = [];
   say(el, "сохраняю картинку…");
   for (const f of got.files || []) names.push(await upload(el, f, f.type || "application/octet-stream"));
@@ -467,11 +468,14 @@ async function attach(el, got, start, end) {
   }
   const ok = [...new Set(names.filter(Boolean))], lost = names.filter((n) => !n).length;
   say(el, lost ? (ok.length ? "не все картинки сохранились" : "картинка не сохранилась") : "", lost > 0);
-  if (!ok.length) return;
+  if (!ok.length) return [];
   if (el.value !== was) start = end = el.selectionEnd;
   put(el, ok.map((n) => `[${n}]`).join(" "), start, end);
   strip(el);
+  return ok;
 }
+// A picture a module draws itself (compare's «Метка» sheet) goes in like a pasted one; resolves to its stored names.
+export const attachPicture = (el, blob) => attach(el, { files: [blob] }, el.selectionStart, el.selectionEnd);
 
 function onPaste(e) {
   const el = textField(e.target), got = el && e.clipboardData && pictures(e.clipboardData);

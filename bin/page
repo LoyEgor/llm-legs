@@ -404,7 +404,7 @@ def show(v):
 
 
 def answered(doc, items):
-    return sum(1 for i in store.item_ids(doc) if any(f != "note" for f in items.get(i, {})))
+    return sum(1 for i in store.item_ids(doc) if any(f not in ("note", "pins") for f in items.get(i, {})))
 
 
 def cmd_new(args):
@@ -436,6 +436,9 @@ def cmd_state(args):
                 v = "%s(%s)" % (v, blind[v])
             elif field == "tags" and isinstance(v, dict):
                 v = {("%s(%s)" % (k, blind[k]) if k in blind else k): t for k, t in v.items()}
+            elif field == "pins" and isinstance(v, dict):
+                v = {n: dict(p, on="%s(%s)" % (p["on"], blind[p["on"]])) if isinstance(p, dict) and str(p.get("on")) in blind else p
+                     for n, p in v.items()}
             words.append("%s=%s" % (field, show(v)))
             words += ["%s=%s" % pair for pair in store.named_files(pid, entry["v"])]
             if field in suggest:

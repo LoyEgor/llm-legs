@@ -5,7 +5,7 @@
 // Geometry is the reference image's natural size (the original, else the largest variant); every
 // image is drawn over that box (or a variant's `box` in it), so a smaller pixel-art variant lands on
 // the same coordinates at the same scale.
-import { h, get, save, textBox, onState, doneWhen, nextOpen, firstOpen, capped, keys, lazy, num } from "/kit/shell.js";
+import { h, get, save, textBox, onState, doneWhen, nextOpen, firstOpen, capped, keys, lazy, num, attachPicture } from "/kit/shell.js";
 
 const CSS = `
 .strip{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:8px}
@@ -30,6 +30,10 @@ body.drag,body.drag .vp{cursor:grabbing}
 .vp:has(>input) .bd{right:30px}.bd span{background:rgba(0,0,0,.6);color:#fff;padding:1px 6px;border-radius:4px}.bd span:first-child{font-size:14px}
 .vp canvas{position:absolute;left:0;top:0;pointer-events:none}
 .pc .mk{position:absolute;border:2px solid #f0f;box-sizing:border-box;pointer-events:none}
+body.pin .vp{cursor:crosshair}.vp .band{position:absolute;border:1px dashed #f0f;background:rgba(255,0,255,.08);pointer-events:none;z-index:2}
+.pins{position:absolute;inset:0;pointer-events:none;overflow:hidden}.pins div{position:absolute;box-sizing:border-box;border:2px solid #f0f;box-shadow:0 0 0 1px #fff}
+.pins div.pt{border-radius:50%}.pins div.far{border-style:dashed;opacity:.55;box-shadow:none}
+.pins b{position:absolute;right:-2px;bottom:100%;background:#f0f;color:#fff;font:700 11px/14px system-ui;padding:0 4px;border-radius:3px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
 .gc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;cursor:pointer}
 .gi{display:flex;gap:4px;margin-top:4px}.gi figure{margin:0;flex:1;min-width:0}
@@ -39,6 +43,7 @@ body.drag,body.drag .vp{cursor:grabbing}
 const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)", MARK = "#f0f";
 const app = document.getElementById("app");
 let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false, marked = true;
+let pinTool = false, pinning = null; // «Метка»: the tool's state, the mark being drawn
 const hot = new Map(), inked = new WeakSet(), off = new Set(); // off: frames whose loupe is hidden, by badge
 
 export function render(spec) {
@@ -48,7 +53,7 @@ export function render(spec) {
   if (!document.getElementById("cmp-css")) document.head.append(h("style", { id: "cmp-css" }, CSS));
   const view = S.mode === "view";
   doneWhen(view ? null : (id) => get(id, "choice") != null);
-  onState((changed) => { if (E && changed.has(cur)) paintSide(); if (E) strip(); });
+  onState((changed) => { if (E && changed.has(cur)) { paintSide(); paintPins(); } if (E) strip(); });
   keys(keymap());
   if (cur !== null && !ids.includes(cur)) cur = null;
   if (cur === null && !view) cur = firstOpen(ids) ?? ids[0];
@@ -73,7 +78,7 @@ function frames(it) {
 function keymap() {
   const m = { ArrowLeft: () => go(-1), ArrowRight: () => go(1), Digit0: fitView,
     Equal: () => zoomBy(1.5), Minus: () => zoomBy(1 / 1.5), Escape: () => S.mode === "view" && grid(),
-    KeyG: () => E && E.gb && toggleLines(), KeyM: () => E && E.mb && toggleMarks() };
+    KeyG: () => E && E.gb && toggleLines(), KeyM: () => E && E.mb && toggleMarks(), KeyQ: togglePin };
   for (let k = 1; k <= 9; k++) m["Digit" + k] = (S.zoom_levels || [])[k - 1] != null ? () => level(k - 1) : () => jump(k - 1);
   if (S.mode !== "view") for (const o of (S.items.length ? allOpts() : [])) if (o.key) m[o.key] = () => vote(o.id);
   return m;
@@ -96,16 +101,18 @@ function show(id, keepView) {
   const toggle = (k) => fs.length > 3 ? h("input", { type: "checkbox", title: "показывать внизу", onclick: (e) => e.stopPropagation(),
     onpointerdown: (e) => e.stopPropagation(), ondblclick: (e) => e.stopPropagation(),
     onchange: (e) => { e.target.blur(); pane(k, e.target.checked); } }) : null;
-  const vps = fs.map((f, k) => h("div", { class: "vp", ondblclick: fitView },
+  const vps = fs.map((f, k) => h("div", { class: "vp", ondblclick: (e) => !(pinTool || e.altKey) && fitView() },
     h("div", { class: "bd" }, h("span", {}, f.side || f.name), f.side && f.name ? h("span", {}, f.name) : null,
       f.meta ? h("span", {}, f.meta) : null, h("span", { class: "dim" })),
-    h("img", { src: f.src, alt: "", draggable: false }), h("canvas"), toggle(k)));
+    h("img", { src: f.src, alt: "", draggable: false }), h("canvas"), h("div", { class: "pins" }), toggle(k)));
   const cells = fs.map((f, k) => h("div", { class: "pc", onclick: aim }, h("img", { alt: "", draggable: false }), h("i"),
     (it.marks || []).map(() => h("span", { class: "mk" })), toggle(k)));
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
     hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
     gb: S.pixel_grid || it.grid ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
     mb: it.marks && it.marks.length ? h("button", { onclick: toggleMarks, title: "M" }, "Рамка") : null,
+    pb: h("button", { onclick: togglePin, title: "Q · или держи ⌥: клик — точка, протяни — рамка; картинка-метка в заметку" }, "Метка"),
+    pls: vps.map((v) => v.querySelector(".pins")), note: textBox(id, "note", { placeholder: "заметка" }), ref: 0,
     pos: h("span", { class: "mute num" }), votes: null, tags: [], sg: h("span", { class: "sg", hidden: true }),
     lv: (S.zoom_levels || []).map((z, k) => h("button", { onclick: () => level(k), title: k < 9 ? `${k + 1}` : null }, `${z}×`)) };
   E.votes = voting ? h("div", { class: "votes" }, opts().map((o) =>
@@ -115,17 +122,20 @@ function show(id, keepView) {
   const nav = h("span", { class: "nav" }, S.mode === "view" ? h("button", { onclick: grid, title: "Esc" }, "▦") : null,
     h("button", { onclick: () => go(-1) }, "←"), E.pos, h("button", { onclick: () => go(1) }, "→"));
   // with zoom_levels the first level fits and the digits are taken, so no fit button and no hotspots
-  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.gb, E.mb);
+  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.pb, E.gb, E.mb);
+  E.note.addEventListener("input", paintPins);
+  E.pb.classList.toggle("on", pinTool);
   app.replaceChildren(E.strip, h("div", { class: "upper" }, h("div", { class: "pv" }, cells),
     h("div", { class: "side" }, h("div", { class: "ttl" }, h("strong", {}, `${num(it, i)}${it.title ? " · " + it.title : ""}`), nav),
       it.q ? h("div", { class: "q" }, it.q) : null, E.votes, E.sg, E.tags, tools,
-      textBox(id, "note", { placeholder: "заметка" }))),
+      E.note)),
     h("div", { class: "lrow" }, vps));
   vps.forEach(wire);
   panes(); paintSide(); strip(); layout();
   Promise.all(E.imgs.map((im) => im.complete ? 0 : new Promise((r) => { im.onload = im.onerror = r; }))).then(() => {
     if (my !== token) return;
     const ref = it.original ? E.imgs[0] : E.imgs.reduce((a, b) => (b.naturalWidth * b.naturalHeight > a.naturalWidth * a.naturalHeight ? b : a));
+    E.ref = E.imgs.indexOf(ref);
     geo = { w: ref.naturalWidth || 1, h: ref.naturalHeight || 1 };
     E.imgs.forEach((im, k) => {
       E.cells[k].querySelector("img").src = im.src;
@@ -134,6 +144,7 @@ function show(id, keepView) {
     });
     layout();
     if (!L) L = fit();
+    paintPins();
     draw();
     E.spots = hotspots(it);
     E.hs.replaceChildren(...E.spots.map((_, k) => h("button", { onclick: () => jump(k) }, `${k + 1}`)));
@@ -224,15 +235,22 @@ function aim(e) {
   setL({ ...L, cx: (e.clientX - r.left) * k, cy: (e.clientY - r.top) * k });
 }
 
-function wire(vp) {
+function wire(vp, k) {
   vp.onpointerdown = (e) => {
     if (e.button !== 0 || !L) return;
     e.preventDefault();
+    if (pinTool || e.altKey) {
+      const band = h("div", { class: "band", hidden: true });
+      vp.append(band);
+      pinning = { k, vp, band, a: [e.clientX, e.clientY], b: [e.clientX, e.clientY] };
+      try { vp.setPointerCapture(e.pointerId); } catch (_) { /* pointer already gone */ }
+      return;
+    }
     drag = [e.clientX, e.clientY];
     document.body.classList.add("drag");
     try { vp.setPointerCapture(e.pointerId); } catch (_) { /* pointer already gone */ }
   };
-  vp.onlostpointercapture = endDrag;
+  vp.onlostpointercapture = () => { endDrag(); endPin(false); };
   vp.addEventListener("wheel", (e) => {
     if (!L) return;
     e.preventDefault();
@@ -243,14 +261,18 @@ function wire(vp) {
 }
 function endDrag() { drag = null; document.body.classList.remove("drag"); }
 addEventListener("pointermove", (e) => {
+  if (pinning) return movePin(e);
   if (!drag) return;
   if (!(e.buttons & 1)) return endDrag();
   setL({ ...L, cx: L.cx - (e.clientX - drag[0]) / L.z, cy: L.cy - (e.clientY - drag[1]) / L.z });
   drag = [e.clientX, e.clientY];
 });
-addEventListener("pointerup", endDrag);
-addEventListener("pointercancel", endDrag);
-addEventListener("blur", endDrag);
+addEventListener("pointerup", (e) => { endPin(true, e); endDrag(); });
+addEventListener("pointercancel", () => { endPin(false); endDrag(); });
+addEventListener("blur", () => { endPin(false); endDrag(); hold(false); });
+const hold = (on) => document.body.classList.toggle("pin", pinTool || on);  // ⌥ held: the crosshair shows
+addEventListener("keydown", (e) => e.key === "Alt" && hold(true));
+addEventListener("keyup", (e) => e.key === "Alt" && hold(false));
 // a loupe that changes width keeps showing the same span of the picture
 function reflow() {
   if (!E) return;
@@ -287,6 +309,7 @@ function draw() {
     return nw ? { x, y, sx: w / nw, sy: hh / nh, nw, nh } : null;
   });
   E.lv.forEach((b, k) => b.classList.toggle("on", L.z === S.zoom_levels[k]));
+  placePins(W, H);
   if (E.gb || E.mb) paintLines(W, H, at, first);
   const x0 = Math.max(0, L.cx - W / 2 / L.z), x1 = Math.min(geo.w, L.cx + W / 2 / L.z);
   const y0 = Math.max(0, L.cy - H / 2 / L.z), y1 = Math.min(geo.h, L.cy + H / 2 / L.z);
@@ -390,4 +413,155 @@ function hotspots(it) {
   } catch (e) { /* fewer than two variants, or an image the canvas cannot read: no hotspots */ }
   hot.set(key, out);
   return out;
+}
+
+// «Метка» (Q, or ⌥ held): on any loupe a click marks one pixel and a drag a box, in the original's px. The page draws
+// a sheet for the reading model (the whole picture with the context framed, then the same context cut from every
+// frame, the mark in magenta, an English caption), stores it like a pasted picture so its [imgN.png] goes in the note
+// at the caret, and saves `pins` {name: {on, at, z}}. A pin whose name the note still holds shows on every loupe.
+const TILE = 360, GAP = 10, LAB = 22, PAD = 12, cl = (v, a, b) => Math.min(b, Math.max(a, v));
+function togglePin() { pinTool = !pinTool; hold(false); if (E) E.pb.classList.toggle("on", pinTool); }
+const toPx = (vp, [x, y]) => {
+  const r = vp.getBoundingClientRect();
+  return [L.cx + (x - r.left - vp.clientWidth / 2) / L.z, L.cy + (y - r.top - vp.clientHeight / 2) / L.z];
+};
+const far = (p) => Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1]) > 5;
+function movePin(e) {
+  if (!(e.buttons & 1)) return endPin(false);
+  const p = pinning, r = p.vp.getBoundingClientRect();
+  p.b = [e.clientX, e.clientY];
+  p.band.hidden = !far(p);
+  Object.assign(p.band.style, { left: Math.min(p.a[0], p.b[0]) - r.left + "px", top: Math.min(p.a[1], p.b[1]) - r.top + "px",
+    width: Math.abs(p.b[0] - p.a[0]) + "px", height: Math.abs(p.b[1] - p.a[1]) + "px" });
+}
+function endPin(ok, e) {
+  const p = pinning;
+  if (!p) return;
+  pinning = null;
+  p.band.remove();
+  if (!ok || !E || !geo || !L || !E.vps.includes(p.vp)) return;
+  if (e) p.b = [e.clientX, e.clientY];
+  const [ax, ay] = toPx(p.vp, p.a), [bx, by] = toPx(p.vp, p.b);
+  let at;
+  if (!far(p)) {
+    if (ax < 0 || ay < 0 || ax >= geo.w || ay >= geo.h) return;
+    at = [Math.floor(ax), Math.floor(ay)];
+  } else {
+    at = [cl(Math.floor(Math.min(ax, bx)), 0, geo.w), cl(Math.floor(Math.min(ay, by)), 0, geo.h),
+      cl(Math.ceil(Math.max(ax, bx)), 0, geo.w), cl(Math.ceil(Math.max(ay, by)), 0, geo.h)];
+    if (at[2] <= at[0] || at[3] <= at[1]) return;
+  }
+  pin(p.k, at);
+}
+
+async function pin(k, at) {
+  const id = cur, el = E.note, z = Math.round(L.z * 1000) / 1000, on = frames(item(id))[k].side || "original";
+  const c = sheet(k, at, z), blob = await new Promise((r) => c.toBlob(r, "image/png"));
+  const [name] = blob ? await attachPicture(el, blob) : [];
+  if (!name) return;
+  save(id, { pins: { ...(get(id, "pins") || {}), [name]: { on, at, z } } });
+  if (cur === id) paintPins();
+}
+
+// The frame's cell range [c0, r0, c1, r1] (inclusive) under the mark, with its bounds in the original's px; null off the frame.
+function cells(f, im, [x0, y0, x1, y1]) {
+  const [bx, by, bx1, by1] = f.box || [0, 0, geo.w, geo.h], nw = im.naturalWidth, nh = im.naturalHeight;
+  if (!nw || x1 <= bx || y1 <= by || x0 >= bx1 || y0 >= by1) return null;
+  const cw = (bx1 - bx) / nw, ch = (by1 - by) / nh;
+  const c = [cl(Math.floor((x0 - bx) / cw), 0, nw - 1), cl(Math.floor((y0 - by) / ch), 0, nh - 1),
+    cl(Math.ceil((x1 - bx) / cw) - 1, 0, nw - 1), cl(Math.ceil((y1 - by) / ch) - 1, 0, nh - 1)];
+  return { c, nw, nh, cw, px: [bx + c[0] * cw, by + c[1] * ch, bx + (c[2] + 1) * cw, by + (c[3] + 1) * ch] };
+}
+
+function sheet(k, at, z) {
+  const it = item(cur), fs = frames(it), box = at.length === 4, m = box ? at : [at[0], at[1], at[0] + 1, at[1] + 1];
+  const lo = 4 * Math.max(m[2] - m[0], m[3] - m[1]);
+  const side = Math.max(1, Math.round(Math.min(Math.max(lo, 0.35 * Math.max(geo.w, geo.h)), Math.max(24, lo, 400 / z))));
+  const rx = Math.round((m[0] + m[2]) / 2 - side / 2), ry = Math.round((m[1] + m[3]) / 2 - side / 2), s = TILE / side;
+  const name = (f, i) => (i === 0 && it.original ? "original" : f.side + (f.name ? " · " + f.name : ""));
+  const on = name(fs[k], k), ref = it.original ? "the original" : `the shared ${geo.w}x${geo.h} frame`;
+  const cc = k === 0 && it.original ? null : cells(fs[k], E.imgs[k], m);
+  const cr = cc && (box ? ` = cells x ${cc.c[0]}..${cc.c[2]}, y ${cc.c[1]}..${cc.c[3]}` : ` = cell ${cc.c[0]},${cc.c[1]}`);
+  const where = (box ? `Box x ${m[0]}..${m[2] - 1}, y ${m[1]}..${m[3] - 1} px of ${ref}` : `Point ${at[0]},${at[1]} px of ${ref}`)
+    + (cr ? `${cr} of ${fs[k].side}'s ${cc.nw}x${cc.nh}` : "") + " (0-based from the top left).";
+  const text = `Mark on ${on} (${box ? "box" : "point"}): where the note names this picture, it means the place in the magenta `
+    + `${box ? "rectangle" : "ring"}. Same place on every picture; tile 1 is the whole picture with the region shown framed. ${where}`;
+  const tiles = [null, ...fs], cols = Math.min(4, tiles.length), rows = Math.ceil(tiles.length / cols);
+  const W = 2 * PAD + cols * TILE + (cols - 1) * GAP, c = h("canvas"), g = c.getContext("2d"), font = "px -apple-system, Helvetica, Arial, sans-serif";
+  g.font = "15" + font;
+  const lines = [""];
+  for (const w of text.split(" ")) {
+    const t = lines.at(-1) ? lines.at(-1) + " " + w : w;
+    if (g.measureText(t).width > W - 2 * PAD && lines.at(-1)) lines.push(w); else lines[lines.length - 1] = t;
+  }
+  const top = PAD + lines.length * 20 + 6;
+  Object.assign(c, { width: W, height: top + rows * (LAB + TILE) + (rows - 1) * GAP + PAD });
+  g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = "#000"; g.font = "15" + font; g.textBaseline = "top";
+  lines.forEach((l, i) => g.fillText(l, PAD, PAD + i * 20));
+  const ring = (x, y, r) => { g.beginPath(); g.arc(x, y, r, 0, 2 * Math.PI); g.stroke(); };
+  tiles.forEach((f, t) => {
+    const X = PAD + (t % cols) * (TILE + GAP), Y = top + Math.floor(t / cols) * (LAB + TILE + GAP) + LAB, i = t - 1, mine = i === k;
+    const label = f ? name(f, i) : "whole picture";
+    g.font = (mine ? "bold 14" : "14") + font;
+    if (mine) { g.fillStyle = MARK; g.fillRect(X, Y - LAB, Math.min(TILE, g.measureText(label).width + 12), LAB - 3); }
+    g.fillStyle = mine ? "#fff" : "#000"; g.fillText(label, X + 6, Y - LAB + 3, TILE - 12);
+    g.save();
+    g.beginPath(); g.rect(X, Y, TILE, TILE); g.clip();
+    g.strokeStyle = MARK; g.lineWidth = 2;
+    if (!f) {                                             // the whole reference picture, the region framed
+      const im = E.imgs[E.ref], q = Math.min(TILE / geo.w, TILE / geo.h), ox = X + (TILE - geo.w * q) / 2, oy = Y + (TILE - geo.h * q) / 2;
+      g.imageSmoothingEnabled = q < 1;
+      if (im.naturalWidth) g.drawImage(im, ox, oy, geo.w * q, geo.h * q);
+      g.strokeRect(ox + rx * q, oy + ry * q, side * q, side * q);
+      if (box) g.strokeRect(ox + m[0] * q - 1, oy + m[1] * q - 1, (m[2] - m[0]) * q + 2, (m[3] - m[1]) * q + 2);
+      else ring(ox + (m[0] + 0.5) * q, oy + (m[1] + 0.5) * q, 5);
+    } else {                                              // the same region from this frame, through its box
+      const im = E.imgs[i], nw = im.naturalWidth, nh = im.naturalHeight, [bx, by, bx1, by1] = f.box || [0, 0, geo.w, geo.h];
+      const ix = Math.max(rx, bx), iy = Math.max(ry, by), ix1 = Math.min(rx + side, bx1), iy1 = Math.min(ry + side, by1);
+      if (nw && ix1 > ix && iy1 > iy) {
+        const sw = (ix1 - ix) / (bx1 - bx) * nw, dw = (ix1 - ix) * s;
+        g.imageSmoothingEnabled = dw < sw;
+        g.drawImage(im, (ix - bx) / (bx1 - bx) * nw, (iy - by) / (by1 - by) * nh, sw, (iy1 - iy) / (by1 - by) * nh,
+          X + (ix - rx) * s, Y + (iy - ry) * s, dw, (iy1 - iy) * s);
+      }
+      const px = (v) => X + (v - rx) * s, py = (v) => Y + (v - ry) * s;
+      if (box) g.strokeRect(px(m[0]) - 1, py(m[1]) - 1, (m[2] - m[0]) * s + 2, (m[3] - m[1]) * s + 2);
+      else ring(px(m[0] + 0.5), py(m[1] + 0.5), Math.max(9, s * 0.75 + 5));
+      const own = mine && cells(f, im, m);                // the frame's own pixel/cell under the mark, when it is big enough
+      if (own && own.cw * s >= 4) {
+        g.lineWidth = 1; g.setLineDash([3, 2]);
+        g.strokeRect(px(own.px[0]) + 0.5, py(own.px[1]) + 0.5, (own.px[2] - own.px[0]) * s - 1, (own.px[3] - own.px[1]) * s - 1);
+      }
+    }
+    g.restore();
+    g.strokeStyle = mine ? MARK : "#bbb"; g.lineWidth = 1;
+    g.strokeRect(X - 0.5, Y - 0.5, TILE + 1, TILE + 1);
+  });
+  return c;
+}
+
+// The note's pins on every loupe: solid with the picture's number on the frame the mark was made on, dashed elsewhere.
+function paintPins() {
+  if (!E) return;
+  const fs = frames(item(cur)), all = get(cur, "pins") || {}, text = E.note.value;
+  const list = Object.entries(all).filter(([n, p]) => p && Array.isArray(p.at) && text.includes(`[${n}]`));
+  E.pinEls = E.pls.map((layer, i) => {
+    const els = list.map(([n, p]) => {
+      const mine = p.on === (fs[i].side || "original");
+      return { p, el: h("div", { class: (p.at.length === 2 ? "pt" : "bx") + (mine ? "" : " far") }, mine ? h("b", {}, String(parseInt(n.slice(3)))) : null) };
+    });
+    layer.replaceChildren(...els.map((x) => x.el));
+    return els;
+  });
+  if (geo && L) { const { W, H } = size(); placePins(W, H); }
+}
+function placePins(W, H) {
+  for (const els of E.pinEls || []) for (const { p, el } of els) {
+    const [a, b, a1 = a + 1, b1 = b + 1] = p.at, x = W / 2 + (a - L.cx) * L.z, y = H / 2 + (b - L.cy) * L.z, w = (a1 - a) * L.z, hh = (b1 - b) * L.z;
+    const r = Math.max(7, w / 2 + 4);
+    Object.assign(el.style, p.at.length === 2
+      ? { left: x + w / 2 - r + "px", top: y + hh / 2 - r + "px", width: 2 * r + "px", height: 2 * r + "px" }
+      : { left: x - 2 + "px", top: y - 2 + "px", width: w + 4 + "px", height: hh + 4 + "px" });
+  }
 }

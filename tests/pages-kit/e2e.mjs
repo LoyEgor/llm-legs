@@ -168,6 +168,29 @@ try {
   await tab.waitForSelector(".side textarea");
   await send({ files: [{ b64: b64(F.b), name: "image.png", type: "image/png" }] }, "paste", ".side textarea");
   check("compare's note takes pictures too, numbered per page", await until(() => tab.$eval(".side textarea", (el) => el.value.endsWith("[img1.png]"))));
+  // «Метка»: ⌥-drag on a loupe marks a box, ⌥-click a point; each becomes a sheet picture named in the note, with a pin.
+  const vpBox = (k) => tab.$$eval(".vp", (v, k) => { const r = v[k].getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }, k);
+  const [bx, by] = await vpBox(2);
+  await tab.keyboard.down("Alt");
+  await tab.mouse.move(bx - 40, by - 30); await tab.mouse.down(); await tab.mouse.move(bx, by, { steps: 4 }); await tab.mouse.move(bx + 40, by + 30, { steps: 4 });
+  check("a ⌥-drag shows the rubber band", await tab.$$eval(".vp .band:not([hidden])", (b) => b.length) === 1);
+  await tab.mouse.up();
+  const cmpFiles = path.join(env.PAGES_DIR, cmp, "files"), pins = async () => (await (await fetch(`${origin}/p/${cmp}/state`)).json()).items.p01?.pins?.v || {};
+  check("a ⌥-drag on a variant puts its sheet's name in the note", await until(() => tab.$eval(".side textarea", (el) => el.value.endsWith("[img1.png] [img2.png]"))));
+  check("…the sheet is stored, the whole picture and three frames in one row", await until(() => fs.existsSync(path.join(cmpFiles, "img2.png"))) && /^1494x\d+$/.test(ihdr(path.join(cmpFiles, "img2.png"))));
+  check("…and a box pin on its slot", await until(async () => { const p = (await pins())["img2.png"]; return p && p.on === "B" && p.at.length === 4 && p.z > 0; }), JSON.stringify(await pins()));
+  const [ox, oy] = await vpBox(1);
+  await tab.mouse.click(ox + 2, oy + 3);
+  await tab.keyboard.up("Alt");
+  check("a ⌥-click makes a point pin", await until(async () => { const p = (await pins())["img3.png"]; return p && p.on === "A" && p.at.length === 2; }), JSON.stringify(await pins()));
+  check("pins show on every loupe, solid with the number on their own", await until(() => tab.$$eval(".vp", (v) => v.map((e) =>
+    [...e.querySelectorAll(".pins div")].map((d) => d.classList.contains("far") ? "-" : d.textContent).join(",")).join(" "))) === "-,- -,3 2,-");
+  let pinState = "";
+  check("page state unblinds the pin's frame and names its sheet", await until(() => {
+    pinState = page(["state", "calib", "--all"]);
+    return /p01 .*pins=.*img3\.png/.test(pinState) && pinState.includes(`B(${slots.B})`) && pinState.includes(`A(${slots.A})`)
+      && pinState.includes(`img2.png=${path.join(cmpFiles, "img2.png")}`) && pinState.includes("answered=2/2");
+  }, 4000), pinState);
   await tab.goto(`${origin}/p/${crd}/`);
   await tab.waitForSelector(note);
   const index = await (await fetch(`http://127.0.0.1:${port}/`)).text();

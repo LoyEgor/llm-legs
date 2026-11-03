@@ -2,6 +2,9 @@
 Synced loupes: drag pans all, wheel zooms at the pointer. From four frames up one checkbox, top right on each
 preview and on its loupe, hides or shows that loupe, for every item of the visit. Right click a picture:
 «Save image as…» under its file's name (none on a blind page).
+«Метка» (Q, or ⌥ held): on any loupe a click marks one pixel, a drag a box. The page draws a sheet (the whole
+picture with the context framed, that context cut from every frame, the mark in magenta, an English caption)
+and stores it as a pasted picture: its [imgN.png] goes into the note at the caret. A reading model opens it.
 
 ## Spec (CONTRACT.md, schema 1)
 - **mode:** `vote` (default) or `view`, a numbered grid with no vote widget.
@@ -31,7 +34,8 @@ preview and on its loupe, hides or shows that loupe, for every item of the visit
   with «Рамка» (M) to hide them; on by default. `mark_width` (top level or per item): the frame's thickness in
   the original's px, so it zooms like a pixel (e.g. one art cell); default 2 screen px.
 - **Common:** `title`, `intro`, `sitting_cap`; any `_` key is hidden, shown in `page state`.
-- **Fields written:** `choice` (an option id; the slot when blind), `tags` (`{"A": [...]}`), `note`.
+- **Fields written:** `choice` (an option id; the slot when blind), `tags` (`{"A": [...]}`), `note`, `pins`
+  (`{"imgN.png": {"on": "B", "at": [x, y] | [x0, y0, x1, y1], "z": zoom}}` in the original's px; not an answer).
 
 ## Example
 ```json
