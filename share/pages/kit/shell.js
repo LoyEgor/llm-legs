@@ -266,17 +266,20 @@ function zoomOpen(from) {
   if (!Z) {
     const img = h("img", { alt: "", draggable: false }), pos = h("span", { class: "zpos" }), msg = h("span", { class: "zmsg" });
     const band = h("div", { class: "zband", hidden: true });
+    const tb = h("button", { onclick: zoomTool, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка" }, "Метка");
     const el = h("div", { class: "zoom", role: "dialog", "aria-modal": "true" }, img, band,
-      h("div", { class: "zbar" }, pos, h("span", { class: "mute" }, "колесо — зум · тащи · двойной клик — 1:1 · ← → · Esc · ⌥ или Q: метка"), msg,
+      h("div", { class: "zbar" }, pos, h("span", { class: "mute" }, "колесо — зум · тащи · двойной клик — 1:1 · ← → · Esc"), msg, tb,
         h("button", { onclick: zoomClose, title: "Esc" }, "✕")));
-    Z = { el, img, pos, msg, band, pts: new Map(), s: 1, x: 0, y: 0, tool: false, mark: null };
+    Z = { el, img, pos, msg, band, tb, pts: new Map(), s: 1, x: 0, y: 0, tool: false, mark: null };
     const at = (s, px, py) => { s = Math.min(Math.max(s, Z.fit / 2), 8); Z.x = px - (px - Z.x) * s / Z.s; Z.y = py - (py - Z.y) * s / Z.s; Z.s = s; zoomPaint(); };
     Z.at = at;
     el.addEventListener("wheel", (e) => { e.preventDefault(); at(Z.s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY); }, { passive: false });
     el.addEventListener("pointerdown", (e) => {
       if (e.target.closest(".zbar")) return;
-      el.setPointerCapture(e.pointerId);
-      if ((Z.tool || e.altKey) && e.button === 0) { Z.mark = { a: [e.clientX, e.clientY], b: [e.clientX, e.clientY], t: Date.now() }; return; }
+      try { el.setPointerCapture(e.pointerId); } catch (_) { /* pointer already gone */ }
+      if ((Z.tool || e.altKey || e.pointerType === "pen") && e.button === 0) {   // an Apple Pencil marks without Q
+        Z.mark = { a: [e.clientX, e.clientY], b: [e.clientX, e.clientY], t: Date.now() }; return;
+      }
       Z.pts.set(e.pointerId, [e.clientX, e.clientY]); Z.moved = 0;
     });
     el.addEventListener("pointermove", (e) => {
@@ -303,7 +306,7 @@ function zoomOpen(from) {
       const step = { ArrowLeft: -1, ArrowRight: 1 }[e.code];
       if (e.key === "Alt") return Z.el.classList.add("pin");
       if (e.code === "Escape") zoomClose(); else if (step) zoomShow(Z.i + step);
-      else if (e.code === "KeyQ" && !e.metaKey && !e.ctrlKey) { Z.tool = !Z.tool; Z.el.classList.toggle("tool", Z.tool); }
+      else if (e.code === "KeyQ" && !e.metaKey && !e.ctrlKey) zoomTool();
       else if (e.code === "Equal" || e.code === "Minus") at(Z.s * (e.code === "Equal" ? 1.5 : 1 / 1.5), innerWidth / 2, innerHeight / 2);
       else if (e.code === "Digit0") zoomFit(); else return;
       e.preventDefault(); e.stopImmediatePropagation();
@@ -328,9 +331,10 @@ function zoomFit() {
   Z.fit = Z.s = Math.min(W / w, H / hh); Z.x = (W - w * Z.s) / 2; Z.y = (H - hh * Z.s) / 2; zoomPaint();
 }
 function zoomPaint() { Z.img.style.transform = `translate(${Z.x}px,${Z.y}px) scale(${Z.s})`; }
+function zoomTool() { Z.tool = !Z.tool; Z.el.classList.toggle("tool", Z.tool); Z.tb.classList.toggle("on", Z.tool); }
 function zoomClose() { Z.el.remove(); Z.pts.clear(); Z.mark = null; Z.band.hidden = true; document.body.style.overflow = ""; }
 
-// «Метка» on any picture shown full screen (compare's loupes have their own): ⌥ held or Q, a click marks a pixel, a
+// «Метка» on any picture shown full screen (compare's loupes have their own): ⌥ held, Q or the button, or a pen, a click marks a pixel, a
 // drag a box. A sheet (the whole picture with the place framed, the place enlarged, an English caption) is stored like
 // a pasted picture and named in the picture's own text field (the one beside it, the strip's field, else the last
 // one typed in); a running dictation takes the name instead, at the word Egor said when he began the mark.
@@ -371,7 +375,7 @@ function markEnd(e) {
 async function zoomMark(at, t) {
   const src = decodeURIComponent((Z.img.getAttribute("src") || "").split("?")[0].split("/").pop() || "picture");
   const where = (at.length === 2 ? "point " : "box ") + at.join(",") + " px", mark = { at: t, about: `${where} on ${src}` };
-  const blob = await new Promise((r) => markSheet(Z.img, at, src, where).toBlob(r, "image/png"));
+  const blob = await new Promise((r) => markSheet(Z.img, at, src, where, Z.s).toBlob(r, "image/png"));
   if (!blob) return;
   Z.msg.textContent = "сохраняю метку…";
   told = false;
@@ -379,12 +383,20 @@ async function zoomMark(at, t) {
   Z.msg.textContent = !names.length ? "метка не сохранилась" : told ? `[${names[0]}] придёт с диктовкой`
     : Z.field ? `[${names[0]}] — в заметке` : `сохранено как ${names[0]}, но поля для имени нет`;
 }
-function markSheet(im, at, src, where) {
+function markSheet(im, at, src, where, z) {
   const W = im.naturalWidth, H = im.naturalHeight, [x0, y0, x1 = x0 + 1, y1 = y0 + 1] = at;
   const m = Math.max(Math.ceil(Math.max(x1 - x0, y1 - y0) / 2), 24), c = [Math.max(0, x0 - m), Math.max(0, y0 - m), Math.min(W, x1 + m), Math.min(H, y1 + m)];
   const k1 = Math.min(480 / W, 480 / H), k2 = Math.min(480 / (c[2] - c[0]), 480 / (c[3] - c[1]), 8);
   const w1 = Math.round(W * k1), h1 = Math.round(H * k1), w2 = Math.round((c[2] - c[0]) * k2), h2 = Math.round((c[3] - c[1]) * k2);
-  const cv = h("canvas", { width: w1 + w2 + 36, height: Math.max(h1, h2) + 52 }), g = cv.getContext("2d");
+  const text = `${src} (${W}x${H}): Egor marked the ${where} (magenta), looking at ${Math.round(z * 100) / 100}× zoom. `
+    + "Left the whole picture, right that place enlarged.";
+  const cv = h("canvas", { width: w1 + w2 + 36 }), g = cv.getContext("2d"), font = "13px system-ui", lines = [""];
+  g.font = font;
+  for (const w of text.split(" ")) {                    // wrapped to the sheet's width, never squeezed
+    const t = lines.at(-1) ? lines.at(-1) + " " + w : w;
+    if (g.measureText(t).width > cv.width - 24 && lines.at(-1)) lines.push(w); else lines[lines.length - 1] = t;
+  }
+  cv.height = Math.max(h1, h2) + 30 + lines.length * 17;
   g.fillStyle = "#fff"; g.fillRect(0, 0, cv.width, cv.height);
   g.drawImage(im, 12, 12, w1, h1);
   g.imageSmoothingEnabled = k2 < 3;
@@ -393,8 +405,8 @@ function markSheet(im, at, src, where) {
   g.setLineDash([6, 4]); g.strokeRect(12 + c[0] * k1, 12 + c[1] * k1, (c[2] - c[0]) * k1, (c[3] - c[1]) * k1); g.setLineDash([]);
   g.strokeRect(12 + x0 * k1 - 2, 12 + y0 * k1 - 2, (x1 - x0) * k1 + 4, (y1 - y0) * k1 + 4);
   g.strokeRect(w1 + 24 + (x0 - c[0]) * k2 - 2, 12 + (y0 - c[1]) * k2 - 2, (x1 - x0) * k2 + 4, (y1 - y0) * k2 + 4);
-  g.fillStyle = "#222"; g.font = "13px system-ui";
-  g.fillText(`${src} (${W}x${H}): Egor marked the ${where} (magenta). Left the whole picture, right that place enlarged.`, 12, cv.height - 18, cv.width - 24);
+  g.fillStyle = "#222"; g.font = font; g.textBaseline = "top";
+  lines.forEach((l, i) => g.fillText(l, 12, Math.max(h1, h2) + 22 + i * 17));
   return cv;
 }
 function onZoomClick(e) {

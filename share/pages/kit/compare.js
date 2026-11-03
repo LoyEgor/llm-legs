@@ -43,7 +43,7 @@ body.pin .vp{cursor:crosshair}.vp .band{position:absolute;border:1px dashed #f0f
 const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)", MARK = "#f0f";
 const app = document.getElementById("app");
 let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false, marked = true;
-let pinTool = false, pinning = null; // «Метка»: the tool's state, the mark being drawn
+let pinTool = false, pinning = null, pinsOff = false; // «Метка»: the tool's state, the mark being drawn, Egor's marks hidden
 const coming = new Set(); // marks a running dictation took: shown before their names arrive in the note
 const hot = new Map(), inked = new WeakSet(), off = new Set(); // off: frames whose loupe is hidden, by badge
 
@@ -79,7 +79,7 @@ function frames(it) {
 function keymap() {
   const m = { ArrowLeft: () => go(-1), ArrowRight: () => go(1), Digit0: fitView,
     Equal: () => zoomBy(1.5), Minus: () => zoomBy(1 / 1.5), Escape: () => S.mode === "view" && grid(),
-    KeyG: () => E && E.gb && toggleLines(), KeyM: () => E && E.mb && toggleMarks(), KeyQ: togglePin };
+    KeyG: () => E && E.gb && toggleLines(), KeyM: () => E && E.mb && toggleMarks(), KeyQ: togglePin, KeyH: () => E && !E.vb.hidden && togglePins() };
   for (let k = 1; k <= 9; k++) m["Digit" + k] = (S.zoom_levels || [])[k - 1] != null ? () => level(k - 1) : () => jump(k - 1);
   if (S.mode !== "view") for (const o of (S.items.length ? allOpts() : [])) if (o.key) m[o.key] = () => vote(o.id);
   return m;
@@ -112,7 +112,8 @@ function show(id, keepView) {
     hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
     gb: S.pixel_grid || it.grid ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
     mb: it.marks && it.marks.length ? h("button", { onclick: toggleMarks, title: "M" }, "Рамка") : null,
-    pb: h("button", { onclick: togglePin, title: "Q · или держи ⌥: клик — точка, протяни — рамка; картинка-метка в заметку" }, "Метка"),
+    pb: h("button", { onclick: togglePin, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка; картинка-метка в заметку" }, "Метка"),
+    vb: h("button", { onclick: togglePins, title: "H", hidden: true }, "Скрыть метки"),
     pls: vps.map((v) => v.querySelector(".pins")), note: textBox(id, "note", { placeholder: "заметка" }), ref: 0,
     pos: h("span", { class: "mute num" }), votes: null, tags: [], sg: h("span", { class: "sg", hidden: true }),
     lv: (S.zoom_levels || []).map((z, k) => h("button", { onclick: () => level(k), title: k < 9 ? `${k + 1}` : null }, `${z}×`)) };
@@ -123,7 +124,7 @@ function show(id, keepView) {
   const nav = h("span", { class: "nav" }, S.mode === "view" ? h("button", { onclick: grid, title: "Esc" }, "▦") : null,
     h("button", { onclick: () => go(-1) }, "←"), E.pos, h("button", { onclick: () => go(1) }, "→"));
   // with zoom_levels the first level fits and the digits are taken, so no fit button and no hotspots
-  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.pb, E.gb, E.mb);
+  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.pb, E.vb, E.gb, E.mb);
   E.note.addEventListener("input", paintPins);
   E.pb.classList.toggle("on", pinTool);
   app.replaceChildren(E.strip, h("div", { class: "upper" }, h("div", { class: "pv" }, cells),
@@ -240,7 +241,7 @@ function wire(vp, k) {
   vp.onpointerdown = (e) => {
     if (e.button !== 0 || !L) return;
     e.preventDefault();
-    if (pinTool || e.altKey) {
+    if (pinTool || e.altKey || e.pointerType === "pen") {      // an Apple Pencil marks without Q
       const band = h("div", { class: "band", hidden: true });
       vp.append(band);
       pinning = { k, vp, band, a: [e.clientX, e.clientY], b: [e.clientX, e.clientY], t: Date.now() };
@@ -416,12 +417,14 @@ function hotspots(it) {
   return out;
 }
 
-// «Метка» (Q, or ⌥ held): on any loupe a click marks one pixel and a drag a box, in the original's px. The page draws
-// a sheet for the reading model (the whole picture with the context framed, then the same context cut from every
-// frame, the mark in magenta, an English caption), stores it like a pasted picture so its [imgN.png] goes in the note
-// at the caret, and saves `pins` {name: {on, at, z}}. A pin whose name the note still holds shows on every loupe.
+// «Метка» (Q, ⌥ held, or a pen): on any loupe a click marks one pixel and a drag a box, in the original's px. The page
+// draws a sheet for the reading model (the whole picture with the context framed, then the same context cut from every
+// frame as Egor saw it: his zoom, the grid if on; the mark in magenta, an English caption), stores it like a pasted
+// picture so its [imgN.png] goes in the note at the caret, and saves `pins` {name: {on, at, z}}. A pin whose name the
+// note still holds shows on every loupe; «Скрыть метки» (H) hides them all for the visit.
 const TILE = 360, GAP = 10, LAB = 22, PAD = 12, cl = (v, a, b) => Math.min(b, Math.max(a, v));
 function togglePin() { pinTool = !pinTool; hold(false); if (E) E.pb.classList.toggle("on", pinTool); }
+function togglePins() { pinsOff = !pinsOff; paintPins(); }
 const toPx = (vp, [x, y]) => {
   const r = vp.getBoundingClientRect();
   return [L.cx + (x - r.left - vp.clientWidth / 2) / L.z, L.cy + (y - r.top - vp.clientHeight / 2) / L.z];
@@ -463,6 +466,7 @@ async function pin(k, at, t) {
   const [name] = blob ? await attachPicture(el, blob, { at: t, about: `${where} on ${on}, item ${it.title || id}` }) : [];
   if (!name) return;
   if (!el.value.includes(`[${name}]`)) coming.add(name);
+  pinsOff = false;                                      // a new mark shows the marks again
   save(id, { pins: { ...(get(id, "pins") || {}), [name]: { on, at, z } } });
   if (cur === id) paintPins();
 }
@@ -478,7 +482,7 @@ function cells(f, im, [x0, y0, x1, y1]) {
 }
 
 function sheet(k, at, z) {
-  const it = item(cur), fs = frames(it), box = at.length === 4, m = box ? at : [at[0], at[1], at[0] + 1, at[1] + 1];
+  const grid = lines && !!E.gb, it = item(cur), fs = frames(it), box = at.length === 4, m = box ? at : [at[0], at[1], at[0] + 1, at[1] + 1];
   // the mark fills about half the tile (never less zoom than Egor's loupe had), the region kept inside the picture
   const lo = 2 * Math.max(m[2] - m[0], m[3] - m[1]);
   const side = Math.max(1, Math.round(Math.min(Math.max(lo, 0.35 * Math.max(geo.w, geo.h)), Math.max(24, lo, 400 / z))));
@@ -489,22 +493,23 @@ function sheet(k, at, z) {
   const cc = k === 0 && it.original ? null : cells(fs[k], E.imgs[k], m);
   const cr = cc && (box ? ` = cells x ${cc.c[0]}..${cc.c[2]}, y ${cc.c[1]}..${cc.c[3]}` : ` = cell ${cc.c[0]},${cc.c[1]}`);
   const where = (box ? `Box x ${m[0]}..${m[2] - 1}, y ${m[1]}..${m[3] - 1} px of ${ref}` : `Point ${at[0]},${at[1]} px of ${ref}`)
-    + (cr ? `${cr} of ${fs[k].side}'s ${cc.nw}x${cc.nh}` : "") + " (0-based from the top left).";
+    + (cr ? `${cr} of ${fs[k].side}'s ${cc.nw}x${cc.nh}` : "") + " (0-based from the top left)."
+    + ` Egor looked at ${z}× zoom` + (grid ? "; the thin cyan lines are the page's grid overlay he had on, not part of any picture." : ".");
   const text = `Mark on ${on} (${box ? "box" : "point"}): where the note names this picture, it means the place in the magenta `
     + `${box ? "rectangle" : "ring"}. Same place on every picture; tile 1 is the whole picture with the region shown framed. ${where}`;
   const tiles = [null, ...fs], cols = Math.min(4, tiles.length), rows = Math.ceil(tiles.length / cols);
   const W = 2 * PAD + cols * TILE + (cols - 1) * GAP, c = h("canvas"), g = c.getContext("2d"), font = "px -apple-system, Helvetica, Arial, sans-serif";
   g.font = "15" + font;
-  const lines = [""];
+  const said = [""];
   for (const w of text.split(" ")) {
-    const t = lines.at(-1) ? lines.at(-1) + " " + w : w;
-    if (g.measureText(t).width > W - 2 * PAD && lines.at(-1)) lines.push(w); else lines[lines.length - 1] = t;
+    const t = said.at(-1) ? said.at(-1) + " " + w : w;
+    if (g.measureText(t).width > W - 2 * PAD && said.at(-1)) said.push(w); else said[said.length - 1] = t;
   }
-  const top = PAD + lines.length * 20 + 6;
+  const top = PAD + said.length * 20 + 6;
   Object.assign(c, { width: W, height: top + rows * (LAB + TILE) + (rows - 1) * GAP + PAD });
   g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
   g.fillStyle = "#000"; g.font = "15" + font; g.textBaseline = "top";
-  lines.forEach((l, i) => g.fillText(l, PAD, PAD + i * 20));
+  said.forEach((l, i) => g.fillText(l, PAD, PAD + i * 20));
   const ring = (x, y, r) => { g.beginPath(); g.arc(x, y, r, 0, 2 * Math.PI); g.stroke(); };
   tiles.forEach((f, t) => {
     const X = PAD + (t % cols) * (TILE + GAP), Y = top + Math.floor(t / cols) * (LAB + TILE + GAP) + LAB, i = t - 1, mine = i === k;
@@ -532,6 +537,7 @@ function sheet(k, at, z) {
           X + (ix - rx) * s, Y + (iy - ry) * s, dw, (iy1 - iy) * s);
       }
       const px = (v) => X + (v - rx) * s, py = (v) => Y + (v - ry) * s;
+      if (grid) { sheetGrid(g, it, f, i, im, px, py, s); g.strokeStyle = MARK; g.lineWidth = 2; }
       if (box) g.strokeRect(px(m[0]) - 1, py(m[1]) - 1, (m[2] - m[0]) * s + 2, (m[3] - m[1]) * s + 2);
       else ring(px(m[0] + 0.5), py(m[1] + 0.5), Math.max(9, s * 0.75 + 5));
       const own = mine && cells(f, im, m);                // the frame's own pixel/cell under the mark, when it is big enough
@@ -547,6 +553,34 @@ function sheet(k, at, z) {
   return c;
 }
 
+// «Сетка» on a sheet tile, the lines its loupe draws (paintLines) in the original's px mapped by px/py at s tile px per
+// original px; a lattice whose cells come under 5 px is left out, as on the loupe.
+function sheetGrid(g, it, f, i, im, px, py, s) {
+  const step = (b) => (b.at(-1) - b[0]) / (b.length - 1) * s;
+  const lattice = (xs, ys, color) => {
+    if (Math.min(step(xs), step(ys)) < 5) return;
+    const [x0, x1, y0, y1] = [px(xs[0]), px(xs.at(-1)), py(ys[0]), py(ys.at(-1))];
+    g.strokeStyle = color || LINE; g.lineWidth = 1; g.beginPath();
+    for (const x of xs) { const v = Math.round(px(x)) + 0.5; g.moveTo(v, y0); g.lineTo(v, y1); }
+    for (const y of ys) { const v = Math.round(py(y)) + 0.5; g.moveTo(x0, v); g.lineTo(x1, v); }
+    g.stroke();
+  };
+  if (i === 0 && it.original) {
+    for (const gr of [].concat(it.grid || [])) {
+      if (!gr.paths) { lattice(gr.x, gr.y, gr.color); continue; }
+      if ((gr.cell || 0) * s < 5) continue;
+      g.strokeStyle = gr.color || LINE; g.lineWidth = 1; g.beginPath();
+      for (const p of gr.paths) p.forEach(([x, y], n) => g[n ? "lineTo" : "moveTo"](px(x), py(y)));
+      g.stroke();
+    }
+    return;
+  }
+  const nw = im.naturalWidth, nh = im.naturalHeight, [bx, by, bx1, by1] = f.box || [0, 0, geo.w, geo.h];
+  if (!nw) return;
+  const own = f.grid || { x: Array.from({ length: nw + 1 }, (_, n) => n), y: Array.from({ length: nh + 1 }, (_, n) => n) };
+  lattice(own.x.map((v) => bx + v * (bx1 - bx) / nw), own.y.map((v) => by + v * (by1 - by) / nh));
+}
+
 // The note's pins on every loupe: solid with the picture's number on the frame the mark was made on, dashed elsewhere.
 function paintPins() {
   if (!E) return;
@@ -558,8 +592,11 @@ function paintPins() {
       return { p, el: h("div", { class: (p.at.length === 2 ? "pt" : "bx") + (mine ? "" : " far") }, mine ? h("b", {}, String(parseInt(n.slice(3)))) : null) };
     });
     layer.replaceChildren(...els.map((x) => x.el));
+    layer.hidden = pinsOff;
     return els;
   });
+  E.vb.hidden = !list.length;
+  E.vb.textContent = pinsOff ? `Показать метки (${list.length})` : "Скрыть метки";
   if (geo && L) { const { W, H } = size(); placePins(W, H); }
 }
 function placePins(W, H) {

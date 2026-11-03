@@ -215,6 +215,20 @@ try {
   await tab.keyboard.insertText(" вот тут [img4.png] криво");
   check("the dictation's paste brings the name; the note says nothing more", await until(() => tab.$eval(".side .atm", (m) => m.textContent === ""))
     && await until(() => page(["state", "calib", "--all"]).includes(`img4.png=${path.join(cmpFiles, "img4.png")}`), 4000));
+  // a pen (an Apple Pencil through a remote desktop that passes it on) marks without Q or ⌥
+  daemon = () => "ignored idle";
+  const pen = (sel, type, x, y) => tab.evaluate(([sel, type, x, y]) => (sel ? document.querySelectorAll(sel)[1] : window).dispatchEvent(new PointerEvent(type,
+    { pointerType: "pen", pointerId: 7, button: 0, buttons: type === "pointerup" ? 0 : 1, clientX: x, clientY: y, bubbles: true })), [sel, type, x, y]);
+  await pen(".vp", "pointerdown", ox + 20, oy + 20); await pen(null, "pointerup", ox + 20, oy + 20);
+  check("a pen's tap on a loupe marks a point", await until(() => tab.$eval(".side textarea", (el) => el.value.endsWith("[img5.png]"))),
+    await tab.$eval(".side textarea", (el) => el.value));
+  // «Скрыть метки» (H) hides every pin for the visit and shows them again
+  const hideBtn = ".tools button[title=H]";
+  await tab.click(hideBtn);
+  check("«Скрыть метки» hides every pin and says how many there are",
+    await tab.$$eval(".vp .pins", (l) => l.every((x) => !x.checkVisibility())) && /^Показать метки \(\d+\)$/.test(await tab.textContent(hideBtn)));
+  await tab.click(hideBtn);
+  check("…and shows them again", await tab.$$eval(".vp .pins", (l) => l.every((x) => x.checkVisibility())) && await tab.textContent(hideBtn) === "Скрыть метки");
   await tab.goto(`${origin}/p/${crd}/`);
   await tab.waitForSelector(note);
   // «Метка» on any picture opened full screen: here a picture of the card's note
@@ -235,6 +249,17 @@ try {
   check("…with Q too, and a running dictation takes the name instead",
     await until(() => tab.$eval(".zmsg", (m) => /диктовк/.test(m.textContent))) && (await value()) === kept
     && marks.at(-1).note.includes(`/p/${crd}/ - point `) && await tab.evaluate(() => document.activeElement.matches(".card textarea")), JSON.stringify(marks.at(-1)));
+  // the bar's «Метка» button is the same switch as Q; a pen marks with it off
+  daemon = () => "ignored idle";
+  await tab.click(".zbar button:has-text('Метка')");
+  const toolOn = await tab.$eval(".zbar button:has-text('Метка')", (b) => b.classList.contains("on"));
+  await tab.click(".zbar button:has-text('Метка')");
+  const before2 = await value();
+  await tab.evaluate(([x, y]) => { const z = document.querySelector(".zoom");
+    for (const type of ["pointerdown", "pointerup"]) z.dispatchEvent(new PointerEvent(type, { pointerType: "pen", pointerId: 8, button: 0,
+      buttons: type === "pointerdown" ? 1 : 0, clientX: x, clientY: y, bubbles: true })); }, [zx + 5, zy + 5]);
+  check("the full-screen «Метка» button switches the tool, and a pen marks without it", toolOn
+    && await until(async () => (await value()) !== before2 && /\[img\d+\.png\]$/.test(await value())), await value());
   await tab.keyboard.press("Escape");
   const index = await (await fetch(`http://127.0.0.1:${port}/`)).text();
   check("index lists both pages under the chat name", index.includes("e2e chat") && index.includes(cmp) && index.includes(crd));
