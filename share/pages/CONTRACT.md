@@ -28,7 +28,7 @@ on an incompatible change.
 | `GET /p/<pid>/state` | the state (below), `Cache-Control: no-cache` |
 | `POST /p/<pid>/patch` | applies one patch (below) |
 | `POST /p/<pid>/error` | `{msg, src, line}`, a kit error the loader reports (≤ 3 per load) → `.events.jsonl`; 204 |
-| `POST /p/<pid>/upload?item=&field=` | a pasted or dropped picture's bytes, or `{"url"}` the server fetches → `{name, url}`; 415 for anything not a picture (below) |
+| `POST /p/<pid>/upload?item=&field=[&at=&about=]` | a pasted or dropped picture's bytes, or `{"url"}` the server fetches → `{name, url, mark}`; 415 for anything not a picture (below). With `at` (the browser's `Date.now()` of a «Метка») the server hands `[name]` to transcriptions-gpt (its MARKS.md: `ref` = the file, `note` = the page URL - `about`); `mark` is the daemon's reply, `ok …` = a running dictation takes the name, else `null`/`ignored …` |
 | `GET /p/<pid>/files` | `[{name, item, field}]`: the page's pictures and the text field each was pasted into |
 | `GET /p/<pid>/f/<name>` | one picture, `name` = `img<N>.(png\|jpg\|gif\|webp)`, else 404 |
 | `GET /p/<pid>/m/<n>?v=<mtime_ns>` | media `n` from `meta.media`; Range/206 streamed in 1 MB chunks, an open-ended range capped at 8 MB; `ETag`, `Cache-Control: private, max-age=31536000, immutable` |

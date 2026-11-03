@@ -18,6 +18,7 @@ import plistlib
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -256,7 +257,12 @@ class Handler(BaseHTTPRequestHandler):
             name = store.add_file(pid, body, item, field)
         except store.Refused as error:
             return self.reply(415, ("%s\n" % error).encode())
-        self.send_json(200, {"name": name, "url": "/p/%s/f/%s" % (pid, name)})
+        at, about = (query.get(k, [""])[0] for k in ("at", "about"))
+        mark = None
+        if re.fullmatch(r"\d{9,13}(\.\d+)?", at):
+            mark = dictation_mark(name, float(at), store.file_path(pid, name),
+                                  "http://%s/p/%s/ - %s" % (self.headers.get("Host", ""), pid, about[:300]))
+        self.send_json(200, {"name": name, "url": "/p/%s/f/%s" % (pid, name), "mark": mark})
 
     def drop(self, pid):
         """× on a picture in a field: {name, item, field}."""
@@ -303,6 +309,26 @@ def index_html():
                 for at, pid, title in sorted(pages, reverse=True)]
         out.append("</ul>")
     return "".join(out)
+
+
+def dictation_mark(tag, at, ref, note):
+    """A picture marked during a dictation, as one line to transcriptions-gpt's control socket (its MARKS.md): the
+    daemon puts [tag] at the word Egor was saying at `at`. -> its reply ("ok TAG OFFSET", "ignored idle", ...), or
+    None with no daemon. A server on another PAGES_DIR (a test's) reaches only TRANSCRIBER_RUNTIME_DIR's socket."""
+    runtime = os.environ.get("TRANSCRIBER_RUNTIME_DIR")
+    if not runtime:
+        if os.path.realpath(store.root()) != os.path.realpath(os.path.expanduser("~/Pages")):
+            return None
+        runtime = os.path.expanduser("~/.transcriptions-gpt")
+    line = "mark %s\n" % json.dumps({"tag": tag, "at": at, "ref": ref, "note": note}, ensure_ascii=False)
+    try:
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(1.0)
+            conn.connect(os.path.join(runtime, "control.sock"))
+            conn.sendall(line.encode())
+            return conn.recv(4096).decode("utf-8", "replace").strip() or None
+    except OSError:
+        return None
 
 
 def lan_token():

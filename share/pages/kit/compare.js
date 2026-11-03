@@ -44,6 +44,7 @@ const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE
 const app = document.getElementById("app");
 let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false, marked = true;
 let pinTool = false, pinning = null; // «Метка»: the tool's state, the mark being drawn
+const coming = new Set(); // marks a running dictation took: shown before their names arrive in the note
 const hot = new Map(), inked = new WeakSet(), off = new Set(); // off: frames whose loupe is hidden, by badge
 
 export function render(spec) {
@@ -242,7 +243,7 @@ function wire(vp, k) {
     if (pinTool || e.altKey) {
       const band = h("div", { class: "band", hidden: true });
       vp.append(band);
-      pinning = { k, vp, band, a: [e.clientX, e.clientY], b: [e.clientX, e.clientY] };
+      pinning = { k, vp, band, a: [e.clientX, e.clientY], b: [e.clientX, e.clientY], t: Date.now() };
       try { vp.setPointerCapture(e.pointerId); } catch (_) { /* pointer already gone */ }
       return;
     }
@@ -451,14 +452,17 @@ function endPin(ok, e) {
       cl(Math.ceil(Math.max(ax, bx)), 0, geo.w), cl(Math.ceil(Math.max(ay, by)), 0, geo.h)];
     if (at[2] <= at[0] || at[3] <= at[1]) return;
   }
-  pin(p.k, at);
+  pin(p.k, at, p.t);
 }
 
-async function pin(k, at) {
+// t: when the mark began, so a running dictation puts the sheet's name at the word Egor said then (shell's dictated)
+async function pin(k, at, t) {
   const id = cur, el = E.note, z = Math.round(L.z * 1000) / 1000, on = frames(item(id))[k].side || "original";
   const c = sheet(k, at, z), blob = await new Promise((r) => c.toBlob(r, "image/png"));
-  const [name] = blob ? await attachPicture(el, blob) : [];
+  const it = item(id), where = (at.length === 2 ? "point " : "box ") + at.join(",") + " px";
+  const [name] = blob ? await attachPicture(el, blob, { at: t, about: `${where} on ${on}, item ${it.title || id}` }) : [];
   if (!name) return;
+  if (!el.value.includes(`[${name}]`)) coming.add(name);
   save(id, { pins: { ...(get(id, "pins") || {}), [name]: { on, at, z } } });
   if (cur === id) paintPins();
 }
@@ -545,7 +549,7 @@ function sheet(k, at, z) {
 function paintPins() {
   if (!E) return;
   const fs = frames(item(cur)), all = get(cur, "pins") || {}, text = E.note.value;
-  const list = Object.entries(all).filter(([n, p]) => p && Array.isArray(p.at) && text.includes(`[${n}]`));
+  const list = Object.entries(all).filter(([n, p]) => p && Array.isArray(p.at) && (text.includes(`[${n}]`) || coming.has(n)));
   E.pinEls = E.pls.map((layer, i) => {
     const els = list.map(([n, p]) => {
       const mine = p.on === (fs[i].side || "original");

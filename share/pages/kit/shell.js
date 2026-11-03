@@ -12,7 +12,9 @@
 //   skip(id), capped()           skip for this sitting; sitting_cap answers given this sitting
 //   keys(map)                    {event.code: fn}; ignored in text fields and with Cmd/Ctrl/Alt
 //   lazy(el)                     el's data-src loads near the viewport and is released far away
-//   attachPicture(el, blob)      a picture the module drew, stored and named at el's caret like a paste → [names]
+//   attachPicture(el, blob, mark)  a picture the module drew, stored and named at el's caret like a paste → [names];
+//                                with mark {at: Date.now() of Egor's action, about} a running dictation takes the name
+//                                at the word he said then, and the caret gets nothing (see dictated)
 //   num(item, i), h(tag, props, ...kids)   the shown number; a DOM element
 // render, onState, doneWhen and keys replace their previous value, so a re-render is idempotent.
 // Every text field on every page takes pictures (the picture section below): no module wires them.
@@ -262,16 +264,23 @@ const zoomable = (from) => from && from.closest(".att") ? [...from.closest(".att
 let Z = null;
 function zoomOpen(from) {
   if (!Z) {
-    const img = h("img", { alt: "", draggable: false }), pos = h("span", { class: "zpos" });
-    const el = h("div", { class: "zoom", role: "dialog", "aria-modal": "true" }, img,
-      h("div", { class: "zbar" }, pos, h("span", { class: "mute" }, "колесо — зум · тащи · двойной клик — 1:1 · ← → · Esc"),
+    const img = h("img", { alt: "", draggable: false }), pos = h("span", { class: "zpos" }), msg = h("span", { class: "zmsg" });
+    const band = h("div", { class: "zband", hidden: true });
+    const el = h("div", { class: "zoom", role: "dialog", "aria-modal": "true" }, img, band,
+      h("div", { class: "zbar" }, pos, h("span", { class: "mute" }, "колесо — зум · тащи · двойной клик — 1:1 · ← → · Esc · ⌥ или Q: метка"), msg,
         h("button", { onclick: zoomClose, title: "Esc" }, "✕")));
-    Z = { el, img, pos, pts: new Map(), s: 1, x: 0, y: 0 };
+    Z = { el, img, pos, msg, band, pts: new Map(), s: 1, x: 0, y: 0, tool: false, mark: null };
     const at = (s, px, py) => { s = Math.min(Math.max(s, Z.fit / 2), 8); Z.x = px - (px - Z.x) * s / Z.s; Z.y = py - (py - Z.y) * s / Z.s; Z.s = s; zoomPaint(); };
     Z.at = at;
     el.addEventListener("wheel", (e) => { e.preventDefault(); at(Z.s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY); }, { passive: false });
-    el.addEventListener("pointerdown", (e) => { if (e.target.closest(".zbar")) return; el.setPointerCapture(e.pointerId); Z.pts.set(e.pointerId, [e.clientX, e.clientY]); Z.moved = 0; });
+    el.addEventListener("pointerdown", (e) => {
+      if (e.target.closest(".zbar")) return;
+      el.setPointerCapture(e.pointerId);
+      if ((Z.tool || e.altKey) && e.button === 0) { Z.mark = { a: [e.clientX, e.clientY], b: [e.clientX, e.clientY], t: Date.now() }; return; }
+      Z.pts.set(e.pointerId, [e.clientX, e.clientY]); Z.moved = 0;
+    });
     el.addEventListener("pointermove", (e) => {
+      if (Z.mark) return markMove(e);
       const p = Z.pts.get(e.pointerId); if (!p) return;
       const all = [...Z.pts.values()], d0 = all.length === 2 ? Math.hypot(all[0][0] - all[1][0], all[0][1] - all[1][1]) : 0;
       Z.pts.set(e.pointerId, [e.clientX, e.clientY]); Z.moved += Math.abs(e.clientX - p[0]) + Math.abs(e.clientY - p[1]);
@@ -281,6 +290,7 @@ function zoomOpen(from) {
       } else { Z.x += e.clientX - p[0]; Z.y += e.clientY - p[1]; zoomPaint(); }
     });
     const up = (e) => {
+      if (Z.mark) return markEnd(e.type === "pointerup" ? e : null);
       if (!Z.pts.delete(e.pointerId) || Z.moved > 4 || e.type !== "pointerup") return;
       const r = img.getBoundingClientRect();
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) zoomClose();
@@ -291,13 +301,17 @@ function zoomOpen(from) {
     document.addEventListener("keydown", (e) => {
       if (!Z.el.isConnected) return;
       const step = { ArrowLeft: -1, ArrowRight: 1 }[e.code];
+      if (e.key === "Alt") return Z.el.classList.add("pin");
       if (e.code === "Escape") zoomClose(); else if (step) zoomShow(Z.i + step);
+      else if (e.code === "KeyQ" && !e.metaKey && !e.ctrlKey) { Z.tool = !Z.tool; Z.el.classList.toggle("tool", Z.tool); }
       else if (e.code === "Equal" || e.code === "Minus") at(Z.s * (e.code === "Equal" ? 1.5 : 1 / 1.5), innerWidth / 2, innerHeight / 2);
       else if (e.code === "Digit0") zoomFit(); else return;
       e.preventDefault(); e.stopImmediatePropagation();
     }, true);
+    document.addEventListener("keyup", (e) => e.key === "Alt" && Z.el.classList.remove("pin"));
   }
   Z.list = zoomable(from);
+  Z.field = fieldFor(from); Z.msg.textContent = "";
   document.body.append(Z.el); document.body.style.overflow = "hidden";
   zoomShow(Math.max(0, Z.list.indexOf(from)));
 }
@@ -314,7 +328,75 @@ function zoomFit() {
   Z.fit = Z.s = Math.min(W / w, H / hh); Z.x = (W - w * Z.s) / 2; Z.y = (H - hh * Z.s) / 2; zoomPaint();
 }
 function zoomPaint() { Z.img.style.transform = `translate(${Z.x}px,${Z.y}px) scale(${Z.s})`; }
-function zoomClose() { Z.el.remove(); Z.pts.clear(); document.body.style.overflow = ""; }
+function zoomClose() { Z.el.remove(); Z.pts.clear(); Z.mark = null; Z.band.hidden = true; document.body.style.overflow = ""; }
+
+// «Метка» on any picture shown full screen (compare's loupes have their own): ⌥ held or Q, a click marks a pixel, a
+// drag a box. A sheet (the whole picture with the place framed, the place enlarged, an English caption) is stored like
+// a pasted picture and named in the picture's own text field (the one beside it, the strip's field, else the last
+// one typed in); a running dictation takes the name instead, at the word Egor said when he began the mark.
+let lastField = null;
+function fieldFor(from) {
+  const own = from.closest(".atw");
+  if (own) return own.querySelector(FIELD);
+  for (let n = from.parentElement; n && n !== document.body; n = n.parentElement) {
+    const near = [...n.querySelectorAll(FIELD)];
+    if (near.length) return near.includes(lastField) ? lastField : near.at(-1);
+  }
+  return lastField && lastField.isConnected ? lastField : null;
+}
+const zpx = ([x, y]) => [(x - Z.x) / Z.s, (y - Z.y) / Z.s];
+function markMove(e) {
+  const m = Z.mark;
+  m.b = [e.clientX, e.clientY];
+  Z.band.hidden = Math.hypot(m.b[0] - m.a[0], m.b[1] - m.a[1]) <= 5;
+  Object.assign(Z.band.style, { left: Math.min(m.a[0], m.b[0]) + "px", top: Math.min(m.a[1], m.b[1]) + "px",
+    width: Math.abs(m.b[0] - m.a[0]) + "px", height: Math.abs(m.b[1] - m.a[1]) + "px" });
+}
+function markEnd(e) {
+  const m = Z.mark, W = Z.img.naturalWidth, H = Z.img.naturalHeight;
+  Z.mark = null; Z.band.hidden = true;
+  if (!e || !W) return;
+  m.b = [e.clientX, e.clientY];
+  const [ax, ay] = zpx(m.a), [bx, by] = zpx(m.b), c = (v, top) => Math.min(top, Math.max(0, v));
+  let at;
+  if (Math.hypot(m.b[0] - m.a[0], m.b[1] - m.a[1]) <= 5) {
+    if (ax < 0 || ay < 0 || ax >= W || ay >= H) return;
+    at = [Math.floor(ax), Math.floor(ay)];
+  } else {
+    at = [c(Math.floor(Math.min(ax, bx)), W), c(Math.floor(Math.min(ay, by)), H), c(Math.ceil(Math.max(ax, bx)), W), c(Math.ceil(Math.max(ay, by)), H)];
+    if (at[2] <= at[0] || at[3] <= at[1]) return;
+  }
+  zoomMark(at, m.t);
+}
+async function zoomMark(at, t) {
+  const src = decodeURIComponent((Z.img.getAttribute("src") || "").split("?")[0].split("/").pop() || "picture");
+  const where = (at.length === 2 ? "point " : "box ") + at.join(",") + " px", mark = { at: t, about: `${where} on ${src}` };
+  const blob = await new Promise((r) => markSheet(Z.img, at, src, where).toBlob(r, "image/png"));
+  if (!blob) return;
+  Z.msg.textContent = "сохраняю метку…";
+  told = false;
+  const names = Z.field ? await attachPicture(Z.field, blob, mark) : [await upload(null, blob, "image/png", mark)].filter(Boolean);
+  Z.msg.textContent = !names.length ? "метка не сохранилась" : told ? `[${names[0]}] придёт с диктовкой`
+    : Z.field ? `[${names[0]}] — в заметке` : `сохранено как ${names[0]}, но поля для имени нет`;
+}
+function markSheet(im, at, src, where) {
+  const W = im.naturalWidth, H = im.naturalHeight, [x0, y0, x1 = x0 + 1, y1 = y0 + 1] = at;
+  const m = Math.max(x1 - x0, y1 - y0, 32), c = [Math.max(0, x0 - m), Math.max(0, y0 - m), Math.min(W, x1 + m), Math.min(H, y1 + m)];
+  const k1 = Math.min(480 / W, 480 / H), k2 = Math.min(480 / (c[2] - c[0]), 480 / (c[3] - c[1]), 8);
+  const w1 = Math.round(W * k1), h1 = Math.round(H * k1), w2 = Math.round((c[2] - c[0]) * k2), h2 = Math.round((c[3] - c[1]) * k2);
+  const cv = h("canvas", { width: w1 + w2 + 36, height: Math.max(h1, h2) + 52 }), g = cv.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, cv.width, cv.height);
+  g.drawImage(im, 12, 12, w1, h1);
+  g.imageSmoothingEnabled = k2 < 3;
+  g.drawImage(im, c[0], c[1], c[2] - c[0], c[3] - c[1], w1 + 24, 12, w2, h2);
+  g.strokeStyle = "#f0f"; g.lineWidth = 2;
+  g.setLineDash([6, 4]); g.strokeRect(12 + c[0] * k1, 12 + c[1] * k1, (c[2] - c[0]) * k1, (c[3] - c[1]) * k1); g.setLineDash([]);
+  g.strokeRect(12 + x0 * k1 - 2, 12 + y0 * k1 - 2, (x1 - x0) * k1 + 4, (y1 - y0) * k1 + 4);
+  g.strokeRect(w1 + 24 + (x0 - c[0]) * k2 - 2, 12 + (y0 - c[1]) * k2 - 2, (x1 - x0) * k2 + 4, (y1 - y0) * k2 + 4);
+  g.fillStyle = "#222"; g.font = "13px system-ui";
+  g.fillText(`${src} (${W}x${H}): Egor marked the ${where} (magenta). Left the whole picture, right that place enlarged.`, 12, cv.height - 18, cv.width - 24);
+  return cv;
+}
 function onZoomClick(e) {
   const im = e.target.closest && e.target.closest("main img");
   if (!im || (im.closest("[data-own-zoom]") && !im.closest(".att"))) return;
@@ -444,22 +526,27 @@ function pictures(dt) {
   return urls.length ? { urls } : null;
 }
 
-async function upload(el, body, type) {
-  const q = el.dataset.item ? `?item=${encodeURIComponent(el.dataset.item)}&field=${encodeURIComponent(el.dataset.field || "")}` : "";
+// -> the stored name, or null; a marked upload also sets told when a dictation took the name
+let told = false;
+async function upload(el, body, type, mark) {
+  const q = new URLSearchParams(el && el.dataset.item ? { item: el.dataset.item, field: el.dataset.field || "" } : {});
+  if (mark) { q.set("at", String(mark.at)); q.set("about", mark.about || ""); }
   try {
-    const r = await fetch(`/p/${pid}/upload${q}`, { method: "POST", headers: { "Content-Type": type }, body });
+    const r = await fetch(`/p/${pid}/upload?${q}`, { method: "POST", headers: { "Content-Type": type }, body });
     if (!r.ok) return null;
-    const { name } = await r.json();
-    if (!known.has(name)) known.set(name, { item: el.dataset.item || null, field: el.dataset.field || null });
+    const { name, mark: reply } = await r.json();
+    if (!known.has(name)) known.set(name, { item: el && el.dataset.item || null, field: el && el.dataset.field || null });
+    if (mark && /^ok /.test(reply || "")) told = true;
     return name;
   } catch (e) { return null; }
 }
 
-async function attach(el, got, start, end) {
+async function attach(el, got, start, end, mark) {
   if (got.finder) { say(el, "файл из Finder так не вставляется — перетащи его в поле мышкой", true); return []; }
   const was = el.value, names = [];
   say(el, "сохраняю картинку…");
-  for (const f of got.files || []) names.push(await upload(el, f, f.type || "application/octet-stream"));
+  told = false;
+  for (const f of got.files || []) names.push(await upload(el, f, f.type || "application/octet-stream", mark));
   for (const u of got.urls || []) {
     let blob = null;
     if (u.startsWith("data:")) try { blob = await (await fetch(u)).blob(); } catch (e) { /* not a picture */ }
@@ -469,13 +556,26 @@ async function attach(el, got, start, end) {
   const ok = [...new Set(names.filter(Boolean))], lost = names.filter((n) => !n).length;
   say(el, lost ? (ok.length ? "не все картинки сохранились" : "картинка не сохранилась") : "", lost > 0);
   if (!ok.length) return [];
+  if (told) return dictated(el, ok);
   if (el.value !== was) start = end = el.selectionEnd;
   put(el, ok.map((n) => `[${n}]`).join(" "), start, end);
   strip(el);
   return ok;
 }
 // A picture a module draws itself (compare's «Метка» sheet) goes in like a pasted one; resolves to its stored names.
-export const attachPicture = (el, blob) => attach(el, { files: [blob] }, el.selectionStart, el.selectionEnd);
+export const attachPicture = (el, blob, mark) => attach(el, { files: [blob] }, el.selectionStart, el.selectionEnd, mark);
+
+// A mark made while Egor dictates (transcriptions-gpt MARKS.md, relayed by the server): the dictation carries
+// [name] at the word he said when he marked, so the caret gets nothing; the field takes the focus back, since the
+// dictation pastes into whatever holds it, and says where the name will come from until it arrives.
+function dictated(el, names) {
+  const s = slot(el);
+  say(el, names.map((n) => `[${n}]`).join(" ") + " — придёт с диктовкой");
+  s.waiting = true;
+  el.focus({ preventScroll: true });
+  strip(el);
+  return names;
+}
 
 function onPaste(e) {
   const el = textField(e.target), got = el && e.clipboardData && pictures(e.clipboardData);
@@ -515,6 +615,11 @@ export async function start(s, r) {
   document.addEventListener("paste", onPaste, true);
   document.addEventListener("dragover", onDragOver, true);
   document.addEventListener("drop", onDrop, true);
-  document.addEventListener("input", (e) => { const el = textField(e.target); if (el) { strip(el); grow(el); } }, true);
+  document.addEventListener("focusin", (e) => { const el = textField(e.target); if (el) lastField = el; });
+  document.addEventListener("input", (e) => {
+    const el = textField(e.target), s = el && strips.get(el);
+    if (s && s.waiting) { s.waiting = false; s.msg.textContent = ""; }
+    if (el) { strip(el); grow(el); }
+  }, true);
   addEventListener("resize", () => document.querySelectorAll("textarea").forEach(grow));
 }

@@ -5,6 +5,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,8 +27,16 @@ const F = fixtures(path.join(tmp, "media"));
 fs.mkdirSync(path.join(tmp, "bin"));
 fs.writeFileSync(path.join(tmp, "bin/chat-name"), '#!/bin/sh\necho \'{"name": "e2e chat"}\'\n', { mode: 0o755 });
 const env = { ...process.env, PATH: `${tmp}/bin:${process.env.PATH}`, PAGES_DIR: path.join(tmp, "pages"),
-  PAGES_KIT_DIR: path.join(ROOT, "share/pages/kit"), CLAUDE_CODE_SESSION_ID: "chat-e2e" };
+  PAGES_KIT_DIR: path.join(ROOT, "share/pages/kit"), CLAUDE_CODE_SESSION_ID: "chat-e2e", TRANSCRIBER_RUNTIME_DIR: path.join(tmp, "tgpt") };
 delete env.CLAUDE_LAUNCHER_SESSION;
+// A stand-in for transcriptions-gpt's daemon (its MARKS.md): every mark line the server relays, answered by `daemon`.
+const marks = [];
+let daemon = () => "ignored idle";
+fs.mkdirSync(env.TRANSCRIBER_RUNTIME_DIR);
+const fake = net.createServer((c) => {
+  let got = "";
+  c.on("data", (d) => { got += d; if (got.endsWith("\n")) { const m = JSON.parse(got.slice(5)); marks.push(m); c.end(daemon(m) + "\n"); } });
+}).listen(path.join(env.TRANSCRIBER_RUNTIME_DIR, "control.sock"));
 const page = (args, input) => {
   const r = spawnSync(PAGE, args, { env, input, encoding: "utf8" });
   if (r.status !== 0) throw new Error(`page ${args.join(" ")}: ${r.stderr}`);
@@ -191,8 +200,42 @@ try {
     return /p01 .*pins=.*img3\.png/.test(pinState) && pinState.includes(`B(${slots.B})`) && pinState.includes(`A(${slots.A})`)
       && pinState.includes(`img2.png=${path.join(cmpFiles, "img2.png")}`) && pinState.includes("answered=2/2");
   }, 4000), pinState);
+  // transcriptions-gpt: every mark goes to its daemon with the moment it began; a running dictation takes the name
+  const m2 = marks.find((m) => m.tag === "img2.png");
+  check("a mark reaches the dictation daemon with its moment, its sheet and its page", m2 && Math.abs(m2.at - Date.now()) < 60000
+    && m2.ref === path.join(cmpFiles, "img2.png") && m2.note.startsWith(`http://127.0.0.1:${port}/p/${cmp}/ - box `), JSON.stringify(marks));
+  daemon = (m) => `ok ${m.tag} 2.5`;
+  const said = await tab.$eval(".side textarea", (el) => el.value);
+  await tab.keyboard.down("Alt"); await tab.mouse.click(ox + 8, oy + 8); await tab.keyboard.up("Alt");
+  check("a mark a dictation takes leaves the note alone and says the name comes with the dictation",
+    await until(() => tab.$eval(".side .atm", (m) => /\[img4\.png\] .*диктовк/.test(m.textContent))) && await tab.$eval(".side textarea", (el) => el.value) === said);
+  check("…the note has the focus for the dictation's paste", await tab.evaluate(() => document.activeElement.matches(".side textarea")));
+  check("…and its pin shows before the name arrives", await until(() => tab.$$eval(".vp .pins b", (b) => b.map((x) => x.textContent).includes("4"))));
+  await tab.$eval(".side textarea", (el) => el.setSelectionRange(el.value.length, el.value.length));
+  await tab.keyboard.insertText(" вот тут [img4.png] криво");
+  check("the dictation's paste brings the name; the note says nothing more", await until(() => tab.$eval(".side .atm", (m) => m.textContent === ""))
+    && await until(() => page(["state", "calib", "--all"]).includes(`img4.png=${path.join(cmpFiles, "img4.png")}`), 4000));
   await tab.goto(`${origin}/p/${crd}/`);
   await tab.waitForSelector(note);
+  // «Метка» on any picture opened full screen: here a picture of the card's note
+  daemon = () => "ignored idle";
+  await tab.click('.card[data-id="c11"] .att img');
+  await tab.waitForFunction(() => document.querySelector(".zoom > img")?.naturalWidth);
+  const [zx, zy] = await tab.$eval(".zoom > img", (im) => { const r = im.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; });
+  const was = await value();
+  await tab.keyboard.down("Alt");
+  await tab.mouse.move(zx - 30, zy - 20); await tab.mouse.down(); await tab.mouse.move(zx + 30, zy + 20, { steps: 4 }); await tab.mouse.up();
+  await tab.keyboard.up("Alt");
+  check("a ⌥-drag on a full-screen picture names its sheet in that picture's own field",
+    await until(async () => /\[img\d+\.png\]$/.test(await value()) && (await value()) !== was)
+    && await tab.$eval(".zmsg", (m) => /в заметке/.test(m.textContent)), await value());
+  daemon = (m) => `ok ${m.tag} 1.0`;
+  const kept = await value();
+  await tab.keyboard.press("KeyQ"); await tab.mouse.click(zx, zy); await tab.keyboard.press("KeyQ");
+  check("…with Q too, and a running dictation takes the name instead",
+    await until(() => tab.$eval(".zmsg", (m) => /диктовк/.test(m.textContent))) && (await value()) === kept
+    && marks.at(-1).note.includes(`/p/${crd}/ - point `) && await tab.evaluate(() => document.activeElement.matches(".card textarea")), JSON.stringify(marks.at(-1)));
+  await tab.keyboard.press("Escape");
   const index = await (await fetch(`http://127.0.0.1:${port}/`)).text();
   check("index lists both pages under the chat name", index.includes("e2e chat") && index.includes(cmp) && index.includes(crd));
   const events = path.join(env.PAGES_DIR, ".events.jsonl");
@@ -206,6 +249,7 @@ try {
 } finally {
   await browser.close();
   server.kill();
+  fake.close();
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 console.log(failed ? `FAIL: ${failed} of ${checks} end-to-end checks` : `PASS: ${checks} end-to-end checks`);

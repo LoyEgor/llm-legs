@@ -4,7 +4,9 @@ preview and on its loupe, hides or shows that loupe, for every item of the visit
 «Save image as…» under its file's name (none on a blind page).
 «Метка» (Q, or ⌥ held): on any loupe a click marks one pixel, a drag a box. The page draws a sheet (the whole
 picture with the context framed, that context cut from every frame, the mark in magenta, an English caption)
-and stores it as a pasted picture: its [imgN.png] goes into the note at the caret. A reading model opens it.
+and stores it as a pasted picture: its [imgN.png] goes into the note at the caret, or, while Egor dictates in
+transcriptions-gpt, into the dictation at the word he was saying. A reading model opens it. The same «Метка»
+works on any picture opened full screen, on every page.
 
 ## Spec (CONTRACT.md, schema 1)
 - **mode:** `vote` (default) or `view`, a numbered grid with no vote widget.
