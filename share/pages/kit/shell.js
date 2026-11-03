@@ -381,7 +381,7 @@ async function zoomMark(at, t) {
 }
 function markSheet(im, at, src, where) {
   const W = im.naturalWidth, H = im.naturalHeight, [x0, y0, x1 = x0 + 1, y1 = y0 + 1] = at;
-  const m = Math.max(x1 - x0, y1 - y0, 32), c = [Math.max(0, x0 - m), Math.max(0, y0 - m), Math.min(W, x1 + m), Math.min(H, y1 + m)];
+  const m = Math.max(Math.ceil(Math.max(x1 - x0, y1 - y0) / 2), 24), c = [Math.max(0, x0 - m), Math.max(0, y0 - m), Math.min(W, x1 + m), Math.min(H, y1 + m)];
   const k1 = Math.min(480 / W, 480 / H), k2 = Math.min(480 / (c[2] - c[0]), 480 / (c[3] - c[1]), 8);
   const w1 = Math.round(W * k1), h1 = Math.round(H * k1), w2 = Math.round((c[2] - c[0]) * k2), h2 = Math.round((c[3] - c[1]) * k2);
   const cv = h("canvas", { width: w1 + w2 + 36, height: Math.max(h1, h2) + 52 }), g = cv.getContext("2d");

@@ -479,9 +479,11 @@ function cells(f, im, [x0, y0, x1, y1]) {
 
 function sheet(k, at, z) {
   const it = item(cur), fs = frames(it), box = at.length === 4, m = box ? at : [at[0], at[1], at[0] + 1, at[1] + 1];
-  const lo = 4 * Math.max(m[2] - m[0], m[3] - m[1]);
+  // the mark fills about half the tile (never less zoom than Egor's loupe had), the region kept inside the picture
+  const lo = 2 * Math.max(m[2] - m[0], m[3] - m[1]);
   const side = Math.max(1, Math.round(Math.min(Math.max(lo, 0.35 * Math.max(geo.w, geo.h)), Math.max(24, lo, 400 / z))));
-  const rx = Math.round((m[0] + m[2]) / 2 - side / 2), ry = Math.round((m[1] + m[3]) / 2 - side / 2), s = TILE / side;
+  const inside = (v, n) => (side < n ? cl(v, 0, n - side) : Math.round((n - side) / 2));
+  const rx = inside(Math.round((m[0] + m[2]) / 2 - side / 2), geo.w), ry = inside(Math.round((m[1] + m[3]) / 2 - side / 2), geo.h), s = TILE / side;
   const name = (f, i) => (i === 0 && it.original ? "original" : f.side + (f.name ? " · " + f.name : ""));
   const on = name(fs[k], k), ref = it.original ? "the original" : `the shared ${geo.w}x${geo.h} frame`;
   const cc = k === 0 && it.original ? null : cells(fs[k], E.imgs[k], m);
