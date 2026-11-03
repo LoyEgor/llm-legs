@@ -3034,7 +3034,8 @@ assert doc_has 'at most `600` s old'
 
 # --- Row cz: the Harness doctor's outputs ----------------------------------------------
 HARNESS_DOCTOR_BIN="$ROOT/bin/harness-doctor"
-assert grep -Fq 'env_dir("HARNESS_DOCTOR_DIR", ".cache", "harness-doctor")' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'os.environ.get("HARNESS_DOCTOR_DIR") or os.path.join(base_home(), ".cache", "harness-doctor")' "$ROOT/share/hook_runs.py"
+assert grep -Fq 'from hook_runs import (' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'os.path.join(folder, "latest.json")' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'os.path.join(folder, "menu.txt")' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq '"local_slow": slow_periods' "$HARNESS_DOCTOR_BIN"
@@ -3054,7 +3055,7 @@ if [ -f "$HOOK_TIME_LIB_FILE" ]; then
   assert grep -Fq '"${HOOK_TIME_PPID:-$PPID}" "$HOOK_TIME_CPU" >>"$HOOK_TIME_DIR/$((end / 86400000000)).tsv"' "$HOOK_TIME_LIB_FILE"
   assert grep -Fq 'HOOK_TIME_KEY=stop.d/$1' "${HOOK_TIME_LIB_FILE%/lib/hook-time.sh}/stop-dispatch.sh"
 fi
-assert grep -Fxq 'STOP_PART = "stop.d/"' "$HARNESS_DOCTOR_BIN"
+assert grep -Fxq 'STOP_PART = "stop.d/"' "$ROOT/share/hook_runs.py"
 assert grep -Fq 'handle.write("".join("%d\t%d\t%s\t%s\t%s\t%s\n" % run for run in sorted(items)))' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'HOOK_TIME_LIB = "hooks/lib/hook-time.sh"' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'fold_tsv(journal, "hooks", hook_row)' "$HARNESS_DOCTOR_BIN"
@@ -3077,7 +3078,7 @@ assert grep -Fq 'file:write(string.format("%d\t%d\t%s\n", math.floor(startedAt *
 assert doc_has '`start_us<TAB>end_us<TAB>menu`'
 assert grep -Fq 'collector_runs.record("harness", started)' "$HARNESS_DOCTOR_BIN"
 assert doc_has '`${DOCTORS_DIR:-~/.cache/doctors}/collector-runs.jsonl`'
-assert grep -Fq 'folder = os.path.join(state_dir(), "hook-runs")' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'folder = os.path.join(state_dir(), "hook-runs")' "$ROOT/share/hook_runs.py"
 assert grep -Fq 'c["wait"].append(["t", round(start, 3), session, round(end, 3), turn["o"], None, 0, turn["ty"],' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'c["wait"].append(["d", round(launch, 3), session, round(end, 3), what, None, 0, round(notified, 3),' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq '{k: round(v, 1) for k, v in part.items() if v >= 0.05}, use, turn.get("calls", [])])' "$HARNESS_DOCTOR_BIN"

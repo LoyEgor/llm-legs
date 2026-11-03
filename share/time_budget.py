@@ -28,6 +28,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import collector_runs  # noqa: E402
 import handoffs  # noqa: E402
+import hook_runs  # noqa: E402
 import limiter_hold  # noqa: E402
 import cpu_audit  # noqa: E402
 import fix_commit  # noqa: E402
@@ -64,7 +65,7 @@ REFUSAL_CAP_S = 300
 HISTORY_DAYS = 6
 TREND_DAYS = 7
 TREND_RECENT = 3
-BUDGET_VERSION = 7
+BUDGET_VERSION = 8
 STRATA = (("chat", "min per order · chat"), ("workers", "min per task · workers"), ("night", "min per job · night"))
 WORKER_OVERHEAD = ("slot", "retries", "walled", "wrapup", "dead", "hung", "suite_run", "suite_wait")
 INDEX_DAYS, INDEX_MIN_UNITS = 7, 20
@@ -236,6 +237,19 @@ def event_rows(lo, hi, kinds=("t", "c", "h", "w", "u")):
                 out[kind] += rows
         day = local_day(day_bounds(day)[1] + 1)
     return out
+
+
+_JOURNAL = {}
+
+
+def hook_journal():
+    """The hook-time journal's runs and earliest start (`hook_runs.journal_runs`, reading the Harness doctor's cache
+    and never writing it), one snapshot per process and journal folder: the live journal grows during a run, and
+    each budget day reading it again cost a full parse."""
+    key = hook_runs.state_dir()
+    if _JOURNAL.get("key") != key:
+        _JOURNAL.update(key=key, found=hook_runs.journal_runs(0.0))
+    return _JOURNAL["found"]
 
 
 def worker_runs(lo, hi):
@@ -624,15 +638,19 @@ def night_agents(lo, hi):
 def budget(lo, hi):
     """Overhead over [lo, hi) as wall-clock seconds: each class is the union of its spans, so parallel runs count once.
     Suites come from run-suites' journal for every caller, less the seconds their owner generated beside them (inside
-    its turns or run, outside its calls, when its session has any: a background suite blocks nobody), hooks from Harness's hook rows and a turn's Stop seconds
-    at its end, refusals from `refusal_cost`, locks and polls from the waits a chat or worker paid, and the rest from
-    each worker run's split; every other wait class is a limiter hold. A turn's compaction and unexplained seconds
+    its turns or run, outside its calls, when its session has any: a background suite blocks nobody), hooks from the
+    hook-time journal's blocking runs (`hook_runs.blocking_runs`: no async, Stop or SessionEnd hook, no detached
+    child), each its agent's by its ppid, and a turn's Stop seconds at its end, refusals from `refusal_cost`, locks
+    and polls from the waits a chat or worker paid, and the rest from each worker run's split; every other wait class
+    is a limiter hold. A turn's compaction and unexplained seconds
     have no position, so they add to the union.
     `active_s` is the union of owner turns, worker runs and suites; a bench worker is in neither. Wait loops (`waits`,
     beside the overhead, never in it) are `wait_overshoot`. `strata` is the
     index's per-day input: each stratum's overhead summed over its agents, every agent's own spans unioned, and its
-    units; None for a day before the journals record (`horizon`). A night is one agent (`night_agents`): its hub
-    sessions and its Close, their suites whole (a hub has no turns to generate in)."""
+    units, its `hooks_s` the journal's hook seconds beyond its agents' other spans (absent on a day the journal does
+    not hold whole; a run of no agent sums into `out_s.unowned`); None for a day before the journals record
+    (`horizon`). A night is one agent (`night_agents`): its hub sessions and its Close, their suites whole (a hub has
+    no turns to generate in)."""
     events = event_rows(lo, hi)
     runs = worker_runs(lo, hi)
     suites = suite_rows(min([lo] + [num(r.get("pid_started_at")) or num(r.get("started_at")) or lo for r in runs]),
@@ -642,7 +660,7 @@ def budget(lo, hi):
     owner, closes, units["night"] = night_agents(lo, hi)
     sessions = {}
     chained = {name for found in resumers(lo).values() for _, name in found} if runs else set()
-    calls, turns, split_runs = collections.defaultdict(list), collections.defaultdict(list), set()
+    calls, turns, split_runs, benched = collections.defaultdict(list), collections.defaultdict(list), set(), set()
     for c in events.get("c", ()):
         calls[str(c[8])[:8]].append(c)
     for run in runs:
@@ -659,6 +677,8 @@ def budget(lo, hi):
             owner.pop(None, None)
             units["workers"] += (name not in dead and name not in chained and not run.get("resume")
                                  and lo <= num(run.get("ended_at")) < hi)
+        else:
+            benched.add(run_session(name))
     for t in events.get("t", ()):
         chat = owner.setdefault(str(t[2])[:8], ("chat", str(t[2])[:8]))
         if t[3] > lo and t[1] < hi and t[3] > t[1]:
@@ -691,12 +711,26 @@ def budget(lo, hi):
             agents[chat] += minus([(r["queued_at"], r["ended_at"])], gen)
         elif not r.get("worker_run"):
             outside.append((r["queued_at"], r["ended_at"]))
+    # Hooks are the journal's blocking runs (`hook_runs.blocking_runs`), each its agent's through its ppid, a bench
+    # worker's left out like its other classes. Harness's `h` rows (a hook that printed) stay: a Stop one in the stop
+    # class, every one in its agent's spans, so `overhead_s` keeps its pre-journal method and a stratum's `hooks_s` is
+    # what the journal adds beyond it (`paasche`).
     by_hook, session_of = collections.defaultdict(list), {c[7]: str(c[8])[:8] for c in events.get("c", ())}
     for h in events.get("h", ()):
-        family, span = "stop" if h[3] == "Stop" else "hooks", (h[1] - h[5] / 1000.0, h[1])
-        spans[family].append(span)
-        by_hook["%s/%s" % (family, hook_key(str(h[4])))].append(span)
+        span = (h[1] - h[5] / 1000.0, h[1])
+        if h[3] == "Stop":
+            spans["stop"].append(span)
+            by_hook["stop/" + hook_key(str(h[4]))].append(span)
         agents[owner.get(session_of.get(h[7]))].append(span)
+    journal, first = hook_journal()
+    hooked = collections.defaultdict(list)
+    for run, session in hook_runs.blocking_runs(journal, events.get("c", ()), lo, hi):
+        if session and str(session)[:8] in benched:
+            continue
+        span = (run[4], run[0])
+        spans["hooks"].append(span)
+        by_hook["hooks/" + run[1]].append(span)
+        hooked[owner.get(str(session)[:8]) if session else None].append(span)
     held, holds = collections.defaultdict(list), collections.defaultdict(list)
     for w in wait_rows(lo, hi):
         span, by = (w["started"], w["started"] + w["seconds"]), str(w.get("caller") or "")
@@ -733,9 +767,24 @@ def budget(lo, hi):
             if agent:
                 mine = agents.get(agent, [])
                 strata[agent[0]]["holds_s"] += length(clip(mine + own, lo, hi)) - length(clip(mine, lo, hi))
+        # A day the journal does not hold whole has no `hooks_s` (and no `out_s.unowned`): unknown, never 0.
+        covered, unowned = first is not None and first <= lo, 0.0
+        for agent, own in hooked.items():
+            mine = clip(agents.get(agent, []), lo, hi) if agent else []
+            extra = length(union(mine + clip(own, lo, hi))) - length(union(mine))
+            if agent:
+                strata[agent[0]]["hooks_s"] = strata[agent[0]].get("hooks_s", 0.0) + extra
+            else:
+                unowned += extra
         for s, _ in STRATA:
             strata[s]["overhead_s"], strata[s]["holds_s"] = (round(strata[s][k], 1) for k in ("overhead_s", "holds_s"))
+            if covered:
+                strata[s]["hooks_s"] = round(strata[s].get("hooks_s", 0.0), 1)
+            else:
+                strata[s].pop("hooks_s", None)
         strata["out_s"] = {"suites": round(length(clip(outside, lo, hi)), 1), "unmeasured": seconds(("other",))}
+        if covered:
+            strata["out_s"]["unowned"] = round(unowned, 1)
 
     hooks = sorted(((length(clip(v, lo, hi)), k) for k, v in by_hook.items()), key=lambda x: (-x[0], x[1]))
     found = {k: seconds((k,)) for k, _ in CLASSES}
@@ -765,8 +814,9 @@ def cached_day(day):
 
 def day_budget(day, now, store):
     """A day's budget, stored once the day ended a day ago (worker rows land when the run ends) and recomputed when
-    its BUDGET_VERSION is older; an older settled day keeps its numbers and strata, taking only the strata it lacks
-    and `out_s` (run folders are pruned after 7 days, so a recompute reads less than it did)."""
+    its BUDGET_VERSION is older; an older settled day keeps its numbers and strata, taking only the strata it lacks,
+    a stratum's `holds_s` and `hooks_s` it lacks, and `out_s` (run folders are pruned after 7 days, so a recompute
+    reads less than it did)."""
     lo, hi = day_bounds(day)
     cached = cached_day(day)
     if cached:
@@ -778,8 +828,11 @@ def day_budget(day, now, store):
         if isinstance(old, dict) and old.get("settled") and isinstance(old.get("strata"), dict) and found["strata"]:
             kept = {s: v for s, v in old["strata"].items() if s != "out_s"}
             for s, v in kept.items():
+                fresh = found["strata"].get(s) or {}
                 if isinstance(v, dict) and "holds_s" not in v:
-                    kept[s] = dict(v, holds_s=(found["strata"].get(s) or {}).get("holds_s", 0.0))
+                    kept[s] = v = dict(v, holds_s=fresh.get("holds_s", 0.0))
+                if isinstance(v, dict) and "hooks_s" not in v and "hooks_s" in fresh:
+                    kept[s] = dict(v, hooks_s=fresh["hooks_s"])
             found = _BUDGETS[key] = dict(old, version=BUDGET_VERSION, strata=dict(found["strata"], **kept))
         found["settled"] = now >= hi + SETTLE_S
         if found["settled"] and store:
@@ -827,9 +880,12 @@ def horizon():
 def paasche(days):
     """The index of the last INDEX_DAYS days' strata against the INDEX_DAYS before: each stratum's window overhead
     over its window units at the prior's price, strata with under INDEX_MIN_UNITS units on either side left out. None
-    while a window day is unrecorded; no value while a prior day is."""
+    while a window day is unrecorded; no value while a prior day is. A method change never moves it alone: the journal's
+    hooks (`hooks_s`) enter both sides once every day of both carries them, before that neither (`hooks`)."""
+    hooks = all(d is not None and all(d[s].get("hooks_s") is not None for s, _ in STRATA) for d in days)
     sides = [None if any(d is None for d in part) else
-             {s: [sum(d[s]["overhead_s"] + d[s].get("holds_s", 0) for d in part), sum(d[s]["units"] for d in part)]
+             {s: [sum(d[s]["overhead_s"] + d[s].get("holds_s", 0) + (d[s]["hooks_s"] if hooks else 0) for d in part),
+                  sum(d[s]["units"] for d in part)]
               for s, _ in STRATA}
              for part in (days[:INDEX_DAYS], days[INDEX_DAYS:])]
     prior, window = sides
@@ -838,8 +894,9 @@ def paasche(days):
     kept = [s for s, _ in STRATA if prior and min(prior[s][1], window[s][1]) >= INDEX_MIN_UNITS]
     base = sum(window[s][1] * prior[s][0] / prior[s][1] for s in kept)
     return {"value": round(sum(window[s][0] for s in kept) / base, 2) if base else None, "window": window,
-            "prior": prior, "left_out": [s for s, _ in STRATA if s not in kept],
-            "out_s": {k: round(sum(d["out_s"][k] for d in days[INDEX_DAYS:]), 1) for k in ("suites", "unmeasured")}}
+            "prior": prior, "left_out": [s for s, _ in STRATA if s not in kept], "hooks": hooks,
+            "out_s": dict({k: round(sum(d["out_s"][k] for d in days[INDEX_DAYS:]), 1) for k in ("suites", "unmeasured")},
+                          unowned=round(sum(d["out_s"].get("unowned") or 0 for d in days[INDEX_DAYS:]), 1))}
 
 
 def index_history(now, store):

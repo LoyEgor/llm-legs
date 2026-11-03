@@ -92,6 +92,28 @@ lines(os.path.join(work, "harness", "events", "2026-01-10.jsonl"), [
     ["c", D0 + 7100, "p", "Read", 0, 10, "c", "tid0000003", "sessA", 1],
     ["h", D0 + 7001, "p", "PreToolUse", "gate", 100000, "Bash", "tid0000001"],
     ["s", D0 + 100, "work", "worker", 3.0, 0.5, "1"]])
+
+
+def hook_rows(folder, rows):
+    """hook-time.sh's journal rows `(start, end, key, ppid)`, each in its end's epoch-day file."""
+    for start, end, key, ppid in rows:
+        os.makedirs(os.path.join(folder, "hooks"), exist_ok=True)
+        with open(os.path.join(folder, "hooks", "%d.tsv" % (end // 86400)), "a") as handle:
+            handle.write("%d\t%d\t%s\t0\t%s\t\n" % (round(start * 1e6), round(end * 1e6), key, ppid))
+
+
+# The settings hooks (no script file, so a key is its command): blocking ones, an async one, a SessionStart one whose
+# detached child keys `baseline-bg`, a SessionEnd and a Stop one.
+os.makedirs(os.path.join(work, "home", ".claude"), exist_ok=True)
+with open(os.path.join(work, "home", ".claude", "settings.json"), "w") as handle:
+    hook = lambda command, **more: {"hooks": [dict({"type": "command", "command": command}, **more)]}
+    json.dump({"hooks": {"PreToolUse": [dict(hook("gate"), matcher="Bash"), dict(hook("silent.sh"), matcher="Bash"),
+                                        dict(hook("async.sh", **{"async": True}), matcher="Bash")],
+                         "SessionStart": [hook("starter.sh"), hook("watch.sh baseline")],
+                         "SessionEnd": [hook("ender.sh")], "Stop": [hook("stopper.sh")]}}, handle)
+# The gate's run its h row above also shows, and one ending at E's midnight (below).
+hook_rows(os.path.join(work, "harness"), [(D0 + 6901, D0 + 7001, "gate", "7"),
+                                          (D0 + 2 * 86400 - 100, D0 + 2 * 86400, "gate", "7")])
 lines(os.path.join(work, "harness", "waits", "2026-01-10.jsonl"),
       [{"class": "lock", "source": "x", "started": D0 + 7100, "seconds": 40, "pid": 1, "caller": "sessA"},
        {"class": "lock", "source": "heartbeat", "started": D0 + 7200, "seconds": 30, "pid": 2},
@@ -804,12 +826,52 @@ E = D0 + 2 * 86400
 os.environ["HARNESS_WAITS_DIR"] = os.path.join(work, "late-waits")
 lines(os.path.join(work, "late-waits", T.local_day(E - 1) + ".jsonl"),
       [{"class": "lock", "source": "x", "started": E - 50, "seconds": 100, "pid": 1, "caller": "late0001"}])
-ended = budget_on(E - 100, E, {"h": [["h", E, "p", "PreToolUse", "gate", 100000, "Bash", "tid"]]})
+ended = budget_on(E - 100, E, {})
 crossed = budget_on(E, E + 3600, {})
 del os.environ["HARNESS_WAITS_DIR"]
-check(ended["seconds"]["hooks"] == 100 and crossed["seconds"]["locks"] == 50,
-      "a hook row is stamped at its end, so its span ends there; a wait begun before midnight keeps its tail in the "
-      "next day: %s %s" % (ended["seconds"]["hooks"], crossed["seconds"]["locks"]))
+check(ended["seconds"]["hooks"] == 100 and crossed["seconds"]["hooks"] == 0 and crossed["seconds"]["locks"] == 50,
+      "a hook run spans its journal start to end, so one ending at midnight stays in its day; a wait begun before "
+      "midnight keeps its tail in the next day: %s %s" % (ended["seconds"]["hooks"], crossed["seconds"]["locks"]))
+# Lost time's hooks are the hook-time journal's blocking runs, a silent one (no transcript attachment, so no h row)
+# too, each its agent's through its ppid (`hook_runs.blocking_runs`).
+silent_dir, S = os.path.join(work, "silent-harness"), D0 + 50000
+lines(os.path.join(silent_dir, "events", "2026-01-10.jsonl"), [
+    ["t", S, "chatsil1", S + 100, "h", [0, 0, 0], 0, [], [], {"gen": 100}, {}, []],
+    ["c", S + 10, "p", "Bash", 0, 5, "h", "tidS000001", "chatsil1", 1],
+    ["c", S + 30, "p", "Bash", 0, 5, "h", "tidS000002", "chatsil1", 1],
+    ["c", S + 60, "p", "Bash", 0, 5, "h", "tidS000003", "chatsil1", 1]])
+hook_rows(silent_dir, [(D0 - 3600, D0 - 3599, "other.sh", "1"), (S + 1, S + 3, "starter.sh", "4242"),
+                       (S + 10.1, S + 12.1, "silent.sh", "4242"), (S + 10.1, S + 20.1, "async.sh", "4242"),
+                       (S + 30.1, S + 33.1, "silent.sh", "4242"), (S + 40, S + 50, "watch.sh baseline-bg", "4242"),
+                       (S + 60.1, S + 61.1, "silent.sh", "4242"), (S + 70, S + 80, "ender.sh", "4242"),
+                       (S + 95, S + 99, "stopper.sh", "4242"), (S + 200, S + 204, "silent.sh", "999")])
+os.environ["HARNESS_DOCTOR_DIR"] = silent_dir
+heard = T.budget(D0, D0 + 86400)
+check(heard["seconds"]["hooks"] == 12 and heard["hooks_by_hook"] == {"hooks/silent.sh": 10, "hooks/starter.sh": 2}
+      and heard["seconds"]["stop"] == 0,
+      "every blocking journal run is a hook second though no transcript shows it; an async hook, a detached child, a "
+      "SessionEnd and a Stop hook (its turn's stop part) are not: %s %s" % (heard["seconds"], heard["hooks_by_hook"]))
+check(heard["strata"]["chat"]["hooks_s"] == 8 and heard["strata"]["workers"]["hooks_s"] == 0
+      and heard["strata"]["out_s"]["unowned"] == 4,
+      "a run joined to its chat's calls, or of a ppid they own (SessionStart), is that chat's; a ppid no call owns "
+      "sums apart, unowned: %s" % heard["strata"])
+T.write_json(T.day_cache_path("2026-01-10"), dict(heard, version=T.BUDGET_VERSION - 1, settled=True, strata=dict(
+    heard["strata"], chat={"overhead_s": 7.0, "holds_s": 0.0, "units": 1})))
+check(T.day_budget("2026-01-10", D0 + 3 * 86400, False)["strata"]["chat"]
+      == {"overhead_s": 7.0, "holds_s": 0.0, "units": 1, "hooks_s": 8},
+      "a day an older budget settled keeps its strata and takes the journal's hooks it lacks")
+os.unlink(T.day_cache_path("2026-01-10"))
+os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "harness")
+before = {"chat": {"overhead_s": 600, "holds_s": 0, "units": 30}, "workers": {"overhead_s": 0, "holds_s": 0, "units": 0},
+          "night": {"overhead_s": 0, "holds_s": 0, "units": 0}, "out_s": {"suites": 0, "unmeasured": 0}}
+journaled = dict({s: dict(before[s], hooks_s=0) for s, _ in T.STRATA}, chat=dict(before["chat"], hooks_s=600),
+                 out_s=dict(before["out_s"], unowned=5))
+mixed = T.paasche([before] * 7 + [journaled] * 7)
+whole = T.paasche([dict(journaled, chat=dict(journaled["chat"], hooks_s=0))] * 7 + [journaled] * 7)
+check(mixed["value"] == 1.0 and not mixed["hooks"] and whole["value"] == 2.0 and whole["hooks"]
+      and whole["out_s"]["unowned"] == 35,
+      "the index never moves with the method alone: the journal's hooks enter both windows once every day of both "
+      "carries them, then count: %s %s" % (mixed["value"], whole["value"]))
 os.environ["HARNESS_WAITS_DIR"] = os.path.join(work, "hold-waits")
 HELD = "claudeb-1-1-held"
 lines(os.path.join(work, "hold-waits", "2026-01-10.jsonl"),
