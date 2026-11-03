@@ -1,7 +1,26 @@
 # Hand-off: the Gemini Argon review cell stalls and ends empty
 
-Status: open
+Status: stall fixed in review-bench (`launch.py`: an agy cell's heartbeat is its conversation db, not its
+log); Q5 open. Taken by «Workers и review bench унификация отображения».
 To: the chat Egor assigns to fix Argon review cells (Egor 2026-11-03: «Я хочу Argon починить»)
+
+## Answers (2026-11-03)
+
+1. The silent-gap stall cap (353 s) ended it, restarted by one housekeeping log line at 18:28:53: kill at
+   18:34:47, 353 s later. Housekeeping lines also mean a really hung turn could outlive any cap.
+2. A long thinking phase, not a hung stream: the kept db's step 45 (ResponseID `CQvqauTyMLj9vdIP2ryDwA4`)
+   generated from 18:25:52 until the kill, 37 772 thinking tokens (~70/s) and a 61 KB thinking summary.
+   agy prints nothing on stdout while its model thinks and its log only gets one line per request; the
+   conversation db (`<state>/antigravity-cli/conversations/<id>.db` + `-wal`) takes the streamed thinking
+   every ~6 s. Probes on Flash: the WAL grew every ~6 s while stdout and log stayed flat; while a tool
+   ran, nothing was written (no timer writes). The cell now watches that db (size + mtime) as life.
+3. `ours` stays: this stall was ours (the wrong heartbeat). With the db heartbeat a stall is a turn that
+   wrote nothing for the whole cap.
+4. agy has no per-request deadline; `--print-timeout` bounds the whole turn. The stall cap on the db is
+   that deadline now. Resuming a cut turn (`agy --conversation <id>`) is possible, not built: no real hung
+   stream on record.
+5. Open. `20261101T141622Z-f0ac00d` (the `cap` row) was no stall either: 136 requests, longest gap 46 s,
+   working until agy's 30-minute print timeout returned nothing.
 
 Written by the chat that ran the review, from what it saw; nothing here was fixed or rerun. Goal: Argon
 (`agy-argon-high`) review cells finish with findings instead of ending as `stall` or `cap`.
