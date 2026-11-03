@@ -3428,10 +3428,10 @@ assert grep -qF 'if M.enabled() and (idle >= AWAY_S or stillAway(now, idle)) the
 assert doc_has '| em | Away mark |'
 # Row en: every Chrome launched for automation is one of the two bundles Show Chrome reads; a launch spelling
 # beyond the counted ones fails here until it is (Egor saw a clone window with no Show Chrome, 2026-10-14).
-# worker-run browse_quit_idle counts twice: its `is running` check and its quit never launch Chrome.
+# worker-run browse_quit_idle counts three times: its `is running` check, its quit and its tab close never launch Chrome.
 chrome_launch_re='launch_persistent_context|\.launch\(|launch_server|connect_over_cdp|puppeteer|selenium|chrome_binary\(|Google Chrome\.app|-[ab][[:space:]]+['\''"]?(com\.google\.Chrome|Google Chrome)|application (id )?\\?"(Google Chrome|com\.google\.Chrome)"'
 assert eq "$(cd "$ROOT" && command grep -rcIE --exclude='*.json' --exclude='*.md' "$chrome_launch_re" bin share |
-  command grep -v ':0$' | sort | paste -sd' ' -)" "bin/chrome-applescript-js:4 share/gemini_web.py:5 share/image_input.py:1 share/worker-run-browse.sh:4"
+  command grep -v ':0$' | sort | paste -sd' ' -)" "bin/chrome-applescript-js:4 share/gemini_web.py:5 share/image_input.py:1 share/worker-run-browse.sh:5"
 assert grep -Fq 'str(profile), executable_path=quiet_chrome(chrome_binary(clone), account), headless=False,' "$ROOT/share/gemini_web.py"
 assert grep -Fq 'browser = pw.chromium.launch(executable_path=chrome_binary(SOURCE_APP), headless=True)' "$ROOT/share/image_input.py"
 assert grep -Fq 'CLONE_ID = "com.google.Chrome.gemini-web"' "$ROOT/share/gemini_web.py"

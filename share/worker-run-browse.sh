@@ -182,14 +182,49 @@ APPLESCRIPT
 browse_marker() { printf 'https://example.com/#worker-run=%s\n' "${1// /-}"; }
 
 # Chrome is automation's browser: once no run drives it and every tab is a marker, probe or canary page, it
-# quits, or the windows a canary or run opened stay on Egor's screen for good (three, 2026-10-18).
+# quits, or the windows a canary or run opened stay on Egor's screen for good (three, 2026-10-18). A page of
+# his own keeps it running (his ChatGPT app window in Profile 1 did from 10-31 to 11-03, and each daily canary
+# added its example.com windows, shown with his app): then only those windows and tabs close. Each action is
+# one line of browse/idle.log.
 browse_quit_idle() { # [run id that is ending]
-  local urls
+  local urls kept closed
   [ -z "$(chrome_runs | grep -vxF -- "${1:-}")" ] || return 0
   browse_chrome_app_running || return 0
   urls=$(browse_chrome_urls) && grep -q . <<<"$urls" || return 0
-  ! grep -v -e '^$' -e '^https://example\.com/' -e '^http://127\.0\.0\.1:' -e '^chrome://newtab/' <<<"$urls" | grep -q . || return 0
-  "${BROWSE_OSASCRIPT:-osascript}" -e 'tell application id "com.google.Chrome" to quit' >/dev/null 2>&1 || :
+  kept=$(grep -v -e '^$' -e '^https://example\.com/' -e '^http://127\.0\.0\.1:' -e '^chrome://newtab/' <<<"$urls" |
+    sed -E 's#^([a-z-]+://[^/]*).*#\1#' | sort -u | paste -sd ' ' -)
+  if [ -z "$kept" ]; then
+    "${BROWSE_OSASCRIPT:-osascript}" -e 'tell application id "com.google.Chrome" to quit' >/dev/null 2>&1 || :
+    { printf '%s quit at %s\n' "$(date '+%F %T')" "${1:-a browse end}" >>"$(browse_dir)/idle.log"; } 2>/dev/null || :
+    return 0
+  fi
+  grep -q '^https://example\.com/' <<<"$urls" || return 0
+  # A window of idle pages closes whole; elsewhere only example.com tabs, which are never Egor's.
+  closed=$("${BROWSE_OSASCRIPT:-osascript}" -e 'set n to 0
+tell application id "com.google.Chrome"
+  repeat with wid in (get id of every window)
+    set w to window id (contents of wid)
+    set spare to true
+    repeat with u in (get URL of every tab of w)
+      set u to contents of u
+      if not (u is "" or u starts with "https://example.com/" or u starts with "http://127.0.0.1:" or u starts with "chrome://newtab/") then set spare to false
+    end repeat
+    if spare then
+      set n to n + (count of tabs of w)
+      close w
+    else
+      repeat with i from (count of tabs of w) to 1 by -1
+        if URL of tab i of w starts with "https://example.com/" then
+          close tab i of w
+          set n to n + 1
+        end if
+      end repeat
+    end if
+  end repeat
+end tell
+return n' 2>/dev/null) || :
+  { printf '%s closed %s tabs at %s, Chrome kept by %s\n' "$(date '+%F %T')" "${closed:-?}" "${1:-a browse end}" "$kept" \
+    >>"$(browse_dir)/idle.log"; } 2>/dev/null || :
 }
 
 browse_chrome_visible() { # true|false; System Events, since AppleScript to Chrome itself unhides and activates it
@@ -213,17 +248,18 @@ browse_refocus() { # bundle id frontmost before; keep_shown set by browse_window
 }
 
 browse_window() { # profile-directory
-  local marker i front keep_shown=''
+  local marker i front keep_shown='' settle=${BROWSE_SETTLE_S:-30}
   marker=$(browse_marker "$1")
   front=$(browse_front)
   # Show Chrome holds for the Chrome it was clicked for, never past it (Egor 2026-10-24: «По умолчанию он должен
   # быть выключен и не должен запоминаться»): a Chrome launched here starts hidden.
-  browse_chrome_app_running || rm -f "$(browse_dir)/shown"
+  # A cold Chrome's extension listed no device 40 s after launch and did by 75 s (2026-11-03): it settles twice as long.
+  browse_chrome_app_running || { rm -f "$(browse_dir)/shown"; settle=$((settle * 2)); }
   [ ! -e "$(browse_dir)/shown" ] && [ -z "$(chrome_runs '.computer == true')" ] || keep_shown=1
   for ((i = 0; i < ${BROWSE_WINDOW_WAIT:-40}; i++)); do
     [ "$i" -eq 0 ] || browse_refocus "$front"
     browse_chrome_urls | grep -qxF -- "$marker" &&
-      { [ "$i" -eq 0 ] || { sleep "${BROWSE_SETTLE_S:-30}"; browse_refocus "$front"; }; return 0; }
+      { [ "$i" -eq 0 ] || { sleep "$settle"; browse_refocus "$front"; }; return 0; }
     [ "$i" -ne 0 ] || BROWSE_OPENED_AT=$(date +%s)
     [ "$i" -ne 0 ] || "${BROWSE_OPEN:-open}" -n -g -b com.google.Chrome --args --profile-directory="$1" "${CHROME_FLAGS[@]}" "$marker" >/dev/null 2>&1 || :
     sleep 0.5
@@ -274,9 +310,11 @@ EOF
 }
 
 browse_preamble() { # vendor target account device-hint profiles token
-  local run="$SCRIPT_DIRECTORY/worker-run browse" first='every' gone
+  local run="$SCRIPT_DIRECTORY/worker-run browse" first='every' gone late=''
   [ "$2" != dia ] || { browse_dia_preamble; return 0; }
   [ -z "$4" ] || first="\`$4\` first when listed, then every other"
+  # A Chrome that worker-run just launched listed its device after 75 s, not after 40 (2026-11-03).
+  [ -z "$4" ] || late=" A Chrome just opened lists \`$4\` up to 2 min late: while it is missing, list again every 20 s, up to 2 min, before taking another."
   gone="run \`$run --window $3\`, repeat the proof for up to 60 s, and only then end \`OUTCOME: BROWSER_INTERRUPTED\`"
   if [ "$1" = codex ]; then
     cat <<EOF
@@ -288,7 +326,7 @@ EOF
     cat <<EOF
 # Browser preamble (Claude in Chrome / Google Chrome / $3)
 Prove the device before the task:
-1. \`list_connected_browsers\`. Candidates: $first \`isLocal: true\` entry; no other id, ever.
+1. \`list_connected_browsers\`. Candidates: $first \`isLocal: true\` entry; no other id, ever.$late
 2. Per candidate: \`select_browser\`, \`navigate\` (no tabId) to \`https://example.com/?wr=$6-<candidate number>\`, then run \`$run --seen $6-<candidate number> --account $3\`. Only \`SEEN: $2\` proves it. An error, a timeout or \`SEEN: none\`: close any tab it opened, take the next candidate; never retry one, never call \`tabs_context_mcp\` on one.
 3. Proven: print \`BROWSER-PROVEN: <deviceId> $3\` and work in that tab; your final answer repeats that line. None: end \`OUTCOME: BROWSER_NO_DEVICE account=$3 profile=$5\`.
 Then:
