@@ -10,7 +10,9 @@ knobs. A forced reboot is the one outcome this exists to prevent; lag and heavy 
 Trigger, both halves required, evaluated once per tick:
 
 - system available RAM < **2048 MB**, AND
-- the **fattest chat job** > **1536 MB**, weighed as the summed physical footprint of its members.
+- the **heaviest chat** > **1536 MB**, all its jobs summed (a setsid fan-out runs each worker in its own
+  group); its largest job is cut first. A ledgered simulator is one job, ended by `simctl shutdown`; a
+  launchd job never is (launchd restarts it); an unowned or ambiguous resource never is.
 
 memlogd counts available RAM one of two ways (`available_mb`), and the `KILLED` line names which as
 `trigger=ram|swap`, beside `swap_room_mb=`:
@@ -50,6 +52,21 @@ process's own session, then the nearest ancestor that claims one or is a registe
 the process's own registry entry (a top-level CLI carries neither variable). The session found is
 then walked up to the outermost chat, so a worker's job is billed to the chat that launched it.
 
+After those, in order:
+
+- **held**: a pid+start once attributed keeps its chat while it lives, and its later children inherit
+  it. A chat CLI is never held. An empty env read is final only after 3 ticks.
+- the **launch ledger**: `chat-load ledger` runs from statusline-workdir-hook.sh on a Bash call naming
+  simctl, xcodebuild, launchctl or `brew services`. It snapshots booted simulators and gui launchd
+  labels at Pre and Post into `ledger/<session>.jsonl`. A record is ambiguous when another chat's call
+  of that kind overlapped; a background call's boot goes to the one window still open. A simulator
+  bills its launchd_sim tree by UDID, a job its tree by label.
+- **cwd**: an unowned own ppid-1 root that is not a launchd job, whose cwd lies in exactly one chat's
+  tree (the record's cwd cut to `.claude/worktrees/<branch>`). In several chats' trees it is
+  `ambiguous`.
+
+Out of reach: Docker, XPC brokers, already-running apps, tmux/ssh.
+
 macOS hides the environment of platform binaries (`/bin/*`, `/usr/bin/*`), so a shell or `sleep`
 is attributed through its ancestry alone. The hogs that froze this machine — python, node — expose
 theirs, so even one orphaned to launchd still has an owner.
@@ -69,7 +86,8 @@ The registry pids and all their ancestors are never members of a job:
    `${WORKER_STATS_DIR:-${CLAUDEB_DIR:-~/.claude-profiles/.claudeb}/worker-stats}`, written right
    after `Popen` and removed in its `finally`.
 
-A stale registration can only spare a process, never condemn one, so no identity check is needed.
+Only a record of the process now under its pid protects (its procStart, else its mtime): a stale
+record on a reused pid hid an orphan's tree.
 
 So the agent always survives its command: the chat or worker CLI sees the command die by signal 9
 and can say so, and a worker run's supervisor still writes its exit code and report.
@@ -134,15 +152,6 @@ which takes time and often more memory first; under this trigger there is no tim
 per tick, the fattest: killing every job over the ceiling would take out the innocent alongside the
 runaway.
 
-## What the live test showed (old guard, same physics)
-
-- **A cold allocation never trips it and never froze the machine either.** 48 GB mapped and touched
-  once does not move `avail` off ~4.3 GB: the kernel pages it out and the resident size stays small.
-- **A hot working set trips it immediately**, which is the shape that does freeze this machine.
-- **RSS counts resident pages only**, so the ceiling was a statement about *hot* memory. The
-  footprint the guard weighs now also counts compressed and wired pages (GPU buffers), so a job
-  whose memory was swapped out still weighs what it would take back.
-
 ## The memguard file
 
 In the run directory of a worker run or review cell the job ran under — `<run dir>/memguard`,
@@ -178,24 +187,28 @@ a 15-minute CPU spark scaled to the performance cores — and what inside "other
 indirectly (screen = WindowServer, kernel = kernel_task, signing = syspolicyd + trustd). States:
 `needs CPU` (using ≥ 0.3 cores on a machine ≥ 90 % busy — the only state more CPU would speed up),
 `full speed`, `wait model` (turn running, CPU near zero), `idle`, `closed` (chat gone, jobs alive),
-`orphan` (below). A live chat's click raises its tab or copies its resume command. A `closed` or
+`orphan` (below), `leftovers` (closed chats under the floor, one row, Stop ends all), `simulator <name>`
+(unowned or ambiguous, Stop shuts it down), `ambiguous` (dim, no Stop). The floor holds only for orphan
+and ambiguous rows. A live chat's click raises its tab or copies its resume command. A `closed` or
 `orphan` row opens a submenu instead: `Stop · <GB>` runs `chat-load stop <key>` (a closed chat also
 keeps `Copy reopen command`).
 
 **orphan** is what nothing runs any more and no chat claims: a process of Egor's adopted by launchd
 (ppid 1) but not one of its jobs (`launchctl list`, asked only when a candidate exists, so apps never
 qualify), an hour old or more, not under `/System/` nor an XPC service or extension, with no attributed
-process in its tree (a detached bench waiting for its slot is a chat's work). It is shown by the same
-50 MB / 0.05-core floor as a closed chat. First case, 2026-10-28: three `agy --print` runs of
-find-truth's morning advice, hung for 3-5 days, 0.4 GB, invisible inside "other". A chat-launched
-daemon that scrubs the session variables off its own environment (the nx daemon drops `CLAUDE_CODE_*`)
-lands here an hour after the command that started it exits.
+process in its tree (a detached bench waiting for its slot is a chat's work). It is shown above a
+50 MB / 0.05-core floor. First case, 2026-10-28: three `agy --print` runs of find-truth's morning
+advice, hung for 3-5 days, 0.4 GB, invisible inside "other". A chat-launched daemon that scrubs the
+session variables off its own environment (the nx daemon drops `CLAUDE_CODE_*`) stays its chat's by
+held ownership or by cwd, never an orphan.
 
-`chat-load stop chat:<session>|orphan:<pid>:<start>` works the members out again from the live table,
-so a pid reused since the row was drawn is never touched: every process attributed to a chat that is
-not open (an open one is refused), or the orphan's tree when its start still matches. SIGTERM; a child
-born to a member while they shut down is added (a stopped `nx serve` started a fresh nx daemon on its
-way out); SIGKILL whatever still runs after 5 s. It prints one line, which the menu shows as an alert.
+`chat-load stop chat:<s>|leftovers:<s>,…|sim:<udid>:<start>|orphan:<pid>:<start>` works the members out
+again from the live table, so a pid reused since the row was drawn is never touched: every process
+attributed to a chat that is not open (an open one is refused), or the orphan's tree when its start
+still matches. Teardown first (`simctl shutdown`; `launchctl bootout` only of labels that chat
+submitted), then SIGTERM with SIGCONT; a child born to a member while they shut down is added (a
+stopped `nx serve` started a fresh nx daemon on its way out), and a ppid-1 process born meanwhile joins
+when it is the same chat's by env or cwd, else it is named and left; SIGKILL whatever still runs after 5 s. It prints one line, which the menu shows as an alert.
 Only Egor's click runs it; the guard never does. A chat's own worker runs and benches go with it:
 the row counts them, and a closed chat cannot read their results.
 
