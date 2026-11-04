@@ -95,10 +95,10 @@ printf '%s|%s|%s|%s|%s\n' "\$LV_GRADIENT" "\$LV_COLORS" "\$LV_PALETTE" "\$BENCH_
 printf '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 384" width="512" height="384"/>' >"\$2"
 EOF
 chmod +x "$WORK/bench/tracers/hints-a7/run.sh"
-mkdir -p "$WORK/bench/tracers/fast-a8"
-sed "s|$WORK/hints|$WORK/auto-hints|" "$WORK/bench/tracers/hints-a7/run.sh" >"$WORK/bench/tracers/fast-a8/run.sh"
-printf "printf 'seams-a4 skipped after retry: status=1\\\\n' >&2\n" >>"$WORK/bench/tracers/fast-a8/run.sh"
-chmod +x "$WORK/bench/tracers/fast-a8/run.sh"
+mkdir -p "$WORK/bench/tracers/fast-a9"
+sed "s|$WORK/hints|$WORK/auto-hints|" "$WORK/bench/tracers/hints-a7/run.sh" >"$WORK/bench/tracers/fast-a9/run.sh"
+printf "printf 'seams-a4 skipped after retry: status=1\\\\n' >&2\n" >>"$WORK/bench/tracers/fast-a9/run.sh"
+chmod +x "$WORK/bench/tracers/fast-a9/run.sh"
 assert vectorize --in "$in" --dest "$dest" --dry-run --gradient no --colors 6
 assert grep -qx 'champion=champ99 source=1024x768 traced=1024x768 size=native hints=gradient:no,colors:6' "$WORK/out"
 assert test ! -e "$WORK/hints"
