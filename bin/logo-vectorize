@@ -99,7 +99,9 @@ fmt, w, h = im.format, *im.size
 cap = 512 if size == '512' else 1024
 s = min(1, cap / max(w, h))
 if s == 1 and fmt in ('PNG', 'JPEG'):
-    out = f'{work}/in.{"jpg" if fmt == "JPEG" else "png"}'
+    # the champion's JPEG graft reads the bench's __jpg128 label from the file stem; small JPEGs carry it so they take the benched path
+    stem = 'in__jpg128' if fmt == 'JPEG' and max(w, h) <= 192 else 'in'
+    out = f'{work}/{stem}.{"jpg" if fmt == "JPEG" else "png"}'
     shutil.copyfile(src, out)
 else:
     im = im.convert('RGBA' if im.mode in ('RGBA', 'LA', 'P') or 'transparency' in im.info else 'RGB')

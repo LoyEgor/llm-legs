@@ -45,6 +45,7 @@ printf '#!/bin/bash\nexec %q "$@"\n' "$REAL_PY" >"$WORK/bench/.venv/bin/python"
 cat >"$WORK/bench/tracers/champ99/run.sh" <<EOF
 #!/bin/bash
 cp "\$1" "$WORK/seen.\${1##*.}"
+basename "\$1" >"$WORK/seen.name"
 printf '%s\n' "\$BENCH_IN_SLOT" >"$WORK/slot"
 [ -e "$WORK/fail" ] && { echo 'stub tracer failed' >&2; exit 3; }
 printf '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 384" width="512" height="384"><rect width="1" height="1"/></svg>' >"\$2"
@@ -77,6 +78,10 @@ assert grep -q 'width="300" height="200"' "$WORK/small.svg"
 magick "$WORK/small.png" -quality 90 "$WORK/small.jpg"
 assert vectorize --in "$WORK/small.jpg" --dest "$WORK/small-jpg.svg"
 assert cmp -s "$WORK/small.jpg" "$WORK/seen.jpg"
+assert grep -qx in.jpg "$WORK/seen.name"
+magick "$WORK/small.png" -resize 128x128 -quality 90 "$WORK/tiny.jpg"
+assert vectorize --in "$WORK/tiny.jpg" --dest "$WORK/tiny-jpg.svg"
+assert grep -qx in__jpg128.jpg "$WORK/seen.name"
 magick "$WORK/small.png" "$WORK/small.webp"
 assert vectorize --in "$WORK/small.webp" --dest "$WORK/small-webp.svg"
 assert test "$(magick identify -format %wx%h "$WORK/seen.png")" = 300x200
