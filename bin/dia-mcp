@@ -3,6 +3,8 @@
 # `BROWSER: yes` run: real input in his open tabs, both profiles, plus network, console and performance.
 # Dia's own switch (chrome://inspect/#remote-debugging) writes DevToolsActivePort, and every new connection
 # makes Dia ask Egor "Allow debugging connection?" (2026-10-26): --check reads only the file and the socket.
+# dia-mcp --storage-state <url-part> <out.json> [<cookie-host>...]: that tab's login (localStorage, cookies incl.
+# HttpOnly of its host and the listed API hosts) as a Playwright storageState for headless runs that need it.
 {
 set -u
 
@@ -60,6 +62,14 @@ case "${1:-}" in
     command -v npx >/dev/null 2>&1 ||
       while IFS= read -r bin; do PATH="$PATH:$bin"; done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -rV)
     exec npx -y "chrome-devtools-mcp@$VERSION" --wsEndpoint "$ws" --no-usage-statistics ;;
-  *) printf 'usage: dia-mcp [--check]\n' >&2; exit 2 ;;
+  --storage-state)
+    [ "$#" -ge 3 ] || { printf 'usage: dia-mcp --storage-state <url-part> <out.json> [<cookie-host>...]\n' >&2; exit 2; }
+    ws=$(endpoint) || { printf '%s\n' "$ws" >&2; exit 1; }
+    allow_watch "$$" "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/browse/dia-allow.log" </dev/null >/dev/null 2>&1 &
+    command -v node >/dev/null 2>&1 ||
+      while IFS= read -r bin; do PATH="$PATH:$bin"; done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -rV)
+    shift
+    node "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../share/dia-storage-state.mjs" "$ws" "$@" ;;
+  *) printf 'usage: dia-mcp [--check | --storage-state <url-part> <out.json> [<cookie-host>...]]\n' >&2; exit 2 ;;
 esac
 exit; }

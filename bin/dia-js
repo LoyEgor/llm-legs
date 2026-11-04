@@ -4,7 +4,6 @@
 # dia-js --relaunch [--auto]         restart a Dia that runs without --enable-applescript-javascript
 # dia-js --open                      bring Dia forward, launching a closed one with the flag
 # dia-js (--active | --url-contains <text> | --tab-id <id>) --shot <png> [--focus]   PNG of the Dia window showing that tab
-# dia-js (--active | --url-contains <text> | --tab-id <id>) --storage-state <json>   Egor's login in that tab as a Playwright storageState for headless runs
 # Runs JavaScript in a tab Egor already has open in Dia and prints its result. AppleScript JavaScript
 # exists only in a Dia started with the flag, so a Dia without it is quit and reopened with it first;
 # --shot needs no flag and never relaunches.
@@ -25,7 +24,7 @@ WINDOWS=${DIA_JS_WINDOWS:-}
 SETTLE_S=${DIA_JS_SETTLE_S:-0.4}
 
 usage() {
-  sed -n '2,7s/^# //p' "$0" >&2
+  sed -n '2,6s/^# //p' "$0" >&2
   exit 2
 }
 
@@ -195,7 +194,6 @@ pick=''
 needle=''
 js_file=''
 shot=''
-state_file=''
 focus=0
 mode=run
 auto=false
@@ -210,7 +208,6 @@ while [ "$#" -gt 0 ]; do
     --relaunch) mode=relaunch; shift ;;
     --open) mode=open; shift ;;
     --shot) mode=shot; shot=${2:?--shot needs a .png path}; shift 2 ;;
-    --storage-state) mode=storage; state_file=${2:?--storage-state needs a .json path}; shift 2 ;;
     --auto) auto=true; shift ;;
     *) usage ;;
   esac
@@ -283,13 +280,7 @@ if [ "$mode" = shot ]; then
   printf '%s\n' "$shot"
   exit 0
 fi
-if [ "$mode" = storage ]; then
-  js='(() => { const h = location.hostname, s = location.protocol === "https:";
-const ls = Object.keys(localStorage).map((k) => ({ name: k, value: localStorage.getItem(k) }));
-const ck = document.cookie ? document.cookie.split("; ").map((c) => { const i = c.indexOf("=");
-  return { name: c.slice(0, i), value: c.slice(i + 1), domain: h, path: "/", expires: -1, httpOnly: false, secure: s, sameSite: "Lax" }; }) : [];
-return { cookies: ck, origins: [{ origin: location.origin, localStorage: ls }] }; })()'
-elif [ -n "$js_file" ]; then
+if [ -n "$js_file" ]; then
   js=$(cat "$js_file")
 else
   [ ! -t 0 ] || die 'no JavaScript: give --file <path> or pipe it on stdin'
@@ -305,15 +296,6 @@ if [ "$state" = bare ]; then
   relaunch
   target=$(choose)
   focus=1
-fi
-if [ "$mode" = storage ]; then
-  out=$(osa exec "$(cut -f1 <<<"$target")" "$focus" "$js")
-  case "$out" in '{"cookies":'*) ;; *) die "the tab returned no storage state: ${out:0:80}" ;; esac
-  (umask 077; printf '%s\n' "$out" >"$state_file")
-  chmod 600 "$state_file"
-  printf '%s\n' "$state_file"
-  printf 'pass it to Playwright as storageState; HttpOnly cookies are invisible to a page, so a site that keeps its session in them stays logged out\n' >&2
-  exit 0
 fi
 osa exec "$(cut -f1 <<<"$target")" "$focus" "$js"
 exit; }
