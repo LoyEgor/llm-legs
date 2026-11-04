@@ -21,7 +21,7 @@ const CSS = `
 .ttl{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px}.nav{display:flex;gap:6px;align-items:center}
 .q{padding:6px 10px;border-left:3px solid var(--accent);background:var(--card);border-radius:6px;font-size:14px;white-space:pre-line}
 .votes{display:flex;gap:8px;flex-wrap:wrap}.votes button{flex:1 0 auto;font-size:17px;font-weight:600;padding:8px;white-space:nowrap}
-.trow,.tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.trow b{width:16px}.trow button,.tools button{padding:3px 10px;font-size:13px}
+.trow,.tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}.trow b{width:16px}.trow button,.tools button{padding:3px 10px;font-size:13px}
 .lrow{display:grid;gap:8px;margin-top:10px}
 .vp[hidden]{display:none}.vp{position:relative;overflow:hidden;height:var(--lh,480px);background:#fff;border-radius:6px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;outline:1px solid var(--line)}
 body.drag,body.drag .vp{cursor:grabbing}
@@ -43,6 +43,7 @@ body.pin .vp{cursor:crosshair}.vp .band{position:absolute;border:1px dashed #f0f
 const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)", MARK = "#f0f";
 const app = document.getElementById("app");
 let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false, marked = true;
+const hiddenLayers = new Set(), seenLayers = new Set(); // grid layers (a `label`led entry of an item's `grid`) hidden for the visit
 let pinTool = false, pinning = null, pinsOff = false; // «Метка»: the tool's state, the mark being drawn, Egor's marks hidden
 const coming = new Set(); // marks a running dictation took: shown before their names arrive in the note
 const hot = new Map(), inked = new WeakSet(), off = new Set(); // off: frames whose loupe is hidden, by badge
@@ -111,6 +112,11 @@ function show(id, keepView) {
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
     hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
     gb: S.pixel_grid || it.grid ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
+    ls: [].concat(it.grid || []).filter((g) => g.label).map((g) => {
+      if (!seenLayers.has(g.label)) { seenLayers.add(g.label); if (g.hidden) hiddenLayers.add(g.label); } // `hidden`: off until pressed
+      return h("button", { onclick: () => toggleLayer(g.label), "data-l": g.label, title: "этот слой сетки: показать или скрыть" },
+        h("i", { class: "sw", style: `background:${g.color || LINE}` }), g.label);
+    }),
     mb: it.marks && it.marks.length ? h("button", { onclick: toggleMarks, title: "M" }, "Рамка") : null,
     pb: h("button", { onclick: togglePin, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка; картинка-метка в заметку" }, "Метка"),
     vb: h("button", { onclick: togglePins, title: "H", hidden: true }, "Скрыть метки"),
@@ -124,7 +130,7 @@ function show(id, keepView) {
   const nav = h("span", { class: "nav" }, S.mode === "view" ? h("button", { onclick: grid, title: "Esc" }, "▦") : null,
     h("button", { onclick: () => go(-1) }, "←"), E.pos, h("button", { onclick: () => go(1) }, "→"));
   // with zoom_levels the first level fits and the digits are taken, so no fit button and no hotspots
-  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.pb, E.vb, E.gb, E.mb);
+  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.pb, E.vb, E.gb, E.ls, E.mb);
   E.note.addEventListener("input", paintPins);
   E.pb.classList.toggle("on", pinTool);
   app.replaceChildren(E.strip, h("div", { class: "upper" }, h("div", { class: "pv" }, cells),
@@ -224,6 +230,8 @@ function jump(k) {
 }
 // zoom_levels[k] as the original's magnification; the first level pressed again fits the view
 function toggleLines() { lines = !lines; draw(); }
+// a layer button with the grid off turns the grid on showing that layer; otherwise it hides or shows the layer
+function toggleLayer(l) { if (!lines) { lines = true; hiddenLayers.delete(l); } else if (!hiddenLayers.delete(l)) hiddenLayers.add(l); draw(); }
 function toggleMarks() { marked = !marked; draw(); }
 const markW = () => item(cur).mark_width ?? S.mark_width ?? 0; // the frame's thickness in the original's px
 function level(k) {
@@ -334,6 +342,7 @@ function draw() {
 function paintLines(W, H, at, first) {
   const d = devicePixelRatio || 1, it = item(cur), fs = frames(it), cw = Math.round(W * d), chh = Math.round(H * d);
   if (E.gb) E.gb.classList.toggle("on", lines);
+  E.ls.forEach((b) => b.classList.toggle("on", lines && !hiddenLayers.has(b.dataset.l)));
   if (E.mb) E.mb.classList.toggle("on", marked);
   E.cvs.forEach((c, i) => {
     if (c.width !== cw || c.height !== chh) {
@@ -361,6 +370,7 @@ function paintLines(W, H, at, first) {
     if (i < first) {                                    // one lattice or several, straight (`x`/`y`) or bent (`paths`)
       const ox = (v) => W / 2 + (v - L.cx) * L.z, oy = (v) => H / 2 + (v - L.cy) * L.z;
       for (const gr of [].concat(it.grid || [])) {
+        if (gr.label && hiddenLayers.has(gr.label)) continue;
         if (!gr.paths) { if (Math.min(step(gr.x), step(gr.y)) >= 5) lattice(gr.x.map(ox), gr.y.map(oy), gr.color); continue; }
         if ((gr.cell || 0) * L.z < 5) continue;
         inked.add(c); g.strokeStyle = gr.color || LINE; g.lineWidth = 1; g.beginPath();
@@ -567,6 +577,7 @@ function sheetGrid(g, it, f, i, im, px, py, s) {
   };
   if (i === 0 && it.original) {
     for (const gr of [].concat(it.grid || [])) {
+      if (gr.label && hiddenLayers.has(gr.label)) continue;
       if (!gr.paths) { lattice(gr.x, gr.y, gr.color); continue; }
       if ((gr.cell || 0) * s < 5) continue;
       g.strokeStyle = gr.color || LINE; g.lineWidth = 1; g.beginPath();

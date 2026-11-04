@@ -38,7 +38,8 @@ const srv = await serve({
   view1: { ...vote(), mode: "view", title: "Обзор" },
   sq1: { ...vote(), pixel_grid: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
     : { ...it, grid: [{ x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) },
-      { paths: [[[0, 101], [240, 103], [480, 101]]], cell: 4, color: "rgb(255,255,0)" }],
+      { paths: [[[0, 101], [240, 103], [480, 101]]], cell: 4, color: "rgb(255,255,0)", label: "bent" },
+      { paths: [[[0, 51], [480, 51]]], cell: 4, color: "rgb(0,0,255)", label: "later", hidden: true }],
       variants: [{ ...it.variants[0], box: [4, 2, 476, 238] }, { ...it.variants[1], grid: { x: [0, 120, 240, 360, 480], y: [0, 120, 240] } }] }) },
   mark1: { ...vote(), items: vote().items.map((it) => it.id === "p01" ? { ...it, marks: [[10, 10, 100, 80]], mark_width: 8 } : it) },
   blind1: { module: "compare", schema: 1, title: "Слепо", blind: true,
@@ -296,7 +297,20 @@ try {
   check("a bent `paths` lattice is drawn over the original in its own colour", await page.$eval(".vp canvas", (c) =>
     c.getContext("2d").getImageData(0, 0, c.width, c.height).data.some((v, k, a) => k % 4 === 0 && v > 200 && a[k + 1] > 200 && a[k + 2] < 60)));
   check("G draws the item's lattice over the original, the 4 px variant's own pixel grid and the full one's `grid`", ink[0] && ink[1] && ink[2]
-    && await page.$eval(".tools button.on:last-child", (b) => b.textContent) === "Сетка", JSON.stringify(ink));
+    && await page.$$eval(".tools button.on", (bs) => bs.some((b) => b.textContent === "Сетка")), JSON.stringify(ink));
+  const yellow = () => page.$eval(".vp canvas", (c) =>
+    c.getContext("2d").getImageData(0, 0, c.width, c.height).data.some((v, k, a) => k % 4 === 0 && v > 200 && a[k + 1] > 200 && a[k + 2] < 60));
+  await page.click('.tools button[data-l="bent"]');
+  check("a labelled layer's button hides that layer alone", !(await yellow()) && (await inked())[0]
+    && !(await page.$eval('.tools button[data-l="bent"]', (b) => b.classList.contains("on"))));
+  await page.click('.tools button[data-l="bent"]');
+  check("its button again shows it", await yellow());
+  const blue = () => page.$eval(".vp canvas", (c) =>
+    c.getContext("2d").getImageData(0, 0, c.width, c.height).data.some((v, k, a) => k % 4 === 0 && v < 60 && a[k + 1] < 60 && a[k + 2] > 200));
+  const wasBlue = await blue();
+  await page.click('.tools button[data-l="later"]');
+  check("a `hidden` layer stays off until its button is pressed", !wasBlue && await blue());
+  await page.click('.tools button[data-l="later"]');
   await page.keyboard.press("KeyG");
   check("G again clears them", (await inked()).every((v) => !v));
   await page.keyboard.press("Digit1");
