@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
+# Lite JS in a tab Egor has open in Dia, synthetic clicks; real input, network, HttpOnly cookies → dia-mcp.
 # dia-js (--active | --url-contains <text> | --tab-id <id>) [--file <js>] [--focus]   JS from --file or stdin
 # dia-js --list                      every open Dia tab: id, front (1/0), URL, title
 # dia-js --relaunch [--auto]         restart a Dia that runs without --enable-applescript-javascript
 # dia-js --open                      bring Dia forward, launching a closed one with the flag
 # dia-js (--active | --url-contains <text> | --tab-id <id>) --shot <png> [--focus]   PNG of the Dia window showing that tab
-# Runs JavaScript in a tab Egor already has open in Dia and prints its result. AppleScript JavaScript
-# exists only in a Dia started with the flag, so a Dia without it is quit and reopened with it first;
-# --shot needs no flag and never relaunches.
+# AppleScript JavaScript exists only in a Dia started with the flag, so a Dia without it is quit and
+# reopened with it first; --shot needs no flag and never relaunches.
 {
 set -euo pipefail
 
@@ -24,7 +24,7 @@ WINDOWS=${DIA_JS_WINDOWS:-}
 SETTLE_S=${DIA_JS_SETTLE_S:-0.4}
 
 usage() {
-  sed -n '2,6s/^# //p' "$0" >&2
+  sed -n '2,7s/^# //p' "$0" >&2
   exit 2
 }
 

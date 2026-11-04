@@ -1,6 +1,6 @@
-// dia-mcp --storage-state <ws> <url-part> <out.json> [<cookie-host>...]: one Dia tab's login as a Playwright
-// storageState — its localStorage plus the cookies (HttpOnly included) of its host and the listed hosts only,
-// never the rest of Egor's browser.
+// Behind `dia-mcp --storage-state` (run that, it adds the ws): one Dia tab's login as a Playwright storageState —
+// its localStorage plus the cookies (HttpOnly included) of its host and the listed hosts only, never the rest of
+// Egor's browser.
 import { writeFileSync } from 'node:fs';
 
 const [ws, needle, out, ...extraHosts] = process.argv.slice(2);

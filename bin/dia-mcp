@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Egor's running Dia over the DevTools protocol, as the `dia` MCP server (chrome-devtools-mcp) of a
-# `BROWSER: yes` run: real input in his open tabs, both profiles, plus network, console and performance.
+# Egor's Dia over CDP: the `dia` MCP server of BROWSER: yes runs; --storage-state gives a headless run his login
+# As the server (chrome-devtools-mcp): real input in his open tabs, both profiles, network, console, performance.
 # Dia's own switch (chrome://inspect/#remote-debugging) writes DevToolsActivePort, and every new connection
 # makes Dia ask Egor "Allow debugging connection?" (2026-10-26): --check reads only the file and the socket.
 # dia-mcp --storage-state <url-part> <out.json> [<cookie-host>...]: that tab's login (localStorage, cookies incl.
