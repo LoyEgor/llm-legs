@@ -1198,12 +1198,13 @@ def close_overlays(page) -> None:
         settle(page, 500, lambda shown=shown: backdrop.count() < shown)
 
 
-def close_settings(page, trigger, family) -> None:
-    """An open model menu's backdrop takes the trigger's click, so the menu closes first."""
+def close_settings(page, trigger, panel) -> None:
+    """An open model menu's backdrop takes the trigger's click, so the menu closes first; `panel` is any control
+    that shows only while the popover is open."""
     close_overlays(page)
-    if family.count() and family.last.is_visible():
+    if panel.count() and panel.last.is_visible():
         trigger.click(timeout=5000)
-        settle(page, 500, lambda: not family.last.is_visible())
+        settle(page, 500, lambda: not panel.last.is_visible())
     close_overlays(page)
 
 
@@ -1250,14 +1251,17 @@ def choose(page, name) -> None:
 
 
 def settings(page, plan: dict, full: bool) -> tuple[int, str]:
-    """Sets the composer popover to the plan and returns Flow's own credit quote and chip text."""
+    """Sets the composer popover to the plan and returns Flow's own credit quote and chip text. The model is
+    picked on the full pass only: an attached video ingredient hides the family menu (only Omni takes one)."""
     trigger = page.get_by_role("button", name="Settings trigger", exact=True).last
     family = page.get_by_role("button", name="Select model family")
-    if not (family.count() and family.last.is_visible()):
+    panel = page.get_by_role("radio", name=f"x{plan['count']}", exact=True)
+    if not (panel.count() and panel.last.is_visible()):
         trigger.click()
     try:
-        family.last.wait_for(timeout=8000)
+        panel.last.wait_for(timeout=8000)
         if full:
+            family.last.wait_for(timeout=8000)
             choose(page, "Video")
             family.last.click()
             item = page.get_by_role("menuitem", name=plan["label"], exact=True)
@@ -1281,7 +1285,7 @@ def settings(page, plan: dict, full: bool) -> tuple[int, str]:
     except Exception as exc:
         raise drift(f"composer settings ({failure_text(exc)[:300]})")
     finally:
-        close_settings(page, trigger, family)
+        close_settings(page, trigger, panel)
     return cost, " ".join(trigger.inner_text().split())
 
 

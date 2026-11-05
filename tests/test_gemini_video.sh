@@ -595,8 +595,8 @@ import gemini_web as g
 
 
 class MenuPage:
-    def __init__(self, models):
-        self.models, self.popover, self.menu, self.picked = models, False, False, None
+    def __init__(self, models, video=False):
+        self.models, self.popover, self.menu, self.picked, self.video = models, False, False, None, video
 
     def get_by_role(self, role, name=None, exact=None):
         page = self
@@ -606,6 +606,8 @@ class MenuPage:
 
             def count(self):
                 if name == "Select model family":
+                    return int(page.popover and not page.video)
+                if role == "radio":
                     return int(page.popover)
                 return int(page.menu and name in page.models) if role == "menuitem" else 1
 
@@ -662,6 +664,10 @@ except g.Failure as failure:
     assert failure.reason.startswith("Flow UI drift: composer settings"), failure.reason
 row = g.caps_checks.read()[-1]
 assert (row["state"], row["what"]) == ("stale", "models: -Veo 3.1 - Fast"), row
+# An attached video ingredient hides the family menu (Omni alone takes one); the second pass still sets the rest.
+page = MenuPage(known, video=True)
+assert g.settings(page, plan, full=False) == (20, "Video · 720p · 8s crop_16_9 x1"), vars(page)
+assert not page.popover, vars(page)
 EOF
 
 # Rotation by cached balance gate and least recent start, past a sign-in step, and inside the gemini worker pool; the clone stays while in use.
