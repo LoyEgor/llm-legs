@@ -177,16 +177,16 @@ benches and `reread_by` (`rejection_faults`, refused at `close`). A parked row (
 (`reopened`, its fact saying what changed) at 3 projects, at twice its `min_day`, past `reread_by` (decision_reread
 skips these rows) or on a menu `Reopen tonight` marker ($DOCTORS_DIR/tools-reopen, consumed by the run). A lever in a repository
 outside the night's is a handoff to its owner chat (`close` accepts one citing that repository), never an open row.
-Adoption (Egor, 2026-10-14: tools are judged by use, not script volume; 2026-10-30: over the `tools` index, near-unused
-counts): per command and skill of the tool index (`facing` over `share/tool_index.py`: README entries, every
-~/.local/bin link into a sweep repository, listed and on-demand skills) its Bash/Skill calls and on-demand SKILL.md reads
-a day, failed ones apart (`err/`), kept per day (`uses`, backfilled over 30 days whenever `USES_V` moves, ~2 min); typed
-slash uses apart, they need no hint; a night hub's sessions and every worker they launched are automation, no use.
-Under one model call a week (`NEAR_UNUSED`, the gap in the 30-day tail) or none in the last 7 days, older than 30 days:
-`opportunity:tool/<kind>/<name>` with its likely cause (`access`: link missing or most calls failed; `unknown`: no
-CLAUDE.md line, skill listing, hook or preamble names it; `obsolete`), priced at the hint's bytes once per session
-loading it (an output char = `OUTPUT_EQ` input ones at the write rate); the fixer reviews it by that cause, then deletes
-tool and hint (only the hint where other code or Egor runs it) or fixes the cause. Menu: the Tools row
+Adoption (Egor, 2026-10-14: tools are judged by use, not script volume; 2026-10-30: over the `tools` index; 2026-11-05:
+a live tool taken for unused is the worst error): per command and skill of the tool index (`facing` over
+`share/tool_index.py`: README entries, every ~/.local/bin link into a sweep repository, listed and on-demand skills) its
+Bash/Skill calls and on-demand SKILL.md reads a day, failed ones (`err/`) and a night's (`night/`) apart, kept per day
+(`uses`, backfilled over 30 days whenever `USES_V` moves, ~2 min). Unused, older than 30 days: nothing ran it in them (no
+call, typed slash or shell history line) and no `callers` (code, Hammerspoon, LaunchAgents, ~/.config, crontab, Claude
+settings or an MCP config naming it): `opportunity:tool/<kind>/<name>` with its likely cause (`access`: link missing;
+`unknown`: no CLAUDE.md line, skill listing, hook or preamble names it; `obsolete`), priced at the hint's bytes once per
+session loading it (an output char = `OUTPUT_EQ` input ones at the write rate); the fixer reviews it by that cause, then
+deletes tool and hint or fixes the cause; `close` refuses deleting one `in_use` (`--used <name>`) or a skill file. Menu: the Tools row
 (`tools_document`, Speed's `tools`, the Harness header's `tools`; docs/doctors-contract.md "Menu layout"), its count a
 day kept (`tools_days`).
 Chains (2026-10-30, after Egor had to ask for `bin/land` himself): the same pass, rows, cost, floor, `adhoc/<key>`,

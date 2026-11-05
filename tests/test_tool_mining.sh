@@ -366,10 +366,10 @@ hist[day0].update(sessions=10, chars_s=10.0, projects={REPO: 4, "/y": 6})
 tools = {"bin/foo": dict(tools["bin/foo"], born=NOW - 40 * 86400), "skill/s": dict(tools["skill/s"], born=NOW - 40 * 86400),
          "skill/c": dict(tools["skill/c"], born=NOW - 20 * 86400), "bin/bar": dict(tools["bin/bar"], born=NOW - 20 * 86400)}
 got = t.adoption(hist, day0, tools, NOW)
-check([k for k, v in got.items() if v["unused"]] == ["bin/foo", "skill/s"] and got["bin/foo"]["calls_day"] == round(1 / 30.0, 2)
+check([k for k, v in got.items() if v["unused"]] == ["skill/s"] and got["bin/foo"]["calls_day"] == round(1 / 30.0, 2)
       and got["skill/s"]["hint_tok_day"] == round(9 * 10 / t.CHARS_PER_TOKEN)
       and got["skill/s"]["hint_min_day"] == round(9 * 10 / (t.OUTPUT_EQ * 10.0) / 60.0, 2),
-      "a tool with a hint and no call, or one call, in %d whole days is (near-)unused once older than them; its hint "
+      "a tool with a hint and no call in %d whole days is unused once older than them, one call keeps it; its hint "
       "priced once a session: %s" % (t.USE_DAYS, got))
 check(got["bin/bar"]["hint_tok_day"] == round(11 * 4 / t.CHARS_PER_TOKEN) and got["bin/bar"]["hint_sessions"] == 4,
       "a repository's hint is charged to its sessions only: %s" % got["bin/bar"])
@@ -387,7 +387,7 @@ check(t.menu_row(cache) == [164.9, "model-written scripts", []] and not hasattr(
       "tools own), no candidate list under it and no unused tools: those live in the Tools row: %s" % t.menu_row(cache))
 unused = s.unused_opportunities({"unused": [dict(got["skill/s"], key="skill/s")]})
 check([o["id"] for o in unused] == ["opportunity:tool/skill/s"] and unused[0]["group"] == "tool"
-      and unused[0]["fact"].startswith("skill/s · 0 calls in 30 days · 40 d old · hint 9 B in 10 sessions/day")
+      and unused[0]["fact"].startswith("skill/s · no run in 30 days, no caller · 40 d old · hint 9 B in 10 sessions/day")
       and unused[0]["opportunity"]["quality"] == "equivalent"
       and unused[0]["opportunity"]["files"] == [got["skill/s"]["path"]],
       "Speed turns an unused tool into a night row deleting it and its hint, its file the component (a skill lives in claude-setup, whose worktree the run needs): %s" % unused)
@@ -708,6 +708,10 @@ json.dump({"id": "x", "session": HUB, "started_at": stamp(T0 - 60), "finished_at
 os.makedirs(os.path.join(runs2, "claude-1-1"))
 open(os.path.join(runs2, "claude-1-1", "launcher"), "w").write(HUB + "\n")
 open(os.path.join(runs2, "claude-1-1", "worker-session"), "w").write(WORKER + "\n")
+CODEX_W = "c3c3c3c3-0000-0000-0000-000000000000"
+os.makedirs(os.path.join(runs2, "codex-1-1"))
+open(os.path.join(runs2, "codex-1-1", "launcher"), "w").write(HUB + "\n")
+open(os.path.join(runs2, "codex-1-1", "worker-session"), "w").write(CODEX_W + "\n")
 os.environ.update({"DOCTORS_DIR": doctors, "WORKER_RUN_DIR": runs2})
 ERR = lambda at, ident: {"type": "user", "timestamp": iso(at), "message": {"content": [
     {"type": "tool_result", "tool_use_id": ident, "content": "no", "is_error": True}]}}
@@ -718,38 +722,101 @@ transcript(os.path.join(ix, "projects", "-p", "chat9.jsonl"), [
     bash(T0 + 3, "land b", "msg_L", "toolu_l"), result(T0 + 3, "toolu_l"), READ])
 transcript(os.path.join(ix, "projects", "-p", HUB + ".jsonl"), [bash(T0, "land b", "msg_H", "toolu_h")])
 transcript(os.path.join(ix, "projects", "-p", WORKER + ".jsonl"), [bash(T0, "quiet", "msg_W", "toolu_w")])
+night_rollout = os.path.join(codex, "acct", "sessions", "2026", "10", "13", "rollout-2026-10-13T12-00-00-%s.jsonl" % CODEX_W)
+transcript(night_rollout, [{"timestamp": iso(T0), "type": "response_item", "payload": {
+    "type": "custom_tool_call", "name": "exec", "call_id": "n", "input": "text(await tools.exec_command({cmd:\"quiet\"}));"}}])
 transcript(os.path.join(ix, "projects", "-p", HUB, "subagents", "agent-a.jsonl"), [bash(T0, "land c", "msg_A", "toolu_a")])
 os.environ["CLAUDE_PROJECTS_DIR"] = os.path.join(ix, "projects")
 uses = t.collections.defaultdict(t.collections.Counter)
 t.scan(HI - t.WINDOW_S, HI, names=t.command_re(["land", "quiet"]), uses=uses, keep=False)
 os.environ["CLAUDE_PROJECTS_DIR"] = projects
-check(dict(uses[day0]) == {"bin/quiet": 1, "err/bin/quiet": 1, "bin/land": 1, "skill/od": 1},
+os.remove(night_rollout)
+check(dict(uses[day0]) == {"bin/quiet": 1, "err/bin/quiet": 1, "bin/land": 1, "skill/od": 1, "night/bin/land": 2,
+                           "night/bin/quiet": 2},
       "use counts a chat's calls (`err/` for a failed one) and its reads of an on-demand skill; a night hub's, its "
-      "subagents' and the workers it launched are automation, no use: %s" % dict(uses[day0]))
+      "subagents' and the workers it launched (codex too) are automation, counted apart under night/: %s" % dict(uses[day0]))
 
 days30 = t.window(day0, t.USE_DAYS)
 spread = lambda n, recent=True: {d: 1 for d in (days30[-n:] if recent else days30[:n])}
-plan = {"bin/land": spread(5), "bin/quiet": spread(4), "err/bin/quiet": spread(1), "bin/hooked": spread(20, False),
-        "bin/waiter": spread(4), "err/bin/waiter": spread(2), "skill/s2": spread(30)}
+plan = {"bin/quiet": spread(1, False), "err/bin/quiet": spread(1, False), "night/bin/land": spread(1, False),
+        "slash/typed": spread(1, False)}
 hist = {d: {"uses": {k: v[d] for k, v in plan.items() if d in v}} for d in days30}
 hist[day0].update(sessions=10, chars_s=10.0, projects={R2: 4})
 old_face = {k: dict(v, born=NOW - 40 * 86400) for k, v in face.items()}
+old_face["bin/waiter"]["shell"] = 1
 got = t.adoption(hist, day0, old_face, NOW)
-check({k: v["cause"] for k, v in got.items() if v["unused"]} == {
-          "bin/lost": "access", "bin/waiter": "access", "bin/quiet": "unknown", "bin/hooked": "obsolete",
-          "skill/od": "unknown", "skill/typed": "unknown"}
-      and t.NEAR_UNUSED * t.USE_DAYS > 4 and t.NEAR_UNUSED * t.USE_DAYS < 5 and got["bin/hooked"]["recent"] == 0,
-      "near-unused: under one model call a week (4 of 30 days flagged, 5 not) or none in the last %d days, each "
-      "with its likely cause: access (link missing, most calls failed), unknown (no hint), obsolete: %s"
-      % (t.RECENT_DAYS, {k: (v["calls"], v["recent"], v["cause"]) for k, v in got.items()}))
-rows = s.unused_opportunities({"unused": [dict(got[k], key=k) for k in ("bin/quiet", "bin/hooked")]})
-check(rows[0]["opportunity"]["what"] == "near-unused tool · bin/quiet · unknown · review: " + s.UNUSED_CAUSES["unknown"]
-      and rows[0]["opportunity"]["cause"] == "unknown" and rows[0]["fact"].startswith("bin/quiet · 4 calls in 30 days · 40 d old")
-      and rows[1]["fact"].startswith("bin/hooked · 20 calls in 30 days, none in the last 7 · 40 d old")
+check({k: v["cause"] for k, v in got.items() if v["unused"]} == {"bin/lost": "access", "skill/od": "unknown",
+                                                                  "skill/s2": "obsolete"}
+      and face["bin/hooked"]["callers"] == [os.path.basename(R2) + "/hooks/h.sh"] and got["bin/land"]["night"] == 1,
+      "unused: nothing ran it in 30 days, each with its likely cause (access: link missing, unknown: no hint, "
+      "obsolete); one failed chat call 29 days ago, a night call, a typed slash command, a shell history line or a "
+      "hook naming it keeps a tool: %s" % {k: (v["calls"], v["night"], v["shell"], v["callers"], v["cause"])
+                                           for k, v in got.items()})
+rows = s.unused_opportunities({"unused": [dict(got[k], key=k) for k in ("bin/lost", "skill/s2")]})
+check(rows[0]["opportunity"]["what"] == "unused tool · bin/lost · access · review: " + s.UNUSED_CAUSES["access"]
+      and rows[0]["opportunity"]["cause"] == "access" and rows[0]["fact"].startswith("bin/lost · no run in 30 days, no caller · 40 d old")
       and rows[1]["fact"].endswith("obsolete · " + s.UNUSED_CAUSES["obsolete"]),
-      "Speed asks for a review of a near-unused tool with its likely cause: %s" % [r["fact"] for r in rows])
-check("Review it by that cause, then delete it or fix it" in brief and "night automation" in brief
-      and "never an always-loaded list" in brief, "the fixer brief reviews a near-unused tool by its cause")
+      "Speed asks for a review of an unused tool with its likely cause: %s" % [r["fact"] for r in rows])
+check("Review it by that cause, then delete it or fix it" in brief and "no chat or night call" in brief
+      and "never an always-loaded list" in brief and "--used <name>" in brief,
+      "the fixer brief reviews an unused tool by its cause and names the check close runs")
+
+# What runs a tool besides models: every place is read, a mention counts, docs, tests and its own file do not.
+H = os.environ["HOME"]
+places = {"Library/LaunchAgents/x.plist": "<string>/usr/local/bin/waiter</string>\n",
+          ".hammerspoon/init.lua": "hs.execute('quiet --all') -- lost-and-found is no other tool\n",
+          ".config/k/karabiner.json": '{"shell_command": "land main"}\n',
+          ".claude/settings.json": '{"hooks": {"Stop": [{"command": "hooked"}]}}\n',
+          ".claude-profiles/acct/.claude.json": json.dumps({"projects": {"/p": {"mcpServers": {"srv": {"command": "/b/lost"}}},
+                                                                          "/q": {"history": [{"display": "run waiter"}]}}})}
+for rel, text in places.items():
+    os.makedirs(os.path.dirname(os.path.join(H, rel)), exist_ok=True)
+    open(os.path.join(H, rel), "w").write(text)
+for rel in ("docs/use.md", "tests/test_x.sh"):
+    os.makedirs(os.path.dirname(os.path.join(repo2, rel)), exist_ok=True)
+    open(os.path.join(repo2, rel), "w").write("lost waiter\n")
+subprocess.run(["git", "-C", repo2, "add", "."], check=True)
+subprocess.run(["git", "-C", repo2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "docs"], check=True)
+open(os.path.join(ix, "cron"), "w").write("0 3 * * * land nightly\n")
+os.environ["TOOL_MINING_CRONTAB"] = os.path.join(ix, "cron")
+mine = {n: os.path.join(repo2, "bin", n) for n in ("waiter", "quiet", "land", "hooked", "lost")}
+found = t.callers(mine)
+check(found == {"waiter": ["~/Library/LaunchAgents/x.plist"], "quiet": ["~/.hammerspoon/init.lua"],
+                "land": ["crontab", "~/.config/k/karabiner.json"], "lost": ["MCP /p"],
+                "hooked": ["repo/hooks/h.sh", "~/.claude/settings.json"]},
+      "a tool's callers: a LaunchAgent, Hammerspoon, ~/.config, the crontab, Claude settings, a hook and an MCP server "
+      "config naming it; its own file, docs, tests, a longer name and a chat's history in .claude.json are none: %s" % found)
+zero30 = {d: {"uses": {}} for d in days30}
+held = t.in_use(dict(mine, gone=os.path.join(repo2, "bin", "gone")), zero30)
+short = t.in_use({"gone": "/x/gone"}, {d: {"uses": {}} for d in days30[1:]})
+night30 = dict(zero30, **{day0: {"uses": {"night/bin/gone": 2, "bin/gone": 1}}})
+check(sorted(held) == ["hooked", "land", "lost", "quiet", "waiter"] and held["lost"] == ["named in MCP /p"]
+      and short == {"gone": ["29 days of use history, not 30"]}
+      and t.in_use({"gone": "/x/gone"}, night30) == {"gone": ["1 chat calls in 30 days", "2 night calls in 30 days"]},
+      "in use: a caller, a chat or night call, or too short a history to prove none; only proof of no use frees a tool: %s"
+      % [held, short])
+base2 = subprocess.run(["git", "-C", repo2, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+tree2 = os.path.join(ix, "tree2")
+subprocess.run(["git", "-C", repo2, "worktree", "add", "-q", "-b", "cut", tree2], check=True)
+open(os.path.join(tree2, "bin", "gone"), "w").write("#!/bin/sh\n")
+subprocess.run(["git", "-C", tree2, "add", "bin/gone"], check=True)
+subprocess.run(["git", "-C", tree2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "gone"], check=True)
+base3 = subprocess.run(["git", "-C", tree2, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+subprocess.run(["git", "-C", tree2, "rm", "-q", "bin/lost", "bin/gone", "skills-on-demand/od/SKILL.md"], check=True)
+faults = t.deletion_faults(tree2, base3, zero30)
+check(faults == ["skills-on-demand/od/SKILL.md deletes the skill od: a command Egor can type keeps its file, only its hint "
+                 "goes (`disable-model-invocation: true`)",
+                 "bin/lost deletes lost, in use: named in MCP /p; keep the file and drop only its hint, or a §7 trade to Egor"]
+      and t.deletion_faults(tree2, base2, zero30) == faults,
+      "close refuses a worktree deleting a tool in use (uncommitted too) or a skill file; one nothing ran or names goes: %s"
+      % faults)
+used = subprocess.run([sys.executable, os.path.join(root, "share", "tool_mining.py"), "--used", "lost"],
+                      capture_output=True, text=True)
+check(used.returncode == 1 and used.stdout.startswith("lost: in use: ") and "named in MCP /p" in used.stdout,
+      "tool_mining.py --used names what runs a command and exits 1: %s" % used.stdout)
+for rel in places:
+    os.remove(os.path.join(H, rel))
+del os.environ["TOOL_MINING_CRONTAB"]
 
 mining = t.cache_path()
 stale_cache = t.time_budget.read_json(mining, {})

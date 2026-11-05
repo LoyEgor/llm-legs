@@ -203,7 +203,7 @@ UNUSED_LEVER = {"component": "tool", "lever": "review it by its likely cause, th
                 "saving": 1.0, "night_cost_h": 0.0,
                 "proof": "elimination", "quality": "equivalent"}
 UNUSED_CAUSES = {"unknown": "no text tells models of it: its hint where the job starts, or fold it into a used tool",
-                 "access": "its link is missing or most calls fail: fix the access",
+                 "access": "its link is missing: fix the access",
                  "obsolete": "a hint and no calls: a doctrine or a newer tool retired it, delete it and its hint"}
 HUNG_LEVER = {"component": "hung-bash", "lever": "the call cannot sit to its timeout: stdin closed, a heredoc that "
               "reaches the command, a wait that ends with its job", "effort": "S", "confidence": "measured",
@@ -1242,23 +1242,21 @@ def adhoc_opportunities(adhoc):
 
 
 def unused_opportunities(adhoc):
-    """Tool mining's near-unused tools (share/tool_mining.py `adoption`): model calls under its floor in its USE_DAYS
-    days or none in the last RECENT_DAYS, night automation's not counted, priced at the hint's minutes; a review by
-    its likely cause deletes it with its hint or fixes the cause."""
+    """Tool mining's unused tools (share/tool_mining.py `adoption`): nothing ran one in its USE_DAYS days (no chat or
+    night call, no shell history line, no caller), priced at the hint's minutes; a review by its likely cause deletes
+    it with its hint or fixes the cause."""
     out = []
     for u in adhoc.get("unused") or ():
         target = "tool/" + u["key"]
         o = target_opportunity(target, u["hint_min_day"] or 0.0, dict(UNUSED_LEVER, component=target), 0,
                                seen_days=WINDOW_D)
         why = UNUSED_CAUSES.get(u.get("cause"), UNUSED_CAUSES["obsolete"])
-        o["opportunity"].update(what="near-unused tool · %s · %s · review: %s" % (u["key"], u.get("cause"), why),
+        o["opportunity"].update(what="unused tool · %s · %s · review: %s" % (u["key"], u.get("cause"), why),
                                 path=u["path"], cause=u.get("cause"), hint_b=u["hint_b"], hint_tok_day=u["hint_tok_day"],
                                 age_d=u["age_d"], files=[u["path"]])
-        o["fact"] = "%s · %d calls in %d days%s%s · %s d old · hint %d B in %d sessions/day, %d tokens/day · %s · %s · %s" % (
-            u["key"], u.get("calls") or 0, u["days"], ", none in the last %d" % u["recent_days"] if u.get("calls")
-            and not u.get("recent") else "", " · typed %s/day" % fmt(u["slash_day"]) if u.get("slash_day") else "",
-            fmt(u["age_d"]), u["hint_b"], u["hint_sessions"], u["hint_tok_day"], per_day(u["hint_min_day"] or 0.0),
-            u.get("cause"), why)
+        o["fact"] = "%s · no run in %d days, no caller · %s d old · hint %d B in %d sessions/day, %d tokens/day · %s · %s · %s" % (
+            u["key"], u["days"], fmt(u["age_d"]), u["hint_b"], u["hint_sessions"], u["hint_tok_day"],
+            per_day(u["hint_min_day"] or 0.0), u.get("cause"), why)
         out.append(o)
     return out
 

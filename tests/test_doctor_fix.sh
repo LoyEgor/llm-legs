@@ -1140,6 +1140,7 @@ swt="$L/.claude/worktrees/night-n8-$sid"
 gw() { git -C "$swt" -c user.name=t -c user.email=t@t "$@"; }
 sed -i '' 's/opus high high/opus medium high/' "$swt/share/worker-model.sh"
 sed -i '' 's/model: opus/model: haiku/' "$swt/agents/w.md"
+rm "$swt/bin/code-doctor"
 gw commit -qam "tune"
 sed -i '' 's/| high |/| medium |/' "$swt/share/worker-policy.md"
 sed -i '' 's/"claude": "low"/"claude": "medium"/' "$swt/share/rbench/catalog.py"
@@ -1163,6 +1164,8 @@ assert knob "review-bench tier effort/rater" "llm-legs/share/rbench/catalog.py:1
 assert knob "claudeb default model" "llm-legs/bin/claudeb:1: +CLAUDEB_CLAUDE_MODEL='haiku'"
 assert knob "brief-template EFFORT/MODEL" "llm-legs/share/briefs/new.md:1: +MODEL: haiku"
 assert [ "$(grep -c '^model/effort knob, ' "$WORK/err")" = 11 ]
+# Nor may it delete a tool nothing proves unused (share/tool_mining.py in_use): a live tool taken for unused is the worst.
+assert grep -qF "tool deletion refused: bin/code-doctor deletes code-doctor, in use: " "$WORK/err"
 # A P1 or P2 Speed row keeps its time only on what was measured and tried; a P3 row needs no measurement.
 assert [ "$(grep -c 'ruled-out refused: a P1 or P2 Speed or test row keeps its time only on measured evidence' "$WORK/err")" = 4 ]
 assert grep -qF 'line 2 (opportunity:delegation/background Bash): ruled-out refused' "$WORK/err"
