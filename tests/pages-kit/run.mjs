@@ -51,6 +51,9 @@ const srv = await serve({
     items: [{ id: "c11", n: 11, title: "трек 3", text: "склейка на 6 с", media: [{ kind: "audio", src: F.s1 }], suggest: { heard: "1" } },
       { id: "c12", n: 12, title: "трек 4", media: [{ kind: "audio", src: F.s2 }] },
       { id: "c13", n: 13, title: "кадр", media: [{ kind: "image", src: F.orig }] }] },
+  cards2: { module: "cards", schema: 1, title: "До и после", media_columns: 2,
+    fields: [{ key: "do", kind: "choice", options: [{ id: "y" }, { id: "n" }] }],
+    items: [{ id: "d1", title: "кадр", media: [{ kind: "image", src: F.a, caption: "было" }, { kind: "image", src: F.b, caption: "стало" }] }] },
 });
 const base = `http://127.0.0.1:${srv.port}`;
 let checks = 0, failed = 0;
@@ -397,6 +400,14 @@ try {
     && twelve.rows === 7 && twelve.scrolls && none.rows === 2, JSON.stringify([one, four, twelve, none]));
   await page.evaluate(() => scrollTo(0, 0));
   await shot(page, "cards.png");
+  await page.close();
+  page = await open("cards2");
+  await page.waitForSelector('.card[data-id="d1"] figure');
+  const cap = await page.evaluate(() => {
+    const figs = [...document.querySelectorAll('.card[data-id="d1"] figure')], [a, b] = figs.map((f) => f.getBoundingClientRect());
+    return { caps: figs.map((f) => f.querySelector("figcaption").textContent), side: Math.abs(a.top - b.top) < 2 && b.left > a.right - 1 };
+  });
+  check("media captions under each medium, media_columns side by side", JSON.stringify(cap) === JSON.stringify({ caps: ["было", "стало"], side: true }), JSON.stringify(cap));
   await page.close();
 
   const dark = await browser.newContext({ viewport: { width: 1400, height: 900 }, colorScheme: "dark" });

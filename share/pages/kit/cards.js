@@ -14,7 +14,9 @@ const CSS = `
 .card img,.card video{max-width:100%;min-height:40px;border-radius:6px;display:block;margin:4px 0}.card audio{width:100%;margin:4px 0}
 .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0}.row>span:first-child{min-width:72px;color:var(--mute)}
 .row button{padding:3px 12px}.row button.on{background:var(--on);border-color:var(--on);color:#fff}
-.card>.atw{margin-top:4px}`;
+.card>.atw{margin-top:4px}
+.card .mg{display:grid;gap:8px;align-items:start}.card figure{margin:4px 0}.card figure>img,.card figure>video{margin:0}
+.card figcaption{font-size:12px;color:var(--mute);margin-top:2px}`;
 const TAG = { image: "img", audio: "audio", video: "video" };
 const app = document.getElementById("app");
 let S, ids, cards = new Map(), first = true;
@@ -53,11 +55,18 @@ export function render(spec) {
 function card(it, i) {
   return h("section", { class: "card", "data-id": it.id }, h("div", { class: "n" }, `${num(it, i)}`),
     it.title ? h("h2", {}, it.title) : null, it.text ? h("p", { class: "tx" }, it.text) : null,
-    (it.media || []).map((m) => {
-      const tag = TAG[m.kind] || "img";
-      return lazy(h(tag, { "data-src": m.src, alt: "", controls: tag !== "img", preload: tag === "img" ? null : "metadata" }));
-    }),
+    mediaBlock(it.media || []),
     S.fields.map((f) => row(it.id, f)), suggest(it), textBox(it.id, "note", { placeholder: "заметка" }));
+}
+
+// A caption wraps its medium in a figure; media_columns lays the media out in that many columns.
+function mediaBlock(media) {
+  const els = media.map((m) => {
+    const tag = TAG[m.kind] || "img";
+    const el = lazy(h(tag, { "data-src": m.src, alt: "", controls: tag !== "img", preload: tag === "img" ? null : "metadata" }));
+    return m.caption ? h("figure", {}, el, h("figcaption", {}, m.caption)) : el;
+  });
+  return S.media_columns > 1 ? h("div", { class: "mg", style: `grid-template-columns:repeat(${S.media_columns},minmax(0,1fr))` }, els) : els;
 }
 
 const values = (f) => f.kind === "scale"

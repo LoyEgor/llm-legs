@@ -9,6 +9,8 @@ plus a note; one clip plays at a time, a card's number turns green once it is an
 - **Done:** every `choice` and `scale` field answered (without any: anything set).
 - **Media:** `media[].kind` is `image`, `audio` or `video`, shown with the native element; only one
   clip plays at a time.
+- **Media caption:** `media[].caption`, a line under that medium (default none); `media_columns`
+  (top level, default 1) lays each card's media out in that many columns, e.g. 2 for before/after.
 - **Numbering:** `n` is the shown number. It is stable and never renumbered when items are added.
 - **Per item:** `id` (immutable), `n`, `title`, `text`, `media`, `suggest` (`{field: value}`, shown
   apart, never counted).
