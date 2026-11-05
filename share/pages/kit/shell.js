@@ -490,6 +490,7 @@ function remove(el, name) {
     fetch(`/p/${pid}/drop`, { method: "POST", headers: json,
       body: JSON.stringify({ name, item: el.dataset.item, field: el.dataset.field }) })
       .then((r) => r.json()).then((r) => waited && say(el, /^ok /.test(r.unmark || "") ? `[${name}] убрана из диктовки`
+        : r.unmark === "ignored pasted" ? `[${name}] уже ушла с диктовкой в другое место — убери её там`
         : `[${name}] уберу, когда диктовка вставится сюда`)).catch(() => {});
   }
   s.chips.delete(name);

@@ -234,8 +234,9 @@ try {
   }, [ox - 30, oy - 30]);
   check("a drag Jump Desktop releases with a buttons-0 move first still marks its box",
     await until(() => tab.$eval(".side textarea", (el) => el.value.endsWith("[img6.png]"))), await tab.$eval(".side textarea", (el) => el.value));
-  // × on a mark a dictation took: the server takes it back out (`unmark`); a daemon that cannot still pastes the name, which leaves again
-  daemon = (m) => (m.verb === "unmark" ? "err unknown command" : `ok ${m.tag} 3.0`);
+  // × on a mark a dictation took: the server takes it back out (`unmark`, replies as transcriptions-gpt 9de44b6 gives them);
+  // a name the paste brings anyway (an older daemon) leaves again as it arrives
+  daemon = (m) => (m.verb === "unmark" ? `ok ${m.tag}` : `ok ${m.tag} 3.0`);
   await tab.keyboard.down("Alt"); await tab.mouse.click(ox + 12, oy - 12); await tab.keyboard.up("Alt");
   await until(() => tab.$eval(".side .atm", (m) => /диктовк/.test(m.textContent)));
   const late = (await tab.$eval(".side .atm", (m) => m.textContent)).match(/\[(img\d+\.png)\]/)?.[1];
@@ -245,7 +246,7 @@ try {
   await tab.$$eval(".side .atc", (cs, n) => cs.find((c) => c.querySelector("img").alt === n).querySelector(".atx").click(), late);
   check("× on it sends `unmark` for its name and drops its pin", await until(() => marks.some((m) => m.verb === "unmark" && m.tag === late))
     && await until(() => tab.$$eval(".vp .pins b", (b, n) => !b.some((x) => x.textContent === n), lateNo)), JSON.stringify(marks.at(-1)));
-  check("…and says the name leaves when the dictation pastes it here", await until(() => tab.$eval(".side .atm", (m, n) => m.textContent === `[${n}] уберу, когда диктовка вставится сюда`, late)),
+  check("…and says the dictation no longer holds it", await until(() => tab.$eval(".side .atm", (m, n) => m.textContent === `[${n}] убрана из диктовки`, late)),
     await tab.$eval(".side .atm", (m) => m.textContent));
   await tab.$eval(".side textarea", (el) => el.setSelectionRange(el.value.length, el.value.length));
   await tab.keyboard.insertText(` и тут [${late}] передумал`);
