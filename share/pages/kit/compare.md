@@ -33,7 +33,9 @@ was saying. A reading model opens it. «Скрыть метки» (H) hides the 
   adds it too, drawn over the original. Cells under 5 screen px stay undrawn. A bent lattice is
   `{"paths": [[[x, y], …], …], "cell": px}`; a list holds several, each with an optional `color`
   and `label`: a labelled layer gets its own button beside «Сетка» that hides or shows it
-  (`hidden: true`: off until pressed).
+  (`hidden: true`: off until pressed). A bent layer's `axes` and `bands` (lists parallel to `paths`: a polyline,
+  a polygon) light on hover: a line under the pointer on the original's loupe is drawn whole in yellow, its axis
+  dashed, its band filled.
   A variant's own `grid` (cell bounds in its own px) replaces its pixel grid: a lattice laid on a big picture.
 - **marks:** per item, `[[x0, y0, x1, y1], …]` in the original's px: framed on every loupe and preview,
   with «Рамка» (M) to hide them; on by default. `mark_width` (top level or per item): the frame's thickness in

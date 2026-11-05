@@ -38,7 +38,8 @@ const srv = await serve({
   view1: { ...vote(), mode: "view", title: "Обзор" },
   sq1: { ...vote(), pixel_grid: true, zoom_levels: [1, 2, 3], items: vote().items.map((it) => it.id !== "p03" ? it
     : { ...it, grid: [{ x: [...Array(121).keys()].map((k) => 4 * k), y: [...Array(61).keys()].map((k) => 4 * k) },
-      { paths: [[[0, 101], [240, 103], [480, 101]]], cell: 4, color: "rgb(255,255,0)", label: "bent" },
+      { paths: [[[0, 101], [240, 103], [480, 101]]], cell: 4, color: "rgb(255,255,0)", label: "bent",
+        axes: [[[0, 100], [480, 100]]], bands: [[[0, 96], [480, 96], [480, 104], [0, 104]]] },
       { paths: [[[0, 51], [480, 51]]], cell: 4, color: "rgb(0,0,255)", label: "later", hidden: true }],
       variants: [{ ...it.variants[0], box: [4, 2, 476, 238] }, { ...it.variants[1], grid: { x: [0, 120, 240, 360, 480], y: [0, 120, 240] } }] }) },
   mark1: { ...vote(), items: vote().items.map((it) => it.id === "p01" ? { ...it, marks: [[10, 10, 100, 80]], mark_width: 8 } : it) },
@@ -308,6 +309,18 @@ try {
     && !(await page.$eval('.tools button[data-l="bent"]', (b) => b.classList.contains("on"))));
   await page.click('.tools button[data-l="bent"]');
   check("its button again shows it", await yellow());
+  // hovering a bent line on the original's loupe lights it whole over its band; leaving the loupe puts it out
+  const litPx = (lo, hi) => page.$eval(".vp canvas", (c, [lo, hi]) => c.getContext("2d").getImageData(0, 0, c.width, c.height).data
+    .some((v, k, a) => k % 4 === 0 && v > 240 && a[k + 1] > 195 && a[k + 1] < 225 && a[k + 2] < 40 && a[k + 3] >= lo && a[k + 3] <= hi), [lo, hi]);
+  const spot = await page.$eval(".vp", (vp) => {
+    const im = vp.querySelector("img"), r = vp.getBoundingClientRect(), m = /translate\(([-\d.]+)px, ?([-\d.]+)px\)/.exec(im.style.transform);
+    const k = parseFloat(im.style.width) / im.naturalWidth;
+    return [r.left + vp.clientLeft + +m[1] + 240 * k, r.top + vp.clientTop + +m[2] + 103 * k];
+  });
+  await page.mouse.move(spot[0], spot[1]);
+  check("hovering a bent line lights it whole over its band", await litPx(200, 255) && await litPx(20, 60), JSON.stringify(spot));
+  await page.mouse.move(5, 5);
+  check("leaving the loupe puts it out", !(await litPx(20, 255)));
   const blue = () => page.$eval(".vp canvas", (c) =>
     c.getContext("2d").getImageData(0, 0, c.width, c.height).data.some((v, k, a) => k % 4 === 0 && v < 60 && a[k + 1] < 60 && a[k + 2] > 200));
   const wasBlue = await blue();

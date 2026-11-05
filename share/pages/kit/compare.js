@@ -41,9 +41,11 @@ body.pin .vp{cursor:crosshair}.vp .band{position:absolute;border:1px dashed #f0f
 .gi figcaption{font-size:12px;color:var(--mute);text-align:center}
 @media (max-width:900px){.upper{flex-direction:column}}`;
 const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)", MARK = "#f0f";
+const LIT = "#ffd400", LIT_BAND = "rgba(255,212,0,.16)"; // a bent grid line under the pointer, its corridor
 const app = document.getElementById("app");
 let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false, marked = true;
 const hiddenLayers = new Set(), seenLayers = new Set(); // grid layers (a `label`led entry of an item's `grid`) hidden for the visit
+let lit = null; // the bent grid line under the pointer on the original's loupe: {gr, n}
 let pinTool = false, pinning = null, pinsOff = false; // «Метка»: the tool's state, the mark being drawn, Egor's marks hidden
 const coming = new Set(); // marks a running dictation took: shown before their names arrive in the note
 const hot = new Map(), inked = new WeakSet(), off = new Set(); // off: frames whose loupe is hidden, by badge
@@ -246,6 +248,7 @@ function aim(e) {
 }
 
 function wire(vp, k) {
+  if (k === 0) { vp.addEventListener("pointermove", (e) => hover(e, vp)); vp.addEventListener("pointerleave", () => lit && ((lit = null), draw())); }
   vp.onpointerdown = (e) => {
     if (e.button !== 0 || !L) return;
     e.preventDefault();
@@ -269,6 +272,23 @@ function wire(vp, k) {
     setL({ cx: L.cx + px / L.z - px / nz, cy: L.cy + py / L.z - py / nz, z: nz });
   }, { passive: false });
 }
+// a bent grid line within 6 screen px of the pointer on the original's loupe is lit whole (paintLit)
+function hover(e, vp) {
+  const it = item(cur);
+  if (drag || pinning || !lines || !L || !it.original) return;
+  const r = vp.getBoundingClientRect(), z = L.z, lim = { d: 6 / z };
+  const x = L.cx + (e.clientX - r.left - vp.clientLeft - vp.clientWidth / 2) / z, y = L.cy + (e.clientY - r.top - vp.clientTop - vp.clientHeight / 2) / z;
+  let best = null;
+  for (const gr of [].concat(it.grid || [])) {
+    if (!gr.paths || (gr.label && hiddenLayers.has(gr.label)) || (gr.cell || 0) * z < 5) continue;
+    gr.paths.forEach((p, n) => { for (let m = 1; m < p.length; m++) { const d = seg(x, y, p[m - 1], p[m]); if (d < lim.d) { lim.d = d; best = { gr, n }; } } });
+  }
+  if (best?.gr !== lit?.gr || best?.n !== lit?.n) { lit = best; draw(); }
+}
+const seg = (x, y, [ax, ay], [bx, by]) => {
+  const dx = bx - ax, dy = by - ay, t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(x - ax - t * dx, y - ay - t * dy);
+};
 function endDrag() { drag = null; document.body.classList.remove("drag"); }
 addEventListener("pointermove", (e) => {
   if (pinning) return movePin(e);
@@ -377,6 +397,7 @@ function paintLines(W, H, at, first) {
         for (const p of gr.paths) p.forEach(([x, y], k) => g[k ? "lineTo" : "moveTo"](ox(x) * d, oy(y) * d));
         g.stroke();
       }
+      if (paintLit(g, it, (v) => ox(v) * d, (v) => oy(v) * d, d, L.z)) inked.add(c);
       return;
     } else if (a && fs[i].grid) {
       const g = fs[i].grid, at = (b, s) => (b.at(-1) - b[0]) / (b.length - 1) * s;
@@ -563,6 +584,18 @@ function sheet(k, at, z) {
   return c;
 }
 
+// The lit line (hover) drawn whole over its layer's `bands` entry (the corridor it may wobble in, filled) and `axes` entry
+// (its straight axis, dashed); X/Y map the original's px to the canvas, k is its px per CSS px, s its px per original px.
+function paintLit(g, it, X, Y, k, s) {
+  if (!lit || !lines || !it.original || ![].concat(it.grid || []).includes(lit.gr)) return false;
+  const { gr, n } = lit, trace = (p) => { g.beginPath(); p.forEach(([x, y], m) => g[m ? "lineTo" : "moveTo"](X(x), Y(y))); };
+  if ((gr.label && hiddenLayers.has(gr.label)) || (gr.cell || 0) * s < 5) return false;
+  if (gr.bands?.[n]) { trace(gr.bands[n]); g.fillStyle = LIT_BAND; g.fill(); }
+  if (gr.axes?.[n]) { trace(gr.axes[n]); g.setLineDash([6 * k, 4 * k]); g.strokeStyle = LIT; g.lineWidth = k; g.stroke(); g.setLineDash([]); }
+  trace(gr.paths[n]); g.strokeStyle = LIT; g.lineWidth = 2.5 * k; g.stroke();
+  return true;
+}
+
 // «Сетка» on a sheet tile, the lines its loupe draws (paintLines) in the original's px mapped by px/py at s tile px per
 // original px; a lattice whose cells come under 5 px is left out, as on the loupe.
 function sheetGrid(g, it, f, i, im, px, py, s) {
@@ -584,6 +617,7 @@ function sheetGrid(g, it, f, i, im, px, py, s) {
       for (const p of gr.paths) p.forEach(([x, y], n) => g[n ? "lineTo" : "moveTo"](px(x), py(y)));
       g.stroke();
     }
+    paintLit(g, it, px, py, 1, s);
     return;
   }
   const nw = im.naturalWidth, nh = im.naturalHeight, [bx, by, bx1, by1] = f.box || [0, 0, geo.w, geo.h];
