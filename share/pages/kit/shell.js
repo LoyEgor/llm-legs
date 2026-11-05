@@ -15,6 +15,8 @@
 //   attachPicture(el, blob, mark)  a picture the module drew, stored and named at el's caret like a paste → [names];
 //                                with mark {at: Date.now() of Egor's action, about} a running dictation takes the name
 //                                at the word he said then, and the caret gets nothing (see dictated)
+//   pending(el)                  the names a running dictation will paste into el (marks it took, not yet arrived,
+//                                not taken back with ×); el fires a "pictures" event whenever that set changes
 //   num(item, i), h(tag, props, ...kids)   the shown number; a DOM element
 // render, onState, doneWhen and keys replace their previous value, so a re-render is idempotent.
 // Every text field on every page takes pictures (the picture section below): no module wires them.
@@ -439,7 +441,8 @@ async function loadFiles() {
 // The field moves into its box once; one that has the focus keeps it and its selection.
 function slot(el) {
   let s = strips.get(el);
-  if (!s) strips.set(el, s = { box: h("div", { class: "att", hidden: true }), msg: h("span", { class: "atm" }), chips: new Map() });
+  if (!s) strips.set(el, s = { box: h("div", { class: "att", hidden: true }), msg: h("span", { class: "atm" }), chips: new Map(),
+    coming: new Set(), gone: new Set() });   // coming: names a dictation will paste here; gone: those taken back with ×
   if (!s.box.isConnected) {
     const had = document.activeElement === el, a = el.selectionStart, b = el.selectionEnd, wrap = h("div", { class: "atw" });
     el.before(wrap);
@@ -476,16 +479,25 @@ function grow(el) {
 }
 
 // × on a tile: every [name] leaves the text, with one space beside it, through the browser's editing
-// (⌘Z restores the text and with it the tile); a picture this field owns stops being shown under it.
+// (⌘Z restores the text and with it the tile); a picture this field owns stops being shown under it. A mark a
+// running dictation took leaves the dictation too (the server's `unmark`); should the paste still bring its name
+// here, the name leaves again as it arrives.
 function remove(el, name) {
-  const s = slot(el), f = known.get(name), tag = `[${name}]`;
+  const s = slot(el), f = known.get(name), waited = s.coming.delete(name);
+  if (waited) { s.gone.add(name); el.dispatchEvent(new Event("pictures")); }
   if (f && el.dataset.item && f.item === el.dataset.item && f.field === el.dataset.field) {
     known.set(name, { ...f, item: null, field: null });
     fetch(`/p/${pid}/drop`, { method: "POST", headers: json,
-      body: JSON.stringify({ name, item: el.dataset.item, field: el.dataset.field }) }).catch(() => {});
+      body: JSON.stringify({ name, item: el.dataset.item, field: el.dataset.field }) })
+      .then((r) => r.json()).then((r) => waited && say(el, /^ok /.test(r.unmark || "") ? `[${name}] убрана из диктовки`
+        : `[${name}] уберу, когда диктовка вставится сюда`)).catch(() => {});
   }
   s.chips.delete(name);
   el.focus();
+  unput(el, `[${name}]`);
+  strip(el);
+}
+function unput(el, tag) {
   for (let at = el.value.lastIndexOf(tag); at >= 0; at = at ? el.value.lastIndexOf(tag, at - 1) : -1) {
     let a = at, b = at + tag.length;
     if (el.value[a - 1] === " ") a--; else if (el.value[b] === " ") b++;
@@ -495,7 +507,6 @@ function remove(el, name) {
       el.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }
-  strip(el);
 }
 
 function say(el, text, bad) {
@@ -580,13 +591,24 @@ export const attachPicture = (el, blob, mark) => attach(el, { files: [blob] }, e
 // A mark made while Egor dictates (transcriptions-gpt MARKS.md, relayed by the server): the dictation carries
 // [name] at the word he said when he marked, so the caret gets nothing; the field takes the focus back, since the
 // dictation pastes into whatever holds it, and says where the name will come from until it arrives.
+export const pending = (el) => new Set(strips.get(el)?.coming || []);
 function dictated(el, names) {
   const s = slot(el);
+  names.forEach((n) => s.coming.add(n));
+  el.dispatchEvent(new Event("pictures"));
   say(el, names.map((n) => `[${n}]`).join(" ") + " — придёт с диктовкой");
   s.waiting = true;
   el.focus({ preventScroll: true });
   strip(el);
   return names;
+}
+
+// A dictation's paste brought names: those still awaited have arrived, those taken back with × leave again.
+function arrived(el, s) {
+  const has = (n) => el.value.includes(`[${n}]`), came = [...s.coming].filter(has), back = [...s.gone].filter(has);
+  came.forEach((n) => s.coming.delete(n));
+  back.forEach((n) => { s.gone.delete(n); unput(el, `[${n}]`); });
+  if (came.length) el.dispatchEvent(new Event("pictures"));
 }
 
 function onPaste(e) {
@@ -631,6 +653,7 @@ export async function start(s, r) {
   document.addEventListener("input", (e) => {
     const el = textField(e.target), s = el && strips.get(el);
     if (s && s.waiting) { s.waiting = false; s.msg.textContent = ""; }
+    if (s && (s.coming.size || s.gone.size)) arrived(el, s);
     if (el) { strip(el); grow(el); }
   }, true);
   addEventListener("resize", () => document.querySelectorAll("textarea").forEach(grow));

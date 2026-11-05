@@ -35,7 +35,10 @@ let daemon = () => "ignored idle";
 fs.mkdirSync(env.TRANSCRIBER_RUNTIME_DIR);
 const fake = net.createServer((c) => {
   let got = "";
-  c.on("data", (d) => { got += d; if (got.endsWith("\n")) { const m = JSON.parse(got.slice(5)); marks.push(m); c.end(daemon(m) + "\n"); } });
+  c.on("data", (d) => { got += d; if (got.endsWith("\n")) {
+    const sp = got.indexOf(" "), m = { verb: got.slice(0, sp), ...JSON.parse(got.slice(sp + 1)) };
+    marks.push(m); c.end(daemon(m) + "\n");
+  } });
 }).listen(path.join(env.TRANSCRIBER_RUNTIME_DIR, "control.sock"));
 const page = (args, input) => {
   const r = spawnSync(PAGE, args, { env, input, encoding: "utf8" });
@@ -231,6 +234,26 @@ try {
   }, [ox - 30, oy - 30]);
   check("a drag Jump Desktop releases with a buttons-0 move first still marks its box",
     await until(() => tab.$eval(".side textarea", (el) => el.value.endsWith("[img6.png]"))), await tab.$eval(".side textarea", (el) => el.value));
+  // × on a mark a dictation took: the server takes it back out (`unmark`); a daemon that cannot still pastes the name, which leaves again
+  daemon = (m) => (m.verb === "unmark" ? "err unknown command" : `ok ${m.tag} 3.0`);
+  await tab.keyboard.down("Alt"); await tab.mouse.click(ox + 12, oy - 12); await tab.keyboard.up("Alt");
+  await until(() => tab.$eval(".side .atm", (m) => /диктовк/.test(m.textContent)));
+  const late = (await tab.$eval(".side .atm", (m) => m.textContent)).match(/\[(img\d+\.png)\]/)?.[1];
+  const lateNo = late && late.slice(3, -4);
+  check("…its tile and its pin wait for the dictation", !!late && await until(() => tab.$$eval(".vp .pins b", (b, n) => b.some((x) => x.textContent === n), lateNo))
+    && await tab.$$eval(".side .atc img", (i, n) => i.some((x) => x.alt === n), late), late);
+  await tab.$$eval(".side .atc", (cs, n) => cs.find((c) => c.querySelector("img").alt === n).querySelector(".atx").click(), late);
+  check("× on it sends `unmark` for its name and drops its pin", await until(() => marks.some((m) => m.verb === "unmark" && m.tag === late))
+    && await until(() => tab.$$eval(".vp .pins b", (b, n) => !b.some((x) => x.textContent === n), lateNo)), JSON.stringify(marks.at(-1)));
+  check("…and says the name leaves when the dictation pastes it here", await until(() => tab.$eval(".side .atm", (m, n) => m.textContent === `[${n}] уберу, когда диктовка вставится сюда`, late)),
+    await tab.$eval(".side .atm", (m) => m.textContent));
+  await tab.$eval(".side textarea", (el) => el.setSelectionRange(el.value.length, el.value.length));
+  await tab.keyboard.insertText(` и тут [${late}] передумал`);
+  check("…and the paste keeps the words but not the name", await until(async () => {
+    const v = await tab.$eval(".side textarea", (el) => el.value);
+    return v.includes("и тут передумал") && !v.includes(`[${late}]`);
+  }), await tab.$eval(".side textarea", (el) => el.value));
+  daemon = () => "ignored idle";
   // «Скрыть метки» (H) hides every pin for the visit and shows them again
   const hideBtn = ".tools button[title=H]";
   await tab.click(hideBtn);

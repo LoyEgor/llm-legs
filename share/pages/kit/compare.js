@@ -5,7 +5,7 @@
 // Geometry is the reference image's natural size (the original, else the largest variant); every
 // image is drawn over that box (or a variant's `box` in it), so a smaller pixel-art variant lands on
 // the same coordinates at the same scale.
-import { h, get, save, textBox, onState, doneWhen, nextOpen, firstOpen, capped, keys, lazy, num, attachPicture } from "/kit/shell.js";
+import { h, get, save, textBox, onState, doneWhen, nextOpen, firstOpen, capped, keys, lazy, num, attachPicture, pending } from "/kit/shell.js";
 
 const CSS = `
 .strip{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:8px}
@@ -47,7 +47,6 @@ let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, 
 const hiddenLayers = new Set(), seenLayers = new Set(); // grid layers (a `label`led entry of an item's `grid`) hidden for the visit
 let lit = null; // the bent grid line under the pointer on the original's loupe: {gr, n}
 let pinTool = false, pinning = null, pinsOff = false; // «Метка»: the tool's state, the mark being drawn, Egor's marks hidden
-const coming = new Set(); // marks a running dictation took: shown before their names arrive in the note
 const hot = new Map(), inked = new WeakSet(), off = new Set(); // off: frames whose loupe is hidden, by badge
 
 export function render(spec) {
@@ -134,6 +133,7 @@ function show(id, keepView) {
   // with zoom_levels the first level fits and the digits are taken, so no fit button and no hotspots
   const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.pb, E.vb, E.gb, E.ls, E.mb);
   E.note.addEventListener("input", paintPins);
+  E.note.addEventListener("pictures", paintPins);
   E.pb.classList.toggle("on", pinTool);
   app.replaceChildren(E.strip, h("div", { class: "upper" }, h("div", { class: "pv" }, cells),
     h("div", { class: "side" }, h("div", { class: "ttl" }, h("strong", {}, `${num(it, i)}${it.title ? " · " + it.title : ""}`), nav),
@@ -496,7 +496,6 @@ async function pin(k, at, t) {
   const it = item(id), where = (at.length === 2 ? "point " : "box ") + at.join(",") + " px";
   const [name] = blob ? await attachPicture(el, blob, { at: t, about: `${where} on ${on}, item ${it.title || id}` }) : [];
   if (!name) return;
-  if (!el.value.includes(`[${name}]`)) coming.add(name);
   pinsOff = false;                                      // a new mark shows the marks again
   save(id, { pins: { ...(get(id, "pins") || {}), [name]: { on, at, z } } });
   if (cur === id) paintPins();
@@ -630,6 +629,7 @@ function sheetGrid(g, it, f, i, im, px, py, s) {
 function paintPins() {
   if (!E) return;
   const fs = frames(item(cur)), all = get(cur, "pins") || {}, text = E.note.value;
+  const coming = pending(E.note);   // marks a running dictation took: shown before their names arrive
   const list = Object.entries(all).filter(([n, p]) => p && Array.isArray(p.at) && (text.includes(`[${n}]`) || coming.has(n)));
   E.pinEls = E.pls.map((layer, i) => {
     const els = list.map(([n, p]) => {

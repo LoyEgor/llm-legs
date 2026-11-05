@@ -262,10 +262,13 @@ class Handler(BaseHTTPRequestHandler):
         if re.fullmatch(r"\d{9,13}(\.\d+)?", at):
             mark = dictation_mark(name, float(at), store.file_path(pid, name),
                                   "http://%s/p/%s/ - %s" % (self.headers.get("Host", ""), pid, about[:300]))
+            if (mark or "").startswith("ok "):
+                DICTATED.add((pid, name))
         self.send_json(200, {"name": name, "url": "/p/%s/f/%s" % (pid, name), "mark": mark})
 
     def drop(self, pid):
-        """× on a picture in a field: {name, item, field}."""
+        """× on a picture in a field: {name, item, field}. A mark a dictation took is taken back out of it
+        (`unmark`, transcriptions-gpt MARKS.md); the reply goes back as `unmark`."""
         length = int(self.headers.get("Content-Length") or 0)
         try:
             body = json.loads(self.rfile.read(length)) if 0 < length <= MAX_PATCH else None
@@ -273,7 +276,11 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, KeyError):
             return self.reply(400, b"expected {\"name\", \"item\", \"field\"}\n")
         store.detach_file(pid, name, item, field)
-        self.send_json(200, {})
+        unmark = None
+        if (pid, name) in DICTATED:
+            DICTATED.discard((pid, name))
+            unmark = dictation_send("unmark", {"tag": name})
+        self.send_json(200, {"unmark": unmark})
 
     def browser_error(self, pid):
         try:
@@ -311,16 +318,25 @@ def index_html():
     return "".join(out)
 
 
+DICTATED = set()  # (pid, name): marks a running dictation took, so a × on one takes it back out
+
+
 def dictation_mark(tag, at, ref, note):
     """A picture marked during a dictation, as one line to transcriptions-gpt's control socket (its MARKS.md): the
     daemon puts [tag] at the word Egor was saying at `at`. -> its reply ("ok TAG OFFSET", "ignored idle", ...), or
-    None with no daemon. A server on another PAGES_DIR (a test's) reaches only TRANSCRIBER_RUNTIME_DIR's socket."""
+    None with no daemon."""
+    return dictation_send("mark", {"tag": tag, "at": at, "ref": ref, "note": note})
+
+
+def dictation_send(verb, request):
+    """One control line to transcriptions-gpt -> its reply line, or None with no daemon. A server on another
+    PAGES_DIR (a test's) reaches only TRANSCRIBER_RUNTIME_DIR's socket."""
     runtime = os.environ.get("TRANSCRIBER_RUNTIME_DIR")
     if not runtime:
         if os.path.realpath(store.root()) != os.path.realpath(os.path.expanduser("~/Pages")):
             return None
         runtime = os.path.expanduser("~/.transcriptions-gpt")
-    line = "mark %s\n" % json.dumps({"tag": tag, "at": at, "ref": ref, "note": note}, ensure_ascii=False)
+    line = "%s %s\n" % (verb, json.dumps(request, ensure_ascii=False))
     try:
         with socket.socket(socket.AF_UNIX) as conn:
             conn.settimeout(1.0)
