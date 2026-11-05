@@ -78,18 +78,59 @@ better, where worse, and whether it works on a grey backdrop at all.
   Which model version it runs is unchecked.
 - **This Mac:** Apple M4, 24 GB unified memory, no NVIDIA.
 
+## What a Rentiva car cut-out must contain (Egor, 2026-11-05)
+
+Today's sprite is two files (`/Volumes/Work/tmp/sunlit2/art8/cars/`):
+
+- **`<slug>-car.png`:**
+  - RGBA;
+  - opaque glass (the windows show the interior and palm reflections; only a small gap by the mirror is see-through);
+  - a soft contact shadow under the body as partial alpha.
+- **`<slug>-shadow.png`:** the sand shadow. It is a multiply layer (white = no effect, darker = shadow), drawn with
+  `mix-blend-mode: multiply`.
+
+From video, the cut-out must deliver three things:
+
+1. **The car**, opaque where solid.
+2. **Glass that is really transparent.** Where the backdrop shows through the windows, alpha < 1 and the page
+   behind shows through. Reflections are kept as colour.
+3. **The shadow under and around the car as its own semi-transparent layer** (multiply, as now). The backdrop's
+   colour must not ride along.
+
+Our sprites therefore test edges and the contact shadow only: their glass is opaque.
+
+## Telling it what is transparent and what is not
+
+Find out, then write it down as a recipe:
+
+- **What CorridorKey's hint means.** It takes a first-frame matte or a matte per frame, plus `--hint_quality`. Do
+  grey values in the hint steer partial alpha in the glass and the shadow, or does the hint only say "this is the
+  subject"? Does it keep shadows at all, and how?
+- **Where the hints come from:**
+  - the subject from `image-cutout` (Vision);
+  - the windows as polygons on the key frames, tracked or interpolated;
+  - the shadow as a floor region.
+- **If hints cannot set partial alpha:**
+  - CorridorKey gives only the body edge;
+  - glass and shadow come from exact per-region math against the clean backdrop plate B;
+  - shadow multiply = I / B inside the floor region (no ML, no recolour);
+  - glass alpha from the colour distance to B, with a stated tint assumption.
+
 ## Tests (Egor drives; show him sheets and numbers, not logs)
 
 1. **Install candidates side by side.** Each goes into its own new folder under `/Volumes/Work/tmp/corridorkey/`
    (downloads are untrusted; run their Python with `-I`). Weights stay outside llm-legs. Load one engine at a time.
 2. **Test set:**
-   - **Ground truth.** Composite our car sprites (alpha known) onto flat green, flat blue and a light-grey studio
-     sweep with a floor gradient. The true matte is known, so errors are measurable.
+   - **Ground truth for glass and shadow.** Render it in Blender (local and free: `blender-render`,
+     `docs/blender.md`). Use a car model with real glass on a shadow-catcher floor (CC0 or CC-BY; note its
+     licence). Render it twice: with a transparent film, and over flat green, blue and a light-grey sweep. That gives
+     the exact alpha of the glass and of the shadow.
+   - **Edges and contact shadow.** Composite our sprites (alpha known) onto the same backdrops.
    - **Real case.** A short AI clip of a glossy black SUV on green and on grey. Stills via the GPT browser route are
      free. Flow, Omni or any paid run needs Egor's word for each launch, with the cost named.
    - **Hard spots:**
      - see-through glass;
-     - tyre contact and the shadow under the car (shadow is not subject);
+     - tyre contact, and the shadow (its own layer, not part of the car);
      - roof rails and antennas;
      - green reflections on black paint;
      - motion blur.
@@ -99,7 +140,7 @@ better, where worse, and whether it works on a grey backdrop at all.
    - one local matting net (BiRefNet or RMBG-2);
    - ChatGPT Remove BG + `image_matte.py`.
 4. **Measure:**
-   - matte error against the truth, overall and in the edge band;
+   - matte error against the truth, in four places: overall, in the edge band, in the glass and in the shadow;
    - colour change where alpha > 0.98 (must be about 0, which answers "does it colour-correct");
    - alpha flicker across frames on still edges;
    - seconds per 1080p frame, peak memory and disk.
@@ -132,8 +173,13 @@ whose colour differs from the source.
 1. **A findings note for Egor.** Which engine runs on this Mac, and how fast. Where it beats or loses to
    Vision, chroma key and the matting net. The grey verdict and the backdrop recommendation.
 2. **On his word, the integration.** A harness tool following llm-legs conventions (wrapper in `bin/`, docs, tests,
-   findable by `tools cut out` and `tools key video`). It reads stills, clips or frame folders and writes RGBA frames,
-   the matte and one report line.
+   findable by `tools cut out` and `tools key video`). It reads stills, clips or frame folders and writes three
+   things:
+   - RGBA subject frames with transparent glass;
+   - a shadow multiply layer per frame;
+   - one report line.
+
+   It also takes the region hints described above.
 3. **Answers back to the Rentiva chat.** Write them into this file under `## Answers`.
 
 ## Limits
