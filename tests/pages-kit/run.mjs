@@ -373,6 +373,10 @@ try {
   let bg = await bgs();
   check("backdrop checker: squares behind every loupe and preview", bg.length === 6 && bg.every((x) => x.includes("conic-gradient"))
     && await page.$eval(".bk button.on", (b) => b.dataset.bk) === "checker", JSON.stringify(bg));
+  await page.click('.bk button[data-bk="ps"]');
+  bg = await page.$$eval(".vp, .pc", (els) => els.map((e) => { const s = getComputedStyle(e); return s.backgroundImage + "|" + s.backgroundSize; }));
+  check("…ps swaps them for Photoshop's grid: white and #ccc, 8 px squares", bg.every((x) => x.includes("rgb(204, 204, 204)")
+    && x.includes("rgb(255, 255, 255)") && x.endsWith("|16px 16px")), JSON.stringify(bg));
   await page.click('.bk button[data-bk="grey"]');
   bg = await bgs();
   check("…grey swaps them for flat grey", bg.every((x) => x === "none|rgb(128, 128, 128)"), JSON.stringify(bg));
