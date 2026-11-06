@@ -14,7 +14,7 @@ Verified against `codex-cli 0.163.0` on 2026-10-20, unchanged from 0.159.3 (0.16
 | --- | --- | --- |
 | Tool | `image_gen.imagegen` (built-in, no API key) | binary tool description, `ext/image-generation/src/tool.rs`; skill `SKILL.md` "Default built-in tool mode (preferred)" |
 | Arguments | `prompt`, `transparent_background` (bool, since 0.157–0.159), `referenced_image_paths`, `num_last_images_to_include` — and nothing else | binary 0.159.0: `struct ImagegenArgs with 4 elements` over `prompttransparent_backgroundreferenced_image_pathsnum_last_images_to_include` (0.156.1: 3 elements, no `transparent_background`), `properties`/`additionalProperties` schema strings |
-| Image model | web: ChatGPT Images 2.5; cli: sends `gpt-image-2` | web: OpenAI's release (openai.com/index/introducing-chatgpt-images-2-5, 2026-09-08: ChatGPT, ChatGPT Work and Codex, all tiers); cli: the literal the binary sends to `images/generations`/`images/edits` (`ext/image-generation/src/tool.rs`, still in 0.165.0) — whether the backend serves 2.5 for it is unwitnessed. No output names either: both routes' PNGs carry the same versionless C2PA (below), so `model.image` is the CLI's request literal only |
+| Image model | web: ChatGPT Images 2.6, behaving as `gpt-image-2.6-sunburst` at `medium`; cli: sends `gpt-image-2` | web: OpenAI's release (openai.com/index/introducing-images-2-6, 2026-11-04: ChatGPT and Codex, all tiers, no picker). Test 2026-11-06, one 16:9 prompt: 5 web takes (Plus and Business) took 28.8–32.8 s from the tool call to the image (the conversation JSON's own timestamps) and drew Sunburst's composition (open lit door, hydrangea pots, twilight street); API Sunburst `medium` 28.9/31.0 s, `high` 43.5–53.9 s; Flare 8.4–14.0 s through `xhigh`, 25.4 s at `max`, its own composition at every quality (closed door, OPEN sign, chalkboards). The page's tool call carries only `{size, n, transparent_background}`; File info names the text model's thinking effort only. cli: the literal the binary sends to `images/generations`/`images/edits` (`ext/image-generation/src/tool.rs`, still in 0.167.0) — what the backend serves for it is unwitnessed. No output names either: API, web and CLI PNGs carry the same versionless C2PA (below), so `model.image` is the CLI's request literal only |
 | Reference images | local paths, at most 5 on the CLI; 20 on `--route web` (`web.refs_max`) | live 2026-10-03 (borodatch, 0.160.0): 16 paths end the turn with `` `referenced_image_paths` must contain at most 5 paths ``, no image; the web route took 16 twice (burkhartor, Plus: 15 of 16 objects drawn once, 16 of 16 in order once) and 20 (notcom, Plus: 20 of 20 in order), so 20 is a verified working cap above the API's documented 16, not a probed ChatGPT ceiling; every ref counts against ChatGPT's own upload quota |
 | Conversation images | `num_last_images_to_include` 1–5, never together with `referenced_image_paths` | binary: `` `num_last_images_to_include` must be between 1 and ``; "Never provide both" |
 | Local-file edits | `view_image` the file first, then pass it in `referenced_image_paths` | binary tool description: "If you have not seen a local image yet, use `view_image` to inspect it before editing"; `SKILL.md` "Built-in edit semantics" |
@@ -32,10 +32,15 @@ Verified against `codex-cli 0.163.0` on 2026-10-20, unchanged from 0.159.3 (0.16
 - **Exact size, quality, `n`, masks, `input_fidelity`, `background=transparent`** — every one of them is
   a fallback-CLI/API parameter. `--size` is passed to the model as a sentence and is a request, not a
   guarantee; with no `--size` the prompt asks for low quality, which is likewise only prose.
-  The manifest's `api_only` records them, plus the API's per-call model: its Images 2.5 models
-  (Sunburst, Flare) add `xhigh` and `max` quality, and `background: "transparent"` there is what the
-  built-in tool's own `transparent_background` already carries (developers.openai.com/api/docs/guides/image-generation,
-  2026-10-20); the 0.163.0 `ImagegenArgs` still names no model, quality or size.
+  The manifest's `api_only` records them, plus the API's per-call model: `gpt-image-2.6-sunburst` and
+  `-flare` (same price, same 1.57 MP `auto` size) take `xhigh` and `max` quality, `complexity`, a `markup` PNG on edits,
+  and `output_format: "gif"` or `"svg"`; `background: "transparent"` there is what the built-in tool's own
+  `transparent_background` already carries (developers.openai.com/api/docs/guides/image-generation, 2026-11-06).
+  SVG needs `svg.model` (any text model, which writes the SVG from the image model's raster), and `images/edits`
+  takes it although the guide says it does not: live 2026-11-06, a 487×530 logo → 16 KB SVG (65 paths, 10
+  gradients, every element; colours pushed to lime, a broken shield edge) in 198 s with `svg.model` `gpt-6.1-sol`.
+  ChatGPT's web image tool makes no SVG or GIF file the harness could save. The 0.167.0 `ImagegenArgs` still
+  names no model, quality or size.
 - **Video** — no video tool in this CLI; the manifest's `video` is `null`, which is the fan-out's hard
   skip signal for this vendor.
 - **Naming the image model per run** — `codex exec` output never names the image model (no image item
@@ -204,6 +209,8 @@ cli 16:9 → 1664×936, all `fit=ok`; `--transparent` gave real alpha on both ro
   which keeps every pixel but leaves background inside a logo's holes. `--remove-bg --composite` lays the
   cutout back onto the input with `share/image_matte.py`: the input's pixels inside, ChatGPT's toned edge
   band and alpha, in the input's frame ([background removal](../image-vendors.md#background-removal)).
+- Not wired: the viewer's **Erase** (beside Remove BG since Images 2.6, seen 2026-11-06) and ChatGPT's GIFs
+  (the image metadata gained `animation`, `gif_speed_variants`, `spritesheet`).
 
 ## Local composite and edit lineage
 
