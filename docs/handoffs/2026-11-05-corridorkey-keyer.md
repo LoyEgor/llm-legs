@@ -240,6 +240,32 @@ repo): `testset/`, `runs/`, `runs_real/`, `results/` (sheets, `metrics.jsonl`, `
   - **Edge rim on chroma screens:** alpha clamped between the gamut bound and the colour-difference bound, which kills
     the green line at tyre contacts. An anti-pink clamp catches over-subtraction.
 
+### Tuning on the Omni clip (2026-11-06)
+
+The Rentiva chat reported defects on `omni-hl`. Each came from the decode or the fuse, not from CK:
+
+| defect | cause | fix |
+|---|---|---|
+| Stair-stepped tyre bottoms, blocky glass | The default ffmpeg decode copies 4:2:0 chroma into 2×2 blocks | Decode with `full_chroma_int` |
+| Haze band and red/pink rim | The rim missed CK's outer tail | The rim now covers the whole edge band; its colour is the alpha-weighted unmix, the nearest solid colour making up the rest |
+
+New options on `ck_key.py`:
+
+- `--edge hard`: a 2× steeper ramp, because AI video blurs hard car edges over 8–10 px.
+- `--despill all`: the screen's reflection on paint turns neutral at the same luma.
+- `--glass-min` (default 0.5): screen-mode glass alpha is smoothed and floored at this tint.
+
+Results:
+
+- **Omni clip, 144 frames:**
+  - green on the subject 77 → 0 px per frame;
+  - pink edge pixels 153 → 0.3;
+  - flicker 1.8 → 1.6.
+- **Blender green clip:** edge error 33.1 → 27.2.
+- **Stills bench:** unchanged.
+
+The recipe for a car on green from AI video is `--glass screen --despill all --edge hard`.
+
 ### Glass
 
 - **Screen mode** (window alpha = 1 − screen share) shows the backdrop through glass on real clips. It cannot tell
