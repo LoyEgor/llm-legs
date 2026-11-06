@@ -10,16 +10,16 @@ const KIT = path.resolve(process.env.PAGES_KIT_DIR || path.join(path.dirname(fil
 const TYPES = { ".js": "text/javascript", ".html": "text/html; charset=utf-8", ".md": "text/markdown",
   ".png": "image/png", ".wav": "audio/wav" };
 
-function png(w, h, rgb) {
-  const raw = Buffer.alloc((w * 3 + 1) * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) raw.set(rgb(x, y), y * (w * 3 + 1) + 1 + x * 3);
+function png(w, h, rgb, ch = 3) {   // ch 4: RGBA
+  const raw = Buffer.alloc((w * ch + 1) * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) raw.set(rgb(x, y), y * (w * ch + 1) + 1 + x * ch);
   const chunk = (type, data) => {
     const td = Buffer.concat([Buffer.from(type), data]), out = Buffer.alloc(8 + td.length);
     out.writeUInt32BE(data.length, 0); td.copy(out, 4); out.writeUInt32BE(zlib.crc32(td), 4 + td.length);
     return out;
   };
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr.set([8, 2, 0, 0, 0], 8);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr.set([8, ch === 4 ? 6 : 2, 0, 0, 0], 8);
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr),
     chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
 }
@@ -47,6 +47,7 @@ export function fixtures(dir) {
     a: put("a.png", png(480, 240, (x, y) => (x >= 96 && x < 144 && y >= 40 && y < 80 ? [220, 30, 30] : scene(x, y)))),
     b: put("b.png", png(480, 240, (x, y) => (x >= 360 && x < 400 && y >= 170 && y < 210 ? [30, 200, 60] : scene(x, y)))),
     px: put("px.png", png(120, 60, (x, y) => scene(x * 4, y * 4))),
+    cut: put("cut.png", png(480, 240, (x, y) => (x >= 200 && x < 280 && y >= 80 && y < 160 ? [220, 30, 30, 255] : [0, 0, 0, 0]), 4)),
     s1: put("s1.wav", wav(440, 3)),
     s2: put("s2.wav", wav(660, 3)),
   };

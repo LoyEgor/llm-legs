@@ -40,6 +40,10 @@ was saying. A reading model opens it. «Скрыть метки» (H) hides the 
 - **marks:** per item, `[[x0, y0, x1, y1], …]` in the original's px: framed on every loupe and preview,
   with «Рамка» (M) to hide them; on by default. `mark_width` (top level or per item): the frame's thickness in
   the original's px, so it zooms like a pixel (e.g. one art cell); default 2 screen px.
+- **backdrop:** what shows through transparent pictures: `checker` (light and dark squares, so a halo of either
+  polarity shows), `white`, `grey`, `black` or `#rrggbb`; present, a picker beside the tools switches it for the visit
+  (those four and a colour well) and «Метка» sheets draw it. Default none: white, no picker. A cut-out goes in as
+  RGBA; a multiply shadow as black at alpha 1 − shadow.
 - **Common:** `title`, `intro`, `sitting_cap`; any `_` key is hidden, shown in `page state`.
 - **Fields written:** `choice` (an option id; the slot when blind), `tags` (`{"A": [...]}`), `note`, `pins`
   (`{"imgN.png": {"on": "B", "at": [x, y] | [x0, y0, x1, y1], "z": zoom}}` in the original's px; not an answer).

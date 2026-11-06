@@ -13,7 +13,7 @@ const CSS = `
 .strip i.v{background:var(--accent);color:var(--bg)}.strip i.cur{outline:2px solid var(--ink)}
 .upper{display:flex;gap:16px;align-items:flex-start}
 .pv{display:flex;gap:6px;flex:none}
-.pc{position:relative;overflow:hidden;border-radius:6px;cursor:crosshair;background:#fff;outline:1px solid var(--line)}
+.pc{position:relative;overflow:hidden;border-radius:6px;cursor:crosshair;background:var(--bk,#fff);outline:1px solid var(--line)}
 .pc img{width:100%;height:100%;display:block;-webkit-user-drag:none}
 .pc i{position:absolute;border:2px solid var(--accent);box-shadow:0 0 0 1px #fff;pointer-events:none}
 .pc input,.vp>input{position:absolute;right:4px;top:4px;z-index:3;margin:0;width:16px;height:16px;cursor:pointer;accent-color:var(--accent)}.vp>input{right:6px;top:6px;width:18px;height:18px}.pc.off img{opacity:.35}
@@ -23,7 +23,7 @@ const CSS = `
 .votes{display:flex;gap:8px;flex-wrap:wrap}.votes button{flex:1 0 auto;font-size:17px;font-weight:600;padding:8px;white-space:nowrap}
 .trow,.tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}.trow b{width:16px}.trow button,.tools button{padding:3px 10px;font-size:13px}
 .lrow{display:grid;gap:8px;margin-top:10px}
-.vp[hidden]{display:none}.vp{position:relative;overflow:hidden;height:var(--lh,480px);background:#fff;border-radius:6px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;outline:1px solid var(--line)}
+.vp[hidden]{display:none}.vp{position:relative;overflow:hidden;height:var(--lh,480px);background:var(--bk,#fff);border-radius:6px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;outline:1px solid var(--line)}
 body.drag,body.drag .vp{cursor:grabbing}
 .vp img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;-webkit-user-drag:none}
 .bd{position:absolute;left:6px;top:4px;display:flex;gap:4px;z-index:1;pointer-events:none;font:600 12px/1.4 system-ui}
@@ -37,11 +37,20 @@ body.pin .vp{cursor:crosshair}.vp .band{position:absolute;border:1px dashed #f0f
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
 .gc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;cursor:pointer}
 .gi{display:flex;gap:4px;margin-top:4px}.gi figure{margin:0;flex:1;min-width:0}
-.gi img{width:100%;max-height:240px;object-fit:contain;background:#fff;border-radius:4px;display:block}
+.gi img{width:100%;max-height:240px;object-fit:contain;background:var(--bk,#fff);border-radius:4px;display:block}
+.bk{display:inline-flex;gap:3px;align-items:center}.bk button{padding:3px 5px}.bk button i{display:block;width:14px;height:14px;border-radius:2px;outline:1px solid var(--line)}
+.bk input{width:28px;height:24px;padding:0 2px;border:1px solid var(--line);border-radius:4px;background:none;cursor:pointer}.bk input.on{outline:2px solid var(--accent)}
 .gi figcaption{font-size:12px;color:var(--mute);text-align:center}
 @media (max-width:900px){.upper{flex-direction:column}}`;
 const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)", MARK = "#f0f";
 const LIT = "#ffd400", LIT_BAND = "rgba(255,212,0,.16)"; // a bent grid line under the pointer, its corridor
+// `backdrop`: what shows through transparent pictures, picked on the page for the visit. The squares are light and dark
+// so a halo of either polarity shows.
+const BK = { checker: ["шахматка", "checkerboard"], white: ["белый", "white"], grey: ["серый", "grey"], black: ["чёрный", "black"] };
+const BK_HEX = { white: "#ffffff", grey: "#808080", black: "#000000" }, SQ = ["#ede6d6", "#292b33"], SQ_PX = 16;
+const bkOk = (v) => typeof v === "string" && (v in BK || /^#[0-9a-f]{6}$/i.test(v));
+const bkCss = (v, sq = SQ_PX) => v === "checker" ? `repeating-conic-gradient(${SQ[1]} 0 25%,${SQ[0]} 0 50%) 0 0/${2 * sq}px ${2 * sq}px` : BK_HEX[v] || v;
+let bk = null; // the backdrop shown: a BK key or "#rrggbb"
 const app = document.getElementById("app");
 let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false, marked = true;
 const hiddenLayers = new Set(), seenLayers = new Set(); // grid layers (a `label`led entry of an item's `grid`) hidden for the visit
@@ -54,6 +63,7 @@ export function render(spec) {
   ids = S.items.map((it) => it.id);
   app.dataset.ownZoom = ""; // the loupes are this module's zoom, so the shell's stays out
   if (!document.getElementById("cmp-css")) document.head.append(h("style", { id: "cmp-css" }, CSS));
+  if (!S.backdrop) { bk = null; app.style.removeProperty("--bk"); } else if (!bk) setBk(bkOk(S.backdrop) ? S.backdrop : "checker");
   const view = S.mode === "view";
   doneWhen(view ? null : (id) => get(id, "choice") != null);
   onState((changed) => { if (E && changed.has(cur)) { paintSide(); paintPins(); } if (E) strip(); });
@@ -119,6 +129,9 @@ function show(id, keepView) {
         h("i", { class: "sw", style: `background:${g.color || LINE}` }), g.label);
     }),
     mb: it.marks && it.marks.length ? h("button", { onclick: toggleMarks, title: "M" }, "Рамка") : null,
+    bk: S.backdrop ? h("span", { class: "bk", title: "фон под прозрачным" }, Object.entries(BK).map(([v, [ru]]) =>
+      h("button", { "data-bk": v, title: ru, onclick: () => setBk(v) }, h("i", { style: `background:${bkCss(v, 4)}` }))),
+      h("input", { type: "color", title: "свой цвет", value: /^#/.test(bk) ? bk : "#4a7a96", oninput: (e) => setBk(e.target.value) })) : null,
     pb: h("button", { onclick: togglePin, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка; картинка-метка в заметку" }, "Метка"),
     vb: h("button", { onclick: togglePins, title: "H", hidden: true }, "Скрыть метки"),
     pls: vps.map((v) => v.querySelector(".pins")), note: textBox(id, "note", { placeholder: "заметка" }), ref: 0,
@@ -131,7 +144,7 @@ function show(id, keepView) {
   const nav = h("span", { class: "nav" }, S.mode === "view" ? h("button", { onclick: grid, title: "Esc" }, "▦") : null,
     h("button", { onclick: () => go(-1) }, "←"), E.pos, h("button", { onclick: () => go(1) }, "→"));
   // with zoom_levels the first level fits and the digits are taken, so no fit button and no hotspots
-  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.pb, E.vb, E.gb, E.ls, E.mb);
+  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.pb, E.vb, E.gb, E.ls, E.mb, E.bk);
   E.note.addEventListener("input", paintPins);
   E.note.addEventListener("pictures", paintPins);
   E.pb.classList.toggle("on", pinTool);
@@ -141,7 +154,7 @@ function show(id, keepView) {
       E.note)),
     h("div", { class: "lrow" }, vps));
   vps.forEach(wire);
-  panes(); paintSide(); strip(); layout();
+  panes(); paintSide(); strip(); layout(); paintBk();
   Promise.all(E.imgs.map((im) => im.complete ? 0 : new Promise((r) => { im.onload = im.onerror = r; }))).then(() => {
     if (my !== token) return;
     const ref = it.original ? E.imgs[0] : E.imgs.reduce((a, b) => (b.naturalWidth * b.naturalHeight > a.naturalWidth * a.naturalHeight ? b : a));
@@ -235,6 +248,20 @@ function toggleLines() { lines = !lines; draw(); }
 // a layer button with the grid off turns the grid on showing that layer; otherwise it hides or shows the layer
 function toggleLayer(l) { if (!lines) { lines = true; hiddenLayers.delete(l); } else if (!hiddenLayers.delete(l)) hiddenLayers.add(l); draw(); }
 function toggleMarks() { marked = !marked; draw(); }
+function setBk(v) { bk = v; app.style.setProperty("--bk", bkCss(v)); paintBk(); }
+function paintBk() {
+  if (!E || !E.bk) return;
+  E.bk.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.bk === bk));
+  E.bk.querySelector("input").classList.toggle("on", /^#/.test(bk));
+}
+// the backdrop under a sheet tile, as the loupe showed it (squares anchored at the tile's corner)
+function sheetBk(g, x, y, w, hh) {
+  if (!bk) return;
+  if (bk !== "checker") { g.fillStyle = bkCss(bk); g.fillRect(x, y, w, hh); return; }
+  g.fillStyle = SQ[0]; g.fillRect(x, y, w, hh); g.fillStyle = SQ[1];
+  for (let j = 0; j * SQ_PX < hh; j++) for (let i = j % 2; i * SQ_PX < w; i += 2)
+    g.fillRect(x + i * SQ_PX, y + j * SQ_PX, Math.min(SQ_PX, w - i * SQ_PX), Math.min(SQ_PX, hh - j * SQ_PX));
+}
 const markW = () => item(cur).mark_width ?? S.mark_width ?? 0; // the frame's thickness in the original's px
 function level(k) {
   const z = (S.zoom_levels || [])[k];
@@ -524,7 +551,8 @@ function sheet(k, at, z) {
   const cr = cc && (box ? ` = cells x ${cc.c[0]}..${cc.c[2]}, y ${cc.c[1]}..${cc.c[3]}` : ` = cell ${cc.c[0]},${cc.c[1]}`);
   const where = (box ? `Box x ${m[0]}..${m[2] - 1}, y ${m[1]}..${m[3] - 1} px of ${ref}` : `Point ${at[0]},${at[1]} px of ${ref}`)
     + (cr ? `${cr} of ${fs[k].side}'s ${cc.nw}x${cc.nh}` : "") + " (0-based from the top left)."
-    + ` Egor looked at ${z}× zoom` + (grid ? "; the thin cyan lines are the page's grid overlay he had on, not part of any picture." : ".");
+    + ` Egor looked at ${z}× zoom` + (grid ? "; the thin cyan lines are the page's grid overlay he had on, not part of any picture." : ".")
+    + (bk ? ` Transparent parts show the page's ${BK[bk] ? BK[bk][1] : bk} backdrop he had chosen, not part of any picture.` : "");
   const text = `Mark on ${on} (${box ? "box" : "point"}): where the note names this picture, it means the place in the magenta `
     + `${box ? "rectangle" : "ring"}. Same place on every picture; tile 1 is the whole picture with the region shown framed. ${where}`;
   const tiles = [null, ...fs], cols = Math.min(4, tiles.length), rows = Math.ceil(tiles.length / cols);
@@ -553,6 +581,7 @@ function sheet(k, at, z) {
     if (!f) {                                             // the whole reference picture, the region framed
       const im = E.imgs[E.ref], q = Math.min(TILE / geo.w, TILE / geo.h), ox = X + (TILE - geo.w * q) / 2, oy = Y + (TILE - geo.h * q) / 2;
       g.imageSmoothingEnabled = q < 1;
+      sheetBk(g, ox, oy, geo.w * q, geo.h * q);
       if (im.naturalWidth) g.drawImage(im, ox, oy, geo.w * q, geo.h * q);
       g.strokeRect(ox + rx * q, oy + ry * q, side * q, side * q);
       if (box) g.strokeRect(ox + m[0] * q - 1, oy + m[1] * q - 1, (m[2] - m[0]) * q + 2, (m[3] - m[1]) * q + 2);
@@ -560,6 +589,7 @@ function sheet(k, at, z) {
     } else {                                              // the same region from this frame, through its box
       const im = E.imgs[i], nw = im.naturalWidth, nh = im.naturalHeight, [bx, by, bx1, by1] = f.box || [0, 0, geo.w, geo.h];
       const ix = Math.max(rx, bx), iy = Math.max(ry, by), ix1 = Math.min(rx + side, bx1), iy1 = Math.min(ry + side, by1);
+      sheetBk(g, X, Y, TILE, TILE);
       if (nw && ix1 > ix && iy1 > iy) {
         const sw = (ix1 - ix) / (bx1 - bx) * nw, dw = (ix1 - ix) * s;
         g.imageSmoothingEnabled = dw < sw;

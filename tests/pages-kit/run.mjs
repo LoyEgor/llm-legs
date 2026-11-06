@@ -43,6 +43,7 @@ const srv = await serve({
       { paths: [[[0, 51], [480, 51]]], cell: 4, color: "rgb(0,0,255)", label: "later", hidden: true }],
       variants: [{ ...it.variants[0], box: [4, 2, 476, 238] }, { ...it.variants[1], grid: { x: [0, 120, 240, 360, 480], y: [0, 120, 240] } }] }) },
   mark1: { ...vote(), items: vote().items.map((it) => it.id === "p01" ? { ...it, marks: [[10, 10, 100, 80]], mark_width: 8 } : it) },
+  bk1: { ...vote(), backdrop: "checker", items: [item("k01", "cut", { variants: [{ id: "v77", label: "cut", src: F.cut }, { id: "v78", label: "champ78", src: F.b }] })] },
   blind1: { module: "compare", schema: 1, title: "Слепо", blind: true,
     items: [{ id: "b01", variants: [{ id: "v77", label: "champ77", src: F.a, meta: "64 px" }, { id: "v78", label: "champ78", src: F.b }] }] },
   cards1: { module: "cards", schema: 1, title: "Швы", sitting_cap: 2,
@@ -359,6 +360,37 @@ try {
   await page.keyboard.press("ArrowRight");
   await ready(page);
   check("an item without marks has no «Рамка»", await page.evaluate(() => ![...document.querySelectorAll("button")].some((b) => b.textContent === "Рамка")));
+  await page.close();
+
+  // 6c. backdrop: a picker switches what shows through transparent pictures behind every loupe and preview, and the
+  // «Метка» sheet draws it; a page without the key keeps white and has no picker
+  page = await ctx.newPage();
+  await page.addInitScript(() => { const tb = HTMLCanvasElement.prototype.toBlob; window.__sheets = [];
+    HTMLCanvasElement.prototype.toBlob = function (...a) { window.__sheets.push(this); return tb.apply(this, a); }; });
+  page = await open("bk1", page);
+  await ready(page);
+  const bgs = () => page.$$eval(".vp, .pc", (els) => els.map((e) => { const s = getComputedStyle(e); return s.backgroundImage + "|" + s.backgroundColor; }));
+  let bg = await bgs();
+  check("backdrop checker: squares behind every loupe and preview", bg.length === 6 && bg.every((x) => x.includes("conic-gradient"))
+    && await page.$eval(".bk button.on", (b) => b.dataset.bk) === "checker", JSON.stringify(bg));
+  await page.click('.bk button[data-bk="grey"]');
+  bg = await bgs();
+  check("…grey swaps them for flat grey", bg.every((x) => x === "none|rgb(128, 128, 128)"), JSON.stringify(bg));
+  await page.$eval(".bk input", (e) => { e.value = "#123456"; e.dispatchEvent(new Event("input")); });
+  check("…the colour well sets its own colour", (await bgs()).every((x) => x === "none|rgb(18, 52, 86)")
+    && await page.$eval(".bk input", (e) => e.classList.contains("on")) && !(await page.$(".bk button.on")));
+  const cutBox = await page.$eval(".vp:nth-child(2) img", (im) => { const r = im.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; });
+  await page.keyboard.down("Alt");
+  await page.mouse.click(cutBox[0] + cutBox[2] * 40 / 480, cutBox[1] + cutBox[3] * 40 / 240);
+  await page.keyboard.up("Alt");
+  const corner = await until(() => page.evaluate(() => { const c = window.__sheets.at(-1);   // tile of A (third): its corner, see-through there
+    return c && [...c.getContext("2d").getImageData(12 + 2 * 370 + 4, c.height - 12 - 360 + 4, 1, 1).data].join(","); }), 3000);
+  check("…the «Метка» sheet shows the transparent part over that colour", corner === "18,52,86,255", corner);
+  await page.close();
+  page = await open("blind1");
+  await ready(page);
+  bg = await bgs();
+  check("no backdrop key: white, no picker", bg.every((x) => x === "none|rgb(255, 255, 255)") && !(await page.$(".bk")), JSON.stringify(bg));
   await page.close();
 
   // 7. cards: choice/multi/scale/note save; one clip at a time
