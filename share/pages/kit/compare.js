@@ -44,12 +44,11 @@ body.pin .vp{cursor:crosshair}.vp .band{position:absolute;border:1px dashed #f0f
 @media (max-width:900px){.upper{flex-direction:column}}`;
 const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)", MARK = "#f0f";
 const LIT = "#ffd400", LIT_BAND = "rgba(255,212,0,.16)"; // a bent grid line under the pointer, its corridor
-// `backdrop`: what shows through transparent pictures, picked on the page for the visit. `checker`'s squares are light
-// and dark so a halo of either polarity shows; `ps` is Photoshop's default grid (Light colours, Medium size), calmer.
-const BK = { checker: ["шахматка", "checkerboard"], ps: ["сетка Photoshop", "Photoshop grid"], white: ["белый", "white"],
-  grey: ["серый", "grey"], black: ["чёрный", "black"] };
+// `backdrop`: what shows through transparent pictures, picked on the page for the visit. `checker` is Photoshop's
+// default grid (Light colours, Medium size); Egor dropped the earlier light/dark 16 px squares as too coarse.
+const BK = { checker: ["шахматка", "checkerboard"], white: ["белый", "white"], grey: ["серый", "grey"], black: ["чёрный", "black"] };
 const BK_HEX = { white: "#ffffff", grey: "#808080", black: "#000000" };
-const CHECK = { checker: { sq: ["#ede6d6", "#292b33"], px: 16 }, ps: { sq: ["#ffffff", "#cccccc"], px: 8 } }; // square colours, side in px
+const CHECK = { checker: { sq: ["#ffffff", "#cccccc"], px: 8 } }; // square colours, side in px
 const bkOk = (v) => typeof v === "string" && (v in BK || /^#[0-9a-f]{6}$/i.test(v));
 const bkCss = (v, px) => { const c = CHECK[v]; if (!c) return BK_HEX[v] || v; const n = px || c.px;
   return `repeating-conic-gradient(${c.sq[1]} 0 25%,${c.sq[0]} 0 50%) 0 0/${2 * n}px ${2 * n}px`; };
