@@ -2,7 +2,8 @@
 """The OpenAI API keys' menubar rows, as one JSON line: the key file, the shared key state and the spend.
 
 $OPENAI_KEYS (default ~/.config/openai/keys.txt): `<key> <account> [label=..] [reset_day=N]` per line, N the day
-of the month the credit grant renews. No llm-legs code spends the OpenAI API, so there is no pool: a row says
+of the month the credit grant renews. Only `logo-vectorize --engine openai` (share/openai_svg.py, on Egor's ask)
+spends the OpenAI API, so there is no pool: a row says
 whether a key-state writer (the dictation daemon) holds the key, why, and when its grant renews.
 
 OpenAI gives no key its credit balance. $OPENAI_ADMIN_KEYS (default ~/.config/openai/admin-keys.txt):
