@@ -376,8 +376,8 @@ run_wait_line() { # directory
   fi
 }
 
-refuse_live_run() { # brief resume
-  local brief="$1" resume="$2" root entry directory pid now started sha other_sha owner
+refuse_live_run() { # brief resume vendor model
+  local brief="$1" resume="$2" vendor="${3:-}" model="${4:-}" root entry directory pid now started sha other_sha owner
   root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
   if [ -n "$resume" ]; then
     while IFS= read -r entry; do
@@ -410,6 +410,9 @@ refuse_live_run() { # brief resume
     supervisor_running "$directory" "$pid" || continue
     other_sha=$(shasum -a 256 "$directory/brief" 2>/dev/null | awk '{print $1}')
     [ "$sha" = "$other_sha" ] || continue
+    # One brief on several vendors or models is a deliberate panel, not a relaunch
+    [ -z "$vendor$model" ] ||
+      [ "$(jq -r '"\(.vendor // "")/\(.model // "")"' "$directory/meta.json" 2>/dev/null)" = "$vendor/$model" ] || continue
     outcome_line "DUPLICATE_RUN ${directory##*/}"
     run_wait_line "$directory"
     exit 4
@@ -811,7 +814,7 @@ start_run() {
     fi
   fi
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
-  refuse_live_run "$brief" "$resume"
+  refuse_live_run "$brief" "$resume" "$vendor" "$model"
   [ "$role" != workers ] || refuse_busy_worktree "$workdir"
   # Paths are re-resolved by the detached supervisor after it cds to workdir, so
   # relative arguments valid here would dangle there — pin them to the caller's cwd.
