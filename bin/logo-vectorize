@@ -32,8 +32,9 @@ usage() {
   printf '  dark letters and shapes are closed in their ink (never at the canvas edge or across a blurred gap); thin strokes of a darker ink (fin rays, insect legs)\n' >&2
   printf '  keep their ink and length; pale hairline seams between two touching fills are closed.\n' >&2
   printf '  --engine openai  only when Egor asks for it: one paid OpenAI API call, a text model reads the image and writes\n' >&2
-  printf '                  the SVG (~2 min; on a gradient logo: smooth curves and true colours where the local trace was\n' >&2
-  printf '                  ragged); takes only --in, --dest and --dry-run; exit 3 = every OpenAI key held or refused\n' >&2
+  printf '                  the SVG (~2 min). It redraws: clean curves, but shapes drift, dark seams open between shapes\n' >&2
+  printf '                  and colours stray further than the local trace (R logo, 2026-11-06); takes only --in, --dest\n' >&2
+  printf '                  and --dry-run; exit 3 = every OpenAI key held or refused\n' >&2
   printf '  --auto no runs the champion alone\n' >&2
   printf '  --size native (default) traces up to 1024 px as given (finer edges). Flat opaque PNG of 300 px or more takes the\n' >&2
   printf '  palette path at any size; on the fallback most post-steps match the bench sizes (256/512/1024) exactly, so other\n' >&2
