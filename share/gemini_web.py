@@ -1264,7 +1264,8 @@ def settings(page, plan: dict, full: bool) -> tuple[int, str]:
             family.last.wait_for(timeout=8000)
             choose(page, "Video")
             family.last.click()
-            item = page.get_by_role("menuitem", name=plan["label"], exact=True)
+            # By the label's start: Flow suffixes a retiring model ("Omni 1.1 Flash Leaving Dec 5", 2026-11).
+            item = page.get_by_role("menuitem", name=re.compile("^" + re.escape(plan["label"]) + r"\b")).first
             with contextlib.suppress(Exception):
                 item.wait_for(timeout=5000)
             note_model_menu(page, "video", [model["label"] for model in video_caps()["models"].values()])
