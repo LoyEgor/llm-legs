@@ -269,6 +269,18 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   (`reason=ghost`), screen colour left over 5 % of a local window (`reason=residue`). Prints
   `composite=matte changed=<% of the subject from the cutout> moved=<px> ghost=<px> residue=<%>` and
   `rendered=` (ChatGPT's cutout).
+- **Glass on a coloured screen: `share/image_fuse.py`.** ChatGPT draws glass solid, so the screen seen
+  through a windscreen stays; a keyer (CorridorKey) sees through it. `image_fuse.py --base <input> --gpt
+  <matte delivery> --key-alpha <keyer alpha> --key-fg <keyer colour> --out <png> --overlay <png> [--take
+  all|none|1,3]` moves each see-through pane from the keyer into the delivery pixel for pixel (its alpha
+  and unmixed colour, no blur). The cut runs only where both deliveries already show the same pixel (the
+  frame round a window), so it cannot be seen; a pane with no such frame is refused, never cut across the
+  glass, and nothing outside the taken panes and their frame changes. Candidates are drawn numbered on
+  `--overlay`: look at it, and leave out a number that is not glass (a screen reflection on paint).
+  Prints `fuse=glass taken=<n,…> candidates=<n:px:closed|open,…> step=<max seam step 0..255>` or
+  `fuse=skipped reason=no-glass|no-frame|none-taken` (nothing written). On the 2026-11-07 bench (Rogue,
+  RAV4, Outlander on green) every pane closed at step 4. The keyer is not a harness tool yet
+  (`docs/handoffs/2026-11-05-corridorkey-keyer.md`, stage two).
 - **Local — exact pixels: `bin/image-cutout`** (local macOS Vision subject lift, free, no network,
   0.3–0.9 s; the first run compiles `share/image-cutout.swift` into
   `~/.cache/image-cutout/<source hash>/`, ~8 s). Kept RGB is byte-identical to the input's decode and
