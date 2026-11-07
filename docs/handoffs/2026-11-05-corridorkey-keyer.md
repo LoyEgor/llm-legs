@@ -356,9 +356,66 @@ the hair. GPT re-renders the person. Sheet: `results/sheet-real-hair-white-all.p
   - A stacked colour-plus-alpha H.264 drawn in a canvas works everywhere, at twice the pixels plus a small script.
 - **For a scroll scrub of 12–16 frames, per-frame WebP or AVIF stills beat any of these.**
 
+### MLX engine for stills (2026-11-07)
+
+**Choice.** Stills run on ck2mlx (peterteravskis/corridorkey-v2-mlx) with graphs we export from upstream ourselves
+(`scripts/mlx_export.py H W OUT`), driven by `scripts/mlx_speed.py`. The PyTorch/Metal fork is closed. The reference
+is upstream fp32 (`runs/ref-fp32`). A Fable/Argon/Astra panel agreed.
+
+**Build "mix" (1.8 GB).**
+- Foundations and RVM run in fp16; stages 1 and 2 run in q8.
+- Stage 1 is pruned to `baton` (`lean_profile`), and weights no graph reads are dropped.
+- Egor accepted its loss: alpha mean ≤ 0.27 ‰ against fp32, worst pixel 2.8 %, no visible change (page
+  `ck-mlx-versions`).
+- Foundations must stay fp16. In q8 they put the car trail up to 15 % off.
+
+**Numbers (M4).**
+
+| case | compute s | peak GB | note |
+|---|---|---|---|
+| 1080p still | 2.9 | 2.2 | |
+| 4K still, native | 13.5 | 4.1 | |
+| first start, weights + venv on internal SSD (2.6 GB) | ≈ 4 total | | |
+| first start, everything on the USB disk | ≈ 14 total | | |
+
+- Compute is at the hardware floor. The matmuls run at ≈ 80 % of M4 peak. Stage 2 takes 1.64 s, against 1.52 s of matmul + attention alone.
+
+**Not resident.** One process per call, and several images go in one call (phased: one stage's weights at a time).
+Keeping the model warm would save ≈ 1 s per call and is not worth holding 2.2 GB.
+
+**Never rescale the image (Egor).** A downscaled model input was rejected: softer hair and a degraded picture. Pixels
+come from the source, and the frame is only padded.
+- Each side is rounded up to a multiple of 128 (the model's quantum; upstream does the same) and cropped back.
+- Padding further, onto a bigger graph, moved alpha ≈ 0.5 ‰ (1672×941 padded by ≈ 250 px; invisible). It costs
+  only time, roughly in proportion to the area.
+
+**One graph per padded size.** MLX graphs have a fixed shape. Weights are identical across sizes: less than 0.1 MB of
+index tables differ. So weights are stored once, plus ≈ 1 MB of graph per size. An export costs 3.5–7 min today: a
+73 s model load, then the trace, then a 3 min weight conversion that shared weights make unnecessary.
+
+**Size grid (Egor's plan, 2026-11-07).**
+- The grid is dynamic: dense where images usually land, sparse at the extremes (e.g. sides in ≈ 1.3× steps), and
+  left open to densify later.
+- Every call logs:
+  - the image size;
+  - the graph used;
+  - the padded-area share;
+  - the seconds lost to padding.
+- When resources allow, the sizes whose absence cost the most seconds get built first.
+- Before building:
+  - make the export fast: one model load for many sizes, no weight conversion;
+  - check that the smallest sizes still work;
+  - measure the padding cost on 2–3 shapes.
+
+**Open.**
+- Video: MLX has temporal windows too (t2/t4 profiles). Measure it against the reference on a clip before choosing
+  an engine for video.
+- Images beyond 4096 px.
+
 ### Stage two (only on Egor's word)
 
-- **Install form:** the corridorkey-desktop binary, its models and the runtime (4.5 GB).
+- **Install form:** for stills, the ck2mlx runtime, our size graphs and the mix weights, with the venv, on the internal SSD
+  (see «MLX engine for stills»). The corridorkey-desktop binary (4.5 GB) stays only if video needs it.
 - **Wrapper:** a `bin/` wrapper around `ck_key.py` plus the fuse, findable by `tools cut out` / `tools key video`, and
   a stills engine under `image-cutout --engine ck`.
 - **Rest of the bench:** 27 GB of scratch in `/Volumes/Work/tmp/corridorkey/`. It can go once the tool lands.
