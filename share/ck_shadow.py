@@ -17,7 +17,8 @@ EXIF-transposed frame: I HxWx3 the frame, A HxW a keyer's alpha (CorridorKey's),
                                     HxWx4) as a grey layer near the frame's own shadow Mf = grey(...): an
                                     alternative (it sometimes reads better on dark backdrops), never the default
   strip_shadow(I, A) -> A           an alpha with the shadow taken out: 0 outside the silhouette where the plate
-                                    only darkens achromatically (a GPT object never carries a shadow)
+                                    darkens achromatically and smoothly; strands (fine texture) and anything
+                                    lighter than the plate keep theirs (a GPT object never carries a shadow)
   despill(I, A, F) -> F             the screen colour out of F everywhere on a chroma screen (F itself otherwise)
   screen(I) -> "green"|"blue"|"red"|None    the backdrop's chroma screen, None on white, grey or any neutral one
   save_layer(M, path)               8-bit RGBA: RGB = the layer, alpha 255 where it darkens (multiply it under the
@@ -36,6 +37,8 @@ DIV_MIN = 0.15  # a plate channel this dark (a chroma screen's) is noise to divi
 CARRY_SIGMAS = (1.5, 3, 6, 12, 24, 48, 96)  # px: the blurs that carry a layer under the subject's soft edge
 TINT_AT = 0.05  # the tint comes in fully at this much darkening; fainter, the plate's noise would colour it
 GPT_REACH = 25  # px: GPT's drawn shadow is kept this far around the frame's own shadow
+TEX_SIGMA, TEX_WIN = 1.5, 3.0  # px: strand scale of the high-pass, and the window its energy is averaged over
+TEX_REL, TEX_K = 0.1, 2.0  # strands: texture energy above this share of the darkening and this x the noise
 LUMA = np.array([0.299, 0.587, 0.114], np.float32)
 
 
@@ -165,10 +168,20 @@ def _zone(I, soft, plate):
 
 
 def strip_shadow(I, A, plate=None):
-    """A with 0 in the shadow zone: outside the silhouette, where the plate only darkens or lightens achromatically,
-    the alpha belongs to the shadow layer, not to the object"""
-    _, zone, _ = _zone(I, A, _plate(I, plate))
-    return np.where(zone, 0.0, A).astype(np.float32)
+    """A with 0 where it holds a shadow: in the zone (outside the silhouette, the plate only darkening
+    achromatically), darker than the plate, and smooth in the frame. Strands are not: dark curls on white and blonde
+    flyaways on grey sit in the zone too (the GPT chat's test, 2026-11-08: 40778 px of a curly halo zeroed), but they
+    are fine high-contrast texture, the darkening's high-pass energy above TEX_REL of the darkening itself and above
+    the plate's noise (hair 0.27-0.73, a floor shadow 0.007-0.014). Lighter than the plate is never shadow: the
+    multiply layer cannot carry it, stripped it would be lost"""
+    plate = _plate(I, plate)
+    B, zone, _ = _zone(I, A, plate)
+    bb = np.maximum((B * B).sum(-1), 1e-4)
+    d = 1 - (I * B).sum(-1) / bb
+    noise = float(np.median(np.linalg.norm(I - B, axis=-1)[zone] / np.sqrt(bb[zone]))) if zone.any() else 0.0
+    e = cv2.GaussianBlur(np.abs(d - cv2.GaussianBlur(d, (0, 0), TEX_SIGMA)), (0, 0), TEX_WIN)
+    strands = (e > TEX_REL * cv2.GaussianBlur(np.abs(d), (0, 0), TEX_WIN)) & (e > TEX_K * noise)
+    return np.where(zone & (d > 0) & ~strands, 0.0, A).astype(np.float32)
 
 
 def _carry(x, under):
