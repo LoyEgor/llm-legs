@@ -156,7 +156,14 @@ def priority(doctor, problem):
         return way, level, num(problem.get("value")), "% of spend", norm
     if rule == "test_hang":
         return way, "P1", None, None, 1.0
+    import time_budget
+
     value = wall_min_day(problem)
+    if time_budget.expected_gain(problem) is None and num((problem.get("opportunity") or {}).get("om_day")) is None:
+        import sightings
+        # A measured row ranks by its loss over the last 14 days, so the biggest one still standing goes first.
+        seen = sightings.min_day(doctor, problem.get("id"))
+        value = value if seen is None else seen
     level, norm = tier(value, WALL_P1_MIN_DAY, WALL_P2_MIN_DAY)
     return way, level, None if value is None else round(value, 2), "wall-min/day", norm
 

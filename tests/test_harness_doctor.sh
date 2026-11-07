@@ -175,6 +175,8 @@ assert_eq 'true harness true fixture 1' \
   "$(jq -sr '.[-1] as $r | "\($r | has("cpu_s") and has("doctor") and has("start") and has("trigger") and has("wall_s")) \($r.doctor) \($r.start > 1e9) \($r.trigger) \(length)"' \
      "$DOCTORS_DIR/collector-runs.jsonl")" \
   "a persisting run appends its C10 row to collector-runs.jsonl"
+assert_eq '[1,false]' "$(jq -c '[(.harness.covered | length), has("llm")]' "$DOCTORS_DIR/sightings.json")" \
+  "a persisting run records the doctors' sightings (share/sightings.py), a doctor with no fixture directory unread"
 HARNESS_DOCTOR_NOW=$T HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --json >/dev/null
 assert_eq 1 "$(wc -l < "$DOCTORS_DIR/collector-runs.jsonl" | tr -d ' ')" "a --json run persists no C10 row"
 

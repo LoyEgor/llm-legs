@@ -172,6 +172,13 @@ Problem fields:
 `new` means that no ledger row matched. Catch-all rows are not allowed (§2), so an unseen cause is
 always `new`.
 
+**Sightings** (`share/sightings.py`, Egor 2026-11-07: nights are irregular, a window forgets). Each Harness run
+records every doctor's `new`/`open`/`regressed` problem that has a `window_h`, on its document's day: the day's
+highest wall-min/day and the problem as last read, 14 days in `$DOCTORS_DIR/sightings.json`. A problem with no
+window, and the Code doctor's, is not kept: gone from its document means resolved. The night's snapshot adds each
+sighting its doctor no longer lists, its fact led by `not seen since <day>`; left out are a live id, an open
+ledger row (it rides as known, quiet), a row not ours, and a row fixed after the last sighting.
+
 ## 2. Ledger
 
 There is one file per doctor, with the same row shape:

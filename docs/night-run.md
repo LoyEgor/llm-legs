@@ -96,7 +96,9 @@ Wall clock about 3 hours, never a 12-hour chain; the morning report is trusted w
 
 ## Priority and admission
 - `night-run job add` stamps each job `direction`, `priority` P1|P2|P3, `value` {n, unit, norm}
-  (`share/night_priority.py`: a fixer by its best row, other kinds by `KINDS`, with its bars).
+  (`share/night_priority.py`: a fixer by its best row, other kinds by `KINDS`, with its bars). A measured row
+  with no priced gain ranks by its wall-min/day over the last 14 days (`share/sightings.py`; a covered day it
+  was not seen counts zero), so the biggest one still standing goes first.
 - `worker-run` asks `night-run admit` before a night worker's slot: P1, then P2, by norm per expected cost (7 days'
   median night-run tokens × 10 % per 1M × the run model's token-map input price over Opus); running Claude fixers hold at most the pool's 5h room. A P3 runs only from
   weekly room its burn leaves unused at reset (≥ 5 %), else it ends unlaunched (`admission.deferred`, job `pending`,

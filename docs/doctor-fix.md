@@ -10,6 +10,8 @@ pilot, finished). Work autonomously and go deep. Updater release events follow
 - Run `bin/doctor-fix show <run id>` (the brief carries it). Its ids are your scope; a problem that
   appeared after launch goes into the report for the next run.
 - Its `known, quiet` rows need no decision line.
+- A fact led by `not seen since <day>` left its doctor's window (contract "Sightings"): first check that its
+  cause still stands; one gone is `ruled-out`, naming what removed it.
 
 ## 1. Purpose before fixes
 

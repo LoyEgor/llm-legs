@@ -333,6 +333,8 @@ def snapshot(doctor, doc_file, night=None):
             hooks = []
     problems = list(doc.get("problems") or ())
     if doc.get("status") != "error" and doctor != "code":
+        import sightings
+        problems += sightings.missing(doctor, {p.get("id") for p in problems}, rows)
         seen = {p.get("ledger") for p in problems} | {str(p.get("id"))[7:] for p in problems if str(p.get("id")).startswith("ledger:")}
         problems += [{"id": r["id"], "rule": (r.get("match") if isinstance(r.get("match"), dict) else {}).get("rule"),
                       "ledger": r["id"], "state": "quiet", "fact": r.get("title")}

@@ -7218,6 +7218,11 @@ def main():
         print(document["title"] + " · " + document["footer"], file=sys.stderr if document["status"] == "error"
               else sys.stdout)
     if document["status"] != "error":
+        try:
+            import sightings
+            sightings.record()
+        except Exception as exc:
+            print("harness-doctor: sightings: %s" % error_line(exc), file=sys.stderr)
         exec_speed()
     return 1 if document["status"] == "error" else 0
 
