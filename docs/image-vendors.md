@@ -256,7 +256,8 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   delivered as is.
 - **`--remove-bg --composite`** when the subject's own pixels must stay exact (a face whose likeness is
   judged, a label): `share/image_matte.py` registers the cutout back onto the input (SIFT, RANSAC
-  similarity, then a local flow that moves parts ChatGPT redrew displaced) and delivers, in the input's
+  similarity, then a local flow that moves parts ChatGPT redrew displaced, undone where it would strip
+  subject-coloured or add backdrop-coloured pixels to the outline) and delivers, in the input's
   frame and size, the cutout's alpha, the input's pixels inside the subject and, in a band along the edge
   (1.2% of the short side), the cutout's own pixels toned locally to the input, so the hair edge stays
   ChatGPT's. On the 2026-10-02 portrait the face came out pixel-exact with a clean hair edge. Tone is

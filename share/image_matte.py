@@ -114,6 +114,34 @@ def align(base: np.ndarray, premultiplied: np.ndarray, alpha: np.ndarray, covere
     height, width = alpha.shape
     flow = local_flow(base, premultiplied, alpha, covered)
     grid_x, grid_y = np.meshgrid(np.arange(width, dtype=np.float32), np.arange(height, dtype=np.float32))
+    shift = lambda x, f, border: cv2.remap(x, grid_x + f[..., 0], grid_y + f[..., 1], cv2.INTER_LINEAR,
+                                           borderMode=border)
+    # The outline must stay on the input's object: ChatGPT redraws a part's inside off while its outline sits right
+    # (a pickup's rim 10 px off inside its own tyre), and flow led by the inside cut the tyre. What the shift strips
+    # must look like the backdrop and what it adds like the subject; where it contradicts that, it is undone.
+    delta = shift(alpha, flow, cv2.BORDER_REPLICATE) - alpha
+    short = min(height, width)
+    scale = min(1.0, 400 / short)
+    small = lambda x: cv2.resize(x, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    sigma = TONE_SIGMA * short * scale
+
+    def local_mean(mask: np.ndarray):
+        weight = cv2.GaussianBlur(small(mask.astype(np.float32)), (0, 0), sigma)
+        mean = cv2.GaussianBlur(small(base) * small(mask.astype(np.float32))[..., None], (0, 0), sigma)
+        mean = cv2.resize(mean / np.maximum(weight, 1e-6)[..., None], (width, height), interpolation=cv2.INTER_LINEAR)
+        return mean, cv2.resize(weight, (width, height), interpolation=cv2.INTER_LINEAR) > 0.02
+
+    lab = lambda rgb: cv2.cvtColor(np.clip(rgb / 255, 0, 1).astype(np.float32), cv2.COLOR_RGB2LAB)
+    subject_mean, subject_known = local_mean((alpha > 0.98) & covered)
+    backdrop_mean, backdrop_known = local_mean(alpha < 0.02)
+    base_lab = lab(base)
+    looks_subject = (np.linalg.norm(base_lab - lab(subject_mean), axis=-1)
+                     < np.linalg.norm(base_lab - lab(backdrop_mean), axis=-1))
+    judged = subject_known & backdrop_known & (np.abs(delta) > 0.5)
+    wrong = judged & ((delta < 0) == looks_subject)
+    window = lambda x: cv2.GaussianBlur(x.astype(np.float32), (0, 0), FLOW_SIGMA * short)
+    contradicted = window(wrong) / np.maximum(window(judged), 1e-3)
+    flow = flow * window(np.clip(2 - 4 * contradicted, 0, 1) * (window(judged) > 1e-3) + (window(judged) <= 1e-3))[..., None]
     map_x, map_y = grid_x + flow[..., 0], grid_y + flow[..., 1]
     move = lambda x, border: cv2.remap(x, map_x, map_y, cv2.INTER_LINEAR, borderMode=border)
     subject = alpha > 0.5
