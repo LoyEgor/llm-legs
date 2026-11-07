@@ -374,6 +374,7 @@ update `share/image-caps/gemini.json` `.video`, run `tests/test_gemini_video.sh`
 ## Audio: music, sound effects, listening
 
 Three scripts, all on Gemini subscription accounts.
+Background music for Egor: his taste and vendor order by his ear are in [music-taste.md](../music-taste.md).
 
 **Music** — `bin/gemini-music` → `share/gemini_music.py` drives gemini.google.com/app (Upload & tools → More
 tools → Create music, Lyria 3.5) in the same hidden Chrome and profiles as Flow. Rotation skips accounts

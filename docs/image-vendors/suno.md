@@ -6,6 +6,7 @@ runtime contract is [suno.json](../../share/image-caps/suno.json); the engine
 (`share/gemini_web.py`: profiles, locks, ledger, failure shots) and reads Suno's own JSON replies from the
 page. `bin/suno-music` (kind `music`) and its symlink `bin/suno-speech` (kind `speech`) are the wrappers;
 `media-run music|speech --vendor suno` is the only door. Gemini stays the default for both kinds.
+Background music for Egor: his taste and vendor order by his ear are in [music-taste.md](../music-taste.md).
 
 ## The free plan
 

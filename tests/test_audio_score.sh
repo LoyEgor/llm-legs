@@ -43,4 +43,10 @@ assert test "$(jq -c 'keys' "$WORK/out")" = "[\"$WORK/a.wav\",\"$WORK/bb.wav\"]"
 assert test "$(jq -c '[.[] | keys_unsorted] | unique' "$WORK/out")" = '[["utmos","aes_pq","aes_pc","aes_ce","aes_cu"]]'
 assert test "$(jq '[.[][] | numbers] | length' "$WORK/out")" -eq 10
 
+assert exits 0 --music "$WORK/a.wav" "$WORK/bb.wav"
+assert grep -qx "run -q --script $ROOT/share/music_score.py $WORK/a.wav $WORK/bb.wav" "$WORK/uv-args"
+assert grep -qxE "engagement=0\.[0-9]+ mood=relaxing,calm,film file=$WORK/a\.wav" "$WORK/out"
+assert exits 0 "$WORK/a.wav" --json --music
+assert test "$(jq -c '[.[] | keys_unsorted] | unique' "$WORK/out")" = '[["engagement","mood"]]'
+
 printf 'PASS: audio-score (%s asserts)\n' "$asserts"
