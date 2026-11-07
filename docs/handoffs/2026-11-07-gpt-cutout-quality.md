@@ -99,7 +99,9 @@ Both defects reproduced and fixed in `share/image_matte.py`, proven on the bench
 - **Agreed with the CK chat:**
   - a GPT object never carries a shadow;
   - shadows are the CK chat's separate layers: grey by default, colour on request;
-  - a GPT-drawn shadow source is built only on Egor's ask (he rejected it as blotchy on 2026-11-06).
+  - GPT's drawn shadow is an alternative grey layer.
+    - Egor asked for it on 2026-11-07: on dark backdrops it sometimes wins.
+    - It is the CK chat's code: `gpt_shadow`, commit 954ec260. It moves to `share/` at stage two.
 
 ## The seam with the CK chat
 
