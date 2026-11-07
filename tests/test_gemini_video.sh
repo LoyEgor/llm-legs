@@ -47,11 +47,11 @@ case "${ENGINE_MODE:-ok}" in
   ok)
     cp "$CLIP" "$dest"
     printf '{"ok": true, "account": "acct-a", "model": "%s", "media_id": "m-1", "build": "boq_test_1", "cost": 20, "charged": %s, "seconds": {"harness": 12.5, "render": 55.0, "total": 87.6}, "phases": {"lock": 0.1, "sent": 9.4}, "load": {"lock": 6.5, "sent": 140.2}, "caps": %s}\n' \
-      "${ENGINE_MODEL:-omni_flash_t2v_8s}" "${ENGINE_CHARGED:-20}" "${ENGINE_CAPS:-null}" ;;
+      "${ENGINE_MODEL:-macaron_cookie_t2v_8s_720p}" "${ENGINE_CHARGED:-20}" "${ENGINE_CAPS:-null}" ;;
   variants)
     cp "$CLIP" "$dest"
     cp "$CLIP" "${dest%.mp4}-2.mp4"
-    printf '{"ok": true, "account": "acct-a", "model": "abra_t2v_4s_360p", "media_id": "m-1", "build": "b", "variants": [{"dest": "%s", "media_id": "m-1"}, {"dest": "%s", "media_id": "m-2"}], "refused": [{"media_id": "m-3", "error": "PUBLIC_ERROR_SAFETY"}]}\n' \
+    printf '{"ok": true, "account": "acct-a", "model": "macaron_cookie_t2v_4s_360p", "media_id": "m-1", "build": "b", "variants": [{"dest": "%s", "media_id": "m-1"}, {"dest": "%s", "media_id": "m-2"}], "refused": [{"media_id": "m-3", "error": "PUBLIC_ERROR_SAFETY"}]}\n' \
       "$dest" "${dest%.mp4}-2.mp4" ;;
   refuse) printf '{"ok": false, "code": 2, "reason": "Flow will not extend this clip (Extend is disabled)"}\n'; exit 2 ;;
   empty) printf '{"ok": true, "account": "acct-a"}\n' ;;
@@ -146,15 +146,15 @@ assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$WORK/mis
 assert test ! -s "$ENGINE_CALLS"
 
 reset_calls
-ENGINE_MODEL=omni_flash_extend_8s video_run --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP"
-assert grep -qx -- "generate --prompt go on --dest $OUT/ext.mp4 --extend $CLIP --duration 8 --resolution 720p" "$ENGINE_CALLS"
-assert grep -qx 'model=omni_flash_extend_8s model_caps=fresh' "$VIDEO_OUT"
-assert test "$(video_rc --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP" --resolution 1080p)" = 2
-assert grep -q 'no upscaled download of an extension' "$VIDEO_ERR"
+ENGINE_MODEL=models/omni_1p5_pro_flow video_run --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP"
+assert grep -qx -- "generate --prompt go on --dest $OUT/ext.mp4 --extend $CLIP --duration 8" "$ENGINE_CALLS"
+assert grep -qx 'model=models/omni_1p5_pro_flow model_caps=fresh' "$VIDEO_OUT"
+assert test "$(video_rc --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP" --resolution 360p)" = 2
+assert grep -q 'keeps the source.s aspect and resolution' "$VIDEO_ERR"
 reset_calls
-ENGINE_MODEL='omni_flash_extend_3s;backend_beyond' video_run --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP" --account acct-a --duration 3 --resolution 360p
-assert grep -qx -- "generate --prompt go on --dest $OUT/ext.mp4 --extend $CLIP --duration 3 --resolution 360p --account acct-a" "$ENGINE_CALLS"
-assert grep -qx 'model=omni_flash_extend_3s;backend_beyond model_caps=fresh' "$VIDEO_OUT"
+ENGINE_MODEL='models/omni_1p5_pro_flow;backend_beyond' video_run --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP" --account acct-a --duration 3
+assert grep -qx -- "generate --prompt go on --dest $OUT/ext.mp4 --extend $CLIP --duration 3 --account acct-a" "$ENGINE_CALLS"
+assert grep -qx 'model=models/omni_1p5_pro_flow;backend_beyond model_caps=fresh' "$VIDEO_OUT"
 assert_fails grep -q 'Flow charged' "$VIDEO_ERR"
 assert test "$(ENGINE_MODE=refuse video_rc --dest "$OUT/r.mp4" --prompt 'go on' --extend "$CLIP")" = 2
 assert grep -q 'Flow will not extend this clip (Extend is disabled)' "$VIDEO_ERR"
@@ -184,17 +184,17 @@ assert_fails grep -q 'Flow charged' "$VIDEO_ERR"
 assert grep -q -- '--duration 8 --aspect 16:9 --model omni' "$ENGINE_CALLS"
 assert_fails grep -q -- '--account' "$ENGINE_CALLS"
 reset_calls
-ENGINE_MODEL=omni_flash_t2v_15s video_run --dest "$OUT/long.mp4" --prompt 'water light' --duration 15
+ENGINE_MODEL=macaron_cookie_t2v_15s_720p video_run --dest "$OUT/long.mp4" --prompt 'water light' --duration 15
 assert grep -q -- '--duration 15 --aspect 16:9 --model omni --resolution 720p' "$ENGINE_CALLS"
 reset_calls
-ENGINE_MODEL=abra_t2v_6s_720p video_run --dest "$OUT/six.mp4" --prompt 'water light' --duration 6
+ENGINE_MODEL=macaron_cookie_t2v_6s_720p video_run --dest "$OUT/six.mp4" --prompt 'water light' --duration 6
 assert grep -q -- '--duration 6 --aspect 16:9 --model omni --resolution 720p' "$ENGINE_CALLS"
-assert grep -qx 'model=abra_t2v_6s_720p model_caps=fresh' "$VIDEO_OUT"
+assert grep -qx 'model=macaron_cookie_t2v_6s_720p model_caps=fresh' "$VIDEO_OUT"
 reset_calls
 ENGINE_MODEL=veo_3_1_t2v_lite video_run --dest "$OUT/swap.mp4" --prompt 'water light' --duration 6
-assert grep -qx 'model=veo_3_1_t2v_lite model_caps=stale verified=^abra_,^omni_flash_' "$VIDEO_OUT"
+assert grep -qx 'model=veo_3_1_t2v_lite model_caps=stale verified=^macaron_cookie_' "$VIDEO_OUT"
 reset_calls
-ENGINE_MODEL=abra_t2v_8s_360p video_run --dest "$OUT/low.mp4" --prompt 'water light' --resolution 360p
+ENGINE_MODEL=macaron_cookie_t2v_8s_360p video_run --dest "$OUT/low.mp4" --prompt 'water light' --resolution 360p
 assert grep -q -- '--duration 8 --aspect 16:9 --model omni --resolution 360p' "$ENGINE_CALLS"
 
 reset_calls
@@ -236,7 +236,7 @@ assert grep -qx 'format=mp4' "$VIDEO_OUT"
 assert grep -qx 'duration=1' "$VIDEO_OUT"
 assert grep -qx 'account=acct-a' "$VIDEO_OUT"
 assert grep -qx 'media=m-1' "$VIDEO_OUT"
-assert grep -qx 'model=omni_flash_t2v_8s model_caps=fresh' "$VIDEO_OUT"
+assert grep -qx 'model=macaron_cookie_t2v_8s_720p model_caps=fresh' "$VIDEO_OUT"
 assert grep -qx 'caps=fresh surface=boq_test_1' "$VIDEO_OUT"
 reset_calls
 ENGINE_CAPS='["models: +Veo 4"]' assert video_run --dest "$OUT/footer-caps.mp4" --prompt 'water light'
@@ -295,6 +295,14 @@ assert other.new_clip(set(), "a different prompt") == clip
 other.feed(items[0]["body"].replace("0204fe88", "0204fe99"))
 assert other.new_clip(set(), "a different prompt") is None
 assert other.new_clip(set(), prompt) in (clip, clip.replace("0204fe88", "0204fe99"))
+# An extension is looked for in its source's scene only: without the reply an Omni extend took a lone image the
+# editor polled and waited 900 s for it (2026-11-08).
+ext = g.Watcher()
+ext.feed(items[0]["body"])
+ext.media[clip]["scene"] = "image-scene"
+assert ext.new_clip(set(), "go on", "src-scene") is None and ext.new_clip(set(), "go on") == clip
+ext.media[clip]["scene"] = "src-scene"
+assert ext.new_clip(set(), "go on", "src-scene") == clip
 
 manual = json.load(open(sys.argv[2].replace("flow-traffic", "flow-manual-traffic")))
 made = "1023f0f5-b655-4402-859c-eafc600a06d5"
@@ -394,6 +402,33 @@ watcher.media['new-2']['created'] = True
 assert watcher.new_clips({'known'}, prompt) == ['new-2', 'new-1', 'new-3']
 assert watcher.new_clip({'known'}, prompt) == 'new-2'
 print('PASS: count=2 recovers fresh matching polls without a generation reply; excludes old/unrelated, caps count')
+
+# An Omni extension finishes without a file URL; only its scene's editor sends it. The editor's Original size gives
+# the scene's first clip, the source: a 12 s clip extended by 3 s was delivered as the 12 s source (2026-11-08).
+ext_watcher, looked, saved = g.Watcher(), [], []
+
+def extended(*args):
+    poll(ext_watcher, 'ext-1')
+    poll(ext_watcher, 'ext-1', done=True)
+    ext_watcher.media['ext-1'].pop('url', None)
+    ext_watcher.media['ext-1']['scene'] = 'scene-src'
+
+def source_clip(*args, **kwargs):
+    raise AssertionError("the scene editor's download is the source, not the extension")
+
+ext_plan = dict(plan, count=1, extend={'project': 'p-src'}, label='Extend', duration=3, what='an extension',
+                model='extend', mode='Extend')
+with patch.multiple(g, browser=lambda account: contextlib.nullcontext(context), Watcher=lambda page: ext_watcher,
+                    open_project=lambda *a: 'project', page_state=lambda page: {'email': 'fixture', 'build': 'fixture'},
+                    read_credits=lambda page: 100, note_credits=Mock(), extend_composer=lambda *a: 'Extend 3s',
+                    press_generate=extended, await_clips=Mock(), ledger=Mock(), save_from_scene=source_clip,
+                    save_video=lambda context, url, dest: saved.append(url) or 10), \
+        patch.object(g, 'scene_media_url', create=True, new=lambda page, project, scene, media_id, account='-':
+                     looked.append((project, scene, media_id)) or 'https://flow-content.google/video/ext-1'):
+    result = g.render_on('fixture', ext_plan, args, {'email': 'fixture'}, Path('/tmp/fixture.mp4'), 0)
+assert looked == [('p-src', 'scene-src', 'ext-1')] and saved == ['https://flow-content.google/video/ext-1'], (looked, saved)
+assert result['media_id'] == 'ext-1' and result['bytes'] == 10, result
+print('PASS: an extension without a file URL is saved from the URL its scene editor sends')
 EOF
 
 assert python3 - "$ROOT/share" "$FRAME" "$CLIP" <<'EOF'
@@ -845,10 +880,13 @@ bytes=$(wc -c <"$CLIP" | tr -d ' ')
   printf '{"account": "walled", "media_id": "m-w", "project": "p-2", "dest": "%s/walled.mp4", "state": "queued"}\n' "$OUT"
   printf '{"account": "walled", "media_id": "m-w", "dest": "%s/walled.mp4", "state": "saved"}\n' "$OUT"
   printf '{"account": "rich", "media_id": "m-ext", "project": "p-1", "dest": "%s/grown.mp4", "state": "queued", "model": "extend"}\n' "$OUT"
+  printf '{"account": "rich", "media_id": "m-low", "project": "p-1", "dest": "%s/low-src.mp4", "state": "queued"}\n' "$OUT"
+  printf '{"account": "rich", "media_id": "m-low", "dest": "%s/low-src.mp4", "state": "saved", "model": "omni", "scene": "s-low"}\n' "$OUT"
   printf '{"account": "rich", "media_id": "m-ext", "dest": "%s/grown.mp4", "state": "saved", "scene": "s-ext"}\n' "$OUT"
 } >"$GW/jobs.jsonl"
 cp "$CLIP" "$OUT/walled.mp4"
 cp "$CLIP" "$OUT/grown.mp4"
+cp "$EDIT" "$OUT/low-src.mp4"
 printf '{"walled": %s}' "$(($(date +%s) + 3600))" >"$GW/walls.json"
 assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" "$VEO" "$OMNI" "$EDITED" "$OUT/walled.mp4" "$CLIP" "$FRAME" "$OUT/grown.mp4" <<'EOF'
 import argparse, contextlib, io, sys
@@ -871,10 +909,13 @@ def refusal(**kw):
 
 p = g.make_plan(ns())
 assert (p["model"], p["cost"], p["duration"], p["mode"], p["count"]) == ("extend", 24, 8, "Extend", 1), p
-assert g.make_plan(ns(duration=3, resolution="360p"))["cost"] == 3
+# A 360p source is priced at 360p whatever --resolution says: the extension comes at its source's render.
+low = grown.replace("grown", "low-src")
+assert (g.make_plan(ns(extend=low, duration=3))["cost"], g.make_plan(ns(extend=low))["resolution"]) == (3, "360p")
+assert g.make_plan(ns(duration=3, resolution="360p"))["cost"] == 9
 assert {k: p["extend"][k] for k in ("account", "media_id", "project", "scene", "model")} == \
     {"account": "rich", "media_id": "m-veo", "project": "p-1", "scene": "s-veo", "model": "fast"}, p["extend"]
-assert refusal(resolution="1080p")[0] == 2 and g.make_plan(ns())["upscale"] is None
+assert g.make_plan(ns(resolution="1080p"))["upscale"] is None
 # Which clips Flow extends is its call (a disabled Extend item): an Omni clip or an extension plans like any.
 assert refusal(extend=grown) is None and g.make_plan(ns(extend=omni))["extend"]["model"] == "omni"
 code, reason = refusal(extend=edited)
@@ -1071,6 +1112,7 @@ class Grid:
         self.tiles, self.listed, self.shown = tiles, listed, 2
         self.aborted, self.init_scripts, self.bodies = False, [], []
         self.url, self.listeners, self.rpc, self.items, self.caught = "", [], [], [], None
+        self.menu = ["270p Animated GIF", "720p Original size", "1080p Upscaled", "4K Upscaled"]
         self.mouse = types.SimpleNamespace(wheel=lambda dx, dy: setattr(self, "shown", self.shown + 2))
         self.context = types.SimpleNamespace(request=types.SimpleNamespace(
             get=lambda url, **kw: self.rpc.append(url) or types.SimpleNamespace(status=404, body=lambda: b"")))
@@ -1139,7 +1181,11 @@ class Grid:
     def get_by_role(self, role, name, exact=True):
         def click(timeout=None):
             if role == "menuitem":
-                self.items.append(name)
+                hits = [label for label in self.menu
+                        if (name.search(label) if isinstance(name, re.Pattern) else label == name)]
+                if not hits:
+                    raise TimeoutError(f"Locator.click: Timeout {timeout}ms exceeded (menuitem {name!r})")
+                self.items.append(hits[0])
                 self.caught = "blob:https://flow.google.com/clip"
         return Clickable(click)
 
@@ -1219,25 +1265,40 @@ with contextlib.redirect_stdout(out):
 assert not [s for s in grid.rpc if re.search(r"batchexecute|as29s|rpcids", s)], grid.rpc
 assert json.loads(out.getvalue()) == {"ok": True, "account": "rich", "dest": str(hd / "f.mp4"), "media_id": "m-5",
                                       "bytes": len(clip_bytes)}, out.getvalue()
-assert (hd / "f.mp4").read_bytes() == clip_bytes and grid.shown == 6 and grid.items == [g.ORIGINAL_SIZE], vars(grid)
+assert (hd / "f.mp4").read_bytes() == clip_bytes and grid.shown == 6 and grid.items == ["720p Original size"], vars(grid)
 assert grid.url.endswith("/project/p-f/edit/s-5") and grid.listeners == [], (grid.url, grid.listeners)
 row = g.job_rows()[-1]
 assert {k: row.get(k) for k in ("account", "media_id", "dest", "state", "scene", "bytes")} == \
     {"account": "rich", "media_id": "m-5", "dest": str(hd / "f.mp4"), "state": "saved", "scene": "s-5",
      "bytes": len(clip_bytes)}, row
 grid.shown, grid.items = 2, []
+# Past 10 s Omni 1.2 prices the upscale in its item (2026-11-08).
+grid.menu[2] = "1080p Upscaled · 2 credits"
 g.JITTER = hd / "jitter-stub"
 g.JITTER.write_text("#!/bin/sh\necho \"$*\" >\"$0.args\"; printf fixed >>\"$2\"; echo '{\"steadied\": \"none\"}'\n")
 g.JITTER.chmod(0o755)
 with contextlib.redirect_stdout(out := io.StringIO()):
     g.cmd_fetch(types.SimpleNamespace(account="rich", media_id="m-1", dest=str(hd / "u.mp4"), resolution="1080p"))
-assert grid.items == ["1080p Upscaled", g.ORIGINAL_SIZE] and grid.shown == 2 and not grid.rpc, vars(grid)
+assert grid.items == ["1080p Upscaled · 2 credits", "720p Original size"] and grid.shown == 2 and not grid.rpc, vars(grid)
 fetched = json.loads(out.getvalue())
 assert fetched["ref720"] == str(hd / "u.720p.mp4") and fetched["steady"] == {"steadied": "none"}, fetched
 assert (hd / "jitter-stub.args").read_text().split() == ["fix", str(hd / "u.mp4"), "--ref720", str(hd / "u.720p.mp4"),
                                                          "--register"]
 # The fix rewrites the file, and Extend still knows it as its media's.
 assert g.extend_source(str(hd / "u.mp4"))["media_id"] == "m-1"
+# An extension lives in its source's scene and its grid tile may show another media's thumbnail (2026-11-08):
+# a scene the ledger knows is opened directly, and the clip saved by the URL that scene's editor sends.
+g.ledger({"account": "rich", "media_id": "m-x", "project": "p-f", "scene": "s-src", "state": "queued"})
+asked, by_url, grid.items = [], [], []
+real_scene_url, real_save_video = g.scene_media_url, g.save_video
+g.scene_media_url = lambda page, project, scene, media_id, account="-": \
+    asked.append((project, scene, media_id)) or "https://flow-content.google/video/m-x"
+g.save_video = lambda context, url, dest: by_url.append((url, str(dest))) or 7
+with contextlib.redirect_stdout(io.StringIO()):
+    g.cmd_fetch(types.SimpleNamespace(account="rich", media_id="m-x", dest=str(hd / "x.mp4"), resolution="720p"))
+assert asked == [("p-f", "s-src", "m-x")] and grid.items == [], (asked, grid.items)
+assert by_url == [("https://flow-content.google/video/m-x", str(hd / "x.mp4"))], by_url
+g.scene_media_url, g.save_video = real_scene_url, real_save_video
 # A pack's films are fixed at once while memory has room, else one after another.
 g.JITTER.write_text("#!/bin/sh\necho \"start $2\" >>\"$0.log\"; sleep 0.5; echo \"end $2\" >>\"$0.log\"; "
                     "echo '{\"steadied\": \"none\"}'\n")

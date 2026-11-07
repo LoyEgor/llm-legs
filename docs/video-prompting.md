@@ -54,7 +54,7 @@ the harness itself (flags, credits, exits) are in `docs/image-vendors/gemini.md`
 
 ### Editing a video (`--edit`)
 
-- Any source video (a Grok clip too), up to 30 s; the result keeps the source's length. Google says an edit works on a segment of up to 10 s, so trim a longer source to
+- Any source video (a Grok clip too), up to 15 s; the result keeps the source's length. Trim a longer source to
   the part you need first (`ffmpeg -ss <start> -t <seconds> -i in.mp4 -c copy part.mp4`).
 - One short instruction, then "Keep everything else the same." Over-described edit prompts change
   things you did not ask for. Good: "Make the phone invisible. Keep everything else the same."
@@ -73,8 +73,8 @@ Two ways to continue clip A:
 2. **Extend:** `gemini-video --dest A-ext.mp4 --extend A.mp4 --prompt …` continues from A's last second
    (24 frames), so motion, speed and ambient sound carry over. Only for clips that gemini-video saved from
    Flow, Veo or Omni (the job ledger remembers the account and project); it runs on that account, on Omni 1.2,
-   adding `--duration` 3–10 s. Uploaded and Grok clips cannot be extended. The output is the new part, at
-   360p or 720p; `video-chain join` puts them together.
+   adding `--duration` 3–10 s. Uploaded and Grok clips cannot be extended. The output is one file, A and its
+   continuation (A's part is the same picture), at A's own render, 360p or 720p; it extends again.
 
 **Choose by the ending of A:**
 
@@ -96,16 +96,12 @@ video-chain end-motion A.mp4 --strip A-tail.png
   scale, last-second scores we measured: a stopwatch with a slowly moving hand 18, a slowly turning knob
   23, sunlit water ripples 29, a restyled clip with a moving camera 63.
 
-**Plan for it.** If a shot will need to go on with its motion, make its first clip on Veo
-(`--model fast` or `--model lite`, 8 s) so Extend stays possible.
-
 **Extend prompts:** describe how the action continues ("the knob keeps turning slowly clockwise, as
 before") and repeat the original prompt's style, camera and light words. A voice continues only if
-someone is speaking in the last second of A. Past A + 7 s, frame-chain from the extension's last frame,
-or extend a new Veo clip.
+someone is speaking in the last second of A. To go on, extend the extension.
 
-**Join:** `video-chain join out.mp4 A.mp4 A-ext.mp4 B.mp4 …`. Extensions come only at 720p (Flow has no
-upscaled download of an extension), so keep a chain that uses Extend at 720p; a 1080p first clip makes
+**Join:** `video-chain join out.mp4 A-ext.mp4 B.mp4 …` (an extension already holds A). Flow has no
+upscaled download of an extension, so keep a chain that uses Extend at 720p; a 1080p clip next to it makes
 the join scale the extension up. A frame chain repeats A's last frame once (1/24 s); it is invisible in
 most shots.
 

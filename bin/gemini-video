@@ -45,7 +45,7 @@ usage() {
   printf '  Google Flow on the account'\''s subscription, through a hidden Chrome (gemini-web)\n' >&2
   printf '  frames (--first-frame/--last-frame; a lone --ref is the first frame) or ingredients (several --ref, --edit), never both\n' >&2
   printf '  --edit reworks a video of up to %ss (any source, a Grok clip too) on Omni; the clip keeps its length\n' "$edit_max" >&2
-  printf '  --extend continues a Flow clip gemini-video saved, on its own account, on %s: a new clip of --duration %s s (default %s) that picks up its motion\n' "$extend_model" "$extend_s" "$extend_default" >&2
+  printf '  --extend continues a Flow clip gemini-video saved, on its own account, on %s: one file of the clip and its continuation by --duration %s s (default %s), at the clip resolution (an extension of an extension too)\n' "$extend_model" "$extend_s" "$extend_default" >&2
   printf '  --count 2-4 renders variants in one send (dest, then <stem>-2, ...) at that multiple of the credits; default 1\n' >&2
   printf '  --resolution 1080p renders 720p and downloads Flow'\''s own upscale (free up to 10 s, then 1 credit a second), steadied and cleaned of halos against its 720p (kept as <stem>.720p.mp4, the download as <stem>.raw.mp4)\n' >&2
   printf '  prompting guide (read before writing a prompt): %s/docs/video-prompting.md\n' "$root" >&2
@@ -107,8 +107,8 @@ esac
 if [ -n "$extend" ]; then
   { [ -z "$first_frame" ] && [ -z "$last_frame" ] && [ -z "$edit" ] && [ "${#refs[@]}" -eq 0 ]; } \
     || say "--extend continues a clip from its own ending; it takes no frames, --ref or --edit"
-  { [ -z "$model" ] && [ -z "$aspect" ] && [ "$count" = 1 ]; } \
-    || say "--extend keeps the source's aspect and adds one $extend_model clip; drop --model, --aspect and --count"
+  { [ -z "$model" ] && [ -z "$aspect" ] && [ -z "$resolution" ] && [ "$count" = 1 ]; } \
+    || say "--extend keeps the source's aspect and resolution and adds one $extend_model clip; drop --model, --aspect, --resolution and --count"
   { [[ "$extend" = /* ]] && [ -f "$extend" ]; } || usage "--extend $extend is not an absolute path to a file"
 fi
 if [ "${#refs[@]}" -eq 1 ] && [ -z "$first_frame" ] && [ -z "$edit" ]; then
@@ -166,11 +166,7 @@ edit_mode=false
 [ -z "$edit" ] || edit_mode=true
 if [ -n "$extend" ]; then
   model=extend
-  { read -r label; read -r extend_renders; } <<<"$(jq -r --arg r "$resolution" \
-    '.video.extend | .label, (.resolutions | index($r) != null)' "$manifest")"
   wire_section=video.extend.wire
-  [ "$extend_renders" = true ] \
-    || say "$label renders $(caps '.video.extend.resolutions | join("|")'), not $resolution: Flow has no upscaled download of an extension; video-chain join scales it to the chain"
 else
   if [ -z "$model" ]; then
     model=$(jq -r --arg d "$duration" --arg r "$render" --argjson n "${#refs[@]}" --argjson e "$edit_mode" '
@@ -202,8 +198,7 @@ trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
 result_file="$tmp_dir/result.json"
 
 if [ -n "$extend" ]; then
-  engine_args=(generate --prompt "$prompt" --dest "$dest" --extend "$extend" --duration "$duration"
-    --resolution "$resolution")
+  engine_args=(generate --prompt "$prompt" --dest "$dest" --extend "$extend" --duration "$duration")
 else
   engine_args=(generate --prompt "$prompt" --dest "$dest" --duration "$duration" --aspect "$aspect"
     --model "$model" --resolution "$resolution")

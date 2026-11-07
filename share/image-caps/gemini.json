@@ -133,8 +133,7 @@
         "720p"
       ],
       "wire": [
-        "^abra_",
-        "^omni_flash_"
+        "^models/omni_"
       ]
     },
     "model_default": "omni",
@@ -209,8 +208,7 @@
           }
         },
         "wire": [
-          "^abra_",
-          "^omni_flash_"
+          "^macaron_cookie_"
         ]
       }
     },

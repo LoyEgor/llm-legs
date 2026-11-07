@@ -82,6 +82,8 @@ BLOCK_ERRORS = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 GENERATE_RPCS = {"YhhmEf", "nprQif", "MZZa6b", "jIps6", "fZytfe"}
 LISTING_RPC = "Zzl0ze"
 ORIGINAL_SIZE = re.compile(r"^\d+p Original size$")
+# "1080p Upscaled", or "1080p Upscaled · 2 credits" past 10 s (Omni 1.2, 2026-11-08)
+UPSCALED_1080 = re.compile(r"^1080p Upscaled(\s*·\s*\d+ credits?)?$")
 DONE = 3
 CARDS_SCAN_S = 3
 GENERATION_FAILED = "flow_generation_failed (not charged)"
@@ -1039,13 +1041,15 @@ class Watcher:
                 and prompt is not None and (r.get("prompt") or "").strip() == prompt.strip()]
         return created + same
 
-    def new_clip(self, known: set[str], prompt: str) -> str | None:
+    def new_clip(self, known: set[str], prompt: str, scene: str | None = None) -> str | None:
         """The clip a send created: named in the generation reply, else first seen after the send,
-        still rendering and carrying our prompt."""
+        still rendering and carrying our prompt. An extension is looked for only in its source's `scene`: without
+        the reply an Omni extend once took a lone image the editor polled and waited 900 s for it (2026-11-08)."""
         created = self.new_clips(known)
         if created:
             return created[-1]
-        fresh = [k for k, r in self.media.items() if k not in known and r.get("fresh")]
+        fresh = [k for k, r in self.media.items() if k not in known and r.get("fresh")
+                 and (scene is None or r.get("scene") == scene)]
         same = [k for k in fresh if (self.media[k].get("prompt") or "").strip() == prompt.strip()]
         if same:
             return same[0]
@@ -1917,7 +1921,7 @@ def save_caught(page, trigger, dest: Path, what: str, kind: str, is_kind, fetch,
 
 
 def save_from_editor(page, prepare, dest: Path, upscaled: bool) -> int:
-    item, what = ("1080p Upscaled", "1080p upscaled") if upscaled else (ORIGINAL_SIZE, "original size")
+    item, what = (UPSCALED_1080, "1080p upscaled") if upscaled else (ORIGINAL_SIZE, "original size")
 
     def trigger():
         page.get_by_role("button", name="Download media", exact=True).click(timeout=30000)
@@ -1990,6 +1994,33 @@ def open_clip(page, project: str, media_id: str, account: str = "-", timeout_s: 
             page.remove_listener("response", watcher._on_response)
     close_promos(page, account)
     return re.search(r"/edit/([^/?#]+)", page.url).group(1)
+
+
+SCENE_URL_TRIES = 9
+
+
+def scene_media_url(page, project: str, scene: str, media_id: str, account: str = "-") -> str | None:
+    """The file URL of one clip of a scene, which Flow sends only to the scene's editor. An Omni extension is such
+    a clip: the source and its continuation in one file, while the editor's Original size gives the scene's first
+    clip, the source (2026-11-08: a 12 s source extended by 3 s downloaded as the 12 s source). Flow joins the
+    extension into its scene a while after it reports it done, so the editor is reloaded up to 3 minutes."""
+    watcher = Watcher(page, include_listing=True)
+
+    def found() -> bool:
+        watcher.drain()
+        return bool(watcher.media.get(media_id, {}).get("url"))
+
+    try:
+        for _ in range(SCENE_URL_TRIES):
+            goto_flow(page, f"/project/{project}/edit/{scene}")
+            close_promos(page, account)
+            settle(page, 20000, found)
+            if found():
+                break
+    finally:
+        with contextlib.suppress(Exception):
+            page.remove_listener("response", watcher._on_response)
+    return watcher.media.get(media_id, {}).get("url")
 
 
 def extend_source(path: str) -> dict:
@@ -2123,7 +2154,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                 if watcher.blocked():
                     raise watcher.blocked()
                 clips = watcher.new_clips(known, args.prompt) if count > 1 else \
-                    [c for c in [watcher.new_clip(known, args.prompt)] if c]
+                    [c for c in [watcher.new_clip(known, args.prompt, (plan["extend"] or {}).get("scene"))] if c]
                 # A clip can show up minutes late on a slow Flow (superman's, 2026-10-18): wait the whole timeout.
                 if len(clips) < count and time.time() > deadline:
                     seen = f"only {len(clips)} of {count} clips" if clips else "no new clip"
@@ -2135,6 +2166,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             for index, media_id in enumerate(clips):
                 ledger({"account": account, "media_id": media_id, "project": project,
                         "dest": str(variant_path(dest, index)), "state": "queued", "model": plan["model"],
+                        **({"scene": plan["extend"]["scene"]} if (plan["extend"] or {}).get("scene") else {}),
                         **video_request(plan, args)})
             await_clips(page, watcher, clips, deadline, args.timeout, account, dest)
             rendered = time.time()
@@ -2155,6 +2187,11 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                     if later or not save_or_defer(page, account, project, upscale, plan["model"]):
                         later.append(upscale)
                     continue
+                if not record.get("url") and plan["extend"] and record.get("scene"):
+                    record["url"] = scene_media_url(page, project, record["scene"], media_id, account)
+                    if not record["url"]:
+                        raise Failure(1, f"extension {media_id} finished but its scene's editor sent no video URL; "
+                                         f"recover: {recover_hint(account, [media_id], path)}", media_id=media_id)
                 if record.get("url"):
                     saved[-1]["bytes"] = save_video(context, record["url"], path)
                 elif record.get("scene"):
@@ -2207,6 +2244,17 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
     return result
 
 
+def clip_resolution(path: str) -> str:
+    """The render an extension comes at: its source's, 360p or 720p (a 1080p clip is Flow's upscale of a 720p
+    render). Flow's Extend has no resolution choice: a 720p source asked at 360p came back 720p (2026-11-08)."""
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=width,height", "-of", "csv=p=0", path], capture_output=True, text=True)
+    sides = [int(n) for n in re.findall(r"\d+", probe.stdout)[:2]]
+    if probe.returncode or len(sides) != 2:
+        raise Failure(2, f"ffprobe cannot read a video in {path}")
+    return "360p" if min(sides) <= 360 else "720p"
+
+
 def extend_plan(args, caps: dict) -> dict:
     ext = caps["extend"]
     if args.first_frame or args.last_frame or args.ref or args.edit:
@@ -2215,14 +2263,12 @@ def extend_plan(args, caps: dict) -> dict:
         raise Failure(2, "--extend makes one continuation per send; drop --count")
     if not Path(args.extend).is_file():
         raise Failure(2, f"--extend {args.extend} is not a file")
-    if args.resolution not in ext["resolutions"]:
-        raise Failure(2, f"{ext['label']} renders {', '.join(ext['resolutions'])}, not {args.resolution}: Flow "
-                         "has no upscaled download of an extension; video-chain join scales it to the chain")
     if args.duration not in ext["seconds"]:
         raise Failure(2, f"{ext['label']} adds {ext['seconds'][0]}-{ext['seconds'][-1]}s, not {args.duration}s")
-    return {"model": "extend", "label": ext["label"], "cost": ext["cost_per_s"][args.resolution] * args.duration,
+    resolution = clip_resolution(args.extend)
+    return {"model": "extend", "label": ext["label"], "cost": ext["cost_per_s"][resolution] * args.duration,
             "what": f"a {args.duration}s {ext['model']} extension of {Path(args.extend).name}", "mode": "Extend",
-            "aspect": None, "resolution": args.resolution, "upscale": None,
+            "aspect": None, "resolution": resolution, "upscale": None,
             "duration": args.duration, "first_frame": None, "last_frame": None, "refs": [], "edit": None,
             "count": 1, "extend": extend_source(args.extend)}
 
@@ -2351,9 +2397,9 @@ def cmd_status(args) -> None:
         sys.exit(1 if not bound else 4 if music else 0)
 
 
-def job_project(media_id: str) -> str | None:
-    known = [r["project"] for r in job_rows()
-             if isinstance(r, dict) and r.get("media_id") == media_id and r.get("project")]
+def job_project(media_id: str, key: str = "project") -> str | None:
+    known = [r[key] for r in job_rows()
+             if isinstance(r, dict) and r.get("media_id") == media_id and r.get(key)]
     return known[-1] if known else None
 
 
@@ -2398,7 +2444,18 @@ def cmd_fetch(args) -> None:
                     opened["scene"] = open_clip(page, project, media_id, args.account)
 
                 upscaled = args.resolution == "1080p"
-                size = save_from_editor(page, prepare, dest, upscaled)
+                if upscaled:
+                    size = save_from_editor(page, prepare, dest, upscaled)
+                else:
+                    # An extension lives in its source's scene and its grid tile may show another media's
+                    # thumbnail, so a scene the ledger knows is opened directly.
+                    opened["scene"] = job_project(media_id, "scene")
+                    url = scene_media_url(page, project, opened["scene"], media_id, args.account) \
+                        if opened["scene"] else None
+                    if not url:
+                        prepare()
+                        url = scene_media_url(page, project, opened["scene"], media_id, args.account)
+                    size = save_video(context, url, dest) if url else save_from_editor(page, None, dest, False)
                 saved.append({"dest": str(dest), "media_id": media_id, "bytes": size})
                 ledger({"account": args.account, "project": project, **saved[-1],
                         "state": "saved", "scene": opened["scene"]})
