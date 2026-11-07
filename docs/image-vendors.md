@@ -268,18 +268,25 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   off (`reason=redrawn`), a part still displaced over 0.6 % of the short side after the flow
   (`reason=ghost`), screen colour left over 5 % of a local window (`reason=residue`). Prints
   `composite=matte changed=<% of the subject from the cutout> moved=<px> ghost=<px> residue=<%>` and
-  `rendered=` (ChatGPT's cutout).
-- **Glass on a coloured screen: `share/image_fuse.py`.** ChatGPT draws glass solid, so the screen seen
-  through a windscreen stays; a keyer (CorridorKey) sees through it. `image_fuse.py --base <input> --gpt
-  <matte delivery> --key-alpha <keyer alpha> --key-fg <keyer colour> --out <png> --overlay <png> [--take
-  all|none|1,3]` moves each see-through pane from the keyer into the delivery pixel for pixel (its alpha
-  and unmixed colour, no blur). The cut runs only where both deliveries already show the same pixel (the
+  `rendered=` (ChatGPT's cutout). Beside Remove BG, on another account and in the same wall time (~50 s),
+  ChatGPT is asked in words for a see-through cut-out (glass, sheer fabric, the far-side windows); laid
+  back the same way it is `words=<stem>.words.png`, and its see-through panes go into the delivery through
+  `image_fuse.py` (below; `fuse=` line, panes drawn on `<stem>.glass.png`). Remove BG keeps the outline
+  and hair. A failed words run delivers Remove BG alone (`fuse=skipped reason=words-failed`).
+- **See-through glass: `share/image_fuse.py`.** ChatGPT's Remove BG draws glass solid, so the backdrop
+  seen through a windscreen stays; a keyer (CorridorKey, on a coloured screen) or ChatGPT asked in words
+  (laid back; its RGBA as both key arguments) sees through it. `image_fuse.py --base <input> --gpt
+  <matte delivery> --key-alpha <source alpha> --key-fg <source colour> --out <png> --overlay <png> [--take
+  all|none|1,3]` moves each see-through pane from the source into the delivery pixel for pixel (its alpha
+  and colour, no blur). The cut runs only where both deliveries already show the same pixel (the
   frame round a window), so it cannot be seen; a pane with no such frame is refused, never cut across the
   glass, and nothing outside the taken panes and their frame changes. Candidates are drawn numbered on
   `--overlay`: look at it, and leave out a number that is not glass (a screen reflection on paint).
   Prints `fuse=glass taken=<n,…> candidates=<n:px:closed|open,…> step=<max seam step 0..255>` or
   `fuse=skipped reason=no-glass|no-frame|none-taken` (nothing written). On the 2026-11-07 bench (Rogue,
-  RAV4, Outlander on green) every pane closed at step 4. The keyer is not a harness tool yet
+  RAV4, Outlander on green) every pane closed at step 4; on grey (2026-11-08) the words run opened the
+  RAV4's far-side windows. A bottle or a sheer dress is glass up to its outline: refused (`open`), Remove BG
+  delivered. The keyer is not a harness tool yet
   (`docs/handoffs/2026-11-05-corridorkey-keyer.md`, stage two).
 - **Local — exact pixels: `bin/image-cutout`** (local macOS Vision subject lift, free, no network,
   0.3–0.9 s; the first run compiles `share/image-cutout.swift` into

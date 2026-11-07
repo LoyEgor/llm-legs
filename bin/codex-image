@@ -145,6 +145,60 @@ deliver_each() {
   rm -f ${landings[@]+"${landings[@]}"}
 }
 
+# --remove-bg --composite: Remove BG keeps the best outline and hair but draws glass solid. ChatGPT asked
+# in words for a see-through cut-out runs beside it on another account (free, the same wall time); laid
+# back by image_matte.py, its see-through panes move into the Remove BG delivery wherever the two share
+# the frame round them (share/image_fuse.py). Its own laid cut-out stays beside dest as <stem>.words.png,
+# the numbered panes as <stem>.glass.png.
+see_through_prompt="The same picture's subject, cut out onto a fully transparent background (PNG with alpha). Whatever is see-through stays see-through: wherever the backdrop shows through glass (a car's windows, the far-side windows behind its cabin too), sheer fabric, gaps, or between hair and fur strands, it becomes transparent as well, keeping the glass's own tint, reflections and highlights, the fabric's own colour, and whatever is seen through them (an interior, a drink) semi-transparent. Keep every hair and fur strand, the finest ones too, with no halo and no backdrop colour left in them. Keep its soft shadow on the floor as a semi-transparent dark shadow if there is one; remove everything else of the floor and the backdrop. The subject itself unchanged: the same shape, pose, colours, details, size and position in the frame."
+words_pid=''
+see_through_start() {
+  local input
+  input="$tmp_dir/input.$(actual_format "$IMAGE_LEG_COMPOSITE_BASE")"
+  cp "$IMAGE_LEG_COMPOSITE_BASE" "$input" || return 0
+  IMAGE_JOB_ID=${IMAGE_JOB_ID:+$IMAGE_JOB_ID-words} "$root/bin/codex-image" --route web --edit "$input" \
+    --transparent --no-composite --prompt "$see_through_prompt" --dest "$tmp_dir/words.png" \
+    ${IMAGE_LEG_LOCK_WAIT:+--lock-wait "$IMAGE_LEG_LOCK_WAIT"} >"$tmp_dir/words.out" 2>"$tmp_dir/words.err" </dev/null &
+  words_pid=$!
+}
+
+kill_tree() { # pid
+  local child
+  for child in $(pgrep -P "$1" || true); do kill_tree "$child"; done
+  kill "$1" 2>/dev/null || true
+}
+
+see_through_stop() { [ -z "$words_pid" ] || kill_tree "$words_pid"; }
+
+see_through_fuse() {
+  [ -n "$words_pid" ] || return 0
+  local uv line ok=true words="${dest%.*}.words.png" base_dir=${IMAGE_LEG_COMPOSITE_BASE%/*}
+  wait "$words_pid" || ok=false
+  words_pid=''
+  if [ "$ok" = false ] || [ ! -s "$tmp_dir/words.png" ]; then
+    printf 'fuse=skipped reason=words-failed\n'
+    printf 'codex-image: the see-through run failed (%s); Remove BG delivered alone\n' \
+      "$(tail -n 1 "$tmp_dir/words.err" 2>/dev/null)" >&2
+    return 0
+  fi
+  case $IMAGE_LEG_COMPOSITE_LINES in
+    composite=matte\ *) ;;
+    *) printf 'fuse=skipped reason=unlaid\n'; return 0 ;;
+  esac
+  uv=$(command -v uv || printf /opt/homebrew/bin/uv)
+  line=$(TMPDIR=$base_dir "$uv" run -q --script "$root/share/image_matte.py" --base "$IMAGE_LEG_COMPOSITE_BASE" \
+    --edited "$tmp_dir/words.png" --out "$words") || line=failed
+  case $line in
+    composite=matte\ *) printf 'words=%s\n' "$words" ;;
+    *) rm -f "$words"; printf 'fuse=skipped reason=words-unlaid\n'; return 0 ;;
+  esac
+  line=$(TMPDIR=$base_dir "$uv" run -q --script "$root/share/image_fuse.py" --base "$IMAGE_LEG_COMPOSITE_BASE" \
+    --gpt "$dest" --key-alpha "$words" --key-fg "$words" --out "$tmp_dir/fused.png" \
+    --overlay "${dest%.*}.glass.png") || { printf 'fuse=failed\n'; return 0; }
+  printf '%s\n' "$line"
+  case $line in fuse=glass\ *) mv "$tmp_dir/fused.png" "$dest" ;; esac
+}
+
 # `%A` alone reports the channel, not its contents: a PNG carrying a fully opaque alpha channel
 # answers `Blend` and would be delivered as a transparent asset that is nothing of the kind.
 deliver_generated() {
@@ -552,7 +606,8 @@ chroma_fallback='Only if real transparency is impossible, fill the background wi
 # check, lock and walls, so none of the CLI route's machinery below applies to it.
 if [ "$route" = web ]; then
   tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-image.XXXXXX")
-  trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
+  trap 'see_through_stop; image_leg_exit; rm -rf "$tmp_dir"' EXIT
+  [ "$remove_bg" = false ] || [ -z "${IMAGE_LEG_COMPOSITE_BASE:-}" ] || see_through_start
   sentences=$(request_sentences)
   web_prompt=$content
   [ -z "$sentences" ] || web_prompt+=$'\n\n'"$sentences"
@@ -593,6 +648,7 @@ if [ "$route" = web ]; then
     generated=$tmp_dir/web-image
     [ -s "$generated" ] || { printf 'codex-image: the web route saved no image\n' >&2; exit 1; }
     deliver_generated
+    see_through_fuse
     deliver_variants
     image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
     aspect_check

@@ -93,9 +93,14 @@ Both defects reproduced and fixed in `share/image_matte.py`, proven on the bench
   backdrop-like pixels to the outline.
 - **Glass from CK (345dbe4a, `share/image_fuse.py`, page gpt-ck-fuse-cbtfvz):** see-through panes move from CK
   into the GPT delivery, cut only along pixels both share. This also fixes the SUV window GPT drew green.
-- **Next, gated on Egor's word in the CK chat (its stage two):**
-  - CK as a harness tool, with the shadow-strip rule as an importable function;
-  - then image-leg runs CK + image_fuse on coloured screens by itself.
+- **Remove BG + words (2026-11-08):** `codex-image --remove-bg --composite` runs ChatGPT asked in words
+  (one generic prompt) beside Remove BG; its laid see-through panes go in through image_fuse, which may now
+  run through glass Remove BG left half see-through. RAV4 on grey: every window opened, no seam. A bottle
+  or sheer dress (glass up to the outline) stays refused: whether to deliver the words cut-out whole there
+  is open.
+- **Stage two is on (Egor, 2026-11-08, CK chat):** `ck-key` plus `share/ck_shadow.py`. When it lands,
+  coloured screens take panes from CK instead of the words run, and the object goes through the
+  shadow-strip rule.
 - **Agreed with the CK chat:**
   - a GPT object never carries a shadow;
   - shadows are the CK chat's separate layers: grey by default, colour on request;

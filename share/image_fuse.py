@@ -2,15 +2,17 @@
 # requires-python = ">=3.11"
 # dependencies = ["numpy==2.5.3", "pillow==12.3.0", "opencv-python-headless==5.0.0.93", "scipy==1.18.1"]
 # ///
-"""See-through glass from a keyer into a generative cut-out, cut along the window frames.
+"""See-through glass from a keyer or a second cut-out into a generative cut-out, cut along the window frames.
 
 ChatGPT's Remove BG (laid back by image_matte.py) gives the best outline and hair, but draws glass solid: the
-screen seen through a windscreen stays in the picture. A keyer on a coloured screen (CorridorKey) sees through it.
-Both deliveries are in the input's frame, so a pane moves from the keyer into the cut-out pixel for pixel, alpha and
-colour, no blur. The cut is placed only where the two deliveries already show the same pixel (the frame round a
-window), so the seam cannot be seen; a pane with no such frame round it is refused, never cut across the glass.
+screen seen through a windscreen stays in the picture. A see-through source does better there: a keyer on a coloured
+screen (CorridorKey), or on any backdrop ChatGPT asked in words for see-through glass, laid back the same way (pass
+its RGBA as both --key-alpha and --key-fg). Both deliveries are in the input's frame, so a pane moves from that
+source into the cut-out pixel for pixel, alpha and colour, no blur. The cut is placed only where the two
+deliveries already show the same pixel (the frame round a window), so the seam cannot be seen; a pane with no such
+frame round it (a bottle, a sheer dress: the glass reaches the outline) is refused, never cut across the glass.
 
-Candidates: inside the cut-out's solid body, where the keyer sees through (alpha < 0.9). Each is drawn numbered
+Candidates: inside the cut-out's solid body, where the source sees through (alpha < 0.9). Each is drawn numbered
 on --overlay; by default every pane with a closed frame is taken, --take picks numbers (a green reflection on
 paint is not glass: leave its number out) or none.
 One stdout line: `fuse=glass taken=<n,...> candidates=<n:px:closed|open,...> step=<max seam step 0..255>
@@ -87,7 +89,9 @@ def fuse(base_path: str, gpt_path: str, key_alpha_path: str, key_fg_path: str, o
 
     # Each pane: what differs by more than t around its core, for the smallest t that closes inside the body; the
     # seam then runs over pixels that differ by at most t.
-    inside = ndi.binary_erosion(solid)
+    # A pane may run on through glass the cut-out already left partly see-through, never across its outline.
+    ring = max(3, int(0.004 * short))
+    inside = ndi.binary_erosion(gpt_alpha > 0.02, iterations=ring)
     above = {step: ndi.label(cost > step)[0] for step in STEPS}
     panes: list[tuple[np.ndarray, bool, int]] = []
     for core in cores:
@@ -135,7 +139,7 @@ def fuse(base_path: str, gpt_path: str, key_alpha_path: str, key_fg_path: str, o
     for number in chosen:
         taken |= panes[number - 1][0]
     # Only the taken panes and the frame round them change; everything else stays the cut-out's bytes.
-    frame = ndi.binary_dilation(taken, iterations=max(3, int(0.004 * short))) & ~taken
+    frame = ndi.binary_dilation(taken, iterations=ring) & ~taken
     result = gpt.copy()
     result[frame, :3] = framed_rgb[frame]
     result[taken, :3] = key_fg[taken]
@@ -149,8 +153,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base", required=True, help="the input both deliveries were cut from")
     parser.add_argument("--gpt", required=True, help="the generative cut-out laid back in the input's frame (RGBA)")
-    parser.add_argument("--key-alpha", required=True, help="the keyer's alpha, 8- or 16-bit, in the input's frame")
-    parser.add_argument("--key-fg", required=True, help="the keyer's foreground colour, in the input's frame")
+    parser.add_argument("--key-alpha", required=True, 
+                        help="the see-through source's alpha (8- or 16-bit grey, or an RGBA's), input's frame")
+    parser.add_argument("--key-fg", required=True, 
+                        help="the see-through source's colour (straight, not premultiplied), input's frame")
     parser.add_argument("--out", required=True)
     parser.add_argument("--overlay", help="where to draw the numbered candidates over the input")
     parser.add_argument("--take", default="all", help="all (default), none, or candidate numbers: 1,3")
