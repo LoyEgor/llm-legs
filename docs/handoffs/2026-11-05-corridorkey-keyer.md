@@ -364,8 +364,31 @@ the hair. GPT re-renders the person. Sheet: `results/sheet-real-hair-white-all.p
   - Now it is a weighted blur at scales of 1.5 to 96 px, each scale weighted 10× less than the one before.
   - Near the edge the nearest values still rule. One scale alone at 6 px lightened a tyre contact into a light seam.
 - **Checked on crops.** All 13 items: the three pins are fixed, and the wine glass's bowl and the hair are unchanged.
-- **Still open.** On the Rogue sprite on green, GPT's patchy redraw of the floor glow stays in places where CK reads
-  the glow as half object. The «CK + тень в цвете» variant there is smooth.
+- **Rentiva floor glow (Egor's img11–img14).** The glow is part of the sprite's alpha. CK keeps it as object at
+  A 0.4–1. GPT drops it and paints its own dark shadow there, often as dense as CK's glow, so «CK sees more than
+  GPT» alone missed it. Off GPT's body (α > 0.9, holes filled), where the frame is not the bare plate, E now takes CK's
+  subject in two cases: where CK's A is above GPT's, and where GPT's pixel is much darker than CK's (luma 0.10–0.25).
+  - The darker test runs only on a GPT object laid on the source's pixels. A re-render that is only warped (Blender
+    car on green) sits px off CK, and the test drew a second chrome lip under the bumper.
+- **Screen colour out of CK's colours** (`despill` in `scripts/run_ckshadow.py`, `fg.png` of both `_cks-*` runs). On a
+  chroma screen the screen channel is clamped to the mean of the other two over the whole subject. Egor 2026-11-07:
+  colour lost in a shadow or glow costs little; a screen colour left there is a defect (img19, img22).
+  - Sparing CK's opaque body left three defects: a green strip where the glow meets the bumper at α 1, the Blender
+    car's green bounce in blotches, and a green cast on the dog's chest.
+  - The whole subject despilled read cleaner on all five green items. Yellows (palm reflections) turn a little olive.
+- **GPT lays re-laid** with the GPT chat's `image_matte.py` fixes (b534f270, 598e0331), for D, E, F and Remove BG.
+  Re-lay again when its hand-off (`2026-11-07-gpt-cutout-quality.md`) closes.
+
+### Shadow policy (Egor 2026-11-07)
+
+- **Grey by default.** A grey multiply lies right on any backdrop. Grey is black at alpha 1 − M, exact over every
+  colour.
+- **Colour only on request.** Use it when the object casts colour or the floor is special (sand, reflective), and
+  deliver it as a separate layer with `mix-blend-mode: multiply`.
+- **Why one RGBA cannot carry colour.** The page's single RGBA (`rgba3`) paints the tint as colour over the backdrop.
+  That is exact over white only; on dark backdrops it reads as a bright stain (Egor's img15 vs img16).
+- **A colour shadow can never be 100 %.** Even a true multiply cannot show a light caustic on a dark floor, so a
+  colour layer is right only on light floors.
 
 ### Web delivery
 
