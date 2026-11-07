@@ -415,6 +415,14 @@
     "why": "Image-leg work files (edit-chain sidecars, fan-out state) are kept two weeks.",
     "normal": "Daily; the count is what aged out."
   },
+  "image-matte.ghost": {
+    "value": 0.6,
+    "unit": "pct",
+    "where": "share/image_matte.py:41",
+    "set_by": "chat",
+    "why": "A part the cut-out model redrew displaced (a pickup's rear 16 px off) still off by more than 0.6 % of the short side after local alignment shows twice where its pixels meet the input's; the cut-out is delivered as is.",
+    "normal": "Rare; aligned stills leave 0.1-0.5 %, the 2026-11-07 bench's worst 0.45 %."
+  },
   "image-matte.redrawn": {
     "value": 45,
     "unit": "count",
@@ -422,6 +430,14 @@
     "set_by": "chat a89a6be0",
     "why": "A cut-out whose border band differs from the base by a mean over 45 was redrawn, so the matte would show a seam.",
     "normal": "Occasional; frequent hits mean the cut-out model redraws its subject."
+  },
+  "image-matte.residue": {
+    "value": 5,
+    "unit": "pct",
+    "where": "share/image_matte.py:42",
+    "set_by": "chat",
+    "why": "Over 5 % of a local window of the delivered subject pulled toward a coloured screen's hue beyond the cut-out's own colour is screen showing (a dog's tail on green read 52 %); the cut-out is delivered as is.",
+    "normal": "Rare; the 2026-11-07 bench's repaired deliveries read 0-0.4 %."
   },
   "instruction-files.journal-lock": {
     "value": 50,

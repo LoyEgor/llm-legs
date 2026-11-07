@@ -35,7 +35,7 @@ cutout_of() { # source dest: a Remove BG stand-in, reframed (x1.08, shifted), br
 magick -size 480x360 -seed 3 xc: +noise Random -blur 0x2.5 -auto-level -alpha off -depth 8 "$WORK/base.png"
 cutout_of "$WORK/base.png" "$WORK/cut.png"
 assert matte --base "$WORK/base.png" --edited "$WORK/cut.png" --out "$WORK/out.png"
-assert grep -Eqx 'composite=matte changed=[0-9.]+%' "$WORK/out"
+assert grep -Eqx 'composite=matte changed=[0-9.]+% moved=[0-9.]+px ghost=[0-9.]+px residue=[0-9.]+%' "$WORK/out"
 read -r size got_a got_b <<<"$(pixels "$WORK/out.png" 240,180 180,150)"
 read -r _ want_a want_b <<<"$(pixels "$WORK/base.png" 240,180 180,150)"
 read -r alpha_in alpha_corner alpha_far <<<"$(alphas "$WORK/out.png" 240,180 6,6 470,350)"
@@ -47,6 +47,20 @@ assert test "$alpha_corner" = 0
 assert test "$alpha_far" = 0
 assert test "$(channel_gap "$WORK/out.png" "$WORK/base.png" 384,180)" -le 14
 assert test "$(channel_gap "$WORK/cut-rgb.png" "$WORK/base.png" 240,180)" -gt 0
+
+# A green screen under a cutout whose alpha is wider than the subject (ChatGPT drew fur over the screen): the input's
+# green under that alpha, and the tone learnt from it, painted the edge green; no opaque pixel may stay screen-green.
+magick -size 480x360 -seed 5 xc: +noise Random -blur 0x2.5 -auto-level +level-colors '#301808','#fff0d8' -alpha off \
+  -depth 8 "$WORK/fur.png"
+magick -size 480x360 xc:'#10e010' \( "$WORK/fur.png" \( -size 480x360 xc:black -fill white \
+  -draw 'ellipse 240,180 150,110 0,360' \) -alpha off -compose CopyOpacity -composite \) -compose Over -composite \
+  -alpha off -depth 8 "$WORK/screen.png"
+magick "$WORK/fur.png" -virtual-pixel edge -distort SRT '240,180 1.08 0 252,170' \( -size 480x360 xc:black -fill white \
+  -draw 'ellipse 252,170 184,138 0,360' \) -alpha off -compose CopyOpacity -composite "PNG32:$WORK/screen-cut.png"
+assert matte --base "$WORK/screen.png" --edited "$WORK/screen-cut.png" --out "$WORK/screen-out.png"
+assert grep -Eqx 'composite=matte changed=[0-9.]+% moved=[0-9.]+px ghost=[0-9.]+px residue=[0-9.]+%' "$WORK/out"
+green=$(magick "$WORK/screen-out.png" -fx 'a>0.5 && g-max(r,b)>0.25 ? 1 : 0' -format '%[fx:int(1e5*mean+.5)]' info:)
+assert test "$green" -le 20
 
 # Another picture entirely: nothing to lay back, nothing written.
 magick -size 480x360 -seed 11 xc: +noise Random -blur 0x2.5 -auto-level -alpha off -depth 8 "$WORK/other.png"
@@ -70,7 +84,7 @@ take() { # dest; env ASK, OFF
     image_leg_composite_record) >"$WORK/out" 2>"$WORK/err"
 }
 ASK=auto assert take "$WORK/asked.png"
-assert grep -Eqx 'composite=matte changed=[0-9.]+%' "$WORK/out"
+assert grep -Eqx 'composite=matte changed=[0-9.]+% moved=[0-9.]+px ghost=[0-9.]+px residue=[0-9.]+%' "$WORK/out"
 assert grep -qx "rendered=$WORK/asked.rendered.png" "$WORK/out"
 assert grep -Eqx '\{"kind":"matte","changed":[0-9.]+,"reason":null\}' "$WORK/out"
 assert cmp "$WORK/cut.png" "$WORK/asked.rendered.png"
@@ -86,4 +100,4 @@ assert test "$rc" -eq 2
 assert grep -q -- '--composite on --remove-bg lays the cutout back onto the whole input' "$WORK/err"
 assert grep -q 'repaint=matte' "$ROOT/bin/codex-image"
 
-printf 'PASS: %s asserts; a reframed, brighter cutout laid back in the input frame (input pixels inside, its alpha, the edge toned to the input), an unrelated cutout skipped with nothing written, an unreadable input exit 1, and Remove BG matte only on an explicit --composite (default delivers the cutout untouched, a rectangle refused)\n' "$asserts"
+printf 'PASS: %s asserts; a reframed, brighter cutout laid back in the input frame (input pixels inside, its alpha, the edge toned to the input), a cutout wider than its subject on a green screen delivered without screen green, an unrelated cutout skipped with nothing written, an unreadable input exit 1, and Remove BG matte only on an explicit --composite (default delivers the cutout untouched, a rectangle refused)\n' "$asserts"

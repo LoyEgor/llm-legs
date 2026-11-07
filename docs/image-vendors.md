@@ -256,12 +256,18 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   delivered as is.
 - **`--remove-bg --composite`** when the subject's own pixels must stay exact (a face whose likeness is
   judged, a label): `share/image_matte.py` registers the cutout back onto the input (SIFT, RANSAC
-  similarity) and delivers, in the input's frame and size, the cutout's alpha, the input's pixels inside
-  the subject and, in a band along the edge (1.2% of the short side), the cutout's own pixels toned locally
-  to the input, so the hair edge stays ChatGPT's. On the 2026-10-02 portrait the face came out
-  pixel-exact with a clean hair edge. A cutout it cannot lay back (a decal ChatGPT redrew flat:
-  `reason=unregistered`; an edge band over 45 mean abs RGB off: `reason=redrawn`) is delivered as is.
-  Prints `composite=matte changed=<% of the subject from the cutout>` and `rendered=` (ChatGPT's cutout).
+  similarity, then a local flow that moves parts ChatGPT redrew displaced) and delivers, in the input's
+  frame and size, the cutout's alpha, the input's pixels inside the subject and, in a band along the edge
+  (1.2% of the short side), the cutout's own pixels toned locally to the input, so the hair edge stays
+  ChatGPT's. On the 2026-10-02 portrait the face came out pixel-exact with a clean hair edge. Tone is
+  learnt only where input and cutout show the same surface, and input pixels a coloured screen leaks into
+  (between strands, through glass) come from the cutout: a dog's tail on green came out green before
+  (2026-11-07), and a pickup's rear redrawn 16 px off showed twice. A cutout it cannot lay back is
+  delivered as is: a decal ChatGPT redrew flat (`reason=unregistered`), an edge band over 45 mean abs RGB
+  off (`reason=redrawn`), a part still displaced over 0.6 % of the short side after the flow
+  (`reason=ghost`), screen colour left over 5 % of a local window (`reason=residue`). Prints
+  `composite=matte changed=<% of the subject from the cutout> moved=<px> ghost=<px> residue=<%>` and
+  `rendered=` (ChatGPT's cutout).
 - **Local — exact pixels: `bin/image-cutout`** (local macOS Vision subject lift, free, no network,
   0.3–0.9 s; the first run compiles `share/image-cutout.swift` into
   `~/.cache/image-cutout/<source hash>/`, ~8 s). Kept RGB is byte-identical to the input's decode and

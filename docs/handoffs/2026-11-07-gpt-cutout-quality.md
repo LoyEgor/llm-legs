@@ -74,6 +74,21 @@ code, and so are its defects (img4, img9, img10).
   - chiffon and hair on white with a shadow;
   - a fluffy dog on green.
 
+## Done (2026-11-07, this chat)
+
+Both defects reproduced and fixed in `share/image_matte.py`, proven on the bench and on one fresh web route run:
+- **Green fur:** GPT's solid alpha covered the input's screen above the tail; the tone match learnt "greener" there
+  and painted GPT's clean fur. Tone is now learnt only where input and cut-out agree; input pixels a coloured screen
+  leaks into (between strands, through glass) come from the cut-out; a replicated soft edge past GPT's frame is cut
+  where the input shows the screen.
+- **Doubling:** GPT redrew the rear 20-25 px off. A local flow (part scale, kept only where it lowers the mismatch)
+  moves the cut-out onto the input.
+- **Self-check:** `ghost=` (displacement left across edges) and `residue=` (screen colour, densest window) on the
+  line; over `GHOST_LIMIT`/`RESIDUE_LIMIT` the cut-out is delivered as is (`reason=ghost|residue`). The old
+  deliveries would have been refused (pickup 16 px, dog 52 %).
+- Left: GPT's own green in an SUV window it drew green (only see-through glass fixes it), paws GPT drew shorter;
+  the zones of use with the CK chat.
+
 ## The seam with the CK chat
 
 - You deliver the object as RGBA in the input's frame.
