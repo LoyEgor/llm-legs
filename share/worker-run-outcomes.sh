@@ -89,7 +89,8 @@ has_limit_signature() {
 
 reroute_lines() {
   jq -r '. as $meta | ($meta.walled_accounts // []) | range(0; length) as $hop
-         | "REROUTE: walled on \(.[$hop]) → continued on \(.[$hop + 1] // $meta.account)"' \
+         | (if .[$hop] | IN(($meta.org_blocked // [])[]) then "org blocked" else "walled" end) as $why
+         | "REROUTE: \($why) on \(.[$hop]) → continued on \(.[$hop + 1] // $meta.account)"' \
     "$1/meta.json" 2>/dev/null
 }
 
@@ -125,7 +126,11 @@ print_outcome() {
     return 0
   fi
   killed_line "$directory"
-  if has_limit_signature "$directory" "$vendor"; then
+  if [ "$vendor" = claudeb ] && [ -s "$directory/org-blocked" ]; then
+    outcome_line "$(failure_outcome "$vendor")" "$directory"
+    printf 'REASON: org blocked — the organization of %s disabled Claude Code subscription access; frozen until a re-check proves access: %s\n' \
+      "$(jq -r '.account' "$directory/meta.json" 2>/dev/null)" "$(paste -sd, "$directory/org-blocked" | sed 's/,/, /g')"
+  elif has_limit_signature "$directory" "$vendor"; then
     outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT" "$directory"
     # The chat reads these lines as they are, so the wall's SCOPE lives here, not in prose.
     if [ "$vendor" = claudeb ] && jq -e '.browser == true' "$directory/meta.json" >/dev/null; then

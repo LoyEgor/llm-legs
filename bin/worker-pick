@@ -535,7 +535,8 @@ summary=$(jq -r \
     if type == "array" and all(.[]; type == "string") then . else null end;
   # Which Claude bucket this whole run is about, chosen once by the caller (see the claude rows).
   def fable_view: $fable_view == "true";
-  def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed") | not);
+  # An org block (claudeb `org-blocked`) is dead auth too, though no login fixes it: its own flag.
+  def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed", "org-blocked") | not);
   # Grok is the one vendor whose CLI refreshes an expired access token itself, so `expired` is a
   # live candidate that merely ranks behind a signed-in one; `needs_login` has no refresh token
   # left and is dead auth like anywhere else.
@@ -619,10 +620,10 @@ summary=$(jq -r \
     [(if (.name | IN($pins[])) then "PINNED" else empty end),
      (if .walled then "WALLED" else empty end),
      (if .defer5h then "5h!" else empty end),
-     (if .auth_ok then empty else "login needed" end),
+     (if .auth_ok then empty elif .org_blocked then "org blocked" else "login needed" end),
      (if .auth_late then "auth expired" else empty end),
      (if .token_expiry then "token-expiry" else empty end),
-     (if .blocked then "blocked" else empty end),
+     (if .blocked and .org_blocked != true then "blocked" else empty end),
      (if .enabled then empty else "off" end)] | join(" ");
   # One cell set per account, rendered two ways below: the aligned table a human reads and the
   # one-line reason a refused query carries. Two renderers over one set, never two row builders.
@@ -655,6 +656,7 @@ summary=$(jq -r \
   def vendor_state($accounts; $off; $pinned; $empty_text):
     if $off == "true" and $pinned == null then "off for workers"
     elif ($accounts | length) == 0 then $empty_text
+    elif ($accounts | all(.org_blocked == true)) then "org blocked"
     elif ($accounts | all(.auth_ok | not)) then "login needed"
     else "" end;
   # A pin that could not serve is announced above the rows it did not choose: routing elsewhere in
@@ -926,7 +928,7 @@ summary=$(jq -r \
     (if fable_view then .fable else .weekly end) as $bucket |
     {token_expiry:(.account | IN($reviewer_token_expiry[])),
      name:.account,own:($own_vendor == "claude" and .account == $own),
-     enabled:(.enabled == true),auth_ok:auth_ok,
+     enabled:(.enabled == true),auth_ok:auth_ok,org_blocked:(.auth.status? == "org-blocked"),
      general_usable:bool_or(.rotation.usable.general?; true),
      fable_capable:bool_or(.rotation.usable.fable?; true),
      h5_absent:limits_window_absent(.five_hour),

@@ -30,7 +30,7 @@ account_status_rows() {
       bucket(.weekly; $thrw; $auth) as $w |
       bucket(.fable; $thrf; $auth) as $f |
       ([$h,$w,$f | select(.eff != null) | .asof | select(. != null)] | min) as $asof |
-      {name: .account, disabled: (.enabled == false),
+      {name: .account, disabled: (.enabled == false), org_blocked: (.auth.status? == "org-blocked"),
        h5: ($h.eff // 0), wk: ($w.eff // 0), fable: $f.eff,
        h5_eff: $h.eff, wk_eff: $w.eff, fable_eff: $f.eff,
        h5_stale: $h.stale, wk_stale: $w.stale, fable_stale: $f.stale,
@@ -193,7 +193,7 @@ render_interactive_accounts() {
   printf -v sep '%*s' "$sep_width" ''
   printf '%s\n' "${sep// /─}"
   filter=$(accounts_sort_filter "$sort_key")
-  while IFS=$'\x1f' read -r name h5 wk fable h5_mk wk_mk fable_mk hreset wreset age h5_dim wk_dim fable_dim disabled; do
+  while IFS=$'\x1f' read -r name h5 wk fable h5_mk wk_mk fable_mk hreset wreset age h5_dim wk_dim fable_dim disabled org_blocked; do
     age_text="$age"
     if [ "$accounts_mode" = live ] && [ -n "$accounts_live_age" ]; then
       "$accounts_live_age" "$name" "$age"  # sets age_text in this shell: no fork per row
@@ -202,6 +202,7 @@ render_interactive_accounts() {
     [ "$name" = "$accounts_picked" ] && marker='*'
     off_text=""
     [ "$disabled" != true ] || off_text=" workers off"
+    [ "$org_blocked" != true ] || off_text+=" org blocked"
     printf -v hcell '%-11s' "$hreset"
     [ "$h5_dim" != true ] || hcell=$'\033[2m'"$hcell"$'\033[0m'
     printf -v wcell '%-11s' "$wreset"
@@ -230,7 +231,7 @@ render_interactive_accounts() {
        limits_reset_text(.hreset; $now), limits_reset_text(.wreset; $now),
        limits_age_text(.age),
        (.h5_dim | tostring), (.wk_dim | tostring), (.fable_dim | tostring),
-       ((.disabled // false) | tostring)] | join("\u001f")')
+       ((.disabled // false) | tostring), ((.org_blocked // false) | tostring)] | join("\u001f")')
   printf '\n\033[33m↑/↓ select  ⏎ launch  ←/→ sort  r refresh  q/Esc exit\033[0m\n'
   [ -z "${accounts_status_line:-}" ] || printf '%s\n' "$accounts_status_line"
 }

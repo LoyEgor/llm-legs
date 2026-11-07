@@ -108,24 +108,28 @@ reroute_walled() {
   # context, and a chain of them burnt a pool for hours unseen; the second wall hands the choice back
   # to the launching chat. The rescue starts fresh, never resuming: a resume saves under 3 worker-min/day
   # (lost-time.md Done 10-30), though every profile links the same projects tree.
-  local directory="$1" vendor="$2" walled tag
+  local directory="$1" vendor="$2" walled tag org=''
+  # An org-blocked claudeb account reroutes like a wall but is no usage wall: nothing is recorded
+  # against its quota, and the reroute passes every account its organization froze with it.
+  [ ! -s "$directory/org-blocked" ] || org=$(paste -sd, "$directory/org-blocked")
   # The research leg reads the quota out of the answer stream and the agy log too, which
   # has_limit_signature deliberately never scans; its own verdict is the wall for that run.
-  if ! has_limit_signature "$directory" "$vendor"; then
+  if [ -n "$org" ]; then :
+  elif ! has_limit_signature "$directory" "$vendor"; then
     [ "$(cat "$directory/research-outcome" 2>/dev/null)" = GEMINI_USAGE_LIMIT ] || return 1
   fi
-  record_run_wall "$directory" "$vendor"
+  [ -n "$org" ] || record_run_wall "$directory" "$vendor"
   # An account-bound browser preamble cannot follow the ordinary pool reroute.
   if [ "$vendor" = claudeb ] && jq -e '.browser == true' "$directory/meta.json" >/dev/null; then return 1; fi
   [ -z "$(jq -r '.resume // empty' "$directory/meta.json")" ] || return 1
   if jq -e '.role == "research" and .explicit_account != ""' "$directory/meta.json" >/dev/null; then return 1; fi
   if jq -e '(.walled_accounts // []) | length > 0' "$directory/meta.json" >/dev/null; then return 1; fi
   walled=$(jq -r '((.walled_accounts // []) + [.account]) | join(",")' "$directory/meta.json")
-  pick_account_listing "$vendor" "$walled" "$(jq -r '.model' "$directory/meta.json")"
+  pick_account_listing "$vendor" "$walled${org:+,$org}" "$(jq -r '.model' "$directory/meta.json")"
   [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 1
   # Defence against a picker that ignores --exclude: relaunching on an account
   # this run already burnt would wall again forever.
-  case ",$walled," in *",$PICKED_ACCOUNT,"*) return 1 ;; esac
+  case ",$walled${org:+,$org}," in *",$PICKED_ACCOUNT,"*) return 1 ;; esac
   if [ "$vendor" = gemini ]; then
     grep -Eq "^${PICKED_ACCOUNT}:" <<<"$("$(jq -r '.cli' "$directory/meta.json")" list 2>/dev/null)" ||
       return 1

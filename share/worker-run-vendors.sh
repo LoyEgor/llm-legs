@@ -462,6 +462,18 @@ record_claudeb_auth_dead() { # directory
   "$(jq -r '.cli' "$1/meta.json")" auth-needed "$account" "$CLAUDEB_AUTH_RE" </dev/null >/dev/null 2>&1 || true
 }
 
+# claudeb owns the org-block signature and the freeze; what it froze (the account and every
+# account of its organization) is kept for reroute_walled and the report.
+record_claudeb_org_blocked() { # directory
+  local account frozen
+  account=$(jq -r '.account // empty' "$1/meta.json" 2>/dev/null)
+  [ -n "$account" ] || return 0
+  frozen=$("$(jq -r '.cli' "$1/meta.json")" org-blocked "$account" "$1/out" </dev/null 2>/dev/null) || return 0
+  [ -n "$frozen" ] || frozen=$account
+  printf '%s\n' "$frozen" >"$1/org-blocked"
+  meta_update "$1" '.org_blocked = ((.org_blocked // []) + [$a] | unique)' --arg a "$account" || :
+}
+
 session_id() { # directory [vendor]
   local directory="$1" vendor="${2:-}" session
   [ -n "$vendor" ] || vendor=$(jq -r '.vendor' "$directory/meta.json")

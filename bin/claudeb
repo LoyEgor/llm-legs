@@ -312,14 +312,15 @@ merge_headers() {
       cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
     fi
     if ! jq -n --arg utilization "$utilization" --arg hreset "$hreset" \
-      --argjson old "$cached" --argjson now "$(date +%s)" '
+      --argjson old "$cached" --argjson now "$(date +%s)" "$org_block_jq"'
         ($old | if (.seven_day.origin? == "headers") then del(.seven_day) else . end) +
         {five_hour: {
           used_percentage: (($utilization | tonumber) * 100 | round),
           resets_at: ($hreset | tonumber),
           as_of: $now, origin: "headers"
         }} +
-        {auth: {status: "ok", checked_at: $now}} | del(.auth_needed, .auth_cause, .auth_checked_at)' > "$tmp" 2>/dev/null; then
+        {auth: {status: "ok", checked_at: $now}} | del(.auth_needed, .auth_cause, .auth_checked_at)
+        | org_block_kept($old)' > "$tmp" 2>/dev/null; then
       rm -f "$tmp"
       return 1
     fi
@@ -350,7 +351,7 @@ merge_usage() {
     if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
       cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
     fi
-    if ! jq --argjson old "$cached" --argjson now "$(date +%s)" '
+    if ! jq --argjson old "$cached" --argjson now "$(date +%s)" "$org_block_jq"'
     def epoch:
       capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.[0-9]+)?(?:Z|\\+00:00)$") |
       (.base + "Z") | fromdateiso8601;
@@ -375,6 +376,7 @@ merge_usage() {
     elif ($merged.fable.resets_at? // 0) > $now then $merged + {fable: ($merged.fable + {origin: "cached"})}
     else $merged + {fable: {used_percentage: 0, resets_at: 0, as_of: $now, origin: "usage"}} end) +
     {auth: {status: "ok", checked_at: $now}} | del(.auth_needed, .auth_cause, .auth_checked_at)
+    | org_block_kept($old)
     # cli_version = our User-Agent is below the minimum the server accepts, not an account fact.
     | if ($cedar | type) == "object" and $cedar.ineligible_reason != "cli_version" then
         [$cedar.grants[]? | select(type == "object" and .paused != true
@@ -409,9 +411,12 @@ mark_auth() {
     if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
       cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
     fi
+    # An org block is cleared only by its own re-check (require_status org-blocked): no other verdict
+    # proves Claude Code serves again — the usage endpoint and /usage answer while the org is blocked.
     if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg status "$status" --arg cause "$cause" \
       --arg require_status "$require_status" '
       if $require_status != "" and ($old.auth.status // "") != $require_status then $old
+      elif ($old.auth.status // "") == "org-blocked" and $status != "org-blocked" and $require_status != "org-blocked" then $old
       else ($old + {auth: ({status: $status, checked_at: $now} + (if $cause == "" then {} else {cause: $cause} end))}
            | del(.auth_needed, .auth_cause, .auth_checked_at))
       end' > "$tmp" 2>/dev/null; then
@@ -461,7 +466,7 @@ mark_auth_needed() {
       cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
     fi
     if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg cause "$cause" '
-      ($old | del(.auth)) + {auth_needed: true, auth_checked_at: $now}
+      ($old | if .auth.status? == "org-blocked" then . else del(.auth) end) + {auth_needed: true, auth_checked_at: $now}
       + (if $cause == "" then {} else {auth_cause: $cause} end)' > "$tmp" 2>/dev/null; then
       if [ "$(cat "$tmp")" = "$cached" ]; then rm -f "$tmp"; else mv "$tmp" "$file" || rm -f "$tmp"; fi
     else
@@ -488,6 +493,77 @@ detect_logged_out() {
     return 0
   fi
   return 1
+}
+
+# Organization block (2026-11-06: com and notcom, one paused Team org): the server refuses every
+# Claude Code call with 403 oauth_not_allowed_for_organization while the free /usage warm and the
+# usage endpoint keep answering, so only a failed model call shows it. It belongs to the
+# organization, so every account sharing the organizationUuid freezes with the one that hit it.
+org_block_re='oauth_org_not_allowed|oauth_not_allowed_for_organization|organization has disabled Claude subscription access|organization.s subscription is paused'
+org_block_jq='def org_block_kept($old): if ($old.auth.status? // "") == "org-blocked" then .auth = $old.auth else . end; '
+org_recheck_s="${CLAUDEB_ORG_RECHECK_S:-3600}"
+org_block_cause='organization disabled Claude Code subscription access'
+
+# A CLI output (a -p JSON envelope, stderr merged or not) whose own error names the block; an
+# answer that merely discusses it is no error and never matches.
+org_block_output() { # file
+  jq -Rne --arg re "$org_block_re" '
+    any(inputs | . as $line | (fromjson? // $line) |
+        if type == "object" then select(.is_error == true or .isApiErrorMessage == true)
+          | (.result, .api_error_code, .error) | strings
+        elif type == "string" then select(test("^\\s*Your organization")) else empty end;
+        test($re; "i"))' <"$1" >/dev/null 2>&1
+}
+
+account_org_uuid() {
+  jq -r '.oauthAccount.organizationUuid? | strings' "$profiles_root/$1/.claude.json" 2>/dev/null || true
+}
+
+# Freezes the account and every claudeb account of its organization; prints each frozen name.
+mark_org_blocked() { # name [cause]
+  local name="$1" cause="${2:-$org_block_cause}" org other
+  mark_auth "$name" org-blocked "$cause"
+  printf '%s\n' "$name"
+  org=$(account_org_uuid "$name")
+  [ -n "$org" ] || return 0
+  while IFS= read -r other; do
+    [ "$other" != "$name" ] && [ "$(account_org_uuid "$other")" = "$org" ] || continue
+    mark_auth "$other" org-blocked "$cause (same organization as $name)"
+    printf '%s\n' "$other"
+  done < <(account_names)
+}
+
+# The rare re-check of a frozen account, from the heal pass of the collector's refresh: one CLI
+# call per frozen account an hour. A blocked org refuses it before any model work (cost 0, API
+# 0 ms on 2026-11-06), so only a served answer, positive proof, clears the state; anything else
+# re-stamps it, and nothing flaps.
+org_block_recheck() {
+  local name pid pids=''
+  while IFS= read -r name; do
+    jq -e --argjson now "$(date +%s)" --argjson every "$org_recheck_s" \
+      '.auth.status? == "org-blocked" and ($now - (.auth.checked_at // 0)) >= $every' \
+      "$limits_dir/$name.json" >/dev/null 2>&1 || continue
+    org_block_recheck_one "$name" &
+    pids="$pids $!"
+  done < <(account_names)
+  for pid in $pids; do wait "$pid" || true; done
+}
+
+org_block_recheck_one() {
+  local name="$1" output rc=0 cause
+  prepared_profile_dir=''
+  CLAUDEB_PREPARE_ONLY=true profile_command "$name" || return 0
+  output=$(mktemp "${TMPDIR:-/tmp}/claudeb-org.XXXXXX") || return 0
+  run_warm_session "$prepared_profile_dir" "$name" "$output" ok --model haiku || rc=$?
+  if [ "$rc" -eq 0 ] && jq -Rne '[inputs | fromjson? | objects | select(.type == "result")] | last | .is_error == false' \
+      <"$output" >/dev/null 2>&1; then
+    mark_auth "$name" ok '' org-blocked
+    printf 'claudeb: %s: Claude Code serves again; org block cleared\n' "$name" >&2
+  else
+    cause=$(jq -r '.auth.cause // empty' "$limits_dir/$name.json" 2>/dev/null) || cause=''
+    mark_auth "$name" org-blocked "${cause:-$org_block_cause}"
+  fi
+  rm -f "$output"
 }
 
 oauth_client_id="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -1408,6 +1484,7 @@ probe_accounts_run() {
     round=$((round + 1))
   done
   [ "$heal" != true ] || heal_expired "$dir"
+  [ "$heal" != true ] || org_block_recheck
   [ "$start_windows" = true ] || return 0
   now=$(date +%s)
   local started=''
@@ -2182,6 +2259,10 @@ warm_accounts() {
       if [ "$session_rc" -eq 124 ]; then
         reason='timeout'
         failure_cause=timeout
+      elif org_block_output "$output"; then
+        reason='org blocked'
+        failure_cause=org-blocked
+        mark_org_blocked "$name" >/dev/null
       elif warm_rate_limited "$output"; then
         reason='warm 429'
         failure_cause=warm-429
@@ -2469,7 +2550,7 @@ render_plain_accounts() {
     printf '%-18s %7s %7s %-11s %-11s %10s %s\n' NAME 5H WEEKLY '5H RESET' 'WEEKLY RESET' AGE PICK
   fi
   while IFS= read -r row; do
-    IFS=$'\x1f' read -r name h5 wk fable hreset wreset age h5_dim wk_dim fable_dim disabled < <(printf '%s' "$row" | jq -r --argjson now "$render_now" "$LIMITS_VIEW_JQ"'
+    IFS=$'\x1f' read -r name h5 wk fable hreset wreset age h5_dim wk_dim fable_dim disabled org_blocked < <(printf '%s' "$row" | jq -r --argjson now "$render_now" "$LIMITS_VIEW_JQ"'
       [.name,
        limits_pct_text(.h5_eff; .h5_stale; .h5_expired),
        limits_pct_text(.wk_eff; .wk_stale; .wk_expired),
@@ -2477,7 +2558,7 @@ render_plain_accounts() {
        limits_reset_text(.hreset; $now), limits_reset_text(.wreset; $now),
        limits_age_text(.age),
        (.h5_dim | tostring), (.wk_dim | tostring), (.fable_dim | tostring),
-       ((.disabled // false) | tostring)] | join("\u001f")')
+       ((.disabled // false) | tostring), ((.org_blocked // false) | tostring)] | join("\u001f")')
     age_text="$age"
     if [ "$accounts_mode" = live ]; then
       probe_state=$(cat "$accounts_probe_dir/$name.display" 2>/dev/null || true)
@@ -2490,6 +2571,7 @@ render_plain_accounts() {
     marker=""
     [ "$name" = "$accounts_picked" ] && marker="*"
     [ "$disabled" != true ] || marker="${marker:+$marker }workers off"
+    [ "$org_blocked" != true ] || marker="${marker:+$marker }org blocked"
     # Cells are padded before the SGR wrap so escape bytes never skew columns.
     h5_cell=$(printf '%7s' "$h5")
     hcell=$(printf '%-11s' "$hreset")
@@ -2657,6 +2739,15 @@ case "${1:-}" in
     shift
     account_exists "${1:-}" || { printf 'usage: claudeb auth-needed <account> [cause]\n' >&2; exit 2; }
     mark_auth_needed "$1" "${2:-logged out}"
+    announce_limits_probed "$claudeb_root"
+    ;;
+  org-blocked)
+    shift
+    { account_exists "${1:-}" && [ -r "${2:-}" ]; } ||
+      { printf 'usage: claudeb org-blocked <account> <cli-output-file>\n' >&2; exit 2; }
+    # Exit 1 when the output names no org block; else the frozen names, one a line.
+    org_block_output "$2" || exit 1
+    mark_org_blocked "$1"
     announce_limits_probed "$claudeb_root"
     ;;
   token-fresh)

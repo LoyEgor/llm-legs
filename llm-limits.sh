@@ -348,7 +348,8 @@ render_table() {
     def credits:
       if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end;
     def account_status($vendor):
-      if .auth_needed == true or
+      if .auth.status? == "org-blocked" then "org blocked"
+      elif .auth_needed == true or
          ((.auth.status? | type) == "string" and .auth.status != "ok"
           and ($vendor != "grok" or .auth.status != "expired"))
       then "login needed" else stale_status($render_now) end;
@@ -1106,7 +1107,8 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       --argjson stale "$stale" --arg plan_type "$plan_type" \
       --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
       --argjson thrf "$LIMITS_STALE_FABLE" "$LIMITS_VIEW_JQ"'
-      (($d.auth | type) == "object" and $d.auth.status == "expired") as $expired |
+      # The numbers of an org-blocked account read a pool nobody can spend: dim, like expired.
+      (($d.auth | type) == "object" and ($d.auth.status | IN("expired", "org-blocked"))) as $expired |
       # Pool membership is consent and has its own field (`enabled`); `rotation.usable` is
       # capability alone, so a reader can tell "taken out of the pool" from "cannot work" — the
       # pin overrides the first and not the second. `blocked` stays the combined verdict.
@@ -2589,7 +2591,8 @@ else
     def credits:
       if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end;
     def account_status($vendor):
-      if .auth_needed == true or
+      if .auth.status? == "org-blocked" then "org blocked"
+      elif .auth_needed == true or
          ((.auth.status? | type) == "string" and .auth.status != "ok"
           and ($vendor != "grok" or .auth.status != "expired"))
       then "login needed" else stale_status($render_now) end;

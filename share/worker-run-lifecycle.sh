@@ -172,6 +172,8 @@ supervise() {
     persist_run_files "$directory"
     [ "$rc" -eq 0 ] && return 0
     [ "$vendor" != claudeb ] || record_claudeb_auth_dead "$directory"
+    rm -f "$directory/org-blocked"
+    [ "$vendor" != claudeb ] || record_claudeb_org_blocked "$directory"
     # A run somebody signalled is over: rerouting it would answer an operator's kill by launching
     # the same brief again on another account.
     case "$(head -n1 "$directory/killed" 2>/dev/null)" in term|'signal '*) return "$rc" ;; esac
