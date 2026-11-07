@@ -354,11 +354,15 @@ the hair. GPT re-renders the person. Sheet: `results/sheet-real-hair-white-all.p
   mask. GPT's pale haze and light tail stayed over the real shadow (Egor's pins img4 and img9), and a tyre's dense
   contact came out as a ragged step (img10).
 - **The rule now.** Off CK's body, a GPT pixel gives way in proportion to the frame's darkening, whatever its colour
-  (full at 3 %). The layer is carried 12 px under CK's opaque edge, because GPT's outline ends a few px sooner. It is
-  carried as a weighted blur of the outside values: copying the nearest pixel made stripes under the Rogue's bumper.
+  (full at 3 %). The layer is carried 12 px under CK's opaque edge, because GPT's outline ends a few px sooner.
   - Kept: CK's body (holes filled).
   - Kept: pixels where the frame is brighter than its shadowed plate in some channel, because something is there.
     Without this, a dog's fine strands over a faintly darker screen were cut.
+- **Carrying a layer under CK's soft edge** (`carry` in `scripts/run_ckshadow.py`; both layers, `_cks-explain` and
+  `_cks-color`, and E). It was a copy of the nearest outside pixel, which drew stripes wherever GPT's thinner object
+  leaves the layer bare: under the Rogue's bumper, the Rogue's sill, the Frontier's bumper.
+  - Now it is a weighted blur at scales of 1.5 to 96 px, each scale weighted 10× less than the one before.
+  - Near the edge the nearest values still rule. One scale alone at 6 px lightened a tyre contact into a light seam.
 - **Checked on crops.** All 13 items: the three pins are fixed, and the wine glass's bowl and the hair are unchanged.
 - **Still open.** On the Rogue sprite on green, GPT's patchy redraw of the floor glow stays in places where CK reads
   the glow as half object. The «CK + тень в цвете» variant there is smooth.
