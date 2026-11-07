@@ -280,9 +280,14 @@ from CK or ChatGPT asked in words); a new asset is `--transparent` with a prompt
   into the delivery through `image_fuse.py` (below): from CK on a coloured screen, from the words run on a
   neutral or busy backdrop (`fuse=… source=ck|words`, panes drawn on `<stem>.glass.png`); Remove BG keeps
   the outline and hair. `shadow=<stem>.shadow.png` is CK's grey multiply layer; GPT's drawn shadow instead:
-  `ck-key --in <input> --out <dir> --shadow gpt --gpt-rgba <stem>.words.png`. CK past 60 s more (a new
-  image size builds its graph) or failed: fused from the words run; both missing: `fuse=skipped
-  reason=no-source`, Remove BG alone.
+  `ck-key --in <input> --out <dir> --shadow gpt --gpt-rgba <stem>.words.png`. CK past 60 s more (waiting
+  on another CorridorKey run, or a new image size building its graph) is stopped, or failed: fused from the
+  words run; both missing: `fuse=skipped reason=no-source`, Remove BG alone. Glass or sheer fabric up to the
+  outline over 5 % of the subject (a bottle, a chiffon dress: 39–41 %; a car's stray pixels 0.1 %) has no
+  frame to cut along: the see-through source is delivered whole (`cutout=whole source=… open=…%`; Egor's
+  pick 2026-11-08), as is the words cut-out when Remove BG could not be laid back (`reason=unlaid`). Last,
+  `share/image_unshadow.py` takes the floor shadow out of the object (ck_shadow's strip rule, strands kept;
+  `unshadow=<px>`): shadows are layers.
 - **See-through glass: `share/image_fuse.py`.** ChatGPT's Remove BG draws glass solid, so the backdrop
   seen through a windscreen stays; a keyer (CorridorKey, on a coloured screen) or ChatGPT asked in words
   (laid back; its RGBA as both key arguments) sees through it. `image_fuse.py --base <input> --gpt
@@ -295,8 +300,8 @@ from CK or ChatGPT asked in words); a new asset is `--transparent` with a prompt
   Prints `fuse=glass taken=<n,…> candidates=<n:px:closed|open,…> step=<max seam step 0..255>` or
   `fuse=skipped reason=no-glass|no-frame|none-taken` (nothing written). On the 2026-11-07 bench (Rogue,
   RAV4, Outlander on green) every pane closed at step 4; on grey (2026-11-08) the words run opened the
-  RAV4's far-side windows. A bottle or a sheer dress is glass up to its outline: refused (`open`), Remove BG
-  delivered.
+  RAV4's far-side windows. A bottle or a sheer dress is glass up to its outline: refused (`open=` gives its
+  share of the subject).
 - **Local — exact pixels: `bin/image-cutout`** (local macOS Vision subject lift, free, no network,
   0.3–0.9 s; the first run compiles `share/image-cutout.swift` into
   `~/.cache/image-cutout/<source hash>/`, ~8 s). Kept RGB is byte-identical to the input's decode and

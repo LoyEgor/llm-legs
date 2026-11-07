@@ -101,9 +101,11 @@ Both defects reproduced and fixed in `share/image_matte.py`, proven on the bench
 - **CK wired (2026-11-08):** `--remove-bg --composite` also runs `ck-key --shadow grey`; on a coloured
   screen the panes come from CK (`source=ck`; RAV4 on green: every window, no green left), and
   `<stem>.shadow.png` is CK's grey layer.
-  - Not wired: `ck_shadow.strip_shadow` would zero hair strands. Dark strands outside the silhouette match
-    its shadow zone; see `/Volumes/Work/tmp/gpt-cutout/strip/where.png`. Sent to the CK chat to fix.
-  - Open, Egor votes on page gpt-words-whole-neywz7: a bottle or sheer dress whole from the words run.
+  - Shadow strip wired (`share/image_unshadow.py`) after the CK chat made strip_shadow spare strands
+    (bb70cb7f).
+  - Egor's votes on gpt-words-whole-neywz7: the bottle and the chiffon dress are better from the words run
+    whole; curls are better from Remove BG; the rest are equal. The open share over 5 % now delivers the
+    source whole.
 - **Agreed with the CK chat:**
   - a GPT object never carries a shadow;
   - shadows are the CK chat's separate layers: grey by default, colour on request;

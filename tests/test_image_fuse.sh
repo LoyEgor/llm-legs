@@ -39,7 +39,7 @@ run_scene() { # dir [args...]
 # A window framed by the body: the pane comes from the keyer, everything else stays the cut-out's bytes.
 scene "$WORK/framed" '150,100 250,160'
 assert run_scene "$WORK/framed" --overlay "$WORK/framed/cand.png"
-assert grep -Eqx "fuse=glass taken=1 candidates=1:[0-9]+:closed step=[0-9]+ overlay=$WORK/framed/cand.png" "$WORK/out"
+assert grep -Eqx "fuse=glass taken=1 candidates=1:[0-9]+:closed open=0\.0 step=[0-9]+ overlay=$WORK/framed/cand.png" "$WORK/out"
 assert [ "$(rgba "$WORK/framed/out.png" 200,130)" = "48,48,48,102" ]
 assert [ "$(rgba "$WORK/framed/out.png" 100,200)" = "$(rgba "$WORK/framed/gpt.png" 100,200)" ]
 assert [ "$(rgba "$WORK/framed/out.png" 145,130)" = "$(rgba "$WORK/framed/gpt.png" 145,130)" ]
@@ -49,20 +49,20 @@ assert [ -s "$WORK/framed/cand.png" ]
 # Picked by number: none taken writes nothing, the cut-out is delivered as is.
 rm -f "$WORK/framed/out.png"
 assert run_scene "$WORK/framed" --take none
-assert grep -Eqx 'fuse=skipped reason=none-taken candidates=1:[0-9]+:closed' "$WORK/out"
+assert grep -Eqx 'fuse=skipped reason=none-taken candidates=1:[0-9]+:closed open=0\.0' "$WORK/out"
 assert [ ! -e "$WORK/framed/out.png" ]
 
 # A pane that reaches the outline has no frame to cut along: refused, never cut across the glass.
 scene "$WORK/open" '150,100 340,160'
 assert run_scene "$WORK/open"
-assert grep -Eqx 'fuse=skipped reason=no-frame candidates=1:[0-9]+:open' "$WORK/out"
+assert grep -Eqx 'fuse=skipped reason=no-frame candidates=1:[0-9]+:open open=[0-9.]+' "$WORK/out"
 assert [ ! -e "$WORK/open/out.png" ]
 
 # No see-through glass: nothing to do.
 scene "$WORK/none" '150,100 250,160'
 magick -size 400x300 xc:black -fill white -draw 'rectangle 60,60 340,240' -colorspace Gray -depth 16 "$WORK/none/alpha.png"
 assert run_scene "$WORK/none"
-assert grep -Eqx 'fuse=skipped reason=no-glass candidates=' "$WORK/out"
+assert grep -Eqx 'fuse=skipped reason=no-glass candidates= open=0\.0' "$WORK/out"
 
 # A keyer output in another frame is refused with exit 1; a bad --take is a usage error.
 magick "$WORK/framed/fg.png" -resize 200x150! "$WORK/framed/small.png"

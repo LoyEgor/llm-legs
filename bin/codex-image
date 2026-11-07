@@ -153,6 +153,7 @@ deliver_each() {
 # <stem>.glass.png (the numbered panes), <stem>.shadow.png (ck-key's grey multiply layer).
 see_through_prompt="The same picture's subject, cut out onto a fully transparent background (PNG with alpha). Whatever is see-through stays see-through: wherever the backdrop shows through glass (a car's windows, the far-side windows behind its cabin too), sheer fabric, gaps, or between hair and fur strands, it becomes transparent as well, keeping the glass's own tint, reflections and highlights, the fabric's own colour, and whatever is seen through them (an interior, a drink) semi-transparent. Keep every hair and fur strand, the finest ones too, with no halo and no backdrop colour left in them. Keep its soft shadow on the floor as a semi-transparent dark shadow if there is one; remove everything else of the floor and the backdrop. The subject itself unchanged: the same shape, pose, colours, details, size and position in the frame."
 words_pid='' ck_pid=''
+WHOLE_OPEN=5 # % of the subject that is glass up to its outline: the bench split 0.1 (pickup) from 41 (bottle, dress)
 CK_GRACE=${CODEX_IMAGE_CK_GRACE:-60} # seconds CK may run on after the words run: a never-seen size builds its graph
 see_through_start() {
   local input
@@ -162,7 +163,7 @@ see_through_start() {
     --transparent --no-composite --prompt "$see_through_prompt" --dest "$tmp_dir/words.png" \
     ${IMAGE_LEG_LOCK_WAIT:+--lock-wait "$IMAGE_LEG_LOCK_WAIT"} >"$tmp_dir/words.out" 2>"$tmp_dir/words.err" </dev/null &
   words_pid=$!
-  # Never killed: a late run still finishes the graph it builds for the next image of that size.
+  # Killed when late: a lingering child keeps the caller's pipes open, and the run hangs.
   "${CODEX_IMAGE_CK:-$root/bin/ck-key}" --in "$input" --out "$tmp_dir/ck" --shadow grey \
     >"$tmp_dir/ck.out" 2>"$tmp_dir/ck.err" </dev/null &
   ck_pid=$!
@@ -174,7 +175,10 @@ kill_tree() { # pid
   kill "$1" 2>/dev/null || true
 }
 
-see_through_stop() { [ -z "$words_pid" ] || kill_tree "$words_pid"; }
+see_through_stop() {
+  [ -z "$words_pid" ] || kill_tree "$words_pid"
+  [ -z "$ck_pid" ] || kill_tree "$ck_pid"
+}
 
 see_through_ck() { # -> the CK line, or nothing when CK failed or is still running past the grace
   local waited=0
@@ -183,7 +187,8 @@ see_through_ck() { # -> the CK line, or nothing when CK failed or is still runni
     waited=$((waited + 1))
   done
   if kill -0 "$ck_pid" 2>/dev/null; then
-    printf 'codex-image: ck-key still running after %ss more (a new image size builds its graph); fused without it\n' "$CK_GRACE" >&2
+    printf 'codex-image: ck-key still running after %ss more (waiting on another CorridorKey run, or a new image size building its graph); stopped, fused without it\n' "$CK_GRACE" >&2
+    kill_tree "$ck_pid"
     return 0
   fi
   wait "$ck_pid" && grep -m1 '^ck=done ' "$tmp_dir/ck.out" ||
@@ -191,8 +196,17 @@ see_through_ck() { # -> the CK line, or nothing when CK failed or is still runni
 }
 
 see_through_fuse() {
-  [ -n "$words_pid" ] || return 0
-  local uv line ck source screen='' words="${dest%.*}.words.png" base_dir=${IMAGE_LEG_COMPOSITE_BASE%/*} ok=true
+  local uv
+  see_through_pick || return 0
+  uv=$(command -v uv || printf /opt/homebrew/bin/uv)
+  TMPDIR=${IMAGE_LEG_COMPOSITE_BASE%/*} "$uv" run -q --script "$root/share/image_unshadow.py" \
+    --base "$IMAGE_LEG_COMPOSITE_BASE" --cutout "$dest" || printf 'unshadow=failed\n'
+}
+
+# 1 when dest is not in the input's frame (no words run started, Remove BG not laid back).
+see_through_pick() {
+  [ -n "$words_pid" ] || return 1
+  local uv line open ck source screen='' words="${dest%.*}.words.png" base_dir=${IMAGE_LEG_COMPOSITE_BASE%/*} ok=true
   wait "$words_pid" || ok=false
   words_pid=''
   ck=$(see_through_ck)
@@ -204,10 +218,6 @@ see_through_fuse() {
     ok=false
     printf 'codex-image: the see-through run failed (%s)\n' "$(tail -n 1 "$tmp_dir/words.err" 2>/dev/null)" >&2
   fi
-  case $IMAGE_LEG_COMPOSITE_LINES in
-    composite=matte\ *) ;;
-    *) printf 'fuse=skipped reason=unlaid\n'; return 0 ;;
-  esac
   uv=$(command -v uv || printf /opt/homebrew/bin/uv)
   if [ "$ok" = true ]; then
     line=$(TMPDIR=$base_dir "$uv" run -q --script "$root/share/image_matte.py" --base "$IMAGE_LEG_COMPOSITE_BASE" \
@@ -217,6 +227,16 @@ see_through_fuse() {
       *) rm -f "$words"; ok=false ;;
     esac
   fi
+  case $IMAGE_LEG_COMPOSITE_LINES in
+    composite=matte\ *) ;;
+    *)
+      # Remove BG not laid back (redrawn, displaced): the words cut-out laid back is the input-frame delivery.
+      [ "$ok" = true ] || { printf 'fuse=skipped reason=unlaid\n'; return 1; }
+      cp "$dest" "${dest%.*}.rendered.${dest##*.}" && cp "$words" "$dest"
+      printf 'cutout=whole source=words reason=unlaid\nrendered=%s\n' "${dest%.*}.rendered.${dest##*.}"
+      return 0
+      ;;
+  esac
   # A coloured screen: CK unmixes it exactly. A neutral backdrop: the words run.
   if [ -n "$screen" ] && [ "$screen" != none ]; then
     source=ck
@@ -232,7 +252,15 @@ see_through_fuse() {
     --gpt "$dest" "$@" --out "$tmp_dir/fused.png" --overlay "${dest%.*}.glass.png") ||
     { printf 'fuse=failed\n'; return 0; }
   printf '%s source=%s\n' "$line" "$source"
-  case $line in fuse=glass\ *) mv "$tmp_dir/fused.png" "$dest" ;; esac
+  open=$(sed -n 's/.* open=\([0-9]*\)\..*/\1/p' <<<"$line")
+  if [ "${open:-0}" -ge "$WHOLE_OPEN" ]; then
+    # Glass or sheer fabric up to the outline (a bottle, a dress): no frame to cut along, so the see-through
+    # source whole (Egor's pick 2026-11-08 over Remove BG's solid glass).
+    if [ "$source" = ck ]; then cp "$tmp_dir/ck/rgba.png" "$dest"; else cp "$words" "$dest"; fi
+    printf 'cutout=whole source=%s open=%s%%\n' "$source" "$open"
+  else
+    case $line in fuse=glass\ *) mv "$tmp_dir/fused.png" "$dest" ;; esac
+  fi
 }
 
 # `%A` alone reports the channel, not its contents: a PNG carrying a fully opaque alpha channel
@@ -244,6 +272,7 @@ deliver_generated() {
   fi
   place_image "$generated" "$dest"
   IMAGE_LEG_COMPOSITE_LINES=$(image_leg_composite_take "$root" "$dest")
+  see_through_fuse
 
   sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")
   width=$(awk '/pixelWidth:/ {print $2; exit}' <<<"$sips_output")
@@ -684,7 +713,6 @@ if [ "$route" = web ]; then
     generated=$tmp_dir/web-image
     [ -s "$generated" ] || { printf 'codex-image: the web route saved no image\n' >&2; exit 1; }
     deliver_generated
-    see_through_fuse
     deliver_variants
     image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
     aspect_check

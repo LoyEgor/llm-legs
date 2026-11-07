@@ -85,7 +85,7 @@ def fuse(base_path: str, gpt_path: str, key_alpha_path: str, key_fg_path: str, o
     sizes = ndi.sum(see, labels, range(1, count + 1))
     cores = [labels == index + 1 for index, size in enumerate(sizes) if size > MIN_AREA * height * width]
     if not cores:
-        return "fuse=skipped reason=no-glass candidates="
+        return "fuse=skipped reason=no-glass candidates= open=0.0"
 
     # Each pane: what differs by more than t around its core, for the smallest t that closes inside the body; the
     # seam then runs over pixels that differ by at most t.
@@ -111,6 +111,10 @@ def fuse(base_path: str, gpt_path: str, key_alpha_path: str, key_fg_path: str, o
             panes.append((region, closed, step))
     panes.sort(key=lambda pane: -int(pane[0].sum()))
     listing = ",".join(f"{n}:{int(r.sum())}:{'closed' if c else 'open'}" for n, (r, c, _) in enumerate(panes, 1))
+    # Glass up to the outline (a bottle, a sheer dress) has no frame: its share of the subject tells the caller
+    # to take the see-through source whole.
+    opened = sum(int(r.sum()) for r, c, _ in panes if not c)
+    listing += f" open={100 * opened / max(1, int((gpt_alpha > 0.5).sum())):.1f}"
 
     if overlay:
         drawn = base.copy()
