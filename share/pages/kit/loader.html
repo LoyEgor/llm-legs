@@ -24,7 +24,7 @@ textarea{resize:vertical;min-height:calc(2lh + 14px);overflow-y:auto}
 .err{color:var(--err)}
 main img{cursor:zoom-in}[data-own-zoom] img{cursor:inherit}
 .zoom{position:fixed;inset:0;z-index:50;background:rgba(12,12,14,.94);overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab}
-.zoom>img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;-webkit-user-drag:none}
+.zpane{position:absolute;top:0;bottom:44px;overflow:hidden}.zpane+.zpane{border-left:1px solid #444}.zpane>img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;-webkit-user-drag:none}.zcap{position:absolute;left:8px;top:6px;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,.6);color:#eee;font-size:13px;pointer-events:none}
 .zbar{position:absolute;left:0;right:0;bottom:0;height:44px;display:flex;gap:16px;align-items:center;padding:0 12px;background:rgba(12,12,14,.8);color:#f2f2f2;cursor:auto}
 .zbar .mute{color:#a3a3aa;margin-right:auto}.zpos{font-variant-numeric:tabular-nums}.zmsg{color:#f6a8f6}
 .zoom.pin,.zoom.tool{cursor:crosshair}.zband{position:absolute;border:1px dashed #f0f;background:rgba(255,0,255,.08);pointer-events:none}

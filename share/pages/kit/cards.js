@@ -16,7 +16,8 @@ const CSS = `
 .row button{padding:3px 12px}.row button.on{background:var(--on);border-color:var(--on);color:#fff}
 .card>.atw{margin-top:4px}
 .card .mg{display:grid;gap:8px;align-items:start}.card figure{margin:4px 0}.card figure>img,.card figure>video{margin:0}
-.card figcaption{font-size:12px;color:var(--mute);margin-top:2px}`;
+.card figcaption{font-size:12px;color:var(--mute);margin-top:2px}
+.card .cg{display:grid;gap:4px;align-items:start;grid-column:1/-1}.card .cg img{margin:0}`;
 const TAG = { image: "img", audio: "audio", video: "video" };
 const app = document.getElementById("app");
 let S, ids, cards = new Map(), first = true;
@@ -59,9 +60,16 @@ function card(it, i) {
     S.fields.map((f) => row(it.id, f)), suggest(it), textBox(it.id, "note", { placeholder: "заметка" }));
 }
 
-// A caption wraps its medium in a figure; media_columns lays the media out in that many columns.
+// A caption wraps its medium in a figure; media_columns lays the media out in that many columns. A
+// `compare` medium puts versions of one picture in a row of their own, opened full screen together.
 function mediaBlock(media) {
   const els = media.map((m) => {
+    if (m.kind === "compare") {
+      const imgs = m.images || [], row = h("div", { class: "cg", "data-compare": "", style: `grid-template-columns:repeat(${imgs.length},minmax(0,1fr))` },
+        imgs.map((v) => h("figure", {}, lazy(h("img", { "data-src": v.src, alt: v.caption || "", "data-cap": v.caption || null })),
+          v.caption ? h("figcaption", {}, v.caption) : null)));
+      return m.caption ? h("figure", { style: "grid-column:1/-1" }, row, h("figcaption", {}, m.caption)) : row;
+    }
     const tag = TAG[m.kind] || "img";
     const el = lazy(h(tag, { "data-src": m.src, alt: "", controls: tag !== "img", preload: tag === "img" ? null : "metadata" }));
     return m.caption ? h("figure", {}, el, h("figcaption", {}, m.caption)) : el;

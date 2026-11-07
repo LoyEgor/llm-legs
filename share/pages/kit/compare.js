@@ -39,7 +39,7 @@ body.pin .vp{cursor:crosshair}.vp .band{position:absolute;border:1px dashed #f0f
 .gi{display:flex;gap:4px;margin-top:4px}.gi figure{margin:0;flex:1;min-width:0}
 .gi img{width:100%;max-height:240px;object-fit:contain;background:var(--bk,#fff);border-radius:4px;display:block}
 .bk{display:inline-flex;gap:3px;align-items:center}.bk button{padding:3px 5px}.bk button i{display:block;width:14px;height:14px;border-radius:2px;outline:1px solid var(--line)}
-.bk input{width:28px;height:24px;padding:0 2px;border:1px solid var(--line);border-radius:4px;background:none;cursor:pointer}.bk input.on{outline:2px solid var(--accent)}
+.bk .bkc{position:relative}.bkc input{position:absolute;inset:0;width:100%;height:100%;opacity:0;padding:0;border:0;cursor:pointer}
 .gi figcaption{font-size:12px;color:var(--mute);text-align:center}
 @media (max-width:900px){.upper{flex-direction:column}}`;
 const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)", MARK = "#f0f";
@@ -52,7 +52,7 @@ const CHECK = { checker: { sq: ["#ffffff", "#cccccc"], px: 8 } }; // square colo
 const bkOk = (v) => typeof v === "string" && (v in BK || /^#[0-9a-f]{6}$/i.test(v));
 const bkCss = (v, px) => { const c = CHECK[v]; if (!c) return BK_HEX[v] || v; const n = px || c.px;
   return `repeating-conic-gradient(${c.sq[1]} 0 25%,${c.sq[0]} 0 50%) 0 0/${2 * n}px ${2 * n}px`; };
-let bk = null; // the backdrop shown: a BK key or "#rrggbb"
+let bk = null, myBk = "#4a7a96"; // the backdrop shown: a BK key or "#rrggbb"; the last own colour
 const app = document.getElementById("app");
 let S, ids, cur = null, E = null, L = null, geo = null, drag = null, token = 0, lastW = 0, lines = false, marked = true;
 const hiddenLayers = new Set(), seenLayers = new Set(); // grid layers (a `label`led entry of an item's `grid`) hidden for the visit
@@ -133,7 +133,8 @@ function show(id, keepView) {
     mb: it.marks && it.marks.length ? h("button", { onclick: toggleMarks, title: "M" }, "Рамка") : null,
     bk: S.backdrop ? h("span", { class: "bk", title: "фон под прозрачным" }, Object.entries(BK).map(([v, [ru]]) =>
       h("button", { "data-bk": v, title: ru, onclick: () => setBk(v) }, h("i", { style: `background:${bkCss(v, CHECK[v] && CHECK[v].px / 4)}` }))),
-      h("input", { type: "color", title: "свой цвет", value: /^#/.test(bk) ? bk : "#4a7a96", oninput: (e) => setBk(e.target.value) })) : null,
+      h("button", { class: "bkc", title: "свой цвет: клик ставит его, в палитре — меняй" }, h("i", { style: `background:${myBk}` }),
+        h("input", { type: "color", value: myBk, onclick: (e) => setBk(e.target.value), oninput: (e) => setBk(e.target.value) }))) : null,
     pb: h("button", { onclick: togglePin, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка; картинка-метка в заметку" }, "Метка"),
     vb: h("button", { onclick: togglePins, title: "H", hidden: true }, "Скрыть метки"),
     pls: vps.map((v) => v.querySelector(".pins")), note: textBox(id, "note", { placeholder: "заметка" }), ref: 0,
@@ -250,11 +251,11 @@ function toggleLines() { lines = !lines; draw(); }
 // a layer button with the grid off turns the grid on showing that layer; otherwise it hides or shows the layer
 function toggleLayer(l) { if (!lines) { lines = true; hiddenLayers.delete(l); } else if (!hiddenLayers.delete(l)) hiddenLayers.add(l); draw(); }
 function toggleMarks() { marked = !marked; draw(); }
-function setBk(v) { bk = v; app.style.setProperty("--bk", bkCss(v)); paintBk(); }
+function setBk(v) { bk = v; if (/^#/.test(v)) myBk = v; app.style.setProperty("--bk", bkCss(v)); paintBk(); }
 function paintBk() {
   if (!E || !E.bk) return;
-  E.bk.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.bk === bk));
-  E.bk.querySelector("input").classList.toggle("on", /^#/.test(bk));
+  E.bk.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.bk ? b.dataset.bk === bk : /^#/.test(bk)));
+  E.bk.querySelector(".bkc i").style.background = myBk;
 }
 // the backdrop under a sheet tile, as the loupe showed it (squares anchored at the tile's corner)
 function sheetBk(g, x, y, w, hh) {

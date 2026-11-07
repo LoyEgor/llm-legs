@@ -55,7 +55,8 @@ const srv = await serve({
       { id: "c13", n: 13, title: "кадр", media: [{ kind: "image", src: F.orig }] }] },
   cards2: { module: "cards", schema: 1, title: "До и после", media_columns: 2,
     fields: [{ key: "do", kind: "choice", options: [{ id: "y" }, { id: "n" }] }],
-    items: [{ id: "d1", title: "кадр", media: [{ kind: "image", src: F.a, caption: "было" }, { kind: "image", src: F.b, caption: "стало" }] }] },
+    items: [{ id: "d1", title: "кадр", media: [{ kind: "image", src: F.a, caption: "было" }, { kind: "image", src: F.b, caption: "стало" }] },
+      { id: "d2", title: "версии", media: [{ kind: "compare", caption: "три версии", images: [{ src: F.orig, caption: "оригинал" }, { src: F.px, caption: "Г" }, { src: F.b }] }] }] },
 });
 const base = `http://127.0.0.1:${srv.port}`;
 let checks = 0, failed = 0;
@@ -379,9 +380,12 @@ try {
   await page.click('.bk button[data-bk="grey"]');
   bg = await bgs();
   check("…grey swaps them for flat grey", bg.every((x) => x === "none|rgb(128, 128, 128)"), JSON.stringify(bg));
+  await page.click(".bk .bkc");
+  check("…a click on the own-colour swatch puts its colour at once", (await bgs()).every((x) => x === "none|rgb(74, 122, 150)")
+    && await page.$$eval(".bk button.on", (b) => b.map((x) => x.className).join()) === "bkc on", JSON.stringify(await bgs()));
   await page.$eval(".bk input", (e) => { e.value = "#123456"; e.dispatchEvent(new Event("input")); });
-  check("…the colour well sets its own colour", (await bgs()).every((x) => x === "none|rgb(18, 52, 86)")
-    && await page.$eval(".bk input", (e) => e.classList.contains("on")) && !(await page.$(".bk button.on")));
+  check("…its palette changes it live, the swatch shows it", (await bgs()).every((x) => x === "none|rgb(18, 52, 86)")
+    && await page.$eval(".bkc i", (i) => i.style.background) === "rgb(18, 52, 86)");
   const cutBox = await page.$eval(".vp:nth-child(2) img", (im) => { const r = im.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; });
   await page.keyboard.down("Alt");
   await page.mouse.click(cutBox[0] + cutBox[2] * 40 / 480, cutBox[1] + cutBox[3] * 40 / 240);
@@ -425,12 +429,17 @@ try {
   check("starting one clip pauses the other", JSON.stringify(play) === "[true,true,false]", JSON.stringify(play));
   await page.waitForFunction(() => document.querySelector('.card[data-id="c13"] img')?.naturalWidth);
   await page.click('.card[data-id="c13"] img');
-  const z0 = await page.waitForFunction(() => document.querySelector(".zoom>img")?.naturalWidth && document.querySelector(".zoom>img").style.transform, null, { timeout: 3000 }).catch(() => null);
+  const z0 = await page.waitForFunction(() => document.querySelector(".zpane>img")?.naturalWidth && document.querySelector(".zpane>img").style.transform, null, { timeout: 3000 }).catch(() => null);
   check("a click on a card picture opens it full screen", z0 !== null);
-  const scale = () => page.$eval(".zoom>img", (im) => +/scale\(([\d.]+)\)/.exec(im.style.transform)[1]);
+  const scales = () => page.$$eval(".zpane>img", (ims) => ims.map((im) => +/scale\(([\d.]+)\)/.exec(im.style.transform)[1]));
+  const scale = async () => (await scales())[0];
   const s0 = await scale();
   await page.mouse.move(700, 400); await page.mouse.wheel(0, -400); await page.waitForTimeout(100);
   check("the wheel zooms the full-screen picture", (await scale()) > s0 * 1.3, JSON.stringify([s0, await scale()]));
+  await page.mouse.click(700, 400);
+  const s1 = await scale();
+  await page.mouse.click(700, 400);
+  check("a click on it shows its actual size, a second the whole picture", s1 === 1 && Math.abs((await scale()) - s0) < 1e-6, JSON.stringify([s1, await scale(), s0]));
   await page.keyboard.press("Escape");
   check("Esc closes it", (await page.$(".zoom")) === null);
   // a textarea shows two lines at least, grows with its text to seven, then scrolls
@@ -456,6 +465,23 @@ try {
     return { caps: figs.map((f) => f.querySelector("figcaption").textContent), side: Math.abs(a.top - b.top) < 2 && b.left > a.right - 1 };
   });
   check("media captions under each medium, media_columns side by side", JSON.stringify(cap) === JSON.stringify({ caps: ["было", "стало"], side: true }), JSON.stringify(cap));
+  await page.waitForFunction(() => [...document.querySelectorAll('.card[data-id="d2"] img')].every((im) => im.naturalWidth));
+  const row = await page.$$eval('.card[data-id="d2"] img', (ims) => ims.map((im) => Math.round(im.getBoundingClientRect().top)));
+  check("compare media: its versions in one row across the card", row.length === 3 && new Set(row).size === 1, JSON.stringify(row));
+  await page.click('.card[data-id="d2"] figure figure:nth-child(2) img');
+  await page.waitForFunction(() => [...document.querySelectorAll(".zpane>img")].every((im) => im.naturalWidth && im.style.transform));
+  const panes = () => page.$$eval(".zpane", (ps) => ps.map((p) => { const r = p.querySelector("img").getBoundingClientRect();
+    return [Math.round(r.left - p.getBoundingClientRect().left - p.clientLeft), Math.round(r.top), Math.round(r.width), p.querySelector(".zcap").textContent]; }));
+  const p0 = await panes(), alike = (ps) => ps.every((q) => q.slice(0, 3).join() === ps[0].slice(0, 3).join());
+  check("…a click opens every version full screen, a pane each, drawn alike and named", p0.length === 3 && alike(p0)
+    && p0.map((q) => q[3]).join() === "оригинал,Г,", JSON.stringify(p0));
+  await page.mouse.move(1400 / 3 * 2 + 150, 400); await page.mouse.wheel(0, -400); await page.waitForTimeout(100);
+  const p1 = await panes();
+  check("…the wheel in one pane zooms them all at the same place", alike(p1) && p1[0][2] > p0[0][2] * 1.3, JSON.stringify(p1));
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => document.querySelectorAll(".zpane").length === 1);
+  check("…→ steps on to the page's next picture alone", (await page.$$(".zpane")).length === 1);
+  await page.keyboard.press("Escape");
   await page.close();
 
   const dark = await browser.newContext({ viewport: { width: 1400, height: 900 }, colorScheme: "dark" });

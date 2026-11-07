@@ -164,7 +164,7 @@ try {
   await tab.click('.card[data-id="c11"] .att img');
   check("a click on a picture opens it full screen among the field's pictures only",
     await until(() => tab.$eval(".zoom .zpos", (z) => z.textContent).catch(() => "")) === `1 / ${chips}` &&
-    (await tab.$eval(".zoom > img", (im) => im.src)).endsWith("/f/img1.png"));
+    (await tab.$eval(".zpane > img", (im) => im.src)).endsWith("/f/img1.png"));
   await tab.keyboard.press("Escape");
   const tile = '.card[data-id="c11"] .atc:has(.atn:text-is("img2.jpg"))', shownTiles = () => tab.$$eval('.card[data-id="c11"] .att .atc', (c) => c.length).catch(() => 0);
   await tab.hover(tile);
@@ -267,8 +267,8 @@ try {
   // «Метка» on any picture opened full screen: here a picture of the card's note
   daemon = () => "ignored idle";
   await tab.click('.card[data-id="c11"] .att img');
-  await tab.waitForFunction(() => document.querySelector(".zoom > img")?.naturalWidth);
-  const [zx, zy] = await tab.$eval(".zoom > img", (im) => { const r = im.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; });
+  await tab.waitForFunction(() => document.querySelector(".zpane > img")?.naturalWidth);
+  const [zx, zy] = await tab.$eval(".zpane > img", (im) => { const r = im.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; });
   const was = await value();
   await tab.keyboard.down("Alt");
   await tab.mouse.move(zx - 30, zy - 20); await tab.mouse.down(); await tab.mouse.move(zx + 30, zy + 20, { steps: 4 }); await tab.mouse.up();

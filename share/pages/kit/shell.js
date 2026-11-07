@@ -257,30 +257,45 @@ const far = new IntersectionObserver((es) => es.forEach((e) => !e.isIntersecting
 export function lazy(el) { near.observe(el); far.observe(el); return el; }
 
 // Every picture on every page opens full screen on a click, so no page ever leaves one too small to
-// read: the wheel or a pinch zooms at the pointer, a drag pans, a double click toggles fit and 1:1,
-// ← → step through the page's pictures, Esc, ✕ or a click beside the picture closes. A module with
-// its own zoom marks its root data-own-zoom and keeps its pictures out.
+// read: the wheel or a pinch zooms at the pointer, a drag pans, a click on the picture toggles its actual
+// size (1:1, at the click) and the whole picture, ← → step through the page's pictures, Esc, ✕ or a click
+// beside the picture closes. The pictures of one [data-compare] box (cards' `compare` media) open side by
+// side, a pane each, under one zoom and pan: each is drawn at the first one's width, so one place lines up.
+// A module with its own zoom marks its root data-own-zoom and keeps its pictures out.
 // A field's pictures step among themselves, apart from the page's own.
-const zoomable = (from) => from && from.closest(".att") ? [...from.closest(".att").querySelectorAll("img")]
-  : [...document.querySelectorAll("main img")].filter((im) => !im.closest("[data-own-zoom],.att"));
+const zoomable = (from) => {
+  if (from && from.closest(".att")) return [...from.closest(".att").querySelectorAll("img")].map((im) => [im]);
+  const out = [], groups = new Map();
+  for (const im of document.querySelectorAll("main img")) {
+    if (im.closest("[data-own-zoom],.att")) continue;
+    const g = im.closest("[data-compare]");
+    if (!g) out.push([im]); else if (groups.has(g)) groups.get(g).push(im); else { groups.set(g, [im]); out.push(groups.get(g)); }
+  }
+  return out;
+};
 let Z = null;
+// a point on screen -> [x, y] in the pane under it (the pictures' shared coordinates) and that pane's index
+const local = (cx, cy) => {
+  const n = Z.panes.length, pw = innerWidth / n, k = Math.min(n - 1, Math.max(0, Math.floor(cx / pw)));
+  return [cx - k * pw, cy, k];
+};
 function zoomOpen(from) {
   if (!Z) {
-    const img = h("img", { alt: "", draggable: false }), pos = h("span", { class: "zpos" }), msg = h("span", { class: "zmsg" });
+    const pos = h("span", { class: "zpos" }), msg = h("span", { class: "zmsg" });
     const band = h("div", { class: "zband", hidden: true });
     const tb = h("button", { onclick: zoomTool, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка" }, "Метка");
-    const el = h("div", { class: "zoom", role: "dialog", "aria-modal": "true" }, img, band,
-      h("div", { class: "zbar" }, pos, h("span", { class: "mute" }, "колесо — зум · тащи · двойной клик — 1:1 · ← → · Esc"), msg, tb,
+    const el = h("div", { class: "zoom", role: "dialog", "aria-modal": "true" }, band,
+      h("div", { class: "zbar" }, pos, h("span", { class: "mute" }, "колесо — зум · тащи · клик — 1:1 или целиком · ← → · Esc"), msg, tb,
         h("button", { onclick: zoomClose, title: "Esc" }, "✕")));
-    Z = { el, img, pos, msg, band, tb, pts: new Map(), s: 1, x: 0, y: 0, tool: false, mark: null };
-    const at = (s, px, py) => { s = Math.min(Math.max(s, Z.fit / 2), 8); Z.x = px - (px - Z.x) * s / Z.s; Z.y = py - (py - Z.y) * s / Z.s; Z.s = s; zoomPaint(); };
+    Z = { el, pos, msg, band, tb, panes: [], pts: new Map(), s: 1, x: 0, y: 0, fit: 1, tool: false, mark: null };
+    const at = (s, px, py) => { s = Math.min(Math.max(s, Math.min(Z.fit / 2, 1)), 8); Z.x = px - (px - Z.x) * s / Z.s; Z.y = py - (py - Z.y) * s / Z.s; Z.s = s; zoomPaint(); };
     Z.at = at;
-    el.addEventListener("wheel", (e) => { e.preventDefault(); at(Z.s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY); }, { passive: false });
+    el.addEventListener("wheel", (e) => { e.preventDefault(); const [x, y] = local(e.clientX, e.clientY); at(Z.s * Math.exp(-e.deltaY * 0.0015), x, y); }, { passive: false });
     el.addEventListener("pointerdown", (e) => {
       if (e.target.closest(".zbar")) return;
       try { el.setPointerCapture(e.pointerId); } catch (_) { /* pointer already gone */ }
       if ((Z.tool || e.altKey || e.pointerType === "pen") && e.button === 0) {   // an Apple Pencil marks without Q
-        Z.mark = { a: [e.clientX, e.clientY], b: [e.clientX, e.clientY], t: Date.now() }; return;
+        Z.mark = { a: [e.clientX, e.clientY], b: [e.clientX, e.clientY], t: Date.now(), k: local(e.clientX, e.clientY)[2] }; return;
       }
       Z.pts.set(e.pointerId, [e.clientX, e.clientY]); Z.moved = 0;
     });
@@ -290,26 +305,25 @@ function zoomOpen(from) {
       const all = [...Z.pts.values()], d0 = all.length === 2 ? Math.hypot(all[0][0] - all[1][0], all[0][1] - all[1][1]) : 0;
       Z.pts.set(e.pointerId, [e.clientX, e.clientY]); Z.moved += Math.abs(e.clientX - p[0]) + Math.abs(e.clientY - p[1]);
       if (all.length === 2) {
-        const [a, b] = [...Z.pts.values()], d1 = Math.hypot(a[0] - b[0], a[1] - b[1]);
-        if (d0) at(Z.s * d1 / d0, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+        const [a, b] = [...Z.pts.values()], d1 = Math.hypot(a[0] - b[0], a[1] - b[1]), [mx, my] = local((a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+        if (d0) at(Z.s * d1 / d0, mx, my);
       } else { Z.x += e.clientX - p[0]; Z.y += e.clientY - p[1]; zoomPaint(); }
     });
     const up = (e) => {
       if (Z.mark) return markEnd(e.type === "pointerup" ? e : null);
       if (!Z.pts.delete(e.pointerId) || Z.moved > 4 || e.type !== "pointerup") return;
-      const r = img.getBoundingClientRect();
+      const [x, y, k] = local(e.clientX, e.clientY), r = Z.panes[k].img.getBoundingClientRect();
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) zoomClose();
+      else if (Math.abs(Z.s - 1) < 1e-3) zoomFit(); else at(1, x, y);   // a click: its actual size there, again: the whole
     };
     el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
-    el.addEventListener("dblclick", (e) => at(Math.abs(Z.s - Z.fit) < 1e-3 ? Math.max(1, Z.fit * 2) : Z.fit, e.clientX, e.clientY));
-    img.addEventListener("load", zoomFit);
     document.addEventListener("keydown", (e) => {
       if (!Z.el.isConnected) return;
       const step = { ArrowLeft: -1, ArrowRight: 1 }[e.code];
       if (e.key === "Alt") return Z.el.classList.add("pin");
       if (e.code === "Escape") zoomClose(); else if (step) zoomShow(Z.i + step);
       else if (e.code === "KeyQ" && !e.metaKey && !e.ctrlKey) zoomTool();
-      else if (e.code === "Equal" || e.code === "Minus") at(Z.s * (e.code === "Equal" ? 1.5 : 1 / 1.5), innerWidth / 2, innerHeight / 2);
+      else if (e.code === "Equal" || e.code === "Minus") at(Z.s * (e.code === "Equal" ? 1.5 : 1 / 1.5), innerWidth / Z.panes.length / 2, innerHeight / 2);
       else if (e.code === "Digit0") zoomFit(); else return;
       e.preventDefault(); e.stopImmediatePropagation();
     }, true);
@@ -318,21 +332,37 @@ function zoomOpen(from) {
   Z.list = zoomable(from);
   Z.field = fieldFor(from); Z.msg.textContent = "";
   document.body.append(Z.el); document.body.style.overflow = "hidden";
-  zoomShow(Math.max(0, Z.list.indexOf(from)));
+  zoomShow(Math.max(0, Z.list.findIndex((set) => set.includes(from))));
 }
 function zoomShow(i) {
   const n = Z.list.length; Z.i = (i + n) % n;
-  const im = Z.list[Z.i];
+  const set = Z.list[Z.i];
   Z.pos.textContent = n > 1 ? `${Z.i + 1} / ${n}` : "";
-  Z.img.src = im.currentSrc || im.getAttribute("src") || im.dataset.src;
-  if (Z.img.complete && Z.img.naturalWidth) zoomFit();
+  while (Z.panes.length > set.length) Z.panes.pop().box.remove();
+  while (Z.panes.length < set.length) {
+    const k = Z.panes.length, img = h("img", { alt: "", draggable: false }), cap = h("span", { class: "zcap" });
+    img.addEventListener("load", () => (k ? zoomPaint() : zoomFit()));   // the first picture sets the scale for all
+    Z.panes.push({ box: h("div", { class: "zpane" }, img, cap), img, cap });
+    Z.el.insertBefore(Z.panes[k].box, Z.band);
+  }
+  set.forEach((im, k) => {
+    const p = Z.panes[k];
+    Object.assign(p.box.style, { left: 100 * k / set.length + "%", width: 100 / set.length + "%" });
+    p.cap.textContent = set.length > 1 ? im.dataset.cap || im.alt || "" : "";
+    p.cap.hidden = !p.cap.textContent;
+    p.img.src = im.currentSrc || im.getAttribute("src") || im.dataset.src;
+  });
+  zoomFit();
 }
 function zoomFit() {
-  const w = Z.img.naturalWidth, hh = Z.img.naturalHeight, W = innerWidth, H = innerHeight - 44;
-  if (!w) return;
+  const ref = Z.panes[0].img, w = ref.naturalWidth, hh = ref.naturalHeight, W = innerWidth / Z.panes.length, H = innerHeight - 44;
+  if (!ref.complete || !w) return;
   Z.fit = Z.s = Math.min(W / w, H / hh); Z.x = (W - w * Z.s) / 2; Z.y = (H - hh * Z.s) / 2; zoomPaint();
 }
-function zoomPaint() { Z.img.style.transform = `translate(${Z.x}px,${Z.y}px) scale(${Z.s})`; }
+function zoomPaint() {
+  const rw = Z.panes[0].img.naturalWidth || 1;
+  for (const p of Z.panes) p.img.style.transform = `translate(${Z.x}px,${Z.y}px) scale(${Z.s * rw / (p.img.naturalWidth || rw)})`;
+}
 function zoomTool() { Z.tool = !Z.tool; Z.el.classList.toggle("tool", Z.tool); Z.tb.classList.toggle("on", Z.tool); }
 function zoomClose() { Z.el.remove(); Z.pts.clear(); Z.mark = null; Z.band.hidden = true; document.body.style.overflow = ""; }
 
@@ -350,7 +380,11 @@ function fieldFor(from) {
   }
   return lastField && lastField.isConnected ? lastField : null;
 }
-const zpx = ([x, y]) => [(x - Z.x) / Z.s, (y - Z.y) / Z.s];
+// a point on screen -> px of pane k's own picture
+const zpx = ([cx, cy], k) => {
+  const f = Z.panes[k].img.naturalWidth / (Z.panes[0].img.naturalWidth || 1);
+  return [(cx - k * innerWidth / Z.panes.length - Z.x) / Z.s * f, (cy - Z.y) / Z.s * f];
+};
 function markMove(e) {
   const m = Z.mark;
   m.b = [e.clientX, e.clientY];
@@ -359,11 +393,11 @@ function markMove(e) {
     width: Math.abs(m.b[0] - m.a[0]) + "px", height: Math.abs(m.b[1] - m.a[1]) + "px" });
 }
 function markEnd(e) {
-  const m = Z.mark, W = Z.img.naturalWidth, H = Z.img.naturalHeight;
+  const m = Z.mark, im = Z.panes[m.k].img, W = im.naturalWidth, H = im.naturalHeight;
   Z.mark = null; Z.band.hidden = true;
   if (!e || !W) return;
   m.b = [e.clientX, e.clientY];
-  const [ax, ay] = zpx(m.a), [bx, by] = zpx(m.b), c = (v, top) => Math.min(top, Math.max(0, v));
+  const [ax, ay] = zpx(m.a, m.k), [bx, by] = zpx(m.b, m.k), c = (v, top) => Math.min(top, Math.max(0, v));
   let at;
   if (Math.hypot(m.b[0] - m.a[0], m.b[1] - m.a[1]) <= 5) {
     if (ax < 0 || ay < 0 || ax >= W || ay >= H) return;
@@ -372,12 +406,12 @@ function markEnd(e) {
     at = [c(Math.floor(Math.min(ax, bx)), W), c(Math.floor(Math.min(ay, by)), H), c(Math.ceil(Math.max(ax, bx)), W), c(Math.ceil(Math.max(ay, by)), H)];
     if (at[2] <= at[0] || at[3] <= at[1]) return;
   }
-  zoomMark(at, m.t);
+  zoomMark(at, m.t, im);
 }
-async function zoomMark(at, t) {
-  const src = decodeURIComponent((Z.img.getAttribute("src") || "").split("?")[0].split("/").pop() || "picture");
+async function zoomMark(at, t, im) {
+  const src = decodeURIComponent((im.getAttribute("src") || "").split("?")[0].split("/").pop() || "picture");
   const where = (at.length === 2 ? "point " : "box ") + at.join(",") + " px", mark = { at: t, about: `${where} on ${src}` };
-  const blob = await new Promise((r) => markSheet(Z.img, at, src, where, Z.s).toBlob(r, "image/png"));
+  const blob = await new Promise((r) => markSheet(im, at, src, where, Z.s * (Z.panes[0].img.naturalWidth || 1) / im.naturalWidth).toBlob(r, "image/png"));
   if (!blob) return;
   Z.msg.textContent = "сохраняю метку…";
   told = false;
