@@ -354,7 +354,8 @@ the hair. GPT re-renders the person. Sheet: `results/sheet-real-hair-white-all.p
   mask. GPT's pale haze and light tail stayed over the real shadow (Egor's pins img4 and img9), and a tyre's dense
   contact came out as a ragged step (img10).
 - **The rule now.** Off CK's body, a GPT pixel gives way in proportion to the frame's darkening, whatever its colour
-  (full at 3 %). The layer is carried 12 px under CK's opaque edge, because GPT's outline ends a few px sooner.
+  (full at 3 %). The layer is carried 12 px under CK's opaque edge, because GPT's outline ends a few px sooner. It is
+  carried as a weighted blur of the outside values: copying the nearest pixel made stripes under the Rogue's bumper.
   - Kept: CK's body (holes filled).
   - Kept: pixels where the frame is brighter than its shadowed plate in some channel, because something is there.
     Without this, a dog's fine strands over a faintly darker screen were cut.
