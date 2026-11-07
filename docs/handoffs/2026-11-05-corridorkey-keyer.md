@@ -487,23 +487,57 @@ across sizes; only lifted index tables (`c_*`) differ.
   an engine for video.
 - Images beyond 4096 px.
 
-### Stage two (only on Egor's word)
+### Stage two: the harness tool (Egor's word 2026-11-08: needed now, tuned later)
 
-- **Install form:** for stills, the ck2mlx runtime, our size graphs and the mix weights, with the venv, on the internal SSD
-  (see «MLX engine for stills»). The corridorkey-desktop binary (4.5 GB) stays only if video needs it.
-- **Wrapper:** a `bin/` wrapper around `ck_key.py` plus the fuse, findable by `tools cut out` / `tools key video`, and
-  a stills engine under `image-cutout --engine ck`.
-- **Rest of the bench:** `/Volumes/Work/tmp/corridorkey/` is 20 GB after the cleanup below. It can go once the tool lands.
+**`ck-key`** (`bin/ck-key` → `share/ck_key.py`, uv script), README entry and PATH link, found by `tools cut out`.
+- **Stills** run on our MLX build (`share/ck_mlx.py`, run in the engine venv). The output is CK as is, as Egor
+  picked on `ck-ab-edge` (A on every item).
+  - Files: `alpha.png` (16-bit), `fg.png` (8-bit straight; despilled over the whole subject on a chroma screen) and
+    `rgba.png`.
+  - One stdout line per image: `ck=done screen=green|blue|red|none alpha= fg= rgba= [shadow=] graph= s= wait_s=`.
+  - The MLX alpha is bit-identical to the bench's `ckgraphs.py run` (three sizes checked).
+  - Warm: a 500² image takes 6.5 s and 1080p 8 s, each including ≈4 s of start and 0.8 s of uv.
+- **Clips and frame folders** run on the original CK2: the bench's `scripts/ck_key.py` on corridorkey-desktop,
+  passed through unchanged. Our MLX build is not measured on video yet.
+- **`--shadow grey|colour|gpt`** writes `shadow.png`: 8-bit RGBA, RGB = the multiply layer, alpha 255 where it
+  darkens.
+  - The layers come from `share/ck_shadow.py`. It is the bench's `run_ckshadow` math, equal to `_cks-explain` and
+    `_cks-color` within 16-bit rounding.
+  - `gpt` needs `--gpt-rgba`: a GPT cut-out that kept its shadow, laid on the input.
+  - Slow: at 1080p, grey ≈ 11 s and colour ≈ 14 s more, measured under load ≈ 28. The large-sigma carry blurs
+    dominate; a pyramid would cut them, which needs an equivalence check.
+- **Importable for the GPT chat's combination:** `grey`, `colour`, `gpt_shadow`, `strip_shadow`, `despill`, `screen`,
+  `Plate`, `save_layer`.
+- **Engine home** `~/.local/share/corridorkey` (internal SSD; `CK_HOME`):
+  - `venv/` is a copy of the bench's ck2mlx venv, with the editable link removed;
+  - `ck2mlx/` holds the runtime package;
+  - `graphs/` is the size store (moved from the bench);
+  - `heavy.lock` is the one lock for stills and clips (the bench's `ck_key.py` takes it too, via `CK_LOCK`).
+- **Still in the bench** (`CK_BUILD`, `/Volumes/Work/tmp/corridorkey`):
+  - the graph exporter (`metal/`, `upstream/`, `scripts/ckgraphs.py build`, `mlx_export.py`), which now writes into
+    the SSD store;
+  - the clip engine (`desktop/`, `venv/`, `scripts/ck_key.py`, `run_fuse.py`, `flatkey.py`).
+- **Base grid (2026-11-08)** adds exact graphs for common sizes: squares 768/1024/1536/2048; ChatGPT 1024×1536 both
+  ways; 720p and 1080p portrait; Gemini 1344×768 and 1184×864 both ways; QHD, 6 MP 3:2 and 12 MP 4:3 both ways; 4K
+  portrait.
+  - Prices (`ck_mlx.py price`) are still to be measured on an idle machine.
+
+**Next:**
+- the GPT chat wires `--remove-bg --composite` to its combination (Remove BG + GPT asked in words + ck-key and
+  image_fuse) and rewrites the background-removal text in the media skill;
+- measure MLX on a clip against the original, then move the clip engine into `share/`;
+- the Speed doctor row and the night build job;
+- images beyond 4096 px.
 
 ### Bench cleanup (Egor, 2026-11-07): 80 → 20 GB
 
 Deleted (61 GB), each restorable or closed:
-- `mlx-export/` (39 GB): every experimental MLX export. The chosen mix lives in `ckgraphs/`. Re-export any profile
+- `mlx-export/` (39 GB): every experimental MLX export. The chosen mix lives in the graph store. Re-export any profile
   with `scripts/mlx_export.py H W OUT`.
 - `ck2mlx/models/` (12 GB): the release's fp16 and q8 profiles, including t2/t4.
   - Restore: `hf download cdelta/CorridorKey-v2-MLX-fp16` or `cdelta/CorridorKey-v2-MLX-8bit` into
     `ck2mlx/models/{fp16,q8}`.
-  - The one file a build read from there, the foundation stats, is now `ckgraphs/stats.json` (`mlx_export.STATS`).
+  - The one file a build read from there, the foundation stats, is now the store's `stats.json` (`mlx_export.STATS`).
 - `metal/ck2-bf16-full.safetensors`, `mlx-v1/`, and the PyTorch/Metal runs (`runs/m-* r-* f-* mA1–mD1`, `_x-trash`):
   closed engines.
 - `blender-work/` (2.5 GB): the raw EXR renders. `testset/blender` keeps their PNG derivatives (frames, alpha,
@@ -512,8 +546,8 @@ Deleted (61 GB), each restorable or closed:
 
 Kept, because something live reads it:
 - `desktop/` and `venv/`: `ck_key.py`, video;
-- `ck2mlx/src`, `ck2mlx/venv`, `ckgraphs/`, `metal/src`, `metal/venv`, `upstream/`: the stills engine and its
-  builds;
+- `metal/src`, `metal/venv`, `upstream/`: the graph exporter. `ck2mlx/src` and `ck2mlx/venv` are the bench's
+  engine; the tool's copy is on the SSD. `ckgraphs/` moved to the SSD on 2026-11-08;
 - `testset/`, `runs/` (CK, shadow and GPT runs), `runs_real/`;
 - the `view*` and `page-mlx-*` folders: live pages read their pictures there.
 

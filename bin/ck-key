@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+{
+set -euo pipefail
+# ck-key: background removal with CorridorKey 2.0 (local, free, the picture's own pixels kept); --help for the rest.
+# usage: ck-key --in <abs image|clip> [--in <abs image>]... --out <abs dir> [--shadow grey|colour|gpt] (--help)
+# The work is share/ck_key.py (uv script: shadows, despill, the clip engine), the stills engine share/ck_mlx.py in
+# CK_HOME's venv (default ~/.local/share/corridorkey).
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+uv=$(command -v uv || printf /opt/homebrew/bin/uv)
+exec "$uv" run -q --script "$(resolve_root)/share/ck_key.py" "$@"
+exit; }

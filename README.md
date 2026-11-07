@@ -287,6 +287,7 @@ this list):
 - `bin/grok-video` → `~/.local/bin/grok-video` — video clips on Grok Imagine.
 - `bin/image-fanout` → `~/.local/bin/image-fanout` — one request across every vendor and account.
 - `bin/image-cutout` → `~/.local/bin/image-cutout` — exact-pixel background removal with macOS Vision (no generation).
+- `bin/ck-key` → `~/.local/bin/ck-key` — cut out / background removal with CorridorKey 2.0 for a subject on a flat backdrop (screen, sweep, white/grey wall; hair, glass, cars, fur): local, free, its own alpha and colour untouched; stills on our MLX build (≈3 s 1080p), clips on the original engine; optional shadow layer (`--shadow grey|colour|gpt`, `share/ck_shadow.py`); engine in `~/.local/share/corridorkey` (`--help`).
 - `bin/logo-vectorize` → `~/.local/bin/logo-vectorize` — logo/icon bitmap to SVG with the logo bench's stable champion (local, no account).
 - `bin/image-enhance` → `~/.local/bin/image-enhance` — enhance, restore or upscale a picture with ChatGPT web edits in tiles at the output size (`docs/image-vendors.md` § Enhance and upscale).
 - `bin/gemini-video` → `~/.local/bin/gemini-video` — Veo/Omni clips through Google Flow.
