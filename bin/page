@@ -8,6 +8,7 @@ harness-doctor's DEPLOYS reruns `page install-agent` once an edit of either file
 
 import argparse
 import errno
+import gzip
 import hmac
 import html
 import http.cookies
@@ -89,13 +90,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_json(self, code, doc):
-        self.reply(code, json.dumps(doc, ensure_ascii=False).encode(), "application/json",
-                   [("Cache-Control", "no-cache")])
+        body, headers = json.dumps(doc, ensure_ascii=False).encode(), [("Cache-Control", "no-cache")]
+        # A big spec (a bent lattice runs to 1.7 MB) goes gzipped to another device, a quarter the size;
+        # on this Mac copying it beats compressing it.
+        if len(body) > 1 << 17 and not self.local() and "gzip" in (self.headers.get("Accept-Encoding") or ""):
+            body = gzip.compress(body, 5)
+            headers += [("Content-Encoding", "gzip"), ("Vary", "Accept-Encoding")]
+        self.reply(code, body, "application/json", headers)
+
+    def local(self):
+        port = self.server.server_address[1]
+        return self.client_address[0] == "127.0.0.1" and self.headers.get("Host") in (
+            "127.0.0.1:%d" % port, "localhost:%d" % port)
 
     def host_ok(self):
-        port = self.server.server_address[1]
-        if self.client_address[0] == "127.0.0.1" and self.headers.get("Host") in (
-                "127.0.0.1:%d" % port, "localhost:%d" % port):
+        if self.local():
             return True
         token = getattr(self.server, "lan_token", None)
         held = http.cookies.SimpleCookie()

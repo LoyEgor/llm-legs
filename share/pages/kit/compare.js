@@ -21,7 +21,7 @@ const CSS = `
 .ttl{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px}.nav{display:flex;gap:6px;align-items:center}
 .q{padding:6px 10px;border-left:3px solid var(--accent);background:var(--card);border-radius:6px;font-size:14px;white-space:pre-line}
 .votes{display:flex;gap:8px;flex-wrap:wrap}.votes button{flex:1 0 auto;font-size:17px;font-weight:600;padding:8px;white-space:nowrap}
-.trow,.tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}.trow b{width:16px}.trow button,.tools button{padding:3px 10px;font-size:13px}
+.trow,.tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}.trow b{width:16px}.trow button,.tools button{padding:3px 10px;font-size:13px}.hs{flex-basis:100%}.hs:empty{display:none}
 .lrow{display:grid;gap:8px;margin-top:10px}
 .vp[hidden]{display:none}.vp{position:relative;overflow:hidden;height:var(--lh,480px);background:var(--bk,#fff);border-radius:6px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;outline:1px solid var(--line)}
 body.drag,body.drag .vp{cursor:grabbing}
@@ -99,7 +99,17 @@ function keymap() {
   return m;
 }
 
+// Pictures still coming for an item just left (and the next item's prefetch) are dropped, so they never share the
+// link with the item shown; a picture the new view uses again keeps its download.
+let ahead = [];
+function dropStale(keep) {
+  const stale = [...ahead, ...(E ? [...E.imgs, ...E.cells.map((c) => c.querySelector("img"))] : [])];
+  ahead = [];
+  for (const im of stale) if (!im.complete && !keep.has(im.src)) im.removeAttribute("src");
+}
+
 function grid() {
+  dropStale(new Set());
   cur = null; E = null; geo = null; L = null;
   app.replaceChildren(h("div", { class: "grid" }, S.items.map((it, i) => h("div", { class: "gc", onclick: () => show(it.id) },
     h("b", {}, `${num(it, i)}`), it.title ? h("span", { class: "mute" }, " · " + it.title) : null,
@@ -120,10 +130,13 @@ function show(id, keepView) {
     h("div", { class: "bd" }, h("span", {}, f.side || f.name), f.side && f.name ? h("span", {}, f.name) : null,
       f.meta ? h("span", {}, f.meta) : null, h("span", { class: "dim" })),
     h("img", { fetchpriority: "high", src: f.src, alt: "", draggable: false }), h("canvas"), h("div", { class: "pins" }), toggle(k)));
+  dropStale(new Set(vps.map((v) => v.querySelector("img").src)));
   const cells = fs.map((f, k) => h("div", { class: "pc", onclick: aim }, h("img", { src: f.src, alt: "", draggable: false }), h("i"),
     (it.marks || []).map(() => h("span", { class: "mk" })), toggle(k)));
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
-    hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
+    // the hotspots' row is held from the start, so their late arrival never pushes the loupes down
+    hs: h("span", { class: "tools hs" }, !S.zoom_levels && ((it.hotspots || []).length || (it.variants || []).length > 1)
+      ? h("button", { style: "visibility:hidden", tabindex: -1 }, "1") : null), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
     gb: S.pixel_grid || it.grid ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
     ls: [].concat(it.grid || []).filter((g) => g.label).map((g) => {
       if (!seenLayers.has(g.label)) { seenLayers.add(g.label); if (g.hidden) hiddenLayers.add(g.label); } // `hidden`: off until pressed
@@ -158,33 +171,44 @@ function show(id, keepView) {
     h("div", { class: "lrow" }, vps));
   vps.forEach(wire);
   panes(); paintSide(); strip(); layout(); paintBk();
-  // The loupes are laid out once every picture's header told its size, so a big one streams in where it belongs
-  // instead of holding the others back; the hotspots need every pixel, and only then the next item is fetched,
-  // so it never shares the line with this one.
-  const imgs = E.imgs, sized = new Promise((r) => (function poll() {
-    if (my !== token || imgs.every((im) => im.naturalWidth || im.complete)) r(); else setTimeout(poll, 20);
+  // The loupes are laid out once the original's header told its size (without one: every picture's, the largest
+  // sets the scale), so a big picture streams in where it belongs instead of holding the others back; each later
+  // one is drawn in as its size arrives. The hotspots need the variants' every pixel (not the original's); the
+  // next item is fetched once all of this one is here, so it never shares the link with it.
+  const imgs = E.imgs, known = (im) => im.naturalWidth || im.complete;
+  const loaded = (list) => Promise.all(list.map((im) => im.complete ? 0 : new Promise((r) => {
+    im.addEventListener("load", r, { once: true }); im.addEventListener("error", r, { once: true }); })));
+  let seen = 0;
+  const sized = new Promise((r) => (function poll() {
+    if (my !== token) return r();
+    const n = imgs.filter(known).length;
+    if (n !== seen && (it.original ? known(imgs[0]) : n === imgs.length)) { seen = n; place(it); }
+    if (n === imgs.length) r(); else setTimeout(poll, 20);
   })());
-  sized.then(() => {
-    if (my !== token) return;
-    const ref = it.original ? E.imgs[0] : E.imgs.reduce((a, b) => (b.naturalWidth * b.naturalHeight > a.naturalWidth * a.naturalHeight ? b : a));
-    E.ref = E.imgs.indexOf(ref);
-    geo = { w: ref.naturalWidth || 1, h: ref.naturalHeight || 1 };
-    E.imgs.forEach((im, k) => {
-      E.cells[k].style.aspectRatio = `${geo.w}/${geo.h}`;
-      vps[k].querySelector(".dim").textContent = im.naturalWidth ? `${im.naturalWidth}×${im.naturalHeight}` : "—";
-    });
-    layout();
-    if (!L) L = fit();
-    paintPins();
-    draw();
-    return Promise.all(imgs.map((im) => im.complete ? 0 : new Promise((r) => { im.onload = im.onerror = r; })));
-  }).then(() => {
+  sized.then(() => my === token && loaded(imgs.slice(it.original ? 1 : 0))).then(() => {
     if (my !== token) return;
     E.spots = hotspots(it);
     E.hs.replaceChildren(...E.spots.map((_, k) => h("button", { onclick: () => jump(k) }, `${k + 1}`)));
-    const nx = item(ids[(i + 1) % ids.length]);
-    if (nx !== it) frames(nx).forEach((f) => { const im = new Image(); im.fetchPriority = "low"; im.src = f.src; });
   });
+  sized.then(() => my === token && loaded(imgs)).then(() => {
+    if (my !== token) return;
+    const nx = item(ids[(i + 1) % ids.length]);
+    if (nx !== it) ahead = frames(nx).map((f) => { const im = new Image(); im.fetchPriority = "low"; im.src = f.src; return im; });
+  });
+}
+
+function place(it) {
+  const ref = it.original ? E.imgs[0] : E.imgs.reduce((a, b) => (b.naturalWidth * b.naturalHeight > a.naturalWidth * a.naturalHeight ? b : a));
+  E.ref = E.imgs.indexOf(ref);
+  geo = { w: ref.naturalWidth || 1, h: ref.naturalHeight || 1 };
+  E.imgs.forEach((im, k) => {
+    E.cells[k].style.aspectRatio = `${geo.w}/${geo.h}`;
+    E.vps[k].querySelector(".dim").textContent = im.naturalWidth ? `${im.naturalWidth}×${im.naturalHeight}` : im.complete ? "—" : "";
+  });
+  layout();
+  if (!L) L = fit();
+  paintPins();
+  draw();
 }
 
 function paintSide() {
