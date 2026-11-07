@@ -88,6 +88,18 @@ Both defects reproduced and fixed in `share/image_matte.py`, proven on the bench
   deliveries would have been refused (pickup 16 px, dog 52 %).
 - Left: GPT's own green in an SUV window it drew green (only see-through glass fixes it), paws GPT drew shorter;
   the zones of use with the CK chat.
+- **Wheel (598e0331):** the flow followed a rim ChatGPT redrew 10 px off inside a tyre it outlined right and cut
+  the sidewall (Egor's pin on gpt-cutout-fix-vb7qvn). It is now undone where it would strip subject-like or add
+  backdrop-like pixels to the outline.
+- **Glass from CK (345dbe4a, `share/image_fuse.py`, page gpt-ck-fuse-cbtfvz):** see-through panes move from CK
+  into the GPT delivery, cut only along pixels both share. This also fixes the SUV window GPT drew green.
+- **Next, gated on Egor's word in the CK chat (its stage two):**
+  - CK as a harness tool, with the shadow-strip rule as an importable function;
+  - then image-leg runs CK + image_fuse on coloured screens by itself.
+- **Agreed with the CK chat:**
+  - a GPT object never carries a shadow;
+  - shadows are the CK chat's separate layers: grey by default, colour on request;
+  - a GPT-drawn shadow source is built only on Egor's ask (he rejected it as blotchy on 2026-11-06).
 
 ## The seam with the CK chat
 
