@@ -346,6 +346,22 @@ the hair. GPT re-renders the person. Sheet: `results/sheet-real-hair-white-all.p
 | GPT Remove BG | none: slow, recolours, unstable |
 | Plain chroma key | none: recolours the subject |
 
+### GPT object + the frame's shadow (page variant «GPT, тень из кадра», 2026-11-07)
+
+`frame_shadow` in bench `scripts/gpt_page.py` composes the GPT object with the colour shadow layer
+(`runs/_cks-color`).
+- **What failed.** A colour rule picked which GPT pixels counted as shadow (near-black or grey), applied as a binary
+  mask. GPT's pale haze and light tail stayed over the real shadow (Egor's pins img4 and img9), and a tyre's dense
+  contact came out as a ragged step (img10).
+- **The rule now.** Off CK's body, a GPT pixel gives way in proportion to the frame's darkening, whatever its colour
+  (full at 3 %). The layer is carried 12 px under CK's opaque edge, because GPT's outline ends a few px sooner.
+  - Kept: CK's body (holes filled).
+  - Kept: pixels where the frame is brighter than its shadowed plate in some channel, because something is there.
+    Without this, a dog's fine strands over a faintly darker screen were cut.
+- **Checked on crops.** All 13 items: the three pins are fixed, and the wine glass's bowl and the hair are unchanged.
+- **Still open.** On the Rogue sprite on green, GPT's patchy redraw of the floor glow stays in places where CK reads
+  the glow as half object. The «CK + тень в цвете» variant there is smooth.
+
 ### Web delivery
 
 - **This pass:** the Rentiva pass takes RGBA PNG frames plus a shadow PNG per frame. The shadow is RGBA: grey = M,
