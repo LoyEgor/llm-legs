@@ -388,9 +388,14 @@ come from the source, and the frame is only padded.
 - Each side is rounded up to a multiple of 128 (the model's quantum; upstream does the same) and cropped back.
 - Padding further, onto a bigger graph, is safe only up to ≈ 2× the exact graph's area. Within that bound it costs
   time and nothing visible: 1672×941 padded by ≈ 250 px moved alpha ≈ 0.5 ‰.
-- Far beyond the bound the frame is mirrored over a big canvas, and the model reads it as a different scene. A 200×112
-  glass came out opaque on 1152×1920, but on 128×256 through 256×384 it matched the exact graph. Edge-replicate
-  padding only halves the damage.
+- Beyond the bound the frame is mirrored over a big canvas, and the model reads it as a different scene.
+- Padding ladder (glass, car and hair at 200×112, 640×360 and 1080p; `runs/ladder`):
+  - up to 2× the area, nothing visible moved;
+  - at 4–9×, a car grew translucent patches and a floor smear;
+  - at 56× and above, a glass came out opaque.
+- The area ratio decides, not the pixel count. +128 px is harmless on 1080p and on 200×112 alike, while the same 4×
+  hurts at any size.
+- Edge-replicate padding only halves the damage.
 
 **One graph per padded size: the store (built 2026-11-07).** MLX graphs have a fixed shape. Weights are identical
 across sizes; only lifted index tables (`c_*`) differ.
@@ -420,8 +425,8 @@ across sizes; only lifted index tables (`c_*`) differ.
   min/day = Σ lost per day, and the lever is to build the missing sizes in order of lost seconds. The night backlog
   already ranks rows by recoverable min/day (docs/speed-doctor-design.md §3). A night job exports the top sizes,
   prices them on an idle machine and the row shrinks.
-- Not wired yet: the Speed doctor row and the night job (stage two). The 2× bound rests on three small frames;
-  the night may refine it.
+- Not wired yet: the Speed doctor row and the night job (stage two). The choice lives in the tool, so a calling LLM
+  needs no rule of its own, only a Bash timeout long enough for a first-use build.
 
 **Open.**
 - Video: MLX has temporal windows too (t2/t4 profiles). Measure it against the reference on a clip before choosing
