@@ -386,12 +386,26 @@ Keeping the model warm would save ≈ 1 s per call and is not worth holding 2.2 
 **Never rescale the image (Egor).** A downscaled model input was rejected: softer hair and a degraded picture. Pixels
 come from the source, and the frame is only padded.
 - Each side is rounded up to a multiple of 128 (the model's quantum; upstream does the same) and cropped back.
-- Padding further, onto a bigger graph, moved alpha ≈ 0.5 ‰ (1672×941 padded by ≈ 250 px; invisible). It costs
-  only time, roughly in proportion to the area.
+- Padding further, onto a bigger graph, is safe only up to ≈ 2× the exact graph's area. Within that bound it costs
+  time and nothing visible: 1672×941 padded by ≈ 250 px moved alpha ≈ 0.5 ‰.
+- Far beyond the bound the frame is mirrored over a big canvas, and the model reads it as a different scene. A 200×112
+  glass came out opaque on 1152×1920, but on 128×256 through 256×384 it matched the exact graph. Edge-replicate
+  padding only halves the damage.
 
-**One graph per padded size.** MLX graphs have a fixed shape. Weights are identical across sizes: less than 0.1 MB of
-index tables differ. So weights are stored once, plus ≈ 1 MB of graph per size. An export costs 3.5–7 min today: a
-73 s model load, then the trace, then a 3 min weight conversion that shared weights make unnecessary.
+**One graph per padded size: the store (built 2026-11-07).** MLX graphs have a fixed shape. Weights are identical
+across sizes; only lifted index tables (`c_*`) differ.
+- The tool is `scripts/ckgraphs.py` in the bench. Its store, `ckgraphs/`, holds:
+  - the mix weights once (1.8 GB);
+  - per size, a graph plus its constants (≈ 1 MB);
+  - per size, a price.
+- A build loads the model once (55 s) and then takes 20 s (128×128) to 200 s (4K) per size. No weight conversion.
+- The 1080p graph equals build «mix» node for node, and its output is bit-identical.
+- Every size works down to 128×128.
+- `run` takes any images in one call. It uses the exact graph, else the cheapest built one within 2× the area, else
+  builds the exact one on the spot (≈ 2 min for a small size) and logs `built_s`.
+- Built sizes: 128×128, 128×256, 256×256, 256×384, 256×512, 512×512, 768×256, 1024×1792, 1152×1920, 2176×3840.
+- Prices in seconds: 128² 0.30, 512² 0.52, 1024×1792 2.6, 1152×1920 3.3, 4K 15.4. They were measured under load 5–8;
+  `price.json` keeps the load average.
 
 **Size grid (Egor's plan, 2026-11-07).**
 - The grid is dynamic: dense where images usually land, sparse at the extremes (e.g. sides in ≈ 1.3× steps), and
@@ -399,17 +413,15 @@ index tables differ. So weights are stored once, plus ≈ 1 MB of graph per size
 - **Lost seconds are priced, never timed live (Egor, 2026-11-07).** Machine load must not move the number.
   - Each graph carries a price: its compute seconds, measured once on an idle machine right after it is built and
     stored with it.
-  - A size with no graph gets its price from a fit over the built graphs (time ∝ a·MP + b·MP²).
+  - A size with no graph gets its price from a fit over the built graphs (c + a·MP + b·MP²).
   - A call logs the image size, the graph used and lost = price(used) − price(the exact ×128 graph). The same images
     give the same number on a busy machine or an idle one.
 - **The night builds what costs most.** The log feeds a Speed doctor opportunity row (`opportunity:ck/graph-sizes`):
   min/day = Σ lost per day, and the lever is to build the missing sizes in order of lost seconds. The night backlog
   already ranks rows by recoverable min/day (docs/speed-doctor-design.md §3). A night job exports the top sizes,
   prices them on an idle machine and the row shrinks.
-- Before building:
-  - make the export fast: one model load for many sizes, no weight conversion;
-  - check that the smallest sizes still work;
-  - measure the padding cost on 2–3 shapes.
+- Not wired yet: the Speed doctor row and the night job (stage two). The 2× bound rests on three small frames;
+  the night may refine it.
 
 **Open.**
 - Video: MLX has temporal windows too (t2/t4 profiles). Measure it against the reference on a clip before choosing
