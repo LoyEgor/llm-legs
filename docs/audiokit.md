@@ -1,4 +1,4 @@
-# audiokit — music loops and joins, by Egor's ear
+# audiokit — music loops, joins and stem levels, by Egor's ear
 
 `bin/audiokit` (`~/.local/bin/audiokit`) is the only way to loop a music track or judge a join in this setup: local,
 free, no account. Do not write your own ffmpeg/numpy loop or seam script; every one before it shipped a click. Its
@@ -9,6 +9,8 @@ README "Editing defects"). No listening model is the answer key: Gemini Flash ca
 audiokit loop <in> <out .m4a|.wav|.flac> [--min 30] [--max <s>] [--at <start>,<end>] [--lufs -20] [--clip <out .wav>]
 audiokit points <in> [--top 10] [--min 30] [--max <s>]
 audiokit check <file> [--loop] [--at <s>,<s>...]
+audiokit split <in> <out dir>
+audiokit mix <in> <out .m4a|.wav|.flac> [--gain <stem>=<dB>|mute[@<from>-<to>]]... [--add <file>@<s>[=<dB>]]... [--lufs <target>|same] [--ramp 50]
 ```
 
 - **loop** picks the start and end itself (whole bars of the take's own beat), joins them with a 10 ms
@@ -18,6 +20,17 @@ audiokit check <file> [--loop] [--at <s>,<s>...]
 - **points** lists candidate pairs with every measure and `clean|borderline|heard`.
 - **check** reads any file for digital silence inside the music, beat-grid jumps, and with `--loop` (the wrap) or
   `--at` (your joins) the waveform step and level dip there. A grid jump where nobody cut is `listen`, not a verdict.
+- **split** writes `<out dir>/<name>.{drums,bass,other,vocals}.wav` (htdemucs; `vocals` holds any lead) and each
+  stem's level against the source.
+- **mix** changes a part's level over the whole take or a range (`--gain drums=-6`, `--gain vocals=mute@0:32-0:50`,
+  `--gain other=3@1:10-`). A range ramps over `--ramp` ms at each edge. `--add` lays another file in at a time, for
+  example new drums from Suno into a muted range, with 10 ms fades. The file is the source sample for sample plus
+  only your changes, so Demucs's artifacts reach only the parts you change. Raising or lowering a stem by a few dB
+  is clean. A muted part can leave a faint ghost in the other stems: `residual=` is how far under the source the
+  stems miss. Loudness stays as it falls unless you pass `--lufs` (`same` keeps the source's); the peak is held
+  under -1 dBFS. It then checks the result as `check` does, at the `--add` edges too, and leaves out what the
+  source itself already has. No marked round tested its own limits yet (2026-11-08): when it matters, he listens.
+- Use other tools to edit a song's content: Flow's `--edit` for a Flow song, and Suno's `--mode` for any file.
 - Exit 0 answered (read `verdict=`), 2 usage, 4 `uv` or `ffmpeg` missing.
 
 ## Reading the verdict

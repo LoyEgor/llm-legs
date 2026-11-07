@@ -2,12 +2,19 @@
 # requires-python = ">=3.11,<3.13"
 # dependencies = ["numpy==2.5.4"]
 # ///
-"""Audio kit: loop a music track so the wrap is not heard, and check a file for the joins people hear.
-Guide: docs/audiokit.md. Run through bin/audiokit.
+"""Audio kit: loop a music track so the wrap is not heard, check a file for the joins people hear, and change one
+part's level. Guide: docs/audiokit.md. Run through bin/audiokit.
 
     audiokit.py loop <in> <out .m4a|.wav|.flac> [--min 30] [--max <s>] [--at <start>,<end>] [--lufs -20] [--clip <out .wav>]
     audiokit.py points <in> [--top 10] [--min 30] [--max <s>]
     audiokit.py check <file> [--loop] [--at <s>,<s>...]
+    audiokit.py split <in> <out dir>
+    audiokit.py mix <in> <out .m4a|.wav|.flac> [--gain <stem>=<dB>|mute[@<from>-<to>]]... [--add <file>@<s>[=<dB>]]...
+                    [--lufs <target>|same] [--ramp 50]
+
+split and mix use the same cached Demucs stems. mix adds each change as a difference to the original: the file is
+the source sample for sample except the changed stems, so Demucs's artifacts reach only the parts you change. A
+range changes over --ramp ms at each edge.
 
 Every threshold is Egor's ear on the listen-bench (/Volumes/Work/Projects/listen-bench, README "Editing defects"):
 - a hard cut clicks; a crossfade of 1 ms or more does not;
@@ -404,12 +411,16 @@ def xfade(p, q, r):
     return (p * g + q * h) / np.sqrt(np.maximum(g * g + h * h + 2 * r * g * h, 0.25))
 
 
-def lufs_gain(y, target):
-    """One linear factor to the target integrated loudness, held so the sample peak stays under -1 dBFS."""
+def lufs(y):
+    """Integrated loudness of y (48 kHz stereo), LUFS."""
     err = subprocess.run(["ffmpeg", "-nostats", "-f", "f64le", "-ar", str(SR), "-ac", "2", "-i", "-", "-af", "ebur128",
                           "-f", "null", "-"], input=np.ascontiguousarray(y).tobytes(), capture_output=True).stderr.decode()
-    i = float(re.findall(r"I:\s+(-?[\d.]+) LUFS", err)[-1])
-    return min(10 ** ((target - i) / 20), 10 ** (-1 / 20) / (np.abs(y).max() + 1e-9))
+    return float(re.findall(r"I:\s+(-?[\d.]+) LUFS", err)[-1])
+
+
+def lufs_gain(y, target):
+    """One linear factor to the target integrated loudness, held so the sample peak stays under -1 dBFS."""
+    return min(10 ** ((target - lufs(y)) / 20), 10 ** (-1 / 20) / (np.abs(y).max() + 1e-9))
 
 
 def db(s):
@@ -567,6 +578,109 @@ def check(a):
     print("verdict=" + ("clean" if all(k == "listen" for *_, k in found) else "audible"))
 
 
+def secs(v):
+    """Seconds from 75.5 or 1:15.5."""
+    m, _, sec = v.rpartition(":")
+    return 60 * float(m or 0) + float(sec)
+
+
+def stem_parts(src):
+    """The source and its four stems at 48 kHz stereo, the stems shifted onto the source and cut to its length, and
+    how far the stems' sum sits under the source (dB): what Demucs left out."""
+    d = stems(src)
+    if d is None:
+        sys.exit("audiokit: split and mix need Demucs stems (unset AUDIOKIT_STEMS=off, or install uv)")
+    x = read(src)
+    st = {n: read(str(d / f"{n}.wav")) for n in STEM_NAMES}
+    st = {n: np.pad(v, ((0, max(0, len(x) - len(v))), (0, 0)))[:len(x)] for n, v in st.items()}
+    a, b = x.mean(1)[:30 * SR], sum(st.values()).mean(1)[:30 * SR]
+    k = 0
+    if db(b) > -80:  # the lag that best puts the stems' sum on the source, within 43 ms
+        N = 1 << int(np.ceil(np.log2(2 * len(a))))
+        c = np.fft.irfft(np.fft.rfft(a, N) * np.conj(np.fft.rfft(b, N)), N)
+        lags = np.r_[np.arange(2049), -np.arange(2048, 0, -1)]
+        k = int(lags[np.argmax(np.r_[c[:2049], c[-2048:]])])
+    if k:
+        st = {n: np.roll(v, k, axis=0) * (np.arange(len(v)) >= k if k > 0 else np.arange(len(v)) < len(v) + k)[:, None]
+              for n, v in st.items()}
+    return x, st, db(x - sum(st.values())) - db(x), k
+
+
+def split(a):
+    x, st, rest, k = stem_parts(a.src)
+    out = Path(a.dst)
+    out.mkdir(parents=True, exist_ok=True)
+    for n, v in st.items():
+        f = out / f"{Path(a.src).stem}.{n}.wav"
+        write(str(f), v)
+        print(f"stem={n} level={db(v) - db(x):+.1f}dB file={f}")
+    print(f"residual={rest:.1f}dB (what the four stems miss of the source) lag={k}")
+
+
+def envelope(L, a, b, g, ramp):
+    """1 outside [a, b) s, g inside, linear over ramp s at each inner edge."""
+    t = np.arange(L) / SR
+    w = np.clip(np.minimum(t - a, b - t) / ramp + 0.5, 0, 1) if ramp else ((t >= a) & (t < b)).astype(float)
+    return 1 + (g - 1) * w
+
+
+def usage(msg):
+    print(f"audiokit: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def mix(a):
+    gains = [(spec, re.fullmatch(r"(\w+)=(-?[\d.]+|mute)(?:@([\d:.]+)-([\d:.]*))?", spec)) for spec in a.gain]
+    adds = [(spec, re.fullmatch(r"(.+)@([\d:.]+)(?:=(-?[\d.]+))?", spec)) for spec in a.add]
+    for spec, m in gains:
+        if not m or m[1] not in STEM_NAMES:
+            usage(f"--gain takes <{'|'.join(STEM_NAMES)}>=<dB>|mute[@<from>-<to>], not {spec}")
+    for spec, m in adds:
+        if not m or not Path(m[1]).is_file():
+            usage(f"--add takes <file>@<s>[=<dB>], not {spec}")
+    if not gains and not adds:
+        usage("mix needs at least one --gain or --add")
+    if a.lufs not in (None, "same") and not re.fullmatch(r"-?[\d.]+", a.lufs):
+        usage(f"--lufs takes a target or same, not {a.lufs}")
+    x, st, rest, k = stem_parts(a.src)
+    L, ramp, y, said, joins = len(x), a.ramp / 1000, x.copy(), [], []
+    for spec, m in gains:
+        g = 0.0 if m[2] == "mute" else 10 ** (float(m[2]) / 20)
+        lo, hi = (secs(m[3]), secs(m[4]) if m[4] else L / SR) if m[3] else (0.0, L / SR)
+        whole = not m[3] or (lo <= 0 and hi >= L / SR)
+        edges = (lo if lo > 0 else -np.inf, hi if hi < L / SR else np.inf)  # no ramp at the file's own ends
+        y += (envelope(L, *edges, g, 0 if whole else ramp) - 1)[:, None] * st[m[1]]
+        said.append(f"{m[1]} {m[2]}{'' if m[2] == 'mute' else ' dB'} {'whole' if whole else f'{mmss(lo)}-{mmss(hi)}'}")
+    for spec, m in adds:
+        z, at = read(m[1]) * 10 ** (float(m[3] or 0) / 20), round(secs(m[2]) * SR)
+        n = min(round(XF * SR), len(z) // 2)
+        z[:n] *= np.linspace(0, 1, n)[:, None]
+        z[len(z) - n:] *= np.linspace(1, 0, n)[:, None]
+        z = z[:max(0, L - at)]
+        y[at:at + len(z)] += z
+        joins += [at / SR, (at + len(z)) / SR]
+        said.append(f"{Path(m[1]).name} at {mmss(at / SR)}, {m[3] or 0} dB{', cut at the end of the source' if at + len(z) == L else ''}")
+    peak = 10 ** (-1 / 20)
+    if a.lufs is not None:
+        y *= lufs_gain(y, lufs(x) if a.lufs == "same" else float(a.lufs))
+    elif np.abs(y).max() > peak:
+        print(f"peak held: {20 * np.log10(peak / np.abs(y).max()):+.1f} dB on the whole file, so it stays under -1 dBFS")
+        y *= peak / np.abs(y).max()
+    write(a.dst, y)
+    z = read(a.dst)
+    js = [j for j in joins if 0.1 < j < len(z) / SR - 0.1]
+    base = inspect(x, js)  # what the source itself has is not the mix's doing
+    found = [f for f in inspect(z, js) if not any(abs(f[0] - g[0]) < 0.25 and f[2] == g[2] for g in base)]
+    print("changed: " + "; ".join(said))
+    if base:
+        print(f"left out: {len(base)} notes the source itself has (audiokit check {a.src})")
+    print(f"residual={rest:.1f}dB (what the four stems miss of the source) lag={k} loudness={lufs(x):.1f}->{lufs(z):.1f} LUFS")
+    for t, w, kind in found:
+        print(f"{mmss(t)}  {kind:6} {w}")
+    print(f"dest={a.dst}")
+    print("verdict=" + ("clean" if all(kind == "listen" for *_, kind in found) else "audible"))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -587,8 +701,18 @@ def main():
     p.add_argument("file")
     p.add_argument("--loop", action="store_true")
     p.add_argument("--at")
+    p = sub.add_parser("split")
+    p.add_argument("src")
+    p.add_argument("dst")
+    p = sub.add_parser("mix")
+    p.add_argument("src")
+    p.add_argument("dst")
+    p.add_argument("--gain", action="append", default=[])
+    p.add_argument("--add", action="append", default=[])
+    p.add_argument("--lufs")
+    p.add_argument("--ramp", type=float, default=50.0)
     a = ap.parse_args()
-    {"loop": loop, "points": points, "check": check}[a.cmd](a)
+    {"loop": loop, "points": points, "check": check, "split": split, "mix": mix}[a.cmd](a)
 
 
 if __name__ == "__main__":

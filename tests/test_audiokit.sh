@@ -61,4 +61,19 @@ assert exits 0 points "$WORK/take.wav" --min 16 --top 3
 assert test "$(wc -l <"$WORK/stem-calls" | tr -d ' ')" -eq 1
 assert grep -qE '^0\.[0-9]+  [0-9.]+ .* (clean|borderline|heard)$' "$WORK/out"
 
+# split and mix on the stub stems (all music in "other"): -6 dB on it halves the take, the source's own notes stay
+# out, a range and an added file are reported, a bad spec is usage.
+assert exits 0 split "$WORK/take.wav" "$WORK/parts"
+assert test -s "$WORK/parts/take.other.wav"
+assert grep -qE '^stem=other level=-?0\.[0-9]dB file=' "$WORK/out"
+assert exits 0 mix "$WORK/take.wav" "$WORK/mix.wav" --gain other=-6
+assert grep -q '^changed: other -6 dB whole$' "$WORK/out"
+assert grep -q '^verdict=clean$' "$WORK/out"
+assert awk "$(sed -nE 's/.* loudness=(-?[0-9.]+)->(-?[0-9.]+) LUFS$/BEGIN { x = \1 - (\2); exit !(x > 5.8 \&\& x < 6.2) }/p' "$WORK/out")" /dev/null
+assert exits 0 mix "$WORK/take.wav" "$WORK/mix2.m4a" --gain other=mute@10-20 --add "$WORK/naive.wav@12=-6"
+assert grep -q '^changed: other mute 0:10.000-0:20.000; naive.wav at 0:12.000, -6 dB$' "$WORK/out"
+assert exits 2 mix "$WORK/take.wav" "$WORK/mix3.wav" --gain kick=-6
+assert exits 2 mix "$WORK/take.wav" "$WORK/mix3.wav"
+assert test "$(wc -l <"$WORK/stem-calls" | tr -d ' ')" -eq 1
+
 printf 'PASS: audiokit (%s asserts)\n' "$asserts"
