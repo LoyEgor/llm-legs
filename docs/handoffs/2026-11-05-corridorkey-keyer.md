@@ -493,7 +493,29 @@ across sizes; only lifted index tables (`c_*`) differ.
   (see «MLX engine for stills»). The corridorkey-desktop binary (4.5 GB) stays only if video needs it.
 - **Wrapper:** a `bin/` wrapper around `ck_key.py` plus the fuse, findable by `tools cut out` / `tools key video`, and
   a stills engine under `image-cutout --engine ck`.
-- **Rest of the bench:** 27 GB of scratch in `/Volumes/Work/tmp/corridorkey/`. It can go once the tool lands.
+- **Rest of the bench:** `/Volumes/Work/tmp/corridorkey/` is 20 GB after the cleanup below. It can go once the tool lands.
+
+### Bench cleanup (Egor, 2026-11-07): 80 → 20 GB
+
+Deleted (61 GB), each restorable or closed:
+- `mlx-export/` (39 GB): every experimental MLX export. The chosen mix lives in `ckgraphs/`. Re-export any profile
+  with `scripts/mlx_export.py H W OUT`.
+- `ck2mlx/models/` (12 GB): the release's fp16 and q8 profiles, including t2/t4.
+  - Restore: `hf download cdelta/CorridorKey-v2-MLX-fp16` or `cdelta/CorridorKey-v2-MLX-8bit` into
+    `ck2mlx/models/{fp16,q8}`.
+  - The one file a build read from there, the foundation stats, is now `ckgraphs/stats.json` (`mlx_export.STATS`).
+- `metal/ck2-bf16-full.safetensors`, `mlx-v1/`, and the PyTorch/Metal runs (`runs/m-* r-* f-* mA1–mD1`, `_x-trash`):
+  closed engines.
+- `blender-work/` (2.5 GB): the raw EXR renders. `testset/blender` keeps their PNG derivatives (frames, alpha,
+  plate, shadow). Re-render: `scripts/blender/run_set.sh` (≈ 44 min for the clip).
+- `nets/`: BEN2 and BiRefNet_HR-matting. BiRefNet-matting stays, since the usage map names it.
+
+Kept, because something live reads it:
+- `desktop/` and `venv/`: `ck_key.py`, video;
+- `ck2mlx/src`, `ck2mlx/venv`, `ckgraphs/`, `metal/src`, `metal/venv`, `upstream/`: the stills engine and its
+  builds;
+- `testset/`, `runs/` (CK, shadow and GPT runs), `runs_real/`;
+- the `view*` and `page-mlx-*` folders: live pages read their pictures there.
 
 ### Licence
 
