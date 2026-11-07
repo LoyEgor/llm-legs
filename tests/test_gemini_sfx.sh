@@ -86,7 +86,7 @@ assert test "$(jq -c '[.tool, .kind, .rc, .account, .size]' <<<"$row")" = '["gem
 : >"$FAKE_VIDEO_CALLS"
 assert sfx --dest "$out" --prompt 'a glass clink' --duration 6 --count 2
 assert grep -qx 'ARG=6' "$FAKE_VIDEO_CALLS"
-assert grep -qx 'credits=10' "$WORK/stdout"
+assert grep -qx 'credits=12' "$WORK/stdout"
 took=$(seconds "$WORK/out/knock-2.wav")
 assert grep -qx "variant=$WORK/out/knock-2.wav duration=$(awk -v s="$took" 'BEGIN { printf "%.2f", s }')" "$WORK/stdout"
 assert near "$took" 2.1 0.25
@@ -99,7 +99,7 @@ assert grep -qx "ARG=$M/scene.mp4" "$FAKE_VIDEO_CALLS"
 assert grep -qx 'ARG=720p' "$FAKE_VIDEO_CALLS"
 refute grep -qx 'ARG=--duration' "$FAKE_VIDEO_CALLS"
 assert grep -q '^ARG=Keep the picture exactly as it is.* a click when the dial turns$' "$FAKE_VIDEO_CALLS"
-assert grep -qx 'credits=20' "$WORK/stdout"
+assert grep -qx 'credits=9' "$WORK/stdout"
 assert grep -qx "source=$M/scene.mp4 source_duration=3.00" "$WORK/stdout"
 assert near "$(seconds "$scored")" 4 0.05
 

@@ -9,12 +9,12 @@ the harness itself (flags, credits, exits) are in `docs/image-vendors/gemini.md`
 
 | You have | Flags | Model |
 |---|---|---|
-| only an idea | `--prompt` | auto: Veo Fast for 8 s, Omni for 4/6/10 s |
+| only an idea | `--prompt` (`--duration 3`–`15`, default 8) | auto: Omni 1.2 |
 | a still to start from | `--first-frame` (a lone `--ref` is the same) | any |
 | a start state and an end state | `--first-frame` + `--last-frame` | any |
 | a character, object or style that must appear | `--ref` ×1–4 | Veo takes 3 (8 s only), Omni 4 |
-| a finished video to change: restyle, add or remove a thing or a character | `--edit` (+ `--ref` for what to add) | Omni |
-| a Flow Veo clip whose action must go on | `--extend` | Veo 3.1 Lite |
+| a finished video (up to 15 s) to change: restyle, add or remove a thing or a character | `--edit` (+ `--ref` for what to add) | Omni |
+| a Flow clip whose action must go on | `--extend` (`--duration 3`–`10`, default 8) | Omni 1.2 |
 
 ## Writing the prompt
 
@@ -71,10 +71,10 @@ Two ways to continue clip A:
    sees one still: speed and direction are gone. From one frame a ball in mid-air may be rising or
    falling, so the new clip may reverse, freeze or restart the motion, and the sound restarts.
 2. **Extend:** `gemini-video --dest A-ext.mp4 --extend A.mp4 --prompt …` continues from A's last second
-   (24 frames), so motion, speed and ambient sound carry over. Only for Veo clips that gemini-video saved from
-   Flow (the job ledger remembers the account and project); it runs on that account. Omni, uploaded and
-   Grok clips cannot be extended (Flow lists Omni extension as "coming soon"), and neither can an
-   extension. The output is only the new part, at 720p; `video-chain join` puts them together.
+   (24 frames), so motion, speed and ambient sound carry over. Only for clips that gemini-video saved from
+   Flow, Veo or Omni (the job ledger remembers the account and project); it runs on that account, on Omni 1.2,
+   adding `--duration` 3–10 s. Uploaded and Grok clips cannot be extended. The output is the new part, at
+   360p or 720p; `video-chain join` puts them together.
 
 **Choose by the ending of A:**
 
@@ -87,7 +87,7 @@ video-chain end-motion A.mp4 --strip A-tail.png
 - `motion=moving`: look at the strip (three frames across the last second) and decide whether that
   motion has to continue across the cut:
   - it has to continue (something falling or thrown, a pan or dolly, a turning part, a walk): Extend
-    if A is a Flow Veo clip. Otherwise frame-chain and state the motion in the next prompt: direction,
+    if A is a Flow clip. Otherwise frame-chain and state the motion in the next prompt: direction,
     speed and what keeps going ("the ball keeps falling toward the floor as fast as before"), or fix the
     end state with `--last-frame` as well.
   - it may stop or change at the cut (a new beat, a cut to another angle): a frame chain or a plain

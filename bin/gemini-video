@@ -30,22 +30,24 @@ caps() { jq -r "$1" "$manifest"; }
 
 video_caps=$(caps '.video | .container, (.durations | join("|")), .duration_default, (.aspects | join("|")),
   .aspect_default, (.resolutions | join("|")), .resolution_default, .refs_max, .edit_source_max_s,
-  (.counts | map(tostring) | join("|")), .extend.seconds, "end"')
+  (.counts | map(tostring) | join("|")), (.extend.seconds | map(tostring) | join("|")), .extend.seconds_default,
+  .extend.model, "end"')
 {
   read -r container; read -r durations; read -r default_duration; read -r video_aspects; read -r default_aspect
   read -r resolutions; read -r default_resolution; read -r refs_max; read -r edit_max; read -r counts; read -r extend_s
+  read -r extend_default; read -r extend_model
 } <<<"$video_caps"
 
 usage() {
   image_leg_cause "$@"
-  printf 'usage: gemini-video --dest <absolute .%s path> --prompt <motion description> [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--ref <absolute image path>]... [--edit <absolute video path>] [--extend <absolute path of a Flow Veo clip>] [--duration <%s>] [--resolution <%s>] [--aspect <%s>] [--model <%s>] [--count <%s>] [--account <geminib profile>] [--lock-wait <seconds>]\n' \
+  printf 'usage: gemini-video --dest <absolute .%s path> --prompt <motion description> [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--ref <absolute image path>]... [--edit <absolute video path>] [--extend <absolute path of a Flow clip>] [--duration <%s>] [--resolution <%s>] [--aspect <%s>] [--model <%s>] [--count <%s>] [--account <geminib profile>] [--lock-wait <seconds>]\n' \
     "$container" "$durations" "$resolutions" "$video_aspects" "$(caps '.video.models | keys | join("|")')" "$counts" >&2
   printf '  Google Flow on the account'\''s subscription, through a hidden Chrome (gemini-web)\n' >&2
   printf '  frames (--first-frame/--last-frame; a lone --ref is the first frame) or ingredients (several --ref, --edit), never both\n' >&2
   printf '  --edit reworks a video of up to %ss (any source, a Grok clip too) on Omni; the clip keeps its length\n' "$edit_max" >&2
-  printf '  --extend continues a Veo clip gemini-video saved, on its own account: a new %ss clip that picks up its motion\n' "$extend_s" >&2
+  printf '  --extend continues a Flow clip gemini-video saved, on its own account, on %s: a new clip of --duration %s s (default %s) that picks up its motion\n' "$extend_model" "$extend_s" "$extend_default" >&2
   printf '  --count 2-4 renders variants in one send (dest, then <stem>-2, ...) at that multiple of the credits; default 1\n' >&2
-  printf '  --resolution 1080p renders 720p and downloads Flow'\''s own upscale (no extra credits), steadied and cleaned of halos against its 720p (kept as <stem>.720p.mp4, the download as <stem>.raw.mp4)\n' >&2
+  printf '  --resolution 1080p renders 720p and downloads Flow'\''s own upscale (free up to 10 s, then 1 credit a second), steadied and cleaned of halos against its 720p (kept as <stem>.720p.mp4, the download as <stem>.raw.mp4)\n' >&2
   printf '  prompting guide (read before writing a prompt): %s/docs/video-prompting.md\n' "$root" >&2
   printf '  one-time per account: geminib web <account>; readiness: gemini-web status <account>\n' >&2
   exit 2
@@ -105,8 +107,8 @@ esac
 if [ -n "$extend" ]; then
   { [ -z "$first_frame" ] && [ -z "$last_frame" ] && [ -z "$edit" ] && [ "${#refs[@]}" -eq 0 ]; } \
     || say "--extend continues a clip from its own ending; it takes no frames, --ref or --edit"
-  { [ -z "$duration" ] && [ -z "$model" ] && [ -z "$aspect" ] && [ "$count" = 1 ]; } \
-    || say "--extend keeps the source's model and aspect and adds ${extend_s}s; drop --duration, --model, --aspect and --count"
+  { [ -z "$model" ] && [ -z "$aspect" ] && [ "$count" = 1 ]; } \
+    || say "--extend keeps the source's aspect and adds one $extend_model clip; drop --model, --aspect and --count"
   { [[ "$extend" = /* ]] && [ -f "$extend" ]; } || usage "--extend $extend is not an absolute path to a file"
 fi
 if [ "${#refs[@]}" -eq 1 ] && [ -z "$first_frame" ] && [ -z "$edit" ]; then
@@ -129,7 +131,11 @@ command -v "$ffprobe_cmd" >/dev/null 2>&1 || {
 }
 
 if [ -n "$extend" ]; then
-  duration=$extend_s
+  duration=${duration:-$extend_default}
+  case "|$extend_s|" in
+    *"|$duration|"*) ;;
+    *) say "--extend adds $extend_s seconds, not $duration" ;;
+  esac
 elif [ -n "$edit" ]; then
   [ -z "$duration" ] || say "an --edit clip keeps the length of its source; drop --duration"
   source_s=$("$ffprobe_cmd" -v error -show_entries format=duration -of csv=p=0 "$edit" 2>/dev/null) || source_s=''
@@ -168,14 +174,14 @@ if [ -n "$extend" ]; then
 else
   if [ -z "$model" ]; then
     model=$(jq -r --arg d "$duration" --arg r "$render" --argjson n "${#refs[@]}" --argjson e "$edit_mode" '
-      .video as $v | ([$v.model_by_duration[$d] // empty] + ($v.models | keys))
+      .video as $v | ([$v.model_default] + ($v.models | keys))
       | map(select(. as $m | $v.models[$m] as $x | $x != null and $x.refs_max >= $n
-          and (if $e then $x.edit_costs[$r] != null else $x.costs[$r][$d] != null end)))
+          and $x.costs[$r][$d] != null and ($x.edits == true or $e == false)))
       | first // empty' "$manifest")
     [ -n "$model" ] || say "no Flow model takes this combination (duration $duration, $render, ${#refs[@]} refs)"
   fi
   model_caps=$(jq -r --arg m "$model" --arg r "$render" --arg d "$duration" '.video.models[$m] as $x
-    | ($x.label // ""), $x.refs_max, ($x.costs[$r] // "" | tostring), ($x.edit_costs[$r] // "" | tostring),
+    | ($x.label // ""), $x.refs_max, ($x.costs[$r] // "" | tostring), (if $x.edits then $x.costs[$r][$d] // "" else "" end | tostring),
       ($x.costs[$r][$d] // "" | tostring), "end"' "$manifest")
   { read -r label; read -r model_refs_max; read -r render_cost; read -r edit_cost; read -r duration_cost; } <<<"$model_caps"
   [ -n "$label" ] || usage "--model $model is not a Flow video model"
@@ -184,7 +190,7 @@ else
   [ -n "$render_cost" ] \
     || say "$label renders $(caps ".video.models[\"$model\"].costs | keys | join(\"|\")"), not $render"
   if [ "$edit_mode" = true ]; then
-    [ -n "$edit_cost" ] || say "$label cannot edit a video at $render"
+    [ -n "$edit_cost" ] || say "$label cannot edit a ${duration}s video at $render"
   elif [ -z "$duration_cost" ]; then
     say "$label takes duration $(caps ".video.models[\"$model\"].costs[\"$render\"] | keys | join(\"|\")"), not $duration"
   fi
@@ -196,7 +202,8 @@ trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
 result_file="$tmp_dir/result.json"
 
 if [ -n "$extend" ]; then
-  engine_args=(generate --prompt "$prompt" --dest "$dest" --extend "$extend" --resolution "$resolution")
+  engine_args=(generate --prompt "$prompt" --dest "$dest" --extend "$extend" --duration "$duration"
+    --resolution "$resolution")
 else
   engine_args=(generate --prompt "$prompt" --dest "$dest" --duration "$duration" --aspect "$aspect"
     --model "$model" --resolution "$resolution")

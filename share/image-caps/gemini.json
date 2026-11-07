@@ -59,17 +59,35 @@
     ],
     "aspect_default": "16:9",
     "durations": [
+      3,
       4,
+      5,
       6,
+      7,
       8,
-      10
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
     ],
     "duration_default": 8,
     "reference_durations": [
+      3,
       4,
+      5,
       6,
+      7,
       8,
-      10
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
     ],
     "refs_max": 4,
     "resolutions": [
@@ -85,7 +103,7 @@
       "first",
       "last"
     ],
-    "edit_source_max_s": 30,
+    "edit_source_max_s": 15,
     "counts": [
       1,
       2,
@@ -93,28 +111,33 @@
       4
     ],
     "extend": {
-      "label": "Extend (Veo 3.1 - Lite)",
-      "cost": 10,
-      "seconds": 7,
+      "label": "Extend",
+      "model": "Omni 1.2 Flash",
+      "seconds": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "seconds_default": 8,
+      "cost_per_s": {
+        "360p": 1,
+        "720p": 3
+      },
       "resolutions": [
+        "360p",
         "720p"
       ],
-      "sources": [
-        "fast",
-        "lite",
-        "quality"
-      ],
       "wire": [
-        "^veo_3_1_extension_lite$",
-        "^models/veo-3\\.1-lite-"
+        "^abra_",
+        "^omni_flash_"
       ]
     },
-    "model_by_duration": {
-      "4": "omni",
-      "6": "omni",
-      "8": "fast",
-      "10": "omni"
-    },
+    "model_default": "omni",
     "models": {
       "fast": {
         "label": "Veo 3.1 - Fast",
@@ -150,24 +173,40 @@
         "wire": []
       },
       "omni": {
-        "label": "Omni 1.1 Flash",
+        "label": "Omni 1.2 Flash",
         "refs_max": 4,
+        "edits": true,
         "costs": {
           "360p": {
+            "3": 3,
             "4": 4,
-            "6": 5,
-            "8": 6,
-            "10": 7
+            "5": 5,
+            "6": 6,
+            "7": 7,
+            "8": 8,
+            "9": 9,
+            "10": 10,
+            "11": 12,
+            "12": 14,
+            "13": 16,
+            "14": 18,
+            "15": 20
           },
           "720p": {
-            "4": 7,
-            "6": 10,
-            "8": 12,
-            "10": 15
+            "3": 9,
+            "4": 12,
+            "5": 15,
+            "6": 18,
+            "7": 21,
+            "8": 24,
+            "9": 27,
+            "10": 30,
+            "11": 36,
+            "12": 42,
+            "13": 48,
+            "14": 54,
+            "15": 60
           }
-        },
-        "edit_costs": {
-          "720p": 20
         },
         "wire": [
           "^abra_",

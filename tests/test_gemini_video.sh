@@ -26,10 +26,12 @@ assert_fails() {
 command -v ffmpeg >/dev/null 2>&1 || fail "ffmpeg is required for this suite"
 OUT="$WORK/out"
 mkdir -p "$OUT"
-CLIP="$WORK/clip.mp4" FRAME="$WORK/frame.png" LONG="$WORK/long.mp4"
+CLIP="$WORK/clip.mp4" FRAME="$WORK/frame.png" LONG="$WORK/long.mp4" EDIT="$WORK/edit.mp4"
 ffmpeg -v error -f lavfi -i color=c=blue:s=1280x720:d=1:r=24 -f lavfi -i testsrc=s=1280x720 \
-  -f lavfi -i color=c=green:s=320x180:d=31:r=4 -map 0 -c:v libx264 -pix_fmt yuv420p "$CLIP" \
-  -map 1 -frames:v 1 "$FRAME" -map 2 -c:v libx264 -pix_fmt yuv420p "$LONG" || fail "could not build the fixture clips"
+  -f lavfi -i color=c=green:s=320x180:d=16:r=4 -f lavfi -i color=c=red:s=320x180:d=4:r=4 \
+  -map 0 -c:v libx264 -pix_fmt yuv420p "$CLIP" -map 1 -frames:v 1 "$FRAME" \
+  -map 2 -c:v libx264 -pix_fmt yuv420p "$LONG" -map 3 -c:v libx264 -pix_fmt yuv420p "$EDIT" \
+  || fail "could not build the fixture clips"
 
 ENGINE="$WORK/fake-gemini-web"
 ENGINE_CALLS="$WORK/engine-calls"
@@ -45,13 +47,13 @@ case "${ENGINE_MODE:-ok}" in
   ok)
     cp "$CLIP" "$dest"
     printf '{"ok": true, "account": "acct-a", "model": "%s", "media_id": "m-1", "build": "boq_test_1", "cost": 20, "charged": %s, "seconds": {"harness": 12.5, "render": 55.0, "total": 87.6}, "phases": {"lock": 0.1, "sent": 9.4}, "load": {"lock": 6.5, "sent": 140.2}, "caps": %s}\n' \
-      "${ENGINE_MODEL:-veo_3_1_t2v_fast}" "${ENGINE_CHARGED:-20}" "${ENGINE_CAPS:-null}" ;;
+      "${ENGINE_MODEL:-omni_flash_t2v_8s}" "${ENGINE_CHARGED:-20}" "${ENGINE_CAPS:-null}" ;;
   variants)
     cp "$CLIP" "$dest"
     cp "$CLIP" "${dest%.mp4}-2.mp4"
     printf '{"ok": true, "account": "acct-a", "model": "abra_t2v_4s_360p", "media_id": "m-1", "build": "b", "variants": [{"dest": "%s", "media_id": "m-1"}, {"dest": "%s", "media_id": "m-2"}], "refused": [{"media_id": "m-3", "error": "PUBLIC_ERROR_SAFETY"}]}\n' \
       "$dest" "${dest%.mp4}-2.mp4" ;;
-  refuse) printf '{"ok": false, "code": 2, "reason": "Flow will not extend this clip (Only Veo-generated videos can be extended)"}\n'; exit 2 ;;
+  refuse) printf '{"ok": false, "code": 2, "reason": "Flow will not extend this clip (Extend is disabled)"}\n'; exit 2 ;;
   empty) printf '{"ok": true, "account": "acct-a"}\n' ;;
   limit) printf '{"ok": false, "code": 3, "reason": "acct-a has 5 Flow credits", "account": "acct-a"}\n'; exit 3 ;;
   login) printf '{"ok": false, "code": 4, "reason": "account acct-a has no browser login"}\n'; exit 4 ;;
@@ -90,7 +92,7 @@ assert test "$(video_rc --prompt 'drift')" = 2
 assert test "$(video_rc --dest relative.mp4 --prompt 'drift')" = 2
 assert test "$(video_rc --dest "$OUT/a.mov" --prompt 'drift')" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --aspect 4:3)" = 2
-assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --duration 5)" = 2
+assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --duration 16)" = 2
 SHIM="$WORK/shim"
 mkdir -p "$SHIM"
 for tool in jq sleep; do
@@ -119,13 +121,14 @@ assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --last-frame "$FRAM
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --edit "$CLIP" --duration 8)" = 2
 assert grep -q 'keeps the length of its source' "$VIDEO_ERR"
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --edit "$LONG")" = 2
-assert grep -q 'edits videos of up to 30s' "$VIDEO_ERR"
-assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --edit "$CLIP" --model fast)" = 2
-assert grep -q 'Veo 3.1 - Fast cannot edit a video at 720p' "$VIDEO_ERR"
+assert grep -q 'edits videos of up to 15s' "$VIDEO_ERR"
+assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --edit "$EDIT" --model fast)" = 2
+assert grep -q 'Veo 3.1 - Fast cannot edit a 4s video at 720p' "$VIDEO_ERR"
+assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --edit "$CLIP")" = 2
+assert grep -q 'no Flow model takes this combination (duration 1' "$VIDEO_ERR"
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --model fast --resolution 360p)" = 2
 assert grep -q 'Veo 3.1 - Fast renders 720p, not 360p' "$VIDEO_ERR"
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --resolution 4k)" = 2
-assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --edit "$CLIP" --resolution 360p)" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --count 5)" = 2
 assert grep -q 'Flow makes 1|2|3|4 clips per send, not 5' "$VIDEO_ERR"
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --count 0)" = 2
@@ -133,30 +136,28 @@ assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$CLIP" --
 assert grep -q 'takes no frames, --ref or --edit' "$VIDEO_ERR"
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$CLIP" --first-frame "$FRAME")" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$CLIP" --edit "$CLIP")" = 2
-assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$CLIP" --duration 8)" = 2
-assert grep -q 'adds 7s' "$VIDEO_ERR"
+assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$CLIP" --duration 11)" = 2
+assert grep -q -- '--extend adds 3|4|5|6|7|8|9|10 seconds, not 11' "$VIDEO_ERR"
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$CLIP" --model fast)" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$CLIP" --aspect 9:16)" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$CLIP" --count 2)" = 2
-assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$CLIP" --resolution 360p)" = 2
-assert grep -q 'Extend (Veo 3.1 - Lite) renders 720p, not 360p' "$VIDEO_ERR"
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend clip.mp4)" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'go on' --extend "$WORK/missing.mp4")" = 2
 assert test ! -s "$ENGINE_CALLS"
 
 reset_calls
-ENGINE_MODEL=veo_3_1_extension_lite ENGINE_CHARGED=10 video_run --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP"
-assert grep -qx -- "generate --prompt go on --dest $OUT/ext.mp4 --extend $CLIP --resolution 720p" "$ENGINE_CALLS"
-assert grep -qx 'model=veo_3_1_extension_lite model_caps=fresh' "$VIDEO_OUT"
+ENGINE_MODEL=omni_flash_extend_8s video_run --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP"
+assert grep -qx -- "generate --prompt go on --dest $OUT/ext.mp4 --extend $CLIP --duration 8 --resolution 720p" "$ENGINE_CALLS"
+assert grep -qx 'model=omni_flash_extend_8s model_caps=fresh' "$VIDEO_OUT"
 assert test "$(video_rc --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP" --resolution 1080p)" = 2
 assert grep -q 'no upscaled download of an extension' "$VIDEO_ERR"
 reset_calls
-ENGINE_MODEL='models/veo-3.1-lite-generate-002;backend_beyond' video_run --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP" --account acct-a
-assert grep -qx -- "generate --prompt go on --dest $OUT/ext.mp4 --extend $CLIP --resolution 720p --account acct-a" "$ENGINE_CALLS"
-assert grep -qx 'model=models/veo-3.1-lite-generate-002;backend_beyond model_caps=fresh' "$VIDEO_OUT"
+ENGINE_MODEL='omni_flash_extend_3s;backend_beyond' video_run --dest "$OUT/ext.mp4" --prompt 'go on' --extend "$CLIP" --account acct-a --duration 3 --resolution 360p
+assert grep -qx -- "generate --prompt go on --dest $OUT/ext.mp4 --extend $CLIP --duration 3 --resolution 360p --account acct-a" "$ENGINE_CALLS"
+assert grep -qx 'model=omni_flash_extend_3s;backend_beyond model_caps=fresh' "$VIDEO_OUT"
 assert_fails grep -q 'Flow charged' "$VIDEO_ERR"
 assert test "$(ENGINE_MODE=refuse video_rc --dest "$OUT/r.mp4" --prompt 'go on' --extend "$CLIP")" = 2
-assert grep -q 'Only Veo-generated videos can be extended' "$VIDEO_ERR"
+assert grep -q 'Flow will not extend this clip (Extend is disabled)' "$VIDEO_ERR"
 assert_fails grep -q GEMINI_USAGE_LIMIT "$VIDEO_ERR"
 
 reset_calls
@@ -180,8 +181,11 @@ assert_fails grep -q '^variant=' "$VIDEO_OUT"
 reset_calls
 assert video_run --dest "$OUT/eight.mp4" --prompt 'water light'
 assert_fails grep -q 'Flow charged' "$VIDEO_ERR"
-assert grep -q -- '--duration 8 --aspect 16:9 --model fast' "$ENGINE_CALLS"
+assert grep -q -- '--duration 8 --aspect 16:9 --model omni' "$ENGINE_CALLS"
 assert_fails grep -q -- '--account' "$ENGINE_CALLS"
+reset_calls
+ENGINE_MODEL=omni_flash_t2v_15s video_run --dest "$OUT/long.mp4" --prompt 'water light' --duration 15
+assert grep -q -- '--duration 15 --aspect 16:9 --model omni --resolution 720p' "$ENGINE_CALLS"
 reset_calls
 ENGINE_MODEL=abra_t2v_6s_720p video_run --dest "$OUT/six.mp4" --prompt 'water light' --duration 6
 assert grep -q -- '--duration 6 --aspect 16:9 --model omni --resolution 720p' "$ENGINE_CALLS"
@@ -195,7 +199,7 @@ assert grep -q -- '--duration 8 --aspect 16:9 --model omni --resolution 360p' "$
 
 reset_calls
 assert video_run --dest "$OUT/hd.mp4" --prompt 'water light' --resolution 1080p
-assert grep -q -- '--duration 8 --aspect 16:9 --model fast --resolution 1080p' "$ENGINE_CALLS"
+assert grep -q -- '--duration 8 --aspect 16:9 --model omni --resolution 1080p' "$ENGINE_CALLS"
 reset_calls
 assert video_run --dest "$OUT/hd4.mp4" --prompt 'water light' --resolution 1080p --duration 4
 assert grep -q -- '--duration 4 --aspect 16:9 --model omni --resolution 1080p' "$ENGINE_CALLS"
@@ -210,15 +214,18 @@ assert video_run --dest "$OUT/fl.mp4" --prompt 'water light' --ref "$FRAME" --la
 assert grep -q -- "--first-frame $FRAME --last-frame $WORK/last.png" "$ENGINE_CALLS"
 reset_calls
 assert video_run --dest "$OUT/refs.mp4" --prompt 'water light' --ref "$FRAME" --ref "$WORK/last.png"
-assert grep -q -- "--model fast --resolution 720p --ref $FRAME --ref $WORK/last.png" "$ENGINE_CALLS"
+assert grep -q -- "--model omni --resolution 720p --ref $FRAME --ref $WORK/last.png" "$ENGINE_CALLS"
 assert_fails grep -q -- '--first-frame' "$ENGINE_CALLS"
 reset_calls
 assert video_run --dest "$OUT/refs4.mp4" --prompt 'water light' --ref "$FRAME" --ref "$FRAME" --ref "$FRAME" --ref "$FRAME"
 assert grep -q -- '--model omni' "$ENGINE_CALLS"
 test "$(grep -o -- '--ref ' "$ENGINE_CALLS" | wc -l | tr -d ' ')" = 4 || fail "four refs were not passed through"
 reset_calls
-assert video_run --dest "$OUT/edit.mp4" --prompt 'turn it into watercolor' --edit "$CLIP" --ref "$FRAME"
-assert grep -q -- "--model omni --resolution 720p --edit $CLIP --ref $FRAME" "$ENGINE_CALLS"
+assert video_run --dest "$OUT/edit.mp4" --prompt 'turn it into watercolor' --edit "$EDIT" --ref "$FRAME"
+assert grep -q -- "--duration 4 --aspect 16:9 --model omni --resolution 720p --edit $EDIT --ref $FRAME" "$ENGINE_CALLS"
+reset_calls
+assert video_run --dest "$OUT/edit.mp4" --prompt 'turn it into watercolor' --edit "$EDIT" --resolution 360p
+assert grep -q -- "--model omni --resolution 360p --edit $EDIT" "$ENGINE_CALLS"
 assert_fails grep -q -- '--first-frame' "$ENGINE_CALLS"
 
 reset_calls
@@ -229,7 +236,7 @@ assert grep -qx 'format=mp4' "$VIDEO_OUT"
 assert grep -qx 'duration=1' "$VIDEO_OUT"
 assert grep -qx 'account=acct-a' "$VIDEO_OUT"
 assert grep -qx 'media=m-1' "$VIDEO_OUT"
-assert grep -qx 'model=veo_3_1_t2v_fast model_caps=fresh' "$VIDEO_OUT"
+assert grep -qx 'model=omni_flash_t2v_8s model_caps=fresh' "$VIDEO_OUT"
 assert grep -qx 'caps=fresh surface=boq_test_1' "$VIDEO_OUT"
 reset_calls
 ENGINE_CAPS='["models: +Veo 4"]' assert video_run --dest "$OUT/footer-caps.mp4" --prompt 'water light'
@@ -413,15 +420,17 @@ assert (p["cost"], p["mode"], p["label"], p["duration"]) == (20, "Frames", "Veo 
 assert plan(model="omni", duration=4, resolution="360p")["cost"] == 4
 assert plan(model="quality")["cost"] == 100
 p = plan(model="omni", duration=10, first_frame=frame, last_frame=frame)
-assert (p["cost"], p["mode"]) == (15, "Frames"), p
+assert (p["cost"], p["mode"]) == (30, "Frames"), p
+assert plan(model="omni", duration=15)["cost"] == 60 and plan(model="omni", duration=3, resolution="360p")["cost"] == 3
+assert plan(model=None)["model"] == "omni"
 p = plan(ref=[frame, frame, frame])
 assert (p["cost"], p["mode"]) == (20, "Ingredients"), p
 p = plan(model="omni", edit=clip, ref=[frame])
-assert (p["cost"], p["mode"], p["duration"], p["upscale"]) == (20, "Ingredients", None, None), p
+assert (p["cost"], p["mode"], p["duration"], p["upscale"]) == (24, "Ingredients", None, None), p
 p = plan(resolution="1080p")
 assert (p["cost"], p["resolution"], p["upscale"]) == (20, "720p", "1080p"), p
 p = plan(model="omni", edit=clip, resolution="1080p")
-assert (p["cost"], p["resolution"], p["upscale"]) == (20, "720p", "1080p"), p
+assert (p["cost"], p["resolution"], p["upscale"]) == (24, "720p", "1080p"), p
 assert refused(model="omni", duration=4, resolution="4k")
 assert refused(ref=[frame] * 4)
 assert refused(model="omni", ref=[frame] * 5)
@@ -429,13 +438,14 @@ assert refused(first_frame=frame, ref=[frame])
 assert refused(last_frame=frame, edit=clip, model="omni")
 assert refused(resolution="360p")
 assert refused(edit=clip)
-assert refused(model="omni", edit=clip, resolution="360p")
-assert refused(model="omni", duration=5)
+assert plan(model="omni", edit=clip, resolution="360p")["cost"] == 8
+assert refused(model="omni", edit=clip, duration=2)
+assert refused(model="omni", duration=16)
 assert refused(ref=["/nonexistent.png"])
 assert refused(model="nope")
 p = plan(model="omni", duration=4, resolution="360p", count=3)
-assert (p["cost"], p["count"], p["what"]) == (12, 3, "Omni 1.1 Flash 360p 4s x3"), p
-assert plan(model="omni", edit=clip, count=2)["cost"] == 40
+assert (p["cost"], p["count"], p["what"]) == (12, 3, "Omni 1.2 Flash 360p 4s x3"), p
+assert plan(model="omni", edit=clip, count=2)["cost"] == 48
 assert refused(count=5) and refused(count=0)
 assert plan()["count"] == 1 and plan()["extend"] is None
 EOF
@@ -589,14 +599,23 @@ EOF
 # Every model in Flow's model menu is compared with the manifest: an added one is recorded as caps drift and
 # the run goes on; a gone one is recorded even when the run then fails on it.
 assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" <<'EOF'
-import sys
+import re, sys
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
 
 
+def named(name, model):
+    return bool(name.search(model)) if hasattr(name, "search") else name == model
+
+
 class MenuPage:
-    def __init__(self, models, video=False):
+    """seconds: Omni 1.2's Length slider (3-15 s, arrow keys) in place of the length radios."""
+    def __init__(self, models, video=False, seconds=None):
         self.models, self.popover, self.menu, self.picked, self.video = models, False, False, None, video
+        self.seconds, self.keyboard = seconds, self
+
+    def press(self, key):
+        self.seconds = max(3, min(15, self.seconds + (1 if key == "ArrowRight" else -1)))
 
     def get_by_role(self, role, name=None, exact=None):
         page = self
@@ -608,8 +627,10 @@ class MenuPage:
                 if name == "Select model family":
                     return int(page.popover and not page.video)
                 if role == "radio":
-                    return int(page.popover)
-                return int(page.menu and name in page.models) if role == "menuitem" else 1
+                    return int(page.popover and not (page.seconds and re.fullmatch(r"\d+s", str(name))))
+                if role == "slider":
+                    return int(page.popover and bool(page.seconds))
+                return int(page.menu and any(named(name, m) for m in page.models)) if role == "menuitem" else 1
 
             def is_visible(self):
                 return self.count() > 0
@@ -627,7 +648,10 @@ class MenuPage:
                 return "- menu:\n" + "".join(f'  - menuitem "{model}"\n' for model in page.models)
 
             def inner_text(self, timeout=None):
-                return "20 credits" if role == "link" else "Video · 720p · 8s crop_16_9 x1"
+                return "20 credits" if role == "link" else f"Video · 720p · {page.seconds or 8}s crop_16_9 x1"
+
+            def focus(self):
+                pass
 
             def click(self, timeout=None):
                 if name == "Settings trigger":
@@ -636,7 +660,7 @@ class MenuPage:
                     page.menu = True
                 elif role == "menuitem":
                     self.wait_for()
-                    page.picked, page.menu = name, False
+                    page.picked, page.menu = next(m for m in page.models if named(name, m)), False
 
         return Node()
 
@@ -650,10 +674,13 @@ class MenuPage:
 plan = {"label": "Veo 3.1 - Fast", "mode": "Frames", "aspect": "16:9", "resolution": "720p", "duration": 8,
         "count": 1}
 known = [m["label"] for m in g.video_caps()["models"].values()]
-for models, drift, state in ((known + ["Veo 4"], ["models: +Veo 4"], "stale"), (known[::-1], [], "fresh")):
+# A retiring model counts by its name, and one the manifest already dropped is no drift (Flow, 2026-11).
+leaving = [f"{m} Leaving Dec 5" for m in known] + ["Omni 1.1 Flash Leaving Dec 5"]
+for models, drift, state in ((known + ["Veo 4"], ["models: +Veo 4"], "stale"), (known[::-1], [], "fresh"),
+                             (leaving, [], "fresh")):
     page = MenuPage(models)
     assert g.settings(page, plan, full=True) == (20, "Video · 720p · 8s crop_16_9 x1"), vars(page)
-    assert page.picked == "Veo 3.1 - Fast" and not page.popover, vars(page)
+    assert page.picked.startswith("Veo 3.1 - Fast") and not page.popover, vars(page)
     assert g.MENU_CAPS["video"] == drift, g.MENU_CAPS
     row = g.caps_checks.read()[-1]
     assert (row["section"], row["state"], row["what"]) == ("video", state, "; ".join(drift)), row
@@ -668,6 +695,11 @@ assert (row["state"], row["what"]) == ("stale", "models: -Veo 3.1 - Fast"), row
 page = MenuPage(known, video=True)
 assert g.settings(page, plan, full=False) == (20, "Video · 720p · 8s crop_16_9 x1"), vars(page)
 assert not page.popover, vars(page)
+# Omni 1.2 sets its length on a slider: stepped from Flow's 6 s to the plan's, both ways.
+for want in (11, 3):
+    page = MenuPage(known, seconds=6)
+    omni = {**plan, "label": "Omni 1.2 Flash", "duration": want}
+    assert g.settings(page, omni, full=True) == (20, f"Video · 720p · {want}s crop_16_9 x1"), vars(page)
 EOF
 
 # Rotation by cached balance gate and least recent start, past a sign-in step, and inside the gemini worker pool; the clone stays while in use.
@@ -838,20 +870,19 @@ def refusal(**kw):
     return None
 
 p = g.make_plan(ns())
-assert (p["model"], p["cost"], p["duration"], p["mode"], p["count"]) == ("extend", 10, 7, "Extend", 1), p
+assert (p["model"], p["cost"], p["duration"], p["mode"], p["count"]) == ("extend", 24, 8, "Extend", 1), p
+assert g.make_plan(ns(duration=3, resolution="360p"))["cost"] == 3
 assert {k: p["extend"][k] for k in ("account", "media_id", "project", "scene", "model")} == \
     {"account": "rich", "media_id": "m-veo", "project": "p-1", "scene": "s-veo", "model": "fast"}, p["extend"]
 assert refusal(resolution="1080p")[0] == 2 and g.make_plan(ns())["upscale"] is None
-code, reason = refusal(extend=grown)
-assert code == 2 and "itself an extension" in reason, reason
-code, reason = refusal(extend=omni)
-assert code == 2 and "made on omni" in reason and "video-chain last-frame" in reason, reason
+# Which clips Flow extends is its call (a disabled Extend item): an Omni clip or an extension plans like any.
+assert refusal(extend=grown) is None and g.make_plan(ns(extend=omni))["extend"]["model"] == "omni"
 code, reason = refusal(extend=edited)
 assert code == 2 and "changed since gemini-video saved it" in reason, reason
 code, reason = refusal(extend=clip)
 assert code == 2 and "not a clip gemini-video saved" in reason, reason
 assert refusal(ref=[frame])[0] == 2 and refusal(edit=clip)[0] == 2 and refusal(count=2)[0] == 2
-assert refusal(resolution="360p")[0] == 2
+assert refusal(duration=11)[0] == 2 and refusal(duration=2)[0] == 2
 code, reason = refusal(extend=veo.replace("veo", "missing"))
 assert code == 2 and "not a file" in reason, reason
 
@@ -1206,7 +1237,7 @@ assert fetched["ref720"] == str(hd / "u.720p.mp4") and fetched["steady"] == {"st
 assert (hd / "jitter-stub.args").read_text().split() == ["fix", str(hd / "u.mp4"), "--ref720", str(hd / "u.720p.mp4"),
                                                          "--register"]
 # The fix rewrites the file, and Extend still knows it as its media's.
-assert g.extend_source(str(hd / "u.mp4"), {"sources": ["fast"]})["media_id"] == "m-1"
+assert g.extend_source(str(hd / "u.mp4"))["media_id"] == "m-1"
 # A pack's films are fixed at once while memory has room, else one after another.
 g.JITTER.write_text("#!/bin/sh\necho \"start $2\" >>\"$0.log\"; sleep 0.5; echo \"end $2\" >>\"$0.log\"; "
                     "echo '{\"steadied\": \"none\"}'\n")
@@ -1271,7 +1302,7 @@ EOF
 engine_rc() { GEMINI_WEB_DIR="$GW" python3 "$ROOT/share/gemini_web.py" "$@" >"$WORK/engine.out" 2>"$WORK/engine.err"; printf '%s' "$?"; }
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --duration 6 --model fast)" = 2
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --aspect 4:3)" = 2
-assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --resolution 360p)" = 2
+assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --resolution 360p --model fast)" = 2
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --first-frame "$FRAME" --ref "$FRAME")" = 2
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --count 7)" = 2
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --extend "$CLIP")" = 2
@@ -1287,14 +1318,14 @@ mkdir -p "$EMPTY"
 assert test "$(GEMINI_WEB_DIR="$EMPTY" python3 "$ROOT/share/gemini_web.py" generate --prompt x --dest "$OUT/x.mp4" >/dev/null 2>&1; printf '%s' "$?")" = 4
 
 assert jq -e '.video.models | to_entries | all(.value.label and .value.refs_max and (.value.costs | length > 0))' "$MANIFEST" >/dev/null
-assert jq -e '.video as $v | $v.durations | all(tostring as $d | $v.model_by_duration[$d] as $m
-  | $m != null and $v.models[$m].costs[$v.resolution_default][$d] != null)' "$MANIFEST" >/dev/null
+assert jq -e '.video as $v | $v.durations | all(tostring as $d
+  | $v.models[$v.model_default].costs[$v.resolution_default][$d] != null)' "$MANIFEST" >/dev/null
 assert jq -e '.video as $v | ([$v.models[].refs_max] | max) == $v.refs_max
   and ([$v.models[].costs | keys[]] | unique) == ($v.resolutions - ($v.upscale | keys) | sort)
   and ($v.upscale | to_entries | all(.value as $r | $v.resolutions | index($r)))
   and ([$v.models[].wire[], $v.extend.wire[]] | all(. as $p | "x" | test($p) or true))
-  and ($v.extend.resolutions | all(. as $r | $v.resolutions | index($r)))
-  and ($v.extend.sources | all($v.models[.] != null))
+  and ($v.extend.resolutions | all(. as $r | $v.resolutions | index($r) and $v.extend.cost_per_s[$r]))
+  and ($v.extend.seconds | index($v.extend.seconds_default))
   and ($v.counts | index(1))' "$MANIFEST" >/dev/null
 
 # Flow's Failed card ends the wait at once: n fresh cards are the n clips still pending once the rest are done.
@@ -1357,7 +1388,7 @@ g.press_generate(types.SimpleNamespace(evaluate=lambda script, op: calls.append(
 assert calls == [(g.FAILED_CARDS, "mark"), "click"], calls
 EOF
 
-ENGINE_MODEL=veo_3_1_i2v_s_fast_fl assert video_run --dest "$OUT/frame-key.mp4" --prompt 'water light'
+ENGINE_MODEL=veo_3_1_i2v_s_fast_fl assert video_run --dest "$OUT/frame-key.mp4" --prompt 'water light' --model fast
 assert grep -qx 'model=veo_3_1_i2v_s_fast_fl model_caps=fresh' "$VIDEO_OUT"
 
 echo "PASS: $asserts asserts; manifest gates refused before any spend (frames vs ingredients, refs per model, resolution, edit source length), 1080p as a 720p render plus upscale, manifest-driven model choice, lone --ref as first frame, refs and --edit passed through, the measured footer with wire-pattern freshness, exit 3 kept to credit walls and exit 4 to unsigned profiles, the engine's media readers on real Flow traffic (the new clip from the generation reply, else by prompt and freshness), the generation request's wire key, the engine's plan and costs, pre-browser engine gates, flagged-account detection (a whole failed envelope, never an old tile) and walled-account rotation least recently started first (a new generation stamps it, an extend or dry run never), --extend found through the job ledger (Veo sources only, untouched files, never an extension, pinned to its account and its walls, 720p) with the extend reply read from real traffic, --count variants priced and listed, a charge that differs from the manifest reported, fetch through the clip's grid tile and editor menu (never a batchexecute/as29s request; no ledger project, no listing entry or no tile = exit 1), and the manifest's model/duration/resolution/extend coverage"

@@ -1233,10 +1233,13 @@ MENU_CAPS: dict[str, list[str]] = {}
 
 def note_model_menu(page, section: str, known: list[str]) -> None:
     """Every model in the open family menu against the manifest's labels, as caps drift: a model Flow added is
-    recorded, never refused."""
+    recorded, never refused. A retiring one ("Omni 1.1 Flash Leaving Dec 5") counts by its name, and is no drift
+    when the manifest already dropped it."""
     with contextlib.suppress(Exception):
         live = [re.sub(r"^\W+", "", name) for name in
                 re.findall(r'menuitem "([^"]+)"', page.get_by_role("menu").last.aria_snapshot(timeout=3000))]
+        names = [re.sub(r"\s+Leaving\b.*$", "", name) for name in live]
+        live = [name for name, shown in zip(names, live) if name in known or name == shown]
         if live:
             MENU_CAPS[section] = caps_drift("models", live, known)
             caps_checks.record("gemini", section, bool(MENU_CAPS[section]), "; ".join(MENU_CAPS[section]))
@@ -1248,6 +1251,29 @@ def choose(page, name) -> None:
     settle(page, 300, radio.is_checked)
     if not radio.is_checked():
         raise drift(f"the {getattr(name, 'pattern', name)} setting does not stick")
+
+
+def set_length(page, trigger, name: str, seconds: int) -> None:
+    """Radios on the older models; on Omni 1.2 a 1-second-step slider stepped by arrow keys until the settings
+    chip reads the length (2026-11). Veo shows neither; compose's chip check catches a length that did not take."""
+    if page.get_by_role("radio", name=f"{seconds}s", exact=True).count():
+        return choose(page, f"{seconds}s")
+    slider = page.get_by_role("slider", name=name, exact=True)
+    if not slider.count():
+        return
+    def shown() -> int | None:
+        found = re.search(r"(\d+)s\b", trigger.inner_text())
+        return int(found[1]) if found else None
+
+    slider.last.focus()
+    for _ in range(20):
+        before = shown()
+        if before is None or before == seconds:
+            return
+        page.keyboard.press("ArrowRight" if before < seconds else "ArrowLeft")
+        settle(page, 500, lambda: shown() != before)
+        if shown() == before:
+            raise drift(f"the {name} slider stops at {before}s, short of {seconds}s")
 
 
 def settings(page, plan: dict, full: bool) -> tuple[int, str]:
@@ -1276,8 +1302,8 @@ def settings(page, plan: dict, full: bool) -> tuple[int, str]:
         resolution = page.get_by_role("radio", name=re.compile("^" + plan["resolution"]))
         if resolution.count():
             choose(page, re.compile("^" + plan["resolution"]))
-        if plan["duration"] and page.get_by_role("radio", name=f"{plan['duration']}s", exact=True).count():
-            choose(page, f"{plan['duration']}s")
+        if plan["duration"]:
+            set_length(page, trigger, "Length", plan["duration"])
         choose(page, f"x{plan['count']}")
         quote = page.get_by_role("link", name=re.compile(r"^\d+ credits?$")).last
         cost = int(re.match(r"\d+", quote.inner_text(timeout=5000)).group(0))
@@ -1380,8 +1406,9 @@ def compose(page, plan: dict) -> tuple[int, str]:
     return cost, chip
 
 
-def extend_composer(page, source: dict, label: str) -> str:
-    """The source clip's editor in extend mode; Flow shows no credit quote there."""
+def extend_composer(page, source: dict, label: str, seconds: int) -> str:
+    """The source clip's editor in extend mode at the plan's length; Flow shows no credit quote there. Since
+    2026-11-05 Omni 1.2 extends (3-10 s, a slider), Veo Extend is gone."""
     if source.get("scene"):
         goto_flow(page, f"/project/{source['project']}/edit/{source['scene']}")
     else:
@@ -1399,11 +1426,23 @@ def extend_composer(page, source: dict, label: str) -> str:
                          "its last frame instead: video-chain last-frame")
     item.click()
     chip = page.get_by_role("button", name="Exit extend mode", exact=True)
+    trigger = page.get_by_role("button", name="Settings trigger", exact=True).last
+    slider = page.get_by_role("slider", name="Extend Length", exact=True)
     try:
         chip.wait_for(timeout=15000)
-    except Exception:
-        raise drift("the extend composer never opened")
-    return " ".join(chip.inner_text().split())
+        trigger.click(timeout=5000)
+        slider.last.wait_for(timeout=8000)
+        set_length(page, trigger, "Extend Length", seconds)
+    except Failure:
+        raise
+    except Exception as exc:
+        raise drift(f"the extend composer never opened at a length ({exc.__class__.__name__})")
+    finally:
+        close_settings(page, trigger, slider)
+    length = " ".join(trigger.inner_text().split())
+    if f"{seconds}s" not in length.split():
+        raise drift(f"the extend composer reads {length!r}, expected {seconds}s")
+    return f"{' '.join(chip.inner_text().split())} {length}"
 
 
 def video_caps() -> dict:
@@ -1953,15 +1992,16 @@ def open_clip(page, project: str, media_id: str, account: str = "-", timeout_s: 
     return re.search(r"/edit/([^/?#]+)", page.url).group(1)
 
 
-def extend_source(path: str, ext: dict) -> dict:
-    """The Flow clip gemini-video saved at `path`, read back from the job ledger."""
+def extend_source(path: str) -> dict:
+    """The Flow clip gemini-video saved at `path`, read back from the job ledger. Which clips Flow extends is
+    its own call: a disabled Extend item in the editor refuses with Flow's tooltip (extend_composer)."""
     target = str(Path(path).resolve())
     rows = job_rows()
     saved = [r for r in rows if isinstance(r, dict) and r.get("state") == "saved" and r.get("dest")
              and str(Path(r["dest"]).resolve()) == target]
     if not saved:
         raise Failure(2, f"{path} is not a clip gemini-video saved from Flow, and Flow extends only its own "
-                         "Veo clips; chain it from its last frame instead: video-chain last-frame")
+                         "clips; chain it from its last frame instead: video-chain last-frame")
     source = {"path": target}
     for row in rows:
         if isinstance(row, dict) and row.get("media_id") == saved[-1].get("media_id"):
@@ -1969,12 +2009,6 @@ def extend_source(path: str, ext: dict) -> dict:
                            if row.get(k)})
     if not source.get("project") or not source.get("account"):
         raise Failure(2, f"the job ledger has no Flow project for {path}")
-    if source.get("model") == "extend":
-        raise Failure(2, f"{path} is itself an extension, and Flow's editor cannot extend one again; chain it "
-                         "from its last frame instead: video-chain last-frame")
-    if source.get("model") and source["model"] not in ext["sources"]:
-        raise Failure(2, f"{path} was made on {source['model']}, and Flow extends only Veo clips; chain it "
-                         "from its last frame instead: video-chain last-frame")
     if source.get("bytes") and Path(path).stat().st_size != source["bytes"]:
         raise Failure(2, f"{path} changed since gemini-video saved it, and Extend continues Flow's original "
                          f"clip {source['media_id']}; pass the untouched clip")
@@ -2063,7 +2097,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                               credits=credits)
             if plan["extend"]:
                 project, quote = plan["extend"]["project"], None
-                chip = extend_composer(page, plan["extend"], plan["label"])
+                chip = extend_composer(page, plan["extend"], plan["label"], plan["duration"])
             else:
                 quote, chip = compose(page, plan)
                 if quote != cost:
@@ -2184,11 +2218,13 @@ def extend_plan(args, caps: dict) -> dict:
     if args.resolution not in ext["resolutions"]:
         raise Failure(2, f"{ext['label']} renders {', '.join(ext['resolutions'])}, not {args.resolution}: Flow "
                          "has no upscaled download of an extension; video-chain join scales it to the chain")
-    return {"model": "extend", "label": ext["label"], "cost": ext["cost"],
-            "what": f"an {ext['label']} of {Path(args.extend).name}", "mode": "Extend", "aspect": None,
-            "resolution": args.resolution, "upscale": None,
-            "duration": ext["seconds"], "first_frame": None, "last_frame": None, "refs": [], "edit": None,
-            "count": 1, "extend": extend_source(args.extend, ext)}
+    if args.duration not in ext["seconds"]:
+        raise Failure(2, f"{ext['label']} adds {ext['seconds'][0]}-{ext['seconds'][-1]}s, not {args.duration}s")
+    return {"model": "extend", "label": ext["label"], "cost": ext["cost_per_s"][args.resolution] * args.duration,
+            "what": f"a {args.duration}s {ext['model']} extension of {Path(args.extend).name}", "mode": "Extend",
+            "aspect": None, "resolution": args.resolution, "upscale": None,
+            "duration": args.duration, "first_frame": None, "last_frame": None, "refs": [], "edit": None,
+            "count": 1, "extend": extend_source(args.extend)}
 
 
 def make_plan(args) -> dict:
@@ -2197,6 +2233,7 @@ def make_plan(args) -> dict:
         raise Failure(2, f"Flow makes {', '.join(map(str, caps['counts']))} clips per send, not {args.count}")
     if args.extend:
         return extend_plan(args, caps)
+    args.model = args.model or caps["model_default"]
     model = caps["models"].get(args.model)
     if model is None:
         raise Failure(2, f"unknown model {args.model!r}; known: {', '.join(caps['models'])}")
@@ -2217,9 +2254,10 @@ def make_plan(args) -> dict:
     if costs is None:
         raise Failure(2, f"{label} renders {', '.join(model['costs'])}, not {args.resolution}")
     if args.edit:
-        cost = model.get("edit_costs", {}).get(resolution)
+        # Flow prices an edit as a clip of the source's whole seconds (7.93 s quotes as 7 s, 2026-11-07).
+        cost = costs.get(str(args.duration)) if model.get("edits") else None
         if cost is None:
-            raise Failure(2, f"{label} cannot edit a video at {resolution}")
+            raise Failure(2, f"{label} cannot edit a {args.duration}s video at {resolution}")
         duration, what = None, f"a {label} {resolution} edit"
     else:
         cost = costs.get(str(args.duration))
@@ -2452,12 +2490,12 @@ def main() -> None:
     p.add_argument("--last-frame")
     p.add_argument("--ref", action="append", default=[])
     p.add_argument("--edit")
-    p.add_argument("--extend", help="continue a Veo clip gemini-video saved from Flow")
+    p.add_argument("--extend", help="continue a clip gemini-video saved from Flow by --duration seconds")
     p.add_argument("--count", type=int, default=1)
     p.add_argument("--duration", type=int, default=8)
     p.add_argument("--aspect", default="16:9")
     p.add_argument("--resolution", default="720p")
-    p.add_argument("--model", default="fast")
+    p.add_argument("--model", help="a manifest video model; default the manifest's model_default")
     p.add_argument("--timeout", type=int, default=900)
     p.add_argument("--dry-run", action="store_true",
                    help="set the composer up and read Flow's credit quote, send nothing")

@@ -305,15 +305,15 @@ manifest, so a misread setup spends nothing. Every model in the family menu is c
 `caps-checks.jsonl` row and `caps=stale what=models: +<label>` in the footer, and the run goes on (all four video
 and three image models matched, quotes too, on build `20261016.00_p1`, 2026-10-19). Watermark: none on PRO.
 
-| Fact (2026-10-01, build `boq_labs-ai-sandbox-frontend_20260929.10_p0`, PRO) | Evidence |
+| Fact (2026-10-01, build `boq_labs-ai-sandbox-frontend_20260929.10_p0`, PRO; Omni 1.2 rows 2026-11-07, build `20261105.10_p0`) | Evidence |
 | --- | --- |
-| Credits: Veo 3.1 Lite/Fast/Quality 8 s 720p = 10/20/100; Omni 1.1 Flash 4/6/8/10 s = 7/10/12/15 at 720p, 4/5/6/7 at 360p; x2–x4 linear; aspect and frames cost nothing extra | popover quotes for every model; real runs matched their quotes |
-| Veo: 8 s 720p only, up to 3 image refs, no video ref; Omni: 360p/720p, 4–10 s, 4 image refs seen (true maximum unknown) plus 1 video | settings popover; ingredient warnings |
-| `--edit`: Omni reworks an uploaded video (any source; uploads over 30 s must be trimmed), the clip keeps the source length; 720p edit of an 8 s upload = 20 credits (Flow help says 40; the charge was 20) | real edit run, 1030 → 1010 |
-| `--resolution 1080p`: renders 720p, then the clip editor's "Download media → 1080p Upscaled" gives 1920x1080 at no charge (4K is disabled on PRO) | real runs, credits unchanged |
-| `--extend`: the source clip's editor → "Add clip" → "Extend (Veo 3.1 - Lite)" → prompt → send; 10 credits, a 7 s 720p clip holding only the continuation, which starts where the source ends (SSIM 0.91 and 0.92 against the source's last frame). Veo clips only: on Omni the item is disabled ("Only Veo-generated videos can be extended"); an extension opens as an empty editor (no Add clip, Download disabled), so it can be neither extended again nor downloaded upscaled. Extend mode shows no quote, so the charge is checked afterwards from the reply's credits. The source is looked up in `~/.gemini-web/jobs.jsonl` (account, project, scene, model, bytes); an older row without a scene opens the editor from the clip's tile in the project grid, as `fetch` does | two real runs (the first 990 → 980) |
+| Credits: Veo 3.1 Lite/Fast/Quality 8 s 720p = 10/20/100; Omni 1.2 Flash 3–15 s = 1 credit a second at 360p and 3 at 720p up to 10 s, then 2 and 6 a second (15 s = 20/60); x2–x4 linear; aspect and frames cost nothing extra. Fast, Quality and Omni 1.1 leave Flow on 2026-12-05 (the menu suffixes them "Leaving Dec 5"; the picker matches a label's start, and a retiring model the manifest dropped is no drift) | popover quotes for every model and every Omni length, both modes |
+| Veo: 8 s 720p only, up to 3 image refs, no video ref; Omni 1.2: 360p/720p, 3–15 s on a "Length" slider (1 s steps; the engine steps it with the arrow keys until the chip reads the length), 4 image refs seen (true maximum unknown) plus 1 video | settings popover; ingredient warnings |
+| `--edit`: Omni reworks an uploaded video (any source), the clip keeps the source length up to 15 s (a 20 s upload is quoted as 15 s, so longer ones are refused: trim first); priced as a clip of the source's whole seconds (7.93 s quotes 21 at 720p, 7 at 360p) | composer quotes with 5/8/12/20 s uploads attached |
+| `--resolution 1080p`: renders 720p, then the clip editor's "Download media → 1080p Upscaled" gives 1920x1080 at no charge up to 10 s; Flow help prices 1 credit a second beyond (not yet seen on a run; 4K is Ultra only) | real runs, credits unchanged |
+| `--extend`: the source clip's editor → "Add clip" → "Extend" (Omni 1.2 since Veo Extend retired 2026-11-05) → the settings chip's "Extend Length" slider, 3–10 s → prompt → send; 1 credit a second at 360p, 3 at 720p (Flow help). Veo and Omni clips both open it; whether Flow extends an extension, and what it downloads, is not yet seen on a real run, so a disabled item is refused with Flow's own tooltip. Extend mode shows no quote, so the charge is checked afterwards from the reply's credits. The source is looked up in `~/.gemini-web/jobs.jsonl` (account, project, scene, model, bytes); an older row without a scene opens the editor from the clip's tile in the project grid, as `fetch` does | dry runs on a Veo and an Omni 1.1 clip (2026-11-07); Veo Extend: two real runs |
 | `--count 2-4`: the x2–x4 setting; the reply names every take, with fresh media polls carrying the exact prompt as fallback, saved as the dest, `<stem>-2.mp4`, …; Omni 360p 4 s x2 = 8 | real run on egbogd; missing-reply regression |
-| `--edit` + `--ref`: puts the ingredient into the uploaded video (a stopwatch onto a water clip's sand), same 20 credits as a plain edit | real run on jihangarangan |
+| `--edit` + `--ref`: puts the ingredient into the uploaded video (a stopwatch onto a water clip's sand), same credits as a plain edit | real run on jihangarangan (Omni 1.1) |
 | Output: 1280x720 (640x360 at 360p) h264 with AAC | ffprobe of every run |
 | Send → saved clip ≈ 25–65 s; a whole run ≈ 35–90 s (uploads and the 1080p download add most of it) | `seconds=` footer |
 
@@ -490,11 +490,11 @@ The app route stays the default: it succeeds more often, fails fast and spends n
 features are needed, or with `--accounts 2+` when the time to a take matters.
 
 **Sound effects** — `bin/gemini-sfx` runs `bin/gemini-video --model omni --resolution 360p` (4/6/8/10 s =
-4/5/6/7 credits) with a prompt that asks for an isolated sound on a close-up of its source. It keeps only the
+4/6/8/10 credits) with a prompt that asks for an isolated sound on a close-up of its source. It keeps only the
 soundtrack: trims silence at both ends (-50 dB), applies two-pass loudnorm to -16 LUFS / -1.5 dBTP, and
 writes 48 kHz stereo pcm_s16le. A clip at -70 LUFS or quieter is refused as silent; with `--count` an
 unusable take is dropped, the usable ones become the dest and its variants, and the run fails only when none is. `--for-video <≤ 10 s>` is
-an Omni edit at 720p (20 credits) asking for effects synced to the picture; the wav keeps the video's
+an Omni edit at 720p (3 credits a second) asking for effects synced to the picture; the wav keeps the video's
 length. By ear, 1 of 3 text takes was usable (the others had a drone or hiss under the sound), so ask for
 `--count 2`. In the edit, whooshes landed on the cuts, but continuous clicks ignored the hand's pauses.
 

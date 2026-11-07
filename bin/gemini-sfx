@@ -32,8 +32,8 @@ usage() {
   printf '  a Flow Omni clip rendered for its soundtrack (%s, %s credits for %ss); the audio is cut out, trimmed of silence and loudness-normalised\n' \
     "$(caps '.sfx.resolution')" "$(caps ".video.models.omni.costs[\"$(caps '.sfx.resolution')\"][\"$(caps '.sfx.duration_default')\"]")" \
     "$(caps '.sfx.duration_default')" >&2
-  printf '  --for-video edits the video on Omni (%s credits) to add sound effects synced to its picture; the wav keeps the video'\''s length, untrimmed\n' \
-    "$(caps '.video.models.omni.edit_costs["720p"]')" >&2
+  printf '  --for-video edits the video on Omni (%s credits for 10 s) to add sound effects synced to its picture; the wav keeps the video'\''s length, untrimmed\n' \
+    "$(caps ".video.models.omni.costs[\"$(caps '.sfx.for_video.resolution')\"][\"10\"]")" >&2
   exit 2
 }
 
@@ -81,7 +81,7 @@ if [ -n "$for_video" ]; then
   awk -v s="$source_s" -v m="$(caps '.sfx.for_video.source_max_s')" 'BEGIN { exit !(s <= m + 0.05) }' ||
     say "--for-video takes up to $(caps '.sfx.for_video.source_max_s')s; cut the scene out first"
   resolution=$(caps '.sfx.for_video.resolution')
-  credits=$(caps ".video.models.omni.edit_costs[\"$resolution\"]")
+  credits=$(caps ".video.models.omni.costs[\"$resolution\"][\"${source_s%.*}\"]")
   wrapped="$(caps '.sfx.for_video.prompt_prefix') $prompt"
   video_args+=(--edit "$for_video")
 else

@@ -328,11 +328,11 @@ assert grep -Fq -- "--lock-wait $LOCK_WAIT" <<<"$(plan_cmd grok delta)"
 assert grep -Fq -- "--lock-wait $LOCK_WAIT" <<<"$(plan_cmd gemini take1)"
 # With several references gemini keeps to its listed lengths; grok's reference range takes any second in it.
 rc=0
-fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --duration 5 --ref "$WORK/refs/r1.png" --ref "$WORK/refs/r2.png" || rc=$?
+fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --duration 2 --ref "$WORK/refs/r1.png" --ref "$WORK/refs/r2.png" || rc=$?
 assert test "$rc" -eq 0
-assert grep -Fq 'duration 5→4' <<<"$(plan_reason gemini take1)"
-assert grep -Fq -- '--duration 4' <<<"$(plan_cmd gemini take1)"
-assert_fails "$(plan_reason grok delta)" 'duration 5→'
+assert grep -Fq 'duration 2→3' <<<"$(plan_reason gemini take1)"
+assert grep -Fq -- '--duration 3' <<<"$(plan_cmd gemini take1)"
+assert_fails "$(plan_reason grok delta)" 'duration 2→'
 assert_fails "$(cat "$FANOUT_OUT")" codex-image
 assert_fails "$(cat "$FANOUT_OUT")" gemini-image
 # Video takes pack into one Flow send like images, but never get spares: every take spends credits.
