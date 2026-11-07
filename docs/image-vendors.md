@@ -248,7 +248,13 @@ face's mean abs RGB difference from the input was Remove BG 22.3, web `--transpa
 An unaligned diff is meaningless here: the web routes scale the frame ~0.92 and shift it. Hair edges
 are the generative routes' strength; exact pixels are `image-cutout`'s.
 
-- **Default for photos — ChatGPT's Remove BG** (`codex-image --route web --remove-bg`; `--transparent`
+Three ways (Egor, 2026-11-08): a subject on a flat backdrop (a screen, a studio sweep, a white or grey
+wall), about nine jobs in ten, is `ck-key` (CorridorKey, local, free, ≈8 s, the picture's own pixels;
+`--help`); the highest quality or a busy background is `--remove-bg --composite` below (Remove BG, glass
+from CK or ChatGPT asked in words); a new asset is `--transparent` with a prompt. Logos and flat graphics:
+`image-cutout`.
+
+- **ChatGPT's Remove BG** (`codex-image --route web --remove-bg`; `--transparent`
   for a new asset): people, hair, fur, glass, foliage (Egor, 2026-10-06). `image-cutout` leaves the old
   background between loose hair strands and fragments of it around a glass (seen by eye; `--edge soft`
   only refines the outer edge); ChatGPT also cleans the edge's colour, so a dark background leaves no dark
@@ -268,11 +274,15 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   off (`reason=redrawn`), a part still displaced over 0.6 % of the short side after the flow
   (`reason=ghost`), screen colour left over 5 % of a local window (`reason=residue`). Prints
   `composite=matte changed=<% of the subject from the cutout> moved=<px> ghost=<px> residue=<%>` and
-  `rendered=` (ChatGPT's cutout). Beside Remove BG, on another account and in the same wall time (~50 s),
-  ChatGPT is asked in words for a see-through cut-out (glass, sheer fabric, the far-side windows); laid
-  back the same way it is `words=<stem>.words.png`, and its see-through panes go into the delivery through
-  `image_fuse.py` (below; `fuse=` line, panes drawn on `<stem>.glass.png`). Remove BG keeps the outline
-  and hair. A failed words run delivers Remove BG alone (`fuse=skipped reason=words-failed`).
+  `rendered=` (ChatGPT's cutout). Beside Remove BG, in its wall time (≈50–85 s in all), run `ck-key
+  --shadow grey` and ChatGPT asked in words for a see-through cut-out (glass, sheer fabric, the far-side
+  windows; another account), laid back the same way: `words=<stem>.words.png`. The see-through panes go
+  into the delivery through `image_fuse.py` (below): from CK on a coloured screen, from the words run on a
+  neutral or busy backdrop (`fuse=… source=ck|words`, panes drawn on `<stem>.glass.png`); Remove BG keeps
+  the outline and hair. `shadow=<stem>.shadow.png` is CK's grey multiply layer; GPT's drawn shadow instead:
+  `ck-key --in <input> --out <dir> --shadow gpt --gpt-rgba <stem>.words.png`. CK past 60 s more (a new
+  image size builds its graph) or failed: fused from the words run; both missing: `fuse=skipped
+  reason=no-source`, Remove BG alone.
 - **See-through glass: `share/image_fuse.py`.** ChatGPT's Remove BG draws glass solid, so the backdrop
   seen through a windscreen stays; a keyer (CorridorKey, on a coloured screen) or ChatGPT asked in words
   (laid back; its RGBA as both key arguments) sees through it. `image_fuse.py --base <input> --gpt
@@ -286,8 +296,7 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   `fuse=skipped reason=no-glass|no-frame|none-taken` (nothing written). On the 2026-11-07 bench (Rogue,
   RAV4, Outlander on green) every pane closed at step 4; on grey (2026-11-08) the words run opened the
   RAV4's far-side windows. A bottle or a sheer dress is glass up to its outline: refused (`open`), Remove BG
-  delivered. The keyer is not a harness tool yet
-  (`docs/handoffs/2026-11-05-corridorkey-keyer.md`, stage two).
+  delivered.
 - **Local — exact pixels: `bin/image-cutout`** (local macOS Vision subject lift, free, no network,
   0.3–0.9 s; the first run compiles `share/image-cutout.swift` into
   `~/.cache/image-cutout/<source hash>/`, ~8 s). Kept RGB is byte-identical to the input's decode and

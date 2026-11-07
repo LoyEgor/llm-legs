@@ -98,9 +98,12 @@ Both defects reproduced and fixed in `share/image_matte.py`, proven on the bench
   run through glass Remove BG left half see-through. RAV4 on grey: every window opened, no seam. A bottle
   or sheer dress (glass up to the outline) stays refused: whether to deliver the words cut-out whole there
   is open.
-- **Stage two is on (Egor, 2026-11-08, CK chat):** `ck-key` plus `share/ck_shadow.py`. When it lands,
-  coloured screens take panes from CK instead of the words run, and the object goes through the
-  shadow-strip rule.
+- **CK wired (2026-11-08):** `--remove-bg --composite` also runs `ck-key --shadow grey`; on a coloured
+  screen the panes come from CK (`source=ck`; RAV4 on green: every window, no green left), and
+  `<stem>.shadow.png` is CK's grey layer.
+  - Not wired: `ck_shadow.strip_shadow` would zero hair strands. Dark strands outside the silhouette match
+    its shadow zone; see `/Volumes/Work/tmp/gpt-cutout/strip/where.png`. Sent to the CK chat to fix.
+  - Open, Egor votes on page gpt-words-whole-neywz7: a bottle or sheer dress whole from the words run.
 - **Agreed with the CK chat:**
   - a GPT object never carries a shadow;
   - shadows are the CK chat's separate layers: grey by default, colour on request;
