@@ -389,6 +389,16 @@ the hair. GPT re-renders the person. Sheet: `results/sheet-real-hair-white-all.p
   That is exact over white only; on dark backdrops it reads as a bright stain (Egor's img15 vs img16).
 - **A colour shadow can never be 100 %.** Even a true multiply cannot show a light caustic on a dark floor, so a
   colour layer is right only on light floors.
+- **GPT's drawn shadow is kept as an alternative** (Egor: on dark backdrops it sometimes beats ours). It is not built
+  as a pipeline of its own: `gpt_shadow` in bench `scripts/gpt_page.py` turns the «GPT с просьбой» render into a
+  grey layer under CK's object (page variant «CK + тень GPT», appended last so the pin letters keep).
+  - Outside CK's body (holes filled) the layer is GPT's render over white, GPT's object included where it reaches
+    past CK's: that is its drawn tyre contact. Excluding GPT's body and carrying the floor in left a light band under
+    the RAV4's tyre.
+  - Under CK's body the layer is the frame's own (the grey layer). GPT's strands there doubled CK's, and a gap that
+    CK's outline closed came out as a light, hard-edged patch (curls, chiffon).
+  - The layer is kept only within 25 px of the frame's own shadow (grey layer below 0.98), so GPT's strands flying
+    past CK's outline do not read as shadow.
 
 ### Web delivery
 
