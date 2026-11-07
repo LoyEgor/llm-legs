@@ -56,7 +56,7 @@ const srv = await serve({
   cards2: { module: "cards", schema: 1, title: "До и после", media_columns: 2,
     fields: [{ key: "do", kind: "choice", options: [{ id: "y" }, { id: "n" }] }],
     items: [{ id: "d1", title: "кадр", media: [{ kind: "image", src: F.a, caption: "было" }, { kind: "image", src: F.b, caption: "стало" }] },
-      { id: "d2", title: "версии", media: [{ kind: "compare", caption: "три версии", images: [{ src: F.orig, caption: "оригинал" }, { src: F.px, caption: "Г" }, { src: F.b }] }] }] },
+      { id: "d2", title: "версии", media: [{ kind: "compare", caption: "три версии", images: [{ src: F.orig, caption: "оригинал" }, { src: F.px, caption: "Г" }, { src: F.b }, { src: F.tall, badge: "узкая" }] }] }] },
 });
 const base = `http://127.0.0.1:${srv.port}`;
 let checks = 0, failed = 0;
@@ -467,20 +467,34 @@ try {
   check("media captions under each medium, media_columns side by side", JSON.stringify(cap) === JSON.stringify({ caps: ["было", "стало"], side: true }), JSON.stringify(cap));
   await page.waitForFunction(() => [...document.querySelectorAll('.card[data-id="d2"] img')].every((im) => im.naturalWidth));
   const row = await page.$$eval('.card[data-id="d2"] img', (ims) => ims.map((im) => Math.round(im.getBoundingClientRect().top)));
-  check("compare media: its versions in one row across the card", row.length === 3 && new Set(row).size === 1, JSON.stringify(row));
+  check("compare media: its versions in one row across the card", row.length === 4 && new Set(row).size === 1, JSON.stringify(row));
+  const bdgs = await page.$$eval(".card .bdg", (bs) => bs.map((b) => b.textContent));
+  check("every medium wears a badge: its letter in the card and the card's number, or its own",
+    bdgs.join() === "A1,B1,A2,B2,C2,узкая", JSON.stringify(bdgs));
+  await page.hover('.card[data-id="d1"] figure img');
+  await page.waitForTimeout(300);
+  const fade = await page.$$eval('.card[data-id="d1"] .bdg', (bs) => bs.map((b) => getComputedStyle(b).opacity));
+  check("…the badge fades while the pointer is on its picture", fade.join() === "0,1", JSON.stringify(fade));
   await page.click('.card[data-id="d2"] figure figure:nth-child(2) img');
   await page.waitForFunction(() => [...document.querySelectorAll(".zpane>img")].every((im) => im.naturalWidth && im.style.transform));
   const panes = () => page.$$eval(".zpane", (ps) => ps.map((p) => { const r = p.querySelector("img").getBoundingClientRect();
     return [Math.round(r.left - p.getBoundingClientRect().left - p.clientLeft), Math.round(r.top), Math.round(r.width), p.querySelector(".zcap").textContent]; }));
   const p0 = await panes(), alike = (ps) => ps.every((q) => q.slice(0, 3).join() === ps[0].slice(0, 3).join());
-  check("…a click opens every version full screen, a pane each, drawn alike and named", p0.length === 3 && alike(p0)
-    && p0.map((q) => q[3]).join() === "оригинал,Г,", JSON.stringify(p0));
+  check("…a click opens every version of its shape full screen, a pane each, drawn alike and named by badge and caption",
+    p0.length === 3 && alike(p0) && p0.map((q) => q[3]).join() === "A2 · оригинал,B2 · Г,C2", JSON.stringify(p0));
   await page.mouse.move(1400 / 3 * 2 + 150, 400); await page.mouse.wheel(0, -400); await page.waitForTimeout(100);
   const p1 = await panes();
   check("…the wheel in one pane zooms them all at the same place", alike(p1) && p1[0][2] > p0[0][2] * 1.3, JSON.stringify(p1));
+  await page.click('.zsolo button:has-text("B2")');
+  const solo = await page.$$eval(".zpane", (ps) => ps.map((p) => p.hidden ? 0 : Math.round(p.getBoundingClientRect().width)));
+  const mid = await page.$eval(".zpane:nth-child(2) img", (im) => { const r = im.getBoundingClientRect(); return [Math.round(r.left + r.width * 0.5), r.width]; });
+  check("…a pane's button shows that one alone across the screen, at the same zoom", solo.join() === "0,1400,0"
+    && Math.abs(mid[1] - p1[1][2]) < 2, JSON.stringify([solo, mid, p1[1]]));
+  await page.keyboard.press("Digit2");
+  check("…its digit again puts them side by side", (await page.$$eval(".zpane", (ps) => ps.filter((p) => !p.hidden).length)) === 3);
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction(() => document.querySelectorAll(".zpane").length === 1);
-  check("…→ steps on to the page's next picture alone", (await page.$$(".zpane")).length === 1);
+  check("…a picture of another shape in the box opens on its own, next", (await page.$eval(".zcap", (c) => c.textContent)) === "узкая");
   await page.keyboard.press("Escape");
   await page.close();
 

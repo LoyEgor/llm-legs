@@ -213,4 +213,17 @@ assert test "$(tail -1 "$PAGES_DIR/$pid/log.jsonl" | jq -cS '[.by, .item, .field
 assert test "$(get "$base/p/$pid/m/3")" = 404
 assert test "$(get "$base/p/$pid/m/2")" = 200
 
-echo "PASS: $asserts asserts; test_pages.sh: test guard, owner resolution, validation, served spec without key fields and with stable blind slots, per-field merge, op dedup, torn line, Host/Origin/Content-Type, home-network token, path confinement, media Range/cap/ETag, state cursor and unblinding, update allowlist and --replace gate"
+# Cards badges: a medium's letter in its card and the card's number, unless it names its own; unique on the page;
+# `page badges` finds a badge's file, `page state` adds the file of each badge a text names.
+printf '{"items": [{"id": "k1", "media": [{"kind": "image", "src": "%s/a.png"}, {"kind": "compare", "images": [{"src": "%s/b.png", "caption": "two words"}, {"src": "%s/c.png", "badge": "Г"}]}]}, {"id": "k2", "n": 8, "media": [{"kind": "audio", "src": "%s/a.png"}, {"kind": "video", "src": "%s/b.png"}]}]}' \
+  "$WORK" "$WORK" "$WORK" "$WORK" "$WORK" | "$PAGE" new cards --slug badged --no-open >"$WORK/badged.out"
+bpid=$(awk '{print $2}' "$WORK/badged.out")
+assert test "$("$PAGE" badges "$bpid" | cut -d' ' -f1-2 | paste -sd'|' -)" = "A1 item=k1|B1 item=k1|Г item=k1|A8 item=k2|B8 item=k2"
+assert test "$("$PAGE" badges "$bpid" b8)" = "B8 item=k2 $WORK/b.png"
+assert test "$("$PAGE" badges "$bpid" B1)" = "B1 item=k1 $WORK/b.png caption=\"two words\""
+assert_fails "$PAGE" badges "$bpid" Z9 2>/dev/null
+"$PAGE" set "$bpid" k2 "note=на b8 тень, а г светлее; AB8 и B80 не бейджи" >/dev/null
+assert like "$("$PAGE" state "$bpid")" "k2 note=* B8=$WORK/b.png Г=$WORK/c.png by=chat*"
+assert_fails sh -c "printf '{\"items\": [{\"id\": \"a\", \"media\": [{\"kind\": \"image\", \"src\": \"$WORK/a.png\", \"badge\": \"A2\"}]}, {\"id\": \"b\", \"media\": [{\"kind\": \"image\", \"src\": \"$WORK/a.png\"}]}]}' | '$PAGE' new cards --slug dup --no-open 2>/dev/null"
+
+echo "PASS: $asserts asserts; test_pages.sh: test guard, owner resolution, validation, served spec without key fields and with stable blind slots, per-field merge, op dedup, torn line, Host/Origin/Content-Type, home-network token, path confinement, media Range/cap/ETag, state cursor and unblinding, update allowlist and --replace gate, cards badges"

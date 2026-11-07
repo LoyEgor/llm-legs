@@ -238,6 +238,42 @@ def modules(kit):
     return ["cards", "compare"]
 
 
+def badge_letter(k):
+    return (badge_letter(k // 26 - 1) if k >= 26 else "") + chr(65 + k % 26)
+
+
+def badges(doc, module=None):
+    """cards: (badge, item id, src, caption) of every medium in page order. A medium's own `badge`, else its letter
+    in the card and the card's number (B8), each picture of a `compare` group counted. kit/cards.js draws the same."""
+    out = []
+    if (module or doc.get("module")) != "cards":
+        return out
+    for i, item in enumerate(doc.get("items") or []):
+        n, k = item.get("n", i + 1), 0
+        for m in item.get("media") or [] if isinstance(item, dict) else []:
+            for one in (m.get("images") or []) if isinstance(m, dict) and m.get("kind") == "compare" else [m]:
+                if isinstance(one, dict):
+                    out.append((str(one.get("badge") or "%s%s" % (badge_letter(k), n)), item.get("id"), one.get("src"), one.get("caption")))
+                k += 1
+    return out
+
+
+def page_badges(pid):
+    """badges() of a stored page, each file as the chat gave it (a temp file is served from the page's copy)."""
+    given = {m["path"]: m.get("src") or m["path"] for m in meta(pid).get("media", [])}
+    return [(b, item, given.get(src, src), caption) for b, item, src, caption in badges(spec(pid))]
+
+
+def named_badges(pid, value):
+    """(badge, src) of every medium a value's text names by its badge (any case), first mention first."""
+    known = {b.upper(): src for b, _, src, _ in page_badges(pid)}
+    if not known:
+        return []
+    word = re.compile(r"(?<!\w)(%s)(?!\w)" % "|".join(map(re.escape, sorted(known, key=len, reverse=True))), re.I)
+    seen = dict.fromkeys(m.upper() for text in strings(value) for m in word.findall(text))
+    return [(b, known[b]) for b in seen]
+
+
 def validate(doc, module, kit):
     if module not in modules(kit):
         raise Refused("unknown module %r (have: %s)" % (module, ", ".join(modules(kit))))
@@ -253,6 +289,12 @@ def validate(doc, module, kit):
             raise Refused("item %s: variant ids must be unique and match %s" % (item["id"], ID_RE.pattern))
     if len(set(ids)) < len(ids):
         raise Refused("item ids must be unique")
+    named = {}
+    for badge, item, _, _ in badges(doc, module):
+        if badge.upper() in named:
+            raise Refused("badge %s names two media (items %s and %s): leave `badge` out for the default, the medium's "
+                          "letter and the card's number" % (badge, named[badge.upper()], item))
+        named[badge.upper()] = item
     for path in media_paths(items):
         if not os.path.isfile(os.path.abspath(path)):
             raise Refused("media not found: %s" % path)

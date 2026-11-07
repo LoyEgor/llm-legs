@@ -261,8 +261,19 @@ export function lazy(el) { near.observe(el); far.observe(el); return el; }
 // size (1:1, at the click) and the whole picture, ← → step through the page's pictures, Esc, ✕ or a click
 // beside the picture closes. The pictures of one [data-compare] box (cards' `compare` media) open side by
 // side, a pane each, under one zoom and pan: each is drawn at the first one's width, so one place lines up.
-// A module with its own zoom marks its root data-own-zoom and keeps its pictures out.
-// A field's pictures step among themselves, apart from the page's own.
+// Versions of one picture share its shape, so a picture of another shape in the box opens on its own. A button
+// per pane in the bar (or its digit) shows that one alone across the screen at the same place, again: side by
+// side. A picture's badge (cards' B8) and caption head its pane. A module with its own zoom marks its root
+// data-own-zoom and keeps its pictures out. A field's pictures step among themselves, apart from the page's own.
+const shape = (im) => (im.naturalWidth ? im.naturalWidth / im.naturalHeight : 0);
+const byShape = (set) => {
+  const out = [];
+  for (const im of set) {
+    const a = shape(im), g = out.find((g) => !a || !shape(g[0]) || Math.abs(shape(g[0]) / a - 1) < 0.02);
+    if (g) g.push(im); else out.push([im]);
+  }
+  return out;
+};
 const zoomable = (from) => {
   if (from && from.closest(".att")) return [...from.closest(".att").querySelectorAll("img")].map((im) => [im]);
   const out = [], groups = new Map();
@@ -271,23 +282,24 @@ const zoomable = (from) => {
     const g = im.closest("[data-compare]");
     if (!g) out.push([im]); else if (groups.has(g)) groups.get(g).push(im); else { groups.set(g, [im]); out.push(groups.get(g)); }
   }
-  return out;
+  return out.flatMap((set) => (set.length > 1 ? byShape(set) : [set]));
 };
 let Z = null;
+const shown = () => (Z.solo == null ? Z.panes.map((_, k) => k) : [Z.solo]);
 // a point on screen -> [x, y] in the pane under it (the pictures' shared coordinates) and that pane's index
 const local = (cx, cy) => {
-  const n = Z.panes.length, pw = innerWidth / n, k = Math.min(n - 1, Math.max(0, Math.floor(cx / pw)));
-  return [cx - k * pw, cy, k];
+  const v = shown(), pw = innerWidth / v.length, j = Math.min(v.length - 1, Math.max(0, Math.floor(cx / pw)));
+  return [cx - j * pw, cy, v[j]];
 };
 function zoomOpen(from) {
   if (!Z) {
-    const pos = h("span", { class: "zpos" }), msg = h("span", { class: "zmsg" });
+    const pos = h("span", { class: "zpos" }), msg = h("span", { class: "zmsg" }), sb = h("span", { class: "zsolo" });
     const band = h("div", { class: "zband", hidden: true });
     const tb = h("button", { onclick: zoomTool, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка" }, "Метка");
     const el = h("div", { class: "zoom", role: "dialog", "aria-modal": "true" }, band,
-      h("div", { class: "zbar" }, pos, h("span", { class: "mute" }, "колесо — зум · тащи · клик — 1:1 или целиком · ← → · Esc"), msg, tb,
+      h("div", { class: "zbar" }, pos, h("span", { class: "mute" }, "колесо — зум · тащи · клик — 1:1 или целиком · ← → · Esc"), msg, sb, tb,
         h("button", { onclick: zoomClose, title: "Esc" }, "✕")));
-    Z = { el, pos, msg, band, tb, panes: [], pts: new Map(), s: 1, x: 0, y: 0, fit: 1, tool: false, mark: null };
+    Z = { el, pos, msg, band, tb, sb, panes: [], solo: null, pts: new Map(), s: 1, x: 0, y: 0, fit: 1, tool: false, mark: null };
     const at = (s, px, py) => { s = Math.min(Math.max(s, Math.min(Z.fit / 2, 1)), 8); Z.x = px - (px - Z.x) * s / Z.s; Z.y = py - (py - Z.y) * s / Z.s; Z.s = s; zoomPaint(); };
     Z.at = at;
     el.addEventListener("wheel", (e) => { e.preventDefault(); const [x, y] = local(e.clientX, e.clientY); at(Z.s * Math.exp(-e.deltaY * 0.0015), x, y); }, { passive: false });
@@ -323,8 +335,9 @@ function zoomOpen(from) {
       if (e.key === "Alt") return Z.el.classList.add("pin");
       if (e.code === "Escape") zoomClose(); else if (step) zoomShow(Z.i + step);
       else if (e.code === "KeyQ" && !e.metaKey && !e.ctrlKey) zoomTool();
-      else if (e.code === "Equal" || e.code === "Minus") at(Z.s * (e.code === "Equal" ? 1.5 : 1 / 1.5), innerWidth / Z.panes.length / 2, innerHeight / 2);
-      else if (e.code === "Digit0") zoomFit(); else return;
+      else if (e.code === "Equal" || e.code === "Minus") at(Z.s * (e.code === "Equal" ? 1.5 : 1 / 1.5), innerWidth / shown().length / 2, innerHeight / 2);
+      else if (e.code === "Digit0") zoomFit();
+      else if (/^Digit[1-9]$/.test(e.code) && Z.panes.length > 1 && +e.code[5] <= Z.panes.length) zoomSolo(+e.code[5] - 1); else return;
       e.preventDefault(); e.stopImmediatePropagation();
     }, true);
     document.addEventListener("keyup", (e) => e.key === "Alt" && Z.el.classList.remove("pin"));
@@ -345,17 +358,42 @@ function zoomShow(i) {
     Z.panes.push({ box: h("div", { class: "zpane" }, img, cap), img, cap });
     Z.el.insertBefore(Z.panes[k].box, Z.band);
   }
+  const name = (im) => [im.dataset.badge, im.dataset.cap || (set.length > 1 ? im.alt : "")].filter(Boolean).join(" · ");
   set.forEach((im, k) => {
     const p = Z.panes[k];
-    Object.assign(p.box.style, { left: 100 * k / set.length + "%", width: 100 / set.length + "%" });
-    p.cap.textContent = set.length > 1 ? im.dataset.cap || im.alt || "" : "";
+    p.cap.textContent = name(im);
     p.cap.hidden = !p.cap.textContent;
+    p.img.dataset.badge = im.dataset.badge || "";
     p.img.src = im.currentSrc || im.getAttribute("src") || im.dataset.src;
   });
+  Z.solo = null;
+  Z.sb.replaceChildren(...(set.length > 1 ? [...set.map((im, k) => h("button", { onclick: () => zoomSolo(k),
+    title: `${name(im)} — одна на весь экран (${k + 1})` }, im.dataset.badge || `${k + 1}`)),
+  h("button", { onclick: () => zoomSolo(null), title: "все рядом" }, "рядом")] : []));
+  zoomPanes();
   zoomFit();
 }
+function zoomPanes() {
+  const v = shown();
+  Z.panes.forEach((p, k) => {
+    const j = v.indexOf(k);
+    p.box.hidden = j < 0;
+    Object.assign(p.box.style, { left: 100 * j / v.length + "%", width: 100 / v.length + "%" });
+  });
+  [...Z.sb.children].forEach((b, k) => b.classList.toggle("on", k < Z.panes.length ? k === Z.solo : Z.solo == null));
+}
+// one pane alone across the screen (again, or null: all side by side), the place at the centre kept in view
+function zoomSolo(k) {
+  const H = innerHeight - 44, pw = innerWidth / shown().length, whole = Math.abs(Z.s - Z.fit) < 1e-6;
+  const cx = (pw / 2 - Z.x) / Z.s, cy = (H / 2 - Z.y) / Z.s, s = Z.s;
+  Z.solo = k == null || k === Z.solo ? null : k;
+  zoomPanes();
+  zoomFit();
+  if (whole) return;
+  Z.s = s; Z.x = innerWidth / shown().length / 2 - cx * s; Z.y = H / 2 - cy * s; zoomPaint();
+}
 function zoomFit() {
-  const ref = Z.panes[0].img, w = ref.naturalWidth, hh = ref.naturalHeight, W = innerWidth / Z.panes.length, H = innerHeight - 44;
+  const ref = Z.panes[0].img, w = ref.naturalWidth, hh = ref.naturalHeight, W = innerWidth / shown().length, H = innerHeight - 44;
   if (!ref.complete || !w) return;
   Z.fit = Z.s = Math.min(W / w, H / hh); Z.x = (W - w * Z.s) / 2; Z.y = (H - hh * Z.s) / 2; zoomPaint();
 }
@@ -382,8 +420,8 @@ function fieldFor(from) {
 }
 // a point on screen -> px of pane k's own picture
 const zpx = ([cx, cy], k) => {
-  const f = Z.panes[k].img.naturalWidth / (Z.panes[0].img.naturalWidth || 1);
-  return [(cx - k * innerWidth / Z.panes.length - Z.x) / Z.s * f, (cy - Z.y) / Z.s * f];
+  const f = Z.panes[k].img.naturalWidth / (Z.panes[0].img.naturalWidth || 1), v = shown();
+  return [(cx - v.indexOf(k) * innerWidth / v.length - Z.x) / Z.s * f, (cy - Z.y) / Z.s * f];
 };
 function markMove(e) {
   const m = Z.mark;
@@ -409,7 +447,8 @@ function markEnd(e) {
   zoomMark(at, m.t, im);
 }
 async function zoomMark(at, t, im) {
-  const src = decodeURIComponent((im.getAttribute("src") || "").split("?")[0].split("/").pop() || "picture");
+  const file = decodeURIComponent((im.getAttribute("src") || "").split("?")[0].split("/").pop() || "picture");
+  const src = im.dataset.badge ? `${im.dataset.badge} (${file})` : file;
   const where = (at.length === 2 ? "point " : "box ") + at.join(",") + " px", mark = { at: t, about: `${where} on ${src}` };
   const blob = await new Promise((r) => markSheet(im, at, src, where, Z.s * (Z.panes[0].img.naturalWidth || 1) / im.naturalWidth).toBlob(r, "image/png"));
   if (!blob) return;

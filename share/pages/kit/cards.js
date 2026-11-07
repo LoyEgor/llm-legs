@@ -17,7 +17,11 @@ const CSS = `
 .card>.atw{margin-top:4px}
 .card .mg{display:grid;gap:8px;align-items:start}.card figure{margin:4px 0}.card figure>img,.card figure>video{margin:0}
 .card figcaption{font-size:12px;color:var(--mute);margin-top:2px}
-.card .cg{display:grid;gap:4px;align-items:start;grid-column:1/-1}.card .cg img{margin:0}`;
+.card .cg{display:grid;gap:4px;align-items:start;grid-column:1/-1}.card .cg img{margin:0}
+.card .md{position:relative}.card .md>img,.card .md>video{margin:0}
+.bdg{position:absolute;left:6px;top:6px;z-index:1;padding:1px 6px;border-radius:4px;background:rgba(0,0,0,.66);color:#fff;
+font:600 12px/1.45 system-ui;pointer-events:none;transition:opacity .15s}.md:hover>.bdg{opacity:0}
+.card .md.au{display:flex;align-items:center;gap:8px}.md.au>.bdg{position:static;opacity:1}`;
 const TAG = { image: "img", audio: "audio", video: "video" };
 const app = document.getElementById("app");
 let S, ids, cards = new Map(), first = true;
@@ -56,23 +60,31 @@ export function render(spec) {
 function card(it, i) {
   return h("section", { class: "card", "data-id": it.id }, h("div", { class: "n" }, `${num(it, i)}`),
     it.title ? h("h2", {}, it.title) : null, it.text ? h("p", { class: "tx" }, it.text) : null,
-    mediaBlock(it.media || []),
+    mediaBlock(it.media || [], num(it, i)),
     S.fields.map((f) => row(it.id, f)), suggest(it), textBox(it.id, "note", { placeholder: "заметка" }));
 }
 
-// A caption wraps its medium in a figure; media_columns lays the media out in that many columns. A
-// `compare` medium puts versions of one picture in a row of their own, opened full screen together.
-function mediaBlock(media) {
+// Every picture and clip wears a badge, so Egor can name any of them: by default its letter in the card and the
+// card's number (B8: card 8's second medium; each picture of a `compare` group counts), or the spec's own `badge`.
+// It sits over the top left corner and fades while the pointer is on the medium; a clip's sits beside it.
+// A caption goes under its medium; media_columns lays the media out in that many columns. A `compare` medium puts
+// versions of one picture in a row of their own, opened full screen together.
+const letter = (k) => (k >= 26 ? letter(Math.floor(k / 26) - 1) : "") + String.fromCharCode(65 + (k % 26));
+function mediaBlock(media, n) {
+  let k = 0;
+  const one = (m, tag) => {
+    const b = m.badge || letter(k) + n;
+    k++;
+    const el = lazy(h(tag, { "data-src": m.src, alt: m.caption || "", "data-badge": b, "data-cap": m.caption || null,
+      controls: tag !== "img", preload: tag === "img" ? null : "metadata" }));
+    return h("figure", { class: tag === "audio" ? "md au" : "md" }, h("span", { class: "bdg" }, b), el,
+      m.caption ? h("figcaption", {}, m.caption) : null);
+  };
   const els = media.map((m) => {
-    if (m.kind === "compare") {
-      const imgs = m.images || [], row = h("div", { class: "cg", "data-compare": "", style: `grid-template-columns:repeat(${imgs.length},minmax(0,1fr))` },
-        imgs.map((v) => h("figure", {}, lazy(h("img", { "data-src": v.src, alt: v.caption || "", "data-cap": v.caption || null })),
-          v.caption ? h("figcaption", {}, v.caption) : null)));
-      return m.caption ? h("figure", { style: "grid-column:1/-1" }, row, h("figcaption", {}, m.caption)) : row;
-    }
-    const tag = TAG[m.kind] || "img";
-    const el = lazy(h(tag, { "data-src": m.src, alt: "", controls: tag !== "img", preload: tag === "img" ? null : "metadata" }));
-    return m.caption ? h("figure", {}, el, h("figcaption", {}, m.caption)) : el;
+    if (m.kind !== "compare") return one(m, TAG[m.kind] || "img");
+    const imgs = m.images || [], row = h("div", { class: "cg", "data-compare": "", style: `grid-template-columns:repeat(${imgs.length},minmax(0,1fr))` },
+      imgs.map((v) => one(v, "img")));
+    return m.caption ? h("figure", { style: "grid-column:1/-1" }, row, h("figcaption", {}, m.caption)) : row;
   });
   return S.media_columns > 1 ? h("div", { class: "mg", style: `grid-template-columns:repeat(${S.media_columns},minmax(0,1fr))` }, els) : els;
 }

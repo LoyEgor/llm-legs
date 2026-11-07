@@ -468,6 +468,18 @@ def cmd_new(args):
         open_page(url(pid))
 
 
+def cmd_badges(args):
+    """Which medium a badge (B8) names: badge, item, file, caption; every badge of the page when none is given."""
+    pid, _ = lookup(args)
+    want = {b.upper() for b in args.badge}
+    found = [row for row in store.page_badges(pid) if not want or row[0].upper() in want]
+    for badge, item, src, caption in found:
+        print(" ".join(["%s item=%s %s" % (badge, item, src)] + (["caption=%s" % show(caption)] if caption else [])))
+    missing = want - {row[0].upper() for row in found}
+    if missing:
+        raise store.Refused("no medium wears %s" % ", ".join(sorted(missing)))
+
+
 def cmd_state(args):
     pid, sid = lookup(args, needed=not args.all)
     doc, folded, key = store.spec(pid), store.fold(pid), store.key(pid)
@@ -491,7 +503,7 @@ def cmd_state(args):
                 v = {n: dict(p, on="%s(%s)" % (p["on"], blind[p["on"]])) if isinstance(p, dict) and str(p.get("on")) in blind else p
                      for n, p in v.items()}
             words.append("%s=%s" % (field, show(v)))
-            words += ["%s=%s" % pair for pair in store.named_files(pid, entry["v"])]
+            words += ["%s=%s" % pair for pair in store.named_files(pid, entry["v"]) + store.named_badges(pid, entry["v"])]
             if field in suggest:
                 words.append("suggest=%s" % show(suggest[field]))
             want = expected.get(field) if isinstance(expected, dict) else expected if field == "choice" else None
@@ -566,7 +578,7 @@ def cmd_help(args):
         if first.startswith(module + ":"):
             first = first[len(module) + 1:].strip()
         print("%-8s %s" % (module, first if first and first != module else BUILTIN_MODULES.get(module, "")))
-    print("page new <module> --slug S --title T [--no-open] < spec.json; page state|set|list|open|lan|doctor|report; "
+    print("page new <module> --slug S --title T [--no-open] < spec.json; page state|badges|set|list|open|lan|doctor|report; "
           "page help <module> for its spec; a module lacks something: %s" % os.path.join(os.path.dirname(KIT), "EXTEND.md"))
 
 
@@ -666,6 +678,9 @@ def main(argv):
     p = sub.add_parser("state", parents=[chat])
     p.add_argument("ref")
     p.add_argument("--all", action="store_true")
+    p = sub.add_parser("badges", parents=[chat])
+    p.add_argument("ref")
+    p.add_argument("badge", nargs="*")
     p = sub.add_parser("set", parents=[chat])
     p.add_argument("ref")
     p.add_argument("item")

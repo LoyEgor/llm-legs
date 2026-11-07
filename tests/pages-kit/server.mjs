@@ -47,6 +47,7 @@ export function fixtures(dir) {
     a: put("a.png", png(480, 240, (x, y) => (x >= 96 && x < 144 && y >= 40 && y < 80 ? [220, 30, 30] : scene(x, y)))),
     b: put("b.png", png(480, 240, (x, y) => (x >= 360 && x < 400 && y >= 170 && y < 210 ? [30, 200, 60] : scene(x, y)))),
     px: put("px.png", png(120, 60, (x, y) => scene(x * 4, y * 4))),
+    tall: put("tall.png", png(120, 240, (x, y) => scene(x * 4, y))),
     cut: put("cut.png", png(480, 240, (x, y) => (x >= 200 && x < 280 && y >= 80 && y < 160 ? [220, 30, 30, 255] : [0, 0, 0, 0]), 4)),
     s1: put("s1.wav", wav(440, 3)),
     s2: put("s2.wav", wav(660, 3)),
