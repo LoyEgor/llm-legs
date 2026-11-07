@@ -119,8 +119,8 @@ function show(id, keepView) {
   const vps = fs.map((f, k) => h("div", { class: "vp", ondblclick: (e) => !(pinTool || e.altKey) && fitView() },
     h("div", { class: "bd" }, h("span", {}, f.side || f.name), f.side && f.name ? h("span", {}, f.name) : null,
       f.meta ? h("span", {}, f.meta) : null, h("span", { class: "dim" })),
-    h("img", { src: f.src, alt: "", draggable: false }), h("canvas"), h("div", { class: "pins" }), toggle(k)));
-  const cells = fs.map((f, k) => h("div", { class: "pc", onclick: aim }, h("img", { alt: "", draggable: false }), h("i"),
+    h("img", { fetchpriority: "high", src: f.src, alt: "", draggable: false }), h("canvas"), h("div", { class: "pins" }), toggle(k)));
+  const cells = fs.map((f, k) => h("div", { class: "pc", onclick: aim }, h("img", { src: f.src, alt: "", draggable: false }), h("i"),
     (it.marks || []).map(() => h("span", { class: "mk" })), toggle(k)));
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
     hs: h("span", { class: "tools" }), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
@@ -158,13 +158,18 @@ function show(id, keepView) {
     h("div", { class: "lrow" }, vps));
   vps.forEach(wire);
   panes(); paintSide(); strip(); layout(); paintBk();
-  Promise.all(E.imgs.map((im) => im.complete ? 0 : new Promise((r) => { im.onload = im.onerror = r; }))).then(() => {
+  // The loupes are laid out once every picture's header told its size, so a big one streams in where it belongs
+  // instead of holding the others back; the hotspots need every pixel, and only then the next item is fetched,
+  // so it never shares the line with this one.
+  const imgs = E.imgs, sized = new Promise((r) => (function poll() {
+    if (my !== token || imgs.every((im) => im.naturalWidth || im.complete)) r(); else setTimeout(poll, 20);
+  })());
+  sized.then(() => {
     if (my !== token) return;
     const ref = it.original ? E.imgs[0] : E.imgs.reduce((a, b) => (b.naturalWidth * b.naturalHeight > a.naturalWidth * a.naturalHeight ? b : a));
     E.ref = E.imgs.indexOf(ref);
     geo = { w: ref.naturalWidth || 1, h: ref.naturalHeight || 1 };
     E.imgs.forEach((im, k) => {
-      E.cells[k].querySelector("img").src = im.src;
       E.cells[k].style.aspectRatio = `${geo.w}/${geo.h}`;
       vps[k].querySelector(".dim").textContent = im.naturalWidth ? `${im.naturalWidth}×${im.naturalHeight}` : "—";
     });
@@ -172,11 +177,14 @@ function show(id, keepView) {
     if (!L) L = fit();
     paintPins();
     draw();
+    return Promise.all(imgs.map((im) => im.complete ? 0 : new Promise((r) => { im.onload = im.onerror = r; })));
+  }).then(() => {
+    if (my !== token) return;
     E.spots = hotspots(it);
     E.hs.replaceChildren(...E.spots.map((_, k) => h("button", { onclick: () => jump(k) }, `${k + 1}`)));
+    const nx = item(ids[(i + 1) % ids.length]);
+    if (nx !== it) frames(nx).forEach((f) => { const im = new Image(); im.fetchPriority = "low"; im.src = f.src; });
   });
-  const nx = item(ids[(i + 1) % ids.length]);
-  if (nx !== it) frames(nx).forEach((f) => { new Image().src = f.src; });
 }
 
 function paintSide() {

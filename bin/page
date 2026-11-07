@@ -619,7 +619,9 @@ def cmd_install_agent(args):
         os.replace(os.path.join(DEPLOY_DIR, name + ".tmp"), os.path.join(DEPLOY_DIR, name))
     log = os.path.expanduser("~/Library/Logs/pagesd.log")
     plist = {"Label": LABEL, "ProgramArguments": [os.path.join(DEPLOY_DIR, "pagesd"), "serve"],
-             "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "WorkingDirectory": os.path.expanduser("~"),
+             # Interactive: launchd's default runs an agent below the apps, so a busy Mac served pictures late.
+             "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "ProcessType": "Interactive",
+             "WorkingDirectory": os.path.expanduser("~"),
              "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                                       "PAGES_KIT_DIR": os.path.realpath(KIT)},
              "StandardErrorPath": log}
