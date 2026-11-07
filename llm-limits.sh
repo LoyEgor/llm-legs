@@ -348,7 +348,7 @@ render_table() {
     def credits:
       if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end;
     def account_status($vendor):
-      if .auth.status? == "org-blocked" then "org blocked"
+      if (.auth.status? // "") == "org-blocked" then "org blocked"
       elif .auth_needed == true or
          ((.auth.status? | type) == "string" and .auth.status != "ok"
           and ($vendor != "grok" or .auth.status != "expired"))
@@ -2591,7 +2591,7 @@ else
     def credits:
       if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end;
     def account_status($vendor):
-      if .auth.status? == "org-blocked" then "org blocked"
+      if (.auth.status? // "") == "org-blocked" then "org blocked"
       elif .auth_needed == true or
          ((.auth.status? | type) == "string" and .auth.status != "ok"
           and ($vendor != "grok" or .auth.status != "expired"))

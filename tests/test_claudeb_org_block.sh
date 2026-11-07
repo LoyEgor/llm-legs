@@ -96,6 +96,17 @@ picker=$("$ROOT/bin/worker-pick" --menu 2>/dev/null)
 assert grep -Eq ' com .*org blocked$' <<<"$picker"
 assert grep -Eq ' notcom .*org blocked$' <<<"$picker"
 assert_fails grep -Eq 'login needed| blocked blocked' <<<"$picker"
+# claudeb's own status table marks the frozen rows too, and only them.
+accounts=$(bash "$SCRIPT" status 2>/dev/null | sed $'s/\033\\[[0-9;]*m//g')
+assert grep -Eq '^com .*org blocked$' <<<"$accounts"
+assert grep -Eq '^notcom .*org blocked$' <<<"$accounts"
+assert grep -Eq '^solo ' <<<"$accounts"
+assert_fails grep -Eq '^solo .*org blocked' <<<"$accounts"
+# A legacy string `auth` ("ok") in a collector row is no org block and keeps the row in the picker.
+jq '.vendors.claude.accounts += [{account:"legacy",enabled:true,auth:"ok",weekly:{used_pct:1}}]' \
+  "$LLM_LIMITS_CACHE" >"$WORK/legacy.json"
+assert grep -Eq ' legacy ' <<<"$(LLM_LIMITS_FILE="$WORK/legacy.json" LLM_LIMITS_CACHE="$WORK/legacy.json" \
+  "$ROOT/bin/worker-pick" --menu 2>/dev/null)"
 # A pin is the one override above the pool toggle, never above a dead org.
 mkdir -p "$HOME/.claude"
 printf 'claudeb_profile=com\n' >"$HOME/.claude/worker-model"

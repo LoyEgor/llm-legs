@@ -30,7 +30,7 @@ account_status_rows() {
       bucket(.weekly; $thrw; $auth) as $w |
       bucket(.fable; $thrf; $auth) as $f |
       ([$h,$w,$f | select(.eff != null) | .asof | select(. != null)] | min) as $asof |
-      {name: .account, disabled: (.enabled == false), org_blocked: (.auth.status? == "org-blocked"),
+      {name: .account, disabled: (.enabled == false), org_blocked: ((.auth.status? // "") == "org-blocked"),
        h5: ($h.eff // 0), wk: ($w.eff // 0), fable: $f.eff,
        h5_eff: $h.eff, wk_eff: $w.eff, fable_eff: $f.eff,
        h5_stale: $h.stale, wk_stale: $w.stale, fable_stale: $f.stale,

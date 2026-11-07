@@ -231,7 +231,7 @@ selection() {
     data="${data}$(account_data "$name")"$'\n'
   done < <(account_names)
   result=$(printf '%s' "$data" | jq -sc --argjson disabled "$disabled_json" '
-    map(. + {disabled: (.name as $n | $disabled | any(. == $n))}) as $all |
+    map(. + {disabled: (.name as $n | $disabled | any(. == $n)), org_blocked: (.auth == "org-blocked")}) as $all |
     [$all[] | select(.disabled | not)] as $enabled |
     ($enabled | length) as $enabled_count |
     ($enabled_count > 0 and ($enabled | all(.walled))) as $all_walled |
@@ -466,7 +466,7 @@ mark_auth_needed() {
       cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
     fi
     if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg cause "$cause" '
-      ($old | if .auth.status? == "org-blocked" then . else del(.auth) end) + {auth_needed: true, auth_checked_at: $now}
+      ($old | if (.auth.status? // "") == "org-blocked" then . else del(.auth) end) + {auth_needed: true, auth_checked_at: $now}
       + (if $cause == "" then {} else {auth_cause: $cause} end)' > "$tmp" 2>/dev/null; then
       if [ "$(cat "$tmp")" = "$cached" ]; then rm -f "$tmp"; else mv "$tmp" "$file" || rm -f "$tmp"; fi
     else
@@ -541,7 +541,7 @@ org_block_recheck() {
   local name pid pids=''
   while IFS= read -r name; do
     jq -e --argjson now "$(date +%s)" --argjson every "$org_recheck_s" \
-      '.auth.status? == "org-blocked" and ($now - (.auth.checked_at // 0)) >= $every' \
+      '(.auth.status? // "") == "org-blocked" and ($now - (.auth.checked_at // 0)) >= $every' \
       "$limits_dir/$name.json" >/dev/null 2>&1 || continue
     org_block_recheck_one "$name" &
     pids="$pids $!"

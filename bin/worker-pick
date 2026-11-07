@@ -928,7 +928,7 @@ summary=$(jq -r \
     (if fable_view then .fable else .weekly end) as $bucket |
     {token_expiry:(.account | IN($reviewer_token_expiry[])),
      name:.account,own:($own_vendor == "claude" and .account == $own),
-     enabled:(.enabled == true),auth_ok:auth_ok,org_blocked:(.auth.status? == "org-blocked"),
+     enabled:(.enabled == true),auth_ok:auth_ok,org_blocked:((.auth.status? // "") == "org-blocked"),
      general_usable:bool_or(.rotation.usable.general?; true),
      fable_capable:bool_or(.rotation.usable.fable?; true),
      h5_absent:limits_window_absent(.five_hour),
