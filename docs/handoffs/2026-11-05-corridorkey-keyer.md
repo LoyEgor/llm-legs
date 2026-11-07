@@ -396,12 +396,16 @@ index tables differ. So weights are stored once, plus ≈ 1 MB of graph per size
 **Size grid (Egor's plan, 2026-11-07).**
 - The grid is dynamic: dense where images usually land, sparse at the extremes (e.g. sides in ≈ 1.3× steps), and
   left open to densify later.
-- Every call logs:
-  - the image size;
-  - the graph used;
-  - the padded-area share;
-  - the seconds lost to padding.
-- When resources allow, the sizes whose absence cost the most seconds get built first.
+- **Lost seconds are priced, never timed live (Egor, 2026-11-07).** Machine load must not move the number.
+  - Each graph carries a price: its compute seconds, measured once on an idle machine right after it is built and
+    stored with it.
+  - A size with no graph gets its price from a fit over the built graphs (time ∝ a·MP + b·MP²).
+  - A call logs the image size, the graph used and lost = price(used) − price(the exact ×128 graph). The same images
+    give the same number on a busy machine or an idle one.
+- **The night builds what costs most.** The log feeds a Speed doctor opportunity row (`opportunity:ck/graph-sizes`):
+  min/day = Σ lost per day, and the lever is to build the missing sizes in order of lost seconds. The night backlog
+  already ranks rows by recoverable min/day (docs/speed-doctor-design.md §3). A night job exports the top sizes,
+  prices them on an idle machine and the row shrinks.
 - Before building:
   - make the export fast: one model load for many sizes, no weight conversion;
   - check that the smallest sizes still work;
