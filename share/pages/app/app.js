@@ -1198,11 +1198,11 @@ async function micStart() {
   micButton();
   try {
     // Inside the tap: iOS starts and resumes audio only from a gesture, so neither waits behind the microphone.
-    take.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const resumed = take.ctx.resume();
-    take.stream = await within('microphone', microphone());
+    const ctx = take.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const resumed = ctx.resume();
+    take.stream = await microphoneOrPlain(take);
     if (MIC.take !== take) return release(take);
-    await within('audio', resumed);
+    if (take.ctx === ctx) await within('audio', resumed);
     await micCapture(take);
     if (MIC.take !== take) return release(take);
     const d = await micCall('/api/mic/start', '{}', 'mac');
@@ -1222,6 +1222,32 @@ async function micStart() {
   }
 }
 
+// A refusal (NotAllowedError) is asked again the plainest way: no AudioContext running, no constraints, the context
+// made after the stream. Egor 2026-11-08: refused with the permission at "prompt", focus, a tap, and a reload did
+// not help; which way works, and how many inputs the iPad lists, goes to page report.
+async function microphoneOrPlain(take) {
+  try {
+    return await within('microphone', microphone());
+  } catch (e) {
+    if (!e || e.name !== 'NotAllowedError' || MIC.take !== take) throw e;
+    if (take.ctx) { const old = take.ctx; take.ctx = null; old.close().catch(() => {}); }
+    let inputs = '?';
+    try { inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput').length; } catch {}
+    let stream = null;
+    try {
+      stream = await within('microphone', navigator.mediaDevices.getUserMedia({audio: true}));
+      take.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      await within('audio', take.ctx.resume());
+      report({kind: 'mic', msg: `refused, then the plain request worked · inputs ${inputs}`});
+      return stream;
+    } catch (again) {
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      e.diag = `inputs ${inputs} · plain retry ${stream ? 'got it, audio ' : ''}${again && again.name || again}`;
+      throw e;
+    }
+  }
+}
+
 // The iPad refusing the microphone at once, no prompt shown (Egor 2026-11-08: three in a row, ~185 ms each, on a
 // day it had recorded): what the browser says about it goes to page report, and the composer says so with a Reload,
 // the one thing a page can do (a fresh page asks for the microphone anew).
@@ -1237,7 +1263,7 @@ async function micRefused(e) {
   report({kind: 'mic', msg: [`refused at ${step}: ${e.name} ${String(e.message).slice(0, 60)}`, `permission ${perm}`, `focus ${document.hasFocus()}`,
     `visible ${document.visibilityState}`, `activation ${ua ? ua.isActive + '/' + ua.hasBeenActive : '?'}`,
     `standalone ${matchMedia('(display-mode: standalone)').matches}`, `loaded ${Math.round(performance.now() / 1000)} s ago`,
-    `takes ${MIC.takes}`].join(' · ').slice(0, 300)});
+    `takes ${MIC.takes}`, e.diag || ''].filter(Boolean).join(' · ').slice(0, 300)});
   MIC.refused = perm === 'denied' ? 'denied' : 'refused';
   renderMicbar();
 }
