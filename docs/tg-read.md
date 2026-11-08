@@ -34,8 +34,9 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
   text that was only a greeting is refused (exit 2). `--as-written` keeps both, only when his own words
   for that message carry them.
 - `wait` runs as a background Bash right after `send` (which prints its line), so the answer wakes the
-  chat: exit 0 with the answer printed (a person: any message; a group: a reply to that message or a
-  mention of Egor), exit 1 after --hours.
+  chat: exit 0 once the chat has been quiet for --settle seconds after an answer (a person: any message,
+  and the whole exchange is printed, Egor's phone replies too; a group: a reply to that message or a
+  mention of Egor), exit 1 after --hours. Its last line re-arms the watch from the newest message: run it.
 - `voice` takes voice messages (`.ogg`) and video notes (round videos, `.mp4`) alike; `--transcribe` writes
   `<file>.txt` next to each download and appends its path to the line.
 - `transcribe` prints `transcript=<dest> engine=<elevenlabs|groq> chars=<n>`; default dest `<audio>.txt`.

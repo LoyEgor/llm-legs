@@ -504,14 +504,14 @@ def chat_name(entity) -> str:
         p for p in (getattr(entity, "first_name", None), getattr(entity, "last_name", None)) if p) or str(entity.id)
 
 
-async def poll_answers(tg, peer, after: int, person: bool) -> list:
-    """Messages after #after that answer it, oldest first; reconnects a dropped connection."""
+async def poll_after(tg, peer, after: int) -> list:
+    """Every message after #after, oldest first; reconnects a dropped connection."""
     if not tg.is_connected():
         await tg.connect()
-    found = [m async for m in tg.iter_messages(peer, min_id=after, reverse=True) if answers(m, after, person)]
-    for message in found:
+    rows = [m async for m in tg.iter_messages(peer, min_id=after, reverse=True)]
+    for message in rows:
         await message.get_sender()
-    return found
+    return rows
 
 
 async def cmd_wait(args) -> int:
@@ -524,7 +524,9 @@ async def cmd_wait(args) -> int:
         peer = await disk.get_input_entity(entity)  # carries the access hash the memory session lacks
     finally:
         await disk.disconnect()
-    person, name = isinstance(entity, User), chat_name(entity)
+    from telethon.utils import get_peer_id
+
+    person, name, peer_id = isinstance(entity, User), chat_name(entity), get_peer_id(entity)
     tg = client(memory_session(), receive_updates=False)
     await ensure_authorized(tg)
     deadline = time.monotonic() + args.hours * 3600
@@ -532,24 +534,34 @@ async def cmd_wait(args) -> int:
     try:
         while True:
             try:
-                found = await poll_answers(tg, peer, args.after, person)
+                rows = await poll_after(tg, peer, args.after)
                 failures = 0
             except Exception as error:  # a network blip or a flood wait must not end a six-hour watch
                 failures += 1
                 if failures >= 10:
                     print(f"tg-read wait: gave up after {failures} failed polls: {error}", file=sys.stderr)
                     return 1
-                found = []
-            if found:
-                # A person often answers in several short messages: let the burst land before printing.
-                await asyncio.sleep(args.settle)
-                with contextlib.suppress(Exception):
-                    found = await poll_answers(tg, peer, args.after, person)
+                rows = []
+            # A person: the whole exchange since #after, his own replies from the phone too; a group: only answers.
+            shown = rows if person else [m for m in rows if answers(m, args.after, person)]
+            if any(answers(m, args.after, person) for m in rows):
+                # People answer in bursts: print once the chat has been quiet for --settle seconds (3 min at most).
+                quiet_by = time.monotonic() + 180
+                while time.monotonic() < quiet_by:
+                    await asyncio.sleep(args.settle)
+                    with contextlib.suppress(Exception):
+                        latest = await poll_after(tg, peer, args.after)
+                        latest = latest if person else [m for m in latest if answers(m, args.after, person)]
+                        if latest[-1].id == shown[-1].id:
+                            break
+                        shown = latest
                 print(f"answer in {name} after #{args.after}:")
-                for message in found:
+                for message in shown:
                     body = " ".join(part for part in (media_tag(message) if message.media else "",
                                                       (message.text or "").replace("\n", " ⏎ ")) if part)
                     print(f"{local_time(message.date)}  {sender_name(message)}:  {body}  #{message.id}")
+                print(f"watch continues: run `tg-read wait {peer_id} --after {shown[-1].id}` as a background Bash now, "
+                      "so the next message reaches this chat too")
                 return 0
             if time.monotonic() >= deadline:
                 print(f"tg-read wait: no answer in {name} after #{args.after} within {args.hours:g} h")
@@ -603,7 +615,7 @@ def main(argv=None) -> int:
     wait.add_argument("--after", type=int, required=True, help="id of Egor's message (`send` prints it)")
     wait.add_argument("--hours", type=float, default=6.0)
     wait.add_argument("--every", type=float, default=15.0, help="seconds between polls")
-    wait.add_argument("--settle", type=float, default=20.0, help="seconds to let a burst of messages land")
+    wait.add_argument("--settle", type=float, default=20.0, help="seconds of quiet after an answer before printing")
     args = parser.parse_args(argv)
     if args.command == "send":
         send_text(args)  # refuse an empty or oversized text before connecting
