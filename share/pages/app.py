@@ -1076,8 +1076,8 @@ MIC_PORT = int(os.environ.get("APP_MIC_PORT") or 47654)  # the daemon's iPad rec
 MIC_FRAME = 640  # 20 ms of 16 kHz mono int16, one audio packet
 MIC_CHUNK_CAP = 256 << 10
 MIC_PAD_AFTER = 0.4  # s without audio before silence frames keep the take under the daemon's 1.5 s stall limit
-MIC_IDLE_LIMIT = 10  # s without a chunk: the client is gone and its take is cancelled
-MIC_TAKE_LIMIT = 900
+MIC_IDLE_LIMIT = 10  # s without a chunk: the client is gone and its take is cancelled (no cap on a live take's length:
+# a 15-minute one threw away a quarter hour of his dictation)
 MIC_WAIT = 120  # s from stop to the transcript
 MICS = {}
 MIC_LOCK = threading.Lock()
@@ -1092,7 +1092,7 @@ class Mic:
         self.stream = int.from_bytes(os.urandom(4), "big")
         self.seq = 0
         self.rest = b""
-        self.sent_at = self.chunk_at = self.born = time.monotonic()
+        self.sent_at = self.chunk_at = time.monotonic()
         self.lock = threading.Lock()
         self.done = threading.Event()
         self.stopping = False
@@ -1125,7 +1125,7 @@ class Mic:
             with self.lock:
                 if now - self.sent_at > MIC_PAD_AFTER:
                     self.frames(bytes(MIC_FRAME * 5))
-            if not self.stopping and (now - self.chunk_at > MIC_IDLE_LIMIT or now - self.born > MIC_TAKE_LIMIT):
+            if not self.stopping and now - self.chunk_at > MIC_IDLE_LIMIT:
                 cancel_take()
                 self.close()
 
