@@ -31,7 +31,8 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
   person's name used as an address (`Славо, …` / `…, Слава!`) always; `dropped: …` says what went, a
   text that was only a greeting is refused (exit 2). `--as-written` keeps both, only when his own words
   for that message carry them.
-- `voice --transcribe` writes `<voice>.txt` next to each download and appends its path to the line.
+- `voice` takes voice messages (`.ogg`) and video notes (round videos, `.mp4`) alike; `--transcribe` writes
+  `<file>.txt` next to each download and appends its path to the line.
 - `transcribe` prints `transcript=<dest> engine=<elevenlabs|groq> chars=<n>`; default dest `<audio>.txt`.
 
 ## Transcription order

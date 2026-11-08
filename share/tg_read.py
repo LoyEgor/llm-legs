@@ -9,7 +9,7 @@ types a code, ever.
     tg-read login --qr                         scan a QR code from the phone instead of a code
     tg-read chats [--limit N]                  dialogs: id, unread, name
     tg-read read <chat> [--limit N] [--since YYYY-MM-DD] [--json]
-    tg-read voice <chat> [--last N] --dest-dir <abs> [--transcribe]   download voice messages as .ogg
+    tg-read voice <chat> [--last N] --dest-dir <abs> [--transcribe]   download voice messages (.ogg) and video notes (.mp4)
     tg-read photo <chat> [--last N] --dest-dir <abs>                   download photos as .jpg
     tg-read transcribe <abs audio> [--dest <abs .txt>] [--language ru] [--engine auto|elevenlabs|groq]
     tg-read send <chat> (--text <text> | --file <abs>) [--as-written]   post ONE plain-text message as Egor
@@ -277,13 +277,14 @@ async def cmd_voice(args) -> int:
     dest_dir.mkdir(parents=True, exist_ok=True)
     found = 0
     async for message in tg.iter_messages(entity, limit=args.scan):
-        if not message.voice:
+        if not (message.voice or message.video_note):
             continue
         stamp = message.date.astimezone().strftime("%Y%m%d-%H%M")
-        dest = dest_dir / f"voice-{stamp}-{message.id}.ogg"
+        kind, suffix = ("voice", ".ogg") if message.voice else ("videonote", ".mp4")
+        dest = dest_dir / f"{kind}-{stamp}-{message.id}{suffix}"
         if not dest.exists():
             await message.download_media(file=str(dest))
-        duration = int(message.voice.attributes[0].duration)
+        duration = int(message.file.duration or 0)
         line = f"{dest}\t{duration}s\t{sender_name(message)}\t{local_time(message.date)}"
         if args.transcribe:
             code, text_dest, engine = transcribe(dest, dest.with_suffix(".txt"), "ru", "auto")
@@ -293,7 +294,7 @@ async def cmd_voice(args) -> int:
         if found >= args.last:
             break
     if not found:
-        print("no voice messages in the last", args.scan, "messages", file=sys.stderr)
+        print("no voice or video notes in the last", args.scan, "messages", file=sys.stderr)
         await tg.disconnect()
         return 1
     await tg.disconnect()
@@ -480,7 +481,7 @@ def main(argv=None) -> int:
     read.add_argument("--limit", type=int, default=50)
     read.add_argument("--since", help="YYYY-MM-DD, local time")
     read.add_argument("--json", action="store_true")
-    voice = sub.add_parser("voice", help="download the last voice messages of a chat")
+    voice = sub.add_parser("voice", help="download the last voice messages and video notes of a chat")
     voice.add_argument("chat")
     voice.add_argument("--last", type=int, default=1)
     voice.add_argument("--scan", type=int, default=200, help="how many recent messages to look through")
