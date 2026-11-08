@@ -2284,7 +2284,9 @@ document.addEventListener('click', (e) => {
   if (p) { e.preventDefault(); overlay(`/p/${encodeURIComponent(p.dataset.pid)}/`); return; }
   const a = e.target.closest('#log a[href]');
   if (a) {
-    const m = a.getAttribute('href').match(/^https?:\/\/(?:127\.0\.0\.1|localhost|[\w.-]+\.local|[\w.-]+\.ts\.net)(?::\d+)?(\/(?:p|app)\/[^\s]*)$/);
+    // The Mac's pages by any of its names, a home-network address too (Egor 2026-11-09: a 192.168 link did not open
+    // on the iPad): the app's own address takes them, wherever the app is reached from.
+    const m = a.getAttribute('href').match(/^https?:\/\/(?:127\.0\.0\.1|localhost|[\w.-]+\.local|[\w.-]+\.ts\.net|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?::\d+)?(\/(?:p|app)\/[^\s]*)$/);
     if (m) { e.preventDefault(); overlay(m[1]); }
   }
 });
