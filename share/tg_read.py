@@ -57,6 +57,7 @@ LOGIN_NEEDED = CONFIG_DIR / "login-needed"  # the menubar's Telegram "login need
 GROQ_KEYS = Path("/Volumes/Work/Projects/transcriptions-gpt/settings/groq_keys.txt")
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 MAX_SEND = 4000
+FOLLOW_HOURS = 1 / 3  # a live exchange that falls silent this long is over
 FALL_BACK = re.compile(r"USAGE_LIMIT|credits|quota|\b402\b|\b429\b", re.IGNORECASE)
 
 
@@ -529,7 +530,9 @@ async def cmd_wait(args) -> int:
     person, name, peer_id = isinstance(entity, User), chat_name(entity), get_peer_id(entity)
     tg = client(memory_session(), receive_updates=False)
     await ensure_authorized(tg)
-    deadline = time.monotonic() + args.hours * 3600
+    # After an answer the watch follows the live exchange only: FOLLOW of silence ends it for good.
+    hours = args.hours if args.hours is not None else FOLLOW_HOURS if args.follow else 6.0
+    deadline = time.monotonic() + hours * 3600
     failures = 0
     try:
         while True:
@@ -560,12 +563,16 @@ async def cmd_wait(args) -> int:
                     body = " ".join(part for part in (media_tag(message) if message.media else "",
                                                       (message.text or "").replace("\n", " ⏎ ")) if part)
                     print(f"{local_time(message.date)}  {sender_name(message)}:  {body}  #{message.id}")
-                print(f"watch continues: run `tg-read wait {peer_id} --after {shown[-1].id}` as a background Bash now, "
-                      "so the next message reaches this chat too")
+                print(f"watch continues: run `tg-read wait {peer_id} --after {shown[-1].id} --follow` as a background "
+                      "Bash now, so the rest of this exchange reaches this chat too")
                 return 0
             if time.monotonic() >= deadline:
-                print(f"tg-read wait: no answer in {name} after #{args.after} within {args.hours:g} h")
-                return 1
+                if args.follow:
+                    print(f"watch ended: {name} quiet for {hours * 60:g} min after #{args.after}; the exchange is "
+                          "over, do not re-arm and tell Egor nothing about it")
+                else:
+                    print(f"tg-read wait: no answer in {name} after #{args.after} within {hours:g} h")
+                return 0 if args.follow else 1
             await asyncio.sleep(args.every)
     finally:
         await tg.disconnect()
@@ -613,7 +620,9 @@ def main(argv=None) -> int:
     wait = sub.add_parser("wait", help="block until the chat answers Egor's message; run as a background Bash")
     wait.add_argument("chat")
     wait.add_argument("--after", type=int, required=True, help="id of Egor's message (`send` prints it)")
-    wait.add_argument("--hours", type=float, default=6.0)
+    wait.add_argument("--hours", type=float, help="how long to wait for an answer (default 6, with --follow 20 min)")
+    wait.add_argument("--follow", action="store_true",
+                      help="a re-arm after an answer: the exchange is over after 20 min of silence")
     wait.add_argument("--every", type=float, default=15.0, help="seconds between polls")
     wait.add_argument("--settle", type=float, default=20.0, help="seconds of quiet after an answer before printing")
     args = parser.parse_args(argv)

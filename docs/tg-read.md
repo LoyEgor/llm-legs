@@ -36,7 +36,9 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
 - `wait` runs as a background Bash right after `send` (which prints its line), so the answer wakes the
   chat: exit 0 once the chat has been quiet for --settle seconds after an answer (a person: any message,
   and the whole exchange is printed, Egor's phone replies too; a group: a reply to that message or a
-  mention of Egor), exit 1 after --hours. Its last line re-arms the watch from the newest message: run it.
+  mention of Egor), exit 1 after --hours. Its last line re-arms the watch with `--follow` from the newest
+  message: run it. A `--follow` watch ends the exchange after 20 min of silence (exit 0, `watch ended`):
+  no re-arm, nothing to tell Egor. Only a new `send` starts a long watch again.
 - `voice` takes voice messages (`.ogg`) and video notes (round videos, `.mp4`) alike; `--transcribe` writes
   `<file>.txt` next to each download and appends its path to the line.
 - `transcribe` prints `transcript=<dest> engine=<elevenlabs|groq> chars=<n>`; default dest `<audio>.txt`.
