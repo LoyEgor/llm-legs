@@ -1076,7 +1076,7 @@ def open_chat(sid, fork=None):
     meta = dict(word.split("=", 1) for word in (lines[1] if len(lines) > 1 else "").split() if "=" in word)
     line = lines[0].strip()
     if fork is not None:
-        line += " --fork-session" + (" --name " + shlex.quote(fork) if fork else "")
+        line += " --fork-session" + (" --name=" + shlex.quote(fork) if fork else "")  # = : a name may start with -
     literal = line.replace("\\", "\\\\").replace('"', '\\"')
     doc = terminal('tell application id "com.apple.Terminal"\ndo script "%s"\nend tell\nreturn "opened"' % literal)
     if not doc.get("ok"):
@@ -1305,6 +1305,9 @@ def rename_chat(sid, name):
     if rec:
         if not tty or rec.get("entrypoint", "cli") != "cli":
             return 409, {"ok": False, "err": "not a terminal chat"}
+        # Its Return would answer a question on the screen or queue the command behind a turn.
+        if rec.get("status") == "busy" or menu_cursor((screen(tty) or {}).get("res")) is not None:
+            return 409, {"ok": False, "err": "it is working or asking: rename it once it waits for you"}
         with TYPING:
             sent = send_text(tty, "/rename " + name, clear=2)
         if not sent.get("ok") or sent.get("res") == "no-tab":
@@ -1359,10 +1362,11 @@ def trash_chat(sid, force=False):
 
 
 def untrash_chat(sid):
-    """A trashed chat back where it was (session-trash.sh restore)."""
+    """A trashed chat back where it was (session-trash.sh restore). One its end has not moved yet (a live chat's
+    session end purges it 2 s later) only loses its mark, which that purge then skips."""
     FAILED.pop(TRASH, None)
     out = run([TRASH, "restore", sid], timeout=30)
-    if ("restored %s" % sid) not in (out or ""):
+    if ("restored %s" % sid) not in (out or "") and ("unmarked %s" % sid) not in (run([TRASH, "unmark", sid], timeout=10) or ""):
         return 502, {"ok": False, "err": "trash: %s" % (FAILED.get(TRASH) or "nothing to restore")}
     forget_lists()
     return 200, {"ok": True}

@@ -462,7 +462,8 @@ async function chatAct(act, sid, name, force) {
     renderList();
     renderHead();
     const d = await api(url + 'rename', {name}, 20000).catch((e) => ({ok: false, err: e.message}));
-    if (!d.ok) { delete S.local.names[sid]; toast('⚠ rename: ' + (d.err || 'no answer')); }
+    // A failed edit was made on S.hist itself, which an unchanged hash would keep: the list comes whole.
+    if (!d.ok) { delete S.local.names[sid]; S.histH = ''; toast('⚠ rename: ' + (d.err || 'no answer')); }
     refreshChats();
     refreshHistory();
   } else if (act === 'branch') {
@@ -472,16 +473,19 @@ async function chatAct(act, sid, name, force) {
     S.opening = {sid, at: now(), cwd: p.cwd || '', known: new Set(S.chats.map((x) => x.sid)), follow: true};
     refreshChats();
   } else if (act === 'trash') {
+    const pinned = S.pins.includes(sid);  // the trash unpins it; its undo pins it again
     S.local.gone[sid] = now();
     localize();
     renderList();
     if (S.sid === sid) location.hash = '#';
     const d = await api(url + 'trash', {force: !!force}, 60000).catch((e) => ({ok: false, err: e.message}));
-    if (!d.ok) { delete S.local.gone[sid]; refreshChats(); refreshHistory(); toast('⚠ trash: ' + (d.err || 'no answer')); return; }
+    if (!d.ok) { delete S.local.gone[sid]; S.histH = ''; refreshChats(); refreshHistory(); toast('⚠ trash: ' + (d.err || 'no answer')); return; }
     toast(`Trashed “${p.name || sid.slice(0, 8)}”`, {label: 'Undo', run: async () => {
       delete S.local.gone[sid];
       const u = await api(url + 'untrash', {}, 30000).catch((e) => ({ok: false, err: e.message}));
       if (!u.ok) toast('⚠ restore: ' + (u.err || 'no answer'));
+      else if (pinned) { S.pins = S.pins.filter((x) => x !== sid); togglePin(sid); }
+      S.histH = '';
       refreshHistory();
     }});
     refreshChats();

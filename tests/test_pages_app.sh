@@ -103,7 +103,7 @@ esac
 case \$1 in
   mark) echo "\$2" >>"$WORK/marks"; echo "marked \$2" ;;
   unmark) grep -v "\$2" "$WORK/marks" >"$WORK/marks.n"; mv "$WORK/marks.n" "$WORK/marks"; echo "unmarked \$2" ;;
-  restore) echo "restored \$2" ;;
+  restore) grep -qx "\$2" "$WORK/marks" 2>/dev/null && { echo "error: trashed session not found" >&2; exit 1; }; echo "restored \$2" ;;
 esac
 EOF
 chmod +x "$WORK/bin/trash"
@@ -579,7 +579,12 @@ assert test "$(post "/api/chat/abc/open" '{}')" = 400
 # /rename writes; branch: `chats`' command with --fork-session and the name, the chat open or not; trash:
 # session-trash marks it and sweeps its own config root (a live one is ended instead, below); untrash restores.
 : >"$WORK/hs.log"
+# Never typed over a question on its screen (its Return would answer it).
+assert test "$(post "/api/chat/$sid/rename" '{"name": "x"}')" = 409
+assert test -z "$(grep '^TEXT=' "$WORK/hs.log")"
+echo '[]' >"$WORK/queue"; sleep 0.9
 assert test "$(post "/api/chat/$sid/rename" '{"name": "  New\n name  "}')" = 200
+rm -f "$WORK/queue"
 assert test "$(grep '^TEXT=' "$WORK/hs.log")" = 'TEXT="/rename New name"'
 assert test "$(post "/api/chat/$past/rename" '{"name": "Старый, но новый"}')" = 200
 assert test "$(tail -1 "$PT" | jq -r '[.type, .customTitle, .sessionId] | join("|")')" = "custom-title|Старый, но новый|$past"
@@ -587,11 +592,17 @@ assert test "$(head -1 "$PT" | jq -r .type)" = user
 assert test "$(post "/api/chat/$past/rename" '{"name": " "}')" = 400
 : >"$WORK/hs.log"
 assert test "$(post "/api/chat/$sid/branch" '{"name": "a branch"}')" = 200
-assert grep -qF "claude --resume $sid --fork-session --name 'a branch'\" end tell" "$WORK/hs.log"
+assert grep -qF "claude --resume $sid --fork-session --name='a branch'\" end tell" "$WORK/hs.log"
+assert test "$(post "/api/chat/$sid/branch" '{"name": "-x"}')" = 200
+assert grep -qF -- "--fork-session --name=-x\" end tell" "$WORK/hs.log"
 assert test "$(post "/api/chat/$past/trash" '{}')" = 200
 assert test "$(tr '\n' '|' <"$WORK/trash.log")" = "mark $past|sweep $WORK/root|"
 assert test "$(post "/api/chat/$past/untrash" '{}')" = 200
 assert test "$(tail -1 "$WORK/trash.log")" = "restore $past"
+# An undo before the chat's end moved it (a live one is purged 2 s after it ends) takes its mark off instead.
+"$WORK/bin/trash" mark "$past" >/dev/null; : >"$WORK/trash.log"
+assert test "$(post "/api/chat/$past/untrash" '{}')" = 200
+assert test "$(tr '\n' '|' <"$WORK/trash.log")" = "restore $past|unmark $past|"
 # A branch (Egor 2026-11-08: it opened empty) has no transcript until its first message: it reads as the chat it
 # branched from as that chat stood when the branch began (Egor: it showed what the parent said afterwards), then as
 # its own file, which the client sees change.
@@ -616,6 +627,9 @@ kill "$forkpid"; rm -f "$WORK/sessions/$forkpid.json" "$WORK/root/projects/-x-ol
 assert test "$(post "/api/chat/$wsid/close" '{}')" = 404
 sed -i '' 's/"status": "idle"/"status": "busy"/' "$WORK/sessions/$chatpid.json"; sleep 1.6
 assert test "$(post "/api/chat/$sid/close" '{}')" = 409
+echo '[]' >"$WORK/queue"; sleep 0.9
+assert test "$(post "/api/chat/$sid/rename" '{"name": "x"}')" = 409
+rm -f "$WORK/queue"
 : >"$WORK/trash.log"
 assert test "$(post "/api/chat/$sid/trash" '{}')" = 409
 assert test ! -s "$WORK/trash.log"
