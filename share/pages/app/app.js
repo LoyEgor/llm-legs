@@ -20,7 +20,7 @@ if (draft.text == null) {
 const saveDraft = () => { draft.text = $('#input').value; keep('draft', draft); };
 const S = {chats: [], workers: [], runs: [], machine: null, sid: null, log: null, running: {}, menuOpen: new Set(),
   pages: null, screen: '', screenAt: 0, screenFails: 0, screenErr: '', scr: parseScreen(''), auth: true, sheet: '',
-  activity: '', hist: [], histN: 25, q: '', found: null, opening: null};
+  activity: '', hist: [], histN: 25, q: '', found: null, opening: null, pins: []};
 
 document.body.insertAdjacentHTML('afterbegin', DEFS);
 for (const el of document.querySelectorAll('[data-icon]')) el.innerHTML = ICON[el.dataset.icon] || '';
@@ -198,25 +198,33 @@ function runRow(r) {
 // Every chat he can go back to (chat-find --recent), newest first; the open ones are already above. The search field
 // filters names and last lines at once; Enter (or the row under them) asks chat-find for everything said, which
 // reads every transcript and takes a while.
-function histRow(r) {
+function histRow(r, pin) {
   const sub = [base(r.cwd), r.text || r.title].filter(Boolean).join(' · ');
-  return `<a class="row past${S.sid === r.sid ? ' sel' : ''}" href="#chat/${esc(r.sid)}"><span class="lead"></span>` +
+  return `<a class="row past${S.sid === r.sid ? ' sel' : ''}" href="#chat/${esc(r.sid)}"><span class="lead">${pin ? '⚑' : ''}</span>` +
     `<div class="body"><div class="l1"><span class="name">${esc(r.name || r.sid.slice(0, 8))}</span>` +
     `<span class="tm">${ago(r.spoke)}</span></div><div class="l2">${esc(sub)}</div></div></a>`;
 }
 
+// A pinned chat that is not open sits at the very top, as `chats` lists it (⚑); an open one is where it would be.
+function pinnedHtml(hit) {
+  const open = new Set(S.chats.map((c) => c.sid));
+  const rows = S.pins.filter((sid) => !open.has(sid)).map((sid) => pastRow(sid) || {sid, name: '', cwd: ''})
+    .filter((r) => hit(r.name, r.cwd, r.text));
+  return rows.length ? '<div class="sec">Pinned</div>' + rows.map((r) => histRow(r, true)).join('') : '';
+}
+
 function historyHtml(q, hit) {
-  const open = new Set(S.chats.concat(S.workers, S.runs).map((c) => c.sid).filter(Boolean));
+  const open = new Set(S.chats.concat(S.workers, S.runs).map((c) => c.sid).filter(Boolean).concat(S.pins));
   const past = S.hist.filter((r) => !open.has(r.sid));
   let html = '';
   if (!q) {
     if (!past.length) return '';
-    html = '<div class="sec">Earlier</div>' + past.slice(0, S.histN).map(histRow).join('');
+    html = '<div class="sec">Earlier</div>' + past.slice(0, S.histN).map((r) => histRow(r)).join('');
     if (past.length > S.histN) html += `<button type="button" class="more" data-more>Show more · ${past.length - S.histN}</button>`;
     return html;
   }
   const near = past.filter((r) => hit(r.name, r.cwd, r.text)).slice(0, 50);
-  if (near.length) html += '<div class="sec">Earlier</div>' + near.map(histRow).join('');
+  if (near.length) html += '<div class="sec">Earlier</div>' + near.map((r) => histRow(r)).join('');
   const f = S.found && S.found.q === q ? S.found : null;
   if (!f) return html + `<button type="button" class="more" data-said>Search everything said · “${esc(q)}”</button>`;
   html += `<div class="sec">Said “${esc(q)}”${f.busy ? ' <span class="shimmer">searching every chat…</span>' : ''}</div>`;
@@ -275,6 +283,16 @@ function followOpening() {
   if (now() - o.at > 60) { S.opening = null; if (S.sid === o.sid) $('#pastnote').textContent = 'Opened in Terminal; it has not shown up here yet'; }
 }
 
+// Pin: the chat stays at the top of the list while it is not open (share/chat_pins.py, the same pins as `chats`).
+async function togglePin() {
+  const sid = S.sid, on = !S.pins.includes(sid);
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/pin`, {on}, 10000).catch(() => ({ok: false}));
+  if (!d.ok) { toast('⚠ the pin did not change'); return; }
+  S.pins = d.pins || [];
+  renderList();
+  renderSheet();
+}
+
 // End an idle chat (/exit, as if typed) and close its Terminal window: from the info panel, after a confirm.
 async function closeLive() {
   const sid = S.sid, c = chat(sid);
@@ -299,7 +317,7 @@ function renderList() {
   const q = S.q.trim().toLowerCase();
   const hit = (...xs) => !q || q.split(/\s+/).every((w) => xs.some((x) => String(x || '').toLowerCase().includes(w)));
   const chats = S.chats.filter((c) => hit(c.name, c.cwd, snippet(c)));
-  let html = chats.length || !q ? '<div class="sec">Chats</div>' + chats.map((c) => chatRow(c, usual)).join('') : '';
+  let html = pinnedHtml(hit) + (chats.length || !q ? '<div class="sec">Chats</div>' + chats.map((c) => chatRow(c, usual)).join('') : '');
   const others = S.workers.map((w) => Object.assign({}, w, {vendor: 'claude', title: w.name, started: w.started, sid: w.sid}));
   const runs = S.runs.filter((r) => hit(r.title, r.account)), more = others.filter((r) => hit(r.title));
   if (runs.length || more.length) {
@@ -312,21 +330,28 @@ function renderList() {
   clocks(box);
 }
 
+function reload() {
+  if (MIC.state) { toast('Reloads when the dictation ends'); return; }
+  saveDraft();
+  location.reload();
+}
+
 async function refreshChats() {
   await once('chats', async () => {
     const d = await api('/api/chats');
     S.auth = true;
     // New client files reload the app (a home-screen app has no reload button); the draft and the open chat stay,
-    // a running dictation or a message on its way finishes first.
+    // a running dictation or a message on its way finishes first, the next poll after it reloads. Meanwhile a thin
+    // bar says an update waits; a tap on it reloads at once (not during a dictation).
     if (d.client && !S.client) S.client = d.client;
-    if (d.client && d.client !== S.client && MIC.state === '' && !OUT.some((o) => o.state === 'sending')) {
-      saveDraft();
-      location.reload();
-      return;
+    if (d.client && d.client !== S.client) {
+      if (MIC.state === '' && !OUT.some((o) => o.state === 'sending')) { reload(); return; }
+      $('#update').hidden = false;
     }
     S.chats = d.chats || [];
     S.workers = d.workers || [];
     S.runs = d.runs || [];
+    S.pins = d.pins || [];
     let fresh = false;
     for (const c of S.chats.concat(S.workers)) {
       // A chat the app has never shown starts read: the dot means "spoke since you last looked here".
@@ -534,27 +559,28 @@ function unqueue(L, match) {
 }
 
 function resetLog() {
-  OLDER.disconnect();
-  S.log = {start: null, end: null, tools: {}, groups: {}, queue: [], group: null};
+  S.log = {start: null, end: null, tools: {}, groups: {}, queue: [], group: null, olderAt: performance.now()};
   $('#col').innerHTML = '';
   S.activity = '';
   $('#activity').innerHTML = '';
   Object.assign(STICK, {on: true, owed: false});
 }
 
-// Earlier history loads itself as he scrolls near the top (the button stays for a tap); the block that came in fades
-// up and a line glows for a moment where it meets what was already there.
-const OLDER = new IntersectionObserver((seen) => {
-  if (seen.some((e) => e.isIntersecting) && S.log && S.log.first === false) loadOlder();
-}, {root: $('#log'), rootMargin: '600px 0px 0px 0px'});
-
+// Earlier history comes one block per scroll of his: his own scroll near the top after the last block came in loads
+// the next (the button stays for a tap). Nothing else does: a short block that leaves the button in view, the
+// layout's own scroll and the bounce at the edge load nothing. The block fades up and a line glows for a moment where
+// it meets what was already there.
+const OLDER_NEAR = 600;  // px from the top
 function olderButton() {
   const b = document.createElement('button');
   b.className = 'older';
   b.textContent = 'Earlier';
   b.onclick = loadOlder;
-  OLDER.observe(b);
   return b;
+}
+function nearTop(b, t) {
+  const L = S.log;
+  if (b.scrollTop < OLDER_NEAR && L && L.first === false && L.start > 0 && t > L.olderAt) loadOlder();
 }
 
 async function pullLog() {
@@ -598,7 +624,7 @@ async function loadOlder() {
     if (sid !== S.sid || L !== S.log) return;
     const box = $('#log');
     const h0 = box.scrollHeight;
-    if (was) { OLDER.unobserve(was); was.remove(); }
+    if (was) was.remove();
     const frag = document.createDocumentFragment();
     if (d.start > 0 && d.start < L.start) frag.appendChild(olderButton());  // a window that did not move ends Earlier
     addItems(d.items || [], L, {group: null, older: true}, frag);
@@ -611,6 +637,7 @@ async function loadOlder() {
     $('#col').prepend(frag);
     STICK.own = true;
     box.scrollTop += box.scrollHeight - h0;
+    L.olderAt = performance.now();
   });
 }
 
@@ -644,6 +671,7 @@ $('#log').addEventListener('scroll', () => {
     STICK.moved = t;
     STICK.on = end;
     later();
+    nearTop(b, t);
   } else if (end) STICK.on = true;
   else if (STICK.on) toBottom();
   $('#jump').hidden = STICK.on;
@@ -859,6 +887,7 @@ function renderHead() {
   $('#termbtn').hidden = !live(c);
   $('#termbtn').classList.toggle('warn', S.screenFails >= 3);
   $('#infobtn').hidden = !S.sid;
+  $('#pagesbtn').classList.toggle('none', !!c && c.pages === 0);
   $('#pastbar').hidden = !!(c || r);
   if (!c && !r) {
     const p = pastRow(S.sid);
@@ -899,16 +928,20 @@ function groups(line) {
   }).filter((g) => g.length && !/^\$[\d.]+$/.test(g.map(([t]) => t).join('')));  // no money on his screen
 }
 
-// A `label N%` segment (ctx, wk, fb, ...) as a bar in its own colour; anything else in the line's colours.
+// A `label N%` segment (ctx, wk, fb, ...) as a bar; anything else in the line's colours. The bar and its % take the
+// segment's most urgent colour, the statusline's own warning included (a cold cache's yellow or red size), and what
+// follows the % keeps its colours.
+const URGENT = ['red', 'yellow', 'green'];
 function segHtml(g) {
   const plain = g.map(([t]) => t).join('');
   const m = plain.match(/^(\S+)\s+(\d{1,3})%\s*(.*)$/);
   if (!m) return `<div class="sg">${runsHtml(g)}</div>`;
-  const run = g.find(([t]) => t.includes(m[2] + '%'));
-  const tone = (run && run[1]) || 'dim';
+  const k = g.findIndex(([t]) => t.includes(m[2] + '%'));
+  const tone = URGENT.find((c) => g.some((r) => r[1] === c)) || (k >= 0 && g[k][1]) || 'dim';
+  const rest = k >= 0 ? g.slice(k + 1).map(([t, c], j) => [j ? t : t.replace(/^\s+/, ''), c]) : [[m[3], '']];
   return `<div class="sg pct"><span class="bl">${esc(m[1])}</span>` +
     `<span class="bt"><i class="b-${esc(tone)}" style="width:${Math.min(100, +m[2])}%"></i></span>` +
-    `<span class="bp c-${esc(tone)}">${m[2]}%</span><span class="br">${esc(m[3])}</span></div>`;
+    `<span class="bp c-${esc(tone)}">${m[2]}%</span><span class="br">${runsHtml(rest)}</span></div>`;
 }
 
 function infoHtml(d) {
@@ -925,8 +958,7 @@ function infoHtml(d) {
   return (status ? `<div class="sgs">${status}</div>` : '') +
     `<div class="ch"><b>Changes</b><span class="n">${files.length || ''}</span>` +
     `<span class="c-green">${files.length ? '+' + sum('add') : ''}</span><span class="c-red">${files.length ? '−' + sum('del') : ''}</span></div>` +
-    (rows || '<div class="none">No files changed in this chat</div>') +
-    (live(chat(S.sid)) ? '<button type="button" class="btn endbtn" data-end>End chat · close its window</button>' : '');
+    (rows || '<div class="none">No files changed in this chat</div>');
 }
 
 async function pullInfo() {
@@ -1062,10 +1094,11 @@ function micButton() {
   $('#composer').classList.toggle('rec', rec);
   $('#wave').hidden = !rec;
   $('#mic').innerHTML = rec ? ICON.x : ICON.mic;
-  $('#mic').title = rec ? 'Cancel the dictation' : 'Dictate';
-  $('#mic').disabled = MIC.state === 'wait';
+  $('#mic').title = rec ? 'Stop and put the text in the box' : 'Dictate';
+  $('#mic').disabled = MIC.state === 'wait' || BUB.busy;
   renderSend();
   renderDock();
+  renderMicbar();
   if (rec && !MIC.raf) MIC.raf = requestAnimationFrame(drawWave);
 }
 
@@ -1117,6 +1150,7 @@ function release(take) {
 const microphone = () => navigator.mediaDevices.getUserMedia({audio: {channelCount: 1}});
 
 async function micStart() {
+  if (BUB.busy) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     toast('⚠ the microphone needs the https link (page lan --app)');
     return;
@@ -1236,19 +1270,84 @@ async function micFlush(id, take) {
   return MIC.take === take;
 }
 
-function micDrop() {
+// quiet: the Mac ends the take itself (a restore over it), so no cancel goes there.
+function micDrop(quiet) {
   const id = MIC.id, take = MIC.take, held = MIC.held;
   if (take) release(take);
+  if (take && take.stream) take.stream.getTracks().forEach((t) => t.stop());
   Object.assign(MIC, {state: '', id: null, take: null, frames: [], held: null});
   if (held && held.head) putBack(held.head);
   micButton();
-  if (id) micCall(`/api/mic/${id}/cancel`, '{}', 'upload');
+  if (id && quiet !== true) micCall(`/api/mic/${id}/cancel`, '{}', 'upload');
 }
 
 function micFail(msg) {
   report({kind: 'mic', msg: `${MIC.state} ${MIC.step}: ${msg}`.slice(0, 300), ms: Math.round((now() - MIC.began) * 1000)});
   micDrop();
   toast('⚠ dictation: ' + msg);
+  setTimeout(pullBubble, 1500);  // a take the Mac kept is offered back at once
+}
+
+// text at the end of v, a space between.
+const joined = (v, text) => (text ? (v && !/\s$/.test(v) ? v + ' ' : v || '') + text : v || '');
+
+// ------------------------------------------------------------------ the Mac's voice pill, mirrored
+// transcriptions-gpt's pill on the Mac shows and offers more than this composer: a cut take to restore, the other
+// result ready, the polish seconds. He never sees it from the iPad, so its state comes here (/api/mic/bubble: the
+// daemon's own record of what the pill was sent) and these buttons do what its clicks do. A take restored comes back
+// as text in the box, for editing.
+const BUB = {doc: null, busy: false, gone: kept('restored')};
+async function pullBubble() {
+  await once('bubble', async () => {
+    const d = await api('/api/mic/bubble', null, 5000);
+    BUB.doc = d.ok ? d : null;
+    renderMicbar();
+  });
+}
+
+const hhmm = (t) => new Date(t * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+function renderMicbar() {
+  const b = BUB.doc, r = b && b.restore;
+  let html = '';
+  if (BUB.busy) html = '<div class="mb"><span class="shimmer">Restoring the cut dictation…</span></div>';
+  else if (r && r.name && !BUB.gone[r.name] && (MIC.state === '' || (MIC.state === 'live' && r.armed))) {
+    html = `<div class="mb"><button type="button" class="pill" data-restore="${esc(r.name)}">↺ Restore the cut dictation` +
+      `<small>${hhmm(r.at)}${r.chars ? ' · ' + kTok(r.chars) + ' chars' : ''}</small></button>` +
+      (MIC.state ? '' : `<button type="button" class="ib" data-forget="${esc(r.name)}" aria-label="Hide">${ICON.x}</button>`) + '</div>';
+  } else if (b && MIC.state === 'wait' && b.remote) {
+    const polish = b.pill === 'polish' && b.polish_since;
+    if (polish || b.alt === 'ready') {
+      html = '<div class="mb">' + (polish ? `<span class="mt">Polishing <span data-since="${b.polish_since}"></span></span>` : '') +
+        `<button type="button" class="pill" data-usealt>${polish && b.alt !== 'ready' ? 'Paste now' : 'Use the other result'}</button></div>`;
+    } else if (b.alt === 'failed') html = '<div class="mb"><span class="mt c-red">● ● the other result failed</span></div>';
+  }
+  $('#composer').classList.toggle('degraded', !!(b && b.degraded && MIC.state));
+  const box = $('#micbar');
+  if (box.dataset.h === html) return;
+  box.dataset.h = html;
+  box.innerHTML = html;
+  clocks(box);
+}
+
+async function micRestore(name) {
+  if (BUB.busy || (MIC.state && MIC.state !== 'live')) return;
+  BUB.busy = true;
+  if (MIC.state === 'live') micDrop(true);  // the Mac discards that take for the restore, as its pill does
+  renderMicbar();
+  micButton();
+  const d = await api('/api/mic/restore', {name}, 250000).catch(() => ({ok: false, err: 'no connection'}));
+  BUB.busy = false;
+  const text = (d.ok && d.text || '').trim();
+  if (text) {
+    BUB.gone[name] = now();
+    for (const [k, t] of Object.entries(BUB.gone)) if (now() - t > 86400) delete BUB.gone[k];
+    keep('restored', BUB.gone);
+    $('#input').value = joined($('#input').value, text);
+    saveDraft();
+    grow();
+  } else toast('⚠ restore: ' + (d.err || 'nothing came back'));
+  micButton();
+  pullBubble();
 }
 
 // What was typed before a dictation that never came back goes back into the draft, ahead of anything typed since.
@@ -1290,7 +1389,7 @@ async function micStop(then = '', why = '') {
     report({kind: 'mic', msg: `wait transcript: ${d.err || d.status}`, ms: Math.round((now() - MIC.waitFrom) * 1000)});
     toast('⚠ ' + (d.err || 'no transcript'));
   }
-  const join = (v) => (text ? (v && !/\s$/.test(v) ? v + ' ' : v || '') + text : v || '');
+  const join = (v) => joined(v, text);
   if (held) {
     const full = join(held.head);
     if (d.ok && full.trim()) {
@@ -1347,9 +1446,10 @@ function menuHtml(items, path) {
     if (it.sep) return '<div class="msep"></div>';
     const text = (it.r || []).map((s) => s.t).join('');
     const word = (text.trim().match(/^[\p{L}\p{N}_./-]+/u) || [''])[0];
-    const id = `${path}/${k}:${word}`;
+    const id = it.key ? `${path}/${it.key}` : `${path}/${k}:${word}`;
     const open = it.sub && S.menuOpen.has(id);
-    const row = `<div class="mi${it.dis ? ' dis' : ''}${it.sub ? ' has' : ''}${open ? ' open' : ''}" data-id="${esc(id)}">` +
+    const row = `<div class="mi${it.dis ? ' dis' : ''}${it.sub ? ' has' : ''}${open ? ' open' : ''}${it.cls ? ' ' + it.cls : ''}"` +
+      ` data-id="${esc(id)}"${it.sid ? ` data-sid="${esc(it.sid)}"` : ''}>` +
       `<span class="ck">${it.ck ? '✓' : ''}</span>${(it.r || []).map(seg).join('')}</div>`;
     return row + (open ? `<div class="msub">${menuHtml(it.sub, id)}</div>` : '');
   }).join('');
@@ -1373,68 +1473,195 @@ async function refreshPages() {
   });
 }
 
-// The info panel stays where he left it, open or shut, across chats and reloads (Codex's right panel).
+// The load per chat, as the menubar's Chats/other shows it (bin/chat-load's chats.json, one tick old at most): a
+// row with workers or apps under it opens them, a chat's row opens the chat.
+async function refreshLoad() {
+  await once('load', async () => {
+    S.load = await api('/api/load');
+    if (S.sheet === 'load') renderSheet();
+  });
+}
+function loadItems(rows) {
+  return (rows || []).map((r) => {
+    if (r === '-') return {sep: true};
+    if (typeof r === 'string') return {r: [{t: r}]};
+    return {r: [{t: r.text || ''}], cls: r.alarm ? 'alarm' : r.dim ? 'dim' : '', sid: r.sub ? '' : r.session || '', key: r.session || '',
+      sub: r.sub ? loadItems(r.sub) : null};
+  });
+}
+
+// The info panel stays where he left it, open or shut, across chats and reloads (Codex's right panel): only its ×
+// (or Esc) turns it off. Both sidebars keep the width he dragged them to, the sheet's per kind.
 const ui = kept('ui');
+ui.w = ui.w || {};
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 function openSheet(kind) {
   if (S.sheet === kind) { closeSheet(); return; }
   if (kind === 'info') { ui.info = true; keep('ui', ui); }
   S.sheet = kind;
-  $('#sheet').className = 'sheet ' + kind;
-  $('#sheet').hidden = $('#scrim').hidden = false;
+  const sh = $('#sheet');
+  sh.className = 'sheet ' + kind;
+  sh.style.width = ui.w[kind] ? ui.w[kind] + 'px' : '';
+  sh.hidden = $('#scrim').hidden = false;
   $('#sheetb').innerHTML = '';
+  sheetHtml = '';
   document.querySelectorAll('[data-sheet]').forEach((b) => b.classList.toggle('on', b.dataset.sheet === kind));
-  document.body.classList.add('docked');
+  if (kind === 'term') S.term = {hist: '', end: true, busy: false};
   renderSheet();
+  dock();
   if (kind === 'menu') refreshMenu();
   if (kind === 'pages') refreshPages();
   if (kind === 'term') pullScreen();
   if (kind === 'info') pullInfo();
+  if (kind === 'load') refreshLoad();
 }
 
-// quiet: the app closed it (no chat left to show), not his choice; else closing another sheet brings info back.
+// quiet: not his choice to turn info off (the app had no chat to show, or a tap beside a covering sheet); else
+// closing another sheet brings info back.
 function closeSheet(quiet) {
   const was = S.sheet;
   if (was === 'info' && quiet !== true) { ui.info = false; keep('ui', ui); }
   S.sheet = '';
   $('#sheet').hidden = $('#scrim').hidden = true;
-  document.body.classList.remove('docked');
+  dock();
   document.querySelectorAll('[data-sheet]').forEach((b) => b.classList.remove('on'));
   if (quiet !== true && was !== 'info') infoBack();
 }
-const wide = () => matchMedia('(min-width: 1000px)').matches;
-function infoBack() { if (ui.info && S.sid && !S.sheet && wide()) openSheet('info'); }
+// A sheet docks beside the thread (Codex's side panel) only while the thread keeps room of its own; else it covers
+// the thread, a tap beside it closes it.
+const THREAD_MIN = 380;
+const fits = (w) => innerWidth > 760 && innerWidth - $('#side').offsetWidth - w - 16 >= THREAD_MIN;
+function dock() {
+  const on = !!S.sheet && fits($('#sheet').offsetWidth);
+  document.body.classList.toggle('docked', on);
+  document.body.style.setProperty('--sheetw', $('#sheet').offsetWidth + 'px');
+}
+function infoBack() { if (ui.info && S.sid && !S.sheet && fits(ui.w.info || 340)) openSheet('info'); }
+window.addEventListener('resize', dock);
 
+// A drag on a sidebar's inner edge sets its width, kept across reloads.
+function grip(el, width) {
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('drag');
+    document.body.classList.add('dragging');
+    const move = (ev) => { width(ev.clientX); dock(); };
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.classList.remove('drag');
+      document.body.classList.remove('dragging');
+      keep('ui', ui);
+      dock();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up, {once: true});
+    el.addEventListener('pointercancel', up, {once: true});
+  });
+}
+const sideWidth = () => { if (ui.w.side) document.documentElement.style.setProperty('--sidew', ui.w.side + 'px'); };
+grip($('#sidegrip'), (x) => { ui.w.side = clamp(Math.round(x), 220, Math.min(520, innerWidth - 420)); sideWidth(); });
+grip($('#sheetgrip'), (x) => {
+  if (!S.sheet) return;
+  ui.w[S.sheet] = clamp(Math.round(innerWidth - 8 - x), 300, Math.min(900, innerWidth - 240));
+  $('#sheet').style.width = ui.w[S.sheet] + 'px';
+});
+sideWidth();
+
+// The Terminal sheet: the screen, redrawn only when it changed, so his scroll stays where he put it; at the end it
+// follows new lines. His scroll to the top brings the tab's whole scrollback (Terminal keeps it), held still while
+// he reads it, until he is back at the end.
+let termSet = 0;
+function termScroll() {
+  const body = $('#sheetb'), tm = S.term;
+  if (S.sheet !== 'term' || !tm || performance.now() - termSet < 120) return;
+  tm.end = body.scrollHeight - body.scrollTop - body.clientHeight < 30;
+  if (tm.end && tm.hist) { tm.hist = ''; renderSheet(); }
+  else if (body.scrollTop < 40 && !tm.hist && !tm.busy) pullHistory();
+}
+async function pullHistory() {
+  const sid = S.sid, tm = S.term;
+  tm.busy = true;
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/screen?history=1`, null, 30000).catch(() => ({ok: false}));
+  tm.busy = false;
+  if (sid !== S.sid || tm !== S.term || S.sheet !== 'term' || tm.end) return;
+  const text = d.ok ? String(d.res || '').replace(/[\s ]+$/, '') : '';
+  if (!text || text.split('\n').length <= S.scr.lines.length) return;
+  const body = $('#sheetb'), h0 = body.scrollHeight;
+  tm.hist = text;
+  renderSheet();
+  termSet = performance.now();
+  body.scrollTop += body.scrollHeight - h0;
+}
+
+function footer(html) {
+  const f = $('#sheetf');
+  if (f.dataset.h === html) return;
+  f.dataset.h = html;
+  f.innerHTML = html;
+  f.hidden = !html;
+}
+
+let sheetHtml = '';  // what #sheetb shows: an unchanged sheet is not redrawn, his scroll and the layout stay
 function renderSheet() {
-  requestAnimationFrame(() => document.body.style.setProperty('--sheetw', $('#sheet').offsetWidth + 'px'));
   const body = $('#sheetb');
-  const top = body.scrollTop, end = body.scrollHeight - body.scrollTop - body.clientHeight < 30;
+  const top = body.scrollTop;
+  let html = '', foot = '';
   if (S.sheet === 'term') {
-    const c = chat(S.sid);
+    const c = chat(S.sid), tm = S.term || (S.term = {hist: '', end: true, busy: false});
     $('#sheett').textContent = 'Terminal';
-    $('#sheets').textContent = c ? (c.tty || '').replace('/dev/', '') : '';
-    body.innerHTML = (S.screenErr ? `<div class="term-err">⚠ ${esc(S.screenErr)}</div>` : '') +
-      `<pre class="term">${esc(S.scr.lines.join('\n'))}</pre>`;
-    body.scrollTop = end || !top ? body.scrollHeight : top;
-  } else if (S.sheet === 'menu') {
+    $('#sheets').textContent = [c ? (c.tty || '').replace('/dev/', '') : '', tm.hist ? 'scrollback' : ''].filter(Boolean).join(' · ');
+    // One slow answer is no lost tab: the warning waits for three in a row, as the screen itself does.
+    html = (S.screenFails >= 3 && S.screenErr ? `<div class="term-err">⚠ ${esc(S.screenErr)}</div>` : '') +
+      `<pre class="term">${esc(tm.hist || S.scr.lines.join('\n'))}</pre>`;
+    if (sheetHtml !== html) {
+      sheetHtml = html;
+      body.innerHTML = html;
+      termSet = performance.now();
+      body.scrollTop = tm.end ? body.scrollHeight : top;
+      dock();
+    }
+    footer('');
+    return;
+  }
+  if (S.sheet === 'menu') {
     $('#sheett').textContent = 'Menu';
     $('#sheets').textContent = '';
-    body.innerHTML = menuErr ? `<div class="term-err">⚠ ${esc(menuErr)}</div>` : lastMenu ? menuHtml(lastMenu, '') : '';
-    body.scrollTop = top;
+    html = menuErr ? `<div class="term-err">⚠ ${esc(menuErr)}</div>` : lastMenu ? menuHtml(lastMenu, '') : '';
+  } else if (S.sheet === 'load') {
+    const d = S.load || {};
+    $('#sheett').textContent = 'Load';
+    $('#sheets').textContent = d.as_of ? ago(d.as_of) : '';
+    html = d.rows ? menuHtml(loadItems(d.rows), 'load') || '<div class="none">No load data from the Mac</div>' : '';
   } else if (S.sheet === 'info') {
     const d = S.info && S.info.sid === S.sid ? S.info : null;
     $('#sheett').textContent = d && d.root ? base(d.root) : 'Info';
     $('#sheets').textContent = '';
-    body.innerHTML = d ? infoHtml(d) : '';
-    body.scrollTop = top;
+    html = d ? infoHtml(d) : '';
+    if (!runOf(S.sid) && !S.workers.some((w) => w.sid === S.sid)) {
+      foot = `<button type="button" class="btn ghost" data-pin>${S.pins.includes(S.sid) ? 'Unpin' : '⚑ Pin to the top'}</button>`;
+    }
+    if (live(chat(S.sid))) foot += '<button type="button" class="btn" data-end>End chat · close its window</button>';
   } else if (S.sheet === 'pages') {
-    $('#sheett').textContent = 'Pages';
-    $('#sheets').textContent = S.pages ? String(S.pages.length) : '';
-    body.innerHTML = (S.pages || []).map((p) =>
+    // This chat's pages; all of them a tap away (and with no chat open).
+    const mine = S.sid && !S.pagesAll, all = S.pages || [];
+    const list = mine ? all.filter((p) => p.owner === S.sid) : all;
+    $('#sheett').textContent = mine ? 'Pages of this chat' : 'Pages';
+    $('#sheets').textContent = S.pages ? String(list.length) : '';
+    html = list.map((p) =>
       `<div class="prow" data-pid="${esc(p.pid)}"><div class="t"><b>${p.owner && p.owner === S.sid ? '<i class="dot"></i>' : ''}` +
       `<span>${esc(p.title)}</span></b><small>${esc(p.chat)}</small></div>` +
-      `<span class="at">${ago(Date.parse(p.updated) / 1000)}</span></div>`).join('');
-    body.scrollTop = top;
+      `<span class="at">${ago(Date.parse(p.updated) / 1000)}</span></div>`).join('') ||
+      (S.pages ? `<div class="none">${mine ? 'This chat made no pages' : 'No pages'}</div>` : '');
+    if (S.sid) foot = `<button type="button" class="btn" data-allpages>${mine ? 'All pages · ' + all.length : 'Only this chat'}</button>`;
   }
+  if (sheetHtml !== html) {
+    sheetHtml = html;
+    body.innerHTML = html;
+    body.scrollTop = top;
+    dock();
+  }
+  footer(foot);
 }
 
 function overlay(path) {
@@ -1458,6 +1685,8 @@ function openChat(sid) {
     $('#opts').innerHTML = $('#suggest').innerHTML = '';
     $('#opts').dataset.h = $('#suggest').dataset.h = '';
     S.info = null;
+    S.pagesAll = false;
+    S.term = {hist: '', end: true, busy: false};
     const c = chat(sid);
     if (c && c.spoke) { seen[sid] = c.spoke; keep('seen', seen); }
   }
@@ -1469,7 +1698,7 @@ function openChat(sid) {
   pullLog();
   pullScreen();
   pullInfo();
-  if (S.sheet === 'info') renderSheet(); else infoBack();
+  if (S.sheet) renderSheet(); else infoBack();
 }
 
 function route() {
@@ -1509,8 +1738,10 @@ $('#mic').addEventListener('click', () => {
   const t = performance.now();
   if (t - MIC.tap < 500) return;  // a double tap would start the take and cancel it at once
   MIC.tap = t;
+  // × ends the take with what was said in the box, for editing; Send sends it. Only a take not yet started drops.
   if (MIC.state === '') micStart();
-  else if (MIC.state === 'live' || MIC.state === 'starting') micDrop();
+  else if (MIC.state === 'live') micStop();
+  else if (MIC.state === 'starting') micDrop();
 });
 $('#opts').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-choose]');
@@ -1527,10 +1758,28 @@ $('#suggest').addEventListener('click', (e) => {
 });
 document.querySelectorAll('[data-sheet]').forEach((b) => b.addEventListener('click', () => openSheet(b.dataset.sheet)));
 $('#sheetx').addEventListener('click', closeSheet);
-$('#scrim').addEventListener('click', closeSheet);
+$('#scrim').addEventListener('click', () => closeSheet(true));
+$('#sheetb').addEventListener('scroll', termScroll, {passive: true});
+$('#sheetf').addEventListener('click', (e) => {
+  if (e.target.closest('[data-end]')) closeLive();
+  else if (e.target.closest('[data-pin]')) togglePin();
+  else if (e.target.closest('[data-allpages]')) { S.pagesAll = !S.pagesAll; renderSheet(); }
+});
+$('#update').addEventListener('click', reload);
+$('#micbar').addEventListener('click', (e) => {
+  const r = e.target.closest('[data-restore]'), f = e.target.closest('[data-forget]');
+  if (r) micRestore(r.dataset.restore);
+  else if (f) { BUB.gone[f.dataset.forget] = now(); keep('restored', BUB.gone); renderMicbar(); }
+  else if (e.target.closest('[data-usealt]')) api('/api/mic/usealt', {}, 5000).then((d) => { if (!d.ok) toast('⚠ ' + (d.err || 'nothing to use')); pullBubble(); }).catch(() => {});
+});
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.sheet) closeSheet(); });
 $('#sheetb').addEventListener('click', (e) => {
-  if (e.target.closest('[data-end]')) { closeLive(); return; }
+  const go = e.target.closest('.mi[data-sid]');
+  if (go) {
+    if (!document.body.classList.contains('docked')) closeSheet(true);
+    location.hash = '#chat/' + encodeURIComponent(go.dataset.sid);
+    return;
+  }
   const row = e.target.closest('.mi.has');
   if (!row) return;
   const id = row.dataset.id;
@@ -1587,7 +1836,7 @@ if (VV) {
 
 // The polls, only while visible: chats every 3 s, the open transcript every 1 s (new bytes only), its screen every
 // 2 s while it works or asks, 4 s idle, 1 s with the Terminal sheet open; its statusline and changed files every 3 s;
-// menu 5 s and pages 20 s while shown.
+// menu 5 s, load 3 s and pages 20 s while shown; the Mac's pill 1 s through a dictation, 10 s else.
 let tick = 0;
 setInterval(() => {
   if (document.visibilityState !== 'visible') return;
@@ -1603,6 +1852,9 @@ setInterval(() => {
   if (S.sid && tick % 3 === 1) pullInfo();
   if (S.sheet === 'menu' && tick % 5 === 0) refreshMenu();
   if (S.sheet === 'pages' && tick % 20 === 0) refreshPages();
+  if (S.sheet === 'load' && tick % 3 === 2) refreshLoad();
+  // The Mac's pill: every second through a take (a restore offered at its start, the polish seconds), else now and then.
+  if (MIC.state || BUB.busy ? true : S.sid && tick % 10 === 5) pullBubble();
   micWatch();
   payOwed();
   clocks();

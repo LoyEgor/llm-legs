@@ -96,6 +96,8 @@ queue = json.load(open("$WORK/queue")) if os.path.exists("$WORK/queue") else Non
 box = lambda line: "\\u23fa working\\n" + "\\u2500" * 20 + "\\n\\u276f " + line + "\\n" + "\\u2500" * 20 + "\\n  status"
 if "llm-limits" in lua:
     print(json.dumps({"items": [{"r": [{"t": "Routing: next fixacct"}], "sub": [{"r": [{"t": "row", "c": "e64033", "a": 1}]}]}, {"sep": True}]}))
+elif "return history of tab" in lua:
+    print(json.dumps({"ok": True, "res": "".join("h%06d\\n" % i for i in range(80000)) + "Pick a color"}))
 elif "return contents of tab" in lua and os.path.exists("$WORK/screen-fails"):
     print(json.dumps({"ok": False, "err": "Terminal timed out"}))
 elif "return contents of tab" in lua and queue is not None:
@@ -114,8 +116,9 @@ else:
     print(json.dumps({"ok": True, "res": "sent"}))
 EOF
 chmod +x "$WORK/bin/hs"
-# The stub transcriptions-gpt: its control socket (status, remote-start, stop, cancel, and `stats` for this test)
-# and a UDP receiver counting the relayed audio packets; a stop writes the take's text to the deliver path.
+# The stub transcriptions-gpt: its control socket (status, remote-start, stop, cancel, bubble, usealt, restore, and
+# `stats` for this test) and a UDP receiver counting the relayed audio packets; a stop writes the take's text to the
+# deliver path, a restore the cut take's.
 cat >"$WORK/bin/daemon-stub" <<'STUB'
 import json, os, socket, struct, sys, threading, time
 rt, log = sys.argv[1], sys.argv[2]
@@ -138,11 +141,13 @@ def receive():
         st["marked"] += data[12:] == b"\x01\x02" * 320
         st["silent"] += data[12:] == bytes(640)
 threading.Thread(target=receive, daemon=True).start()
-def finish():
+def finish(text="текст с iPad"):
     time.sleep(0.3)
     with open(st["deliver"], "w") as f:
-        f.write("текст с iPad")
+        f.write(text)
     st["state"] = "idle"
+BUBBLE = {"pill": "", "polish_since": None, "alt": "", "degraded": False,
+          "restore": {"name": "20261108T153230.wav", "at": 1794145895.6, "chars": 11834, "armed": True}}
 srv = socket.socket(socket.AF_UNIX)
 srv.bind(os.path.join(rt, "control.sock"))
 srv.listen(8)
@@ -168,6 +173,13 @@ while True:
         threading.Thread(target=finish, daemon=True).start()
     elif verb == "cancel":
         st["state"], reply = "idle", "ok"
+    elif verb == "bubble":
+        reply = json.dumps(dict(BUBBLE, state=st["state"], remote=st["deliver"] is not None))
+    elif verb == "usealt":
+        reply = "ok" if st["state"] == "processing" else "ignored " + st["state"]
+    elif verb == "restore" and st["state"] in ("idle", "recording"):
+        st["deliver"], st["state"], reply = json.loads(arg)["deliver"], "processing", "ok"
+        threading.Thread(target=finish, args=("пятнадцать минут диктовки",), daemon=True).start()
     else:
         reply = "ignored " + st["state"]
     conn.sendall(reply.encode() + b"\n")
@@ -351,12 +363,37 @@ assert test "$(chunk "$old")" = 404
 assert test "$(chunk "$mic")" = 200
 assert test "$(grep -c '^cancel$' "$WORK/daemon.log")" = 2
 assert test "$(post "/api/mic/$mic/cancel" '{}')" = 200
+# The Mac's voice pill, mirrored (he never sees it from the iPad): its state as the daemon's `bubble` gives it, the
+# other result on a tap, and a cut take restored into this app instead of pasted on the Mac, also over a take of
+# ours still recording (the daemon discards it; our relay must not cancel the restore).
+assert test "$(get "$base/api/mic/bubble")" = 200
+assert test "$(jq -r '[.ok, .state, .restore.name, .restore.armed] | join("|")' "$WORK/body")" = "true|idle|20261108T153230.wav|true"
+assert test "$(post /api/mic/usealt '{}')" = 200
+assert test "$(jq -r '[.ok, .err] | join("|")' "$WORK/body")" = "false|ignored idle"
+assert test "$(post /api/mic/restore '{"name": "20261108T153230.wav"}')" = 200
+assert test "$(jq -r '[.ok, .text] | join("|")' "$WORK/body")" = "true|пятнадцать минут диктовки"
+assert grep -q '^restore {"deliver": "/.*/pages-app/restore-[0-9a-f]*.txt", "name": "20261108T153230.wav"}$' "$WORK/daemon.log"
+assert test "$(post /api/mic/start '{}')" = 200
+mic=$(jq -r .id "$WORK/body")
+cancels=$(grep -c '^cancel$' "$WORK/daemon.log")
+assert test "$(post /api/mic/restore '{}')" = 200
+assert test "$(jq -r .text "$WORK/body")" = "пятнадцать минут диктовки"
+assert test "$(chunk "$mic")" = 404
+sleep 0.3
+assert test "$(grep -c '^cancel$' "$WORK/daemon.log")" = "$cancels"
+assert test -z "$(ls -A "$(python3 -c 'import tempfile; print(tempfile.gettempdir())')/pages-app" 2>/dev/null)"
 # Behind `tailscale serve` the page's origin is https.
 assert test "$(post "/api/chat/$sid/key" '{"key": "esc"}' -H "Origin: https://127.0.0.1:$port")" = 200
 
 # The screen, the menubar mirror, pages.
 assert test "$(get "$base/api/chat/$sid/screen")" = 200
 assert like "$(jq -r .res "$WORK/body")" "Pick a color*"
+# Scrolled past the screen, the Terminal sheet gets the tab's scrollback: its last 400 KB, from a line start.
+assert test "$(get "$base/api/chat/$sid/screen?history=1")" = 200
+assert test "$(jq -r '[.ok, (.res | length <= 409600), (.res | test("^h[0-9]{6}\n")), (.res | endswith("h079999\nPick a color"))] | all' "$WORK/body")" = true
+# The load per chat for the sidebar's meters: bin/chat-load's rows as they are (a row's sub list included).
+assert test "$(get "$base/api/load")" = 200
+assert test "$(jq -r '[.title, .rows[1], .rows[2].session] | join("|")' "$WORK/body")" = "Chats/other  1.0/2.0 cores|-|$sid"
 assert test "$(get "$base/api/menu")" = 200
 assert test "$(jq -r '.items[0].sub[0].r[0].c' "$WORK/body")" = e64033
 assert test "$(get "$base/api/pages")" = 200
@@ -472,6 +509,15 @@ assert test "$(jq -r '[.items[].t] | join(",")' "$WORK/body")" = "after the big 
 s1=$(jq -r .start "$WORK/body")
 assert test "$(get "$base/api/chat/$sid/log?before=$s1")" = 200
 assert test "$(jq -r '[.end == '"$s1"', .start < '"$s1"' - 900000, .items[-1].k == "user"] | all' "$WORK/body")" = true
+# An Earlier block is a block: windows of a few big lines each are joined until it holds 12 items, so one scroll
+# of his brings a screenful, not three lines (the app then asked again and again on its own).
+"$PY" -c 'import json, sys
+line = lambda t: json.dumps({"type": "user", "message": {"role": "user", "content": t}}) + "\n"
+open(sys.argv[1], "a").write("".join(line("b%02d " % i + "y" * 200000) for i in range(30)) + line("the end"))' "$T"
+assert test "$(get "$base/api/chat/$sid/log")" = 200
+s2=$(jq -r .start "$WORK/body")
+assert test "$(get "$base/api/chat/$sid/log?before=$s2")" = 200
+assert test "$(jq -r '[(.items | length >= 12), .end == '"$s2"', (.items[-1].t | startswith("b"))] | all' "$WORK/body")" = true
 
 # It costs Claude Code nothing: no model call, no settings or hooks touched; the only programs it runs are ps,
 # Hammerspoon, chat-find and chats (to open a past chat), and the client polls only while it is on screen, at most once a second.
@@ -482,4 +528,4 @@ assert "$PY" -c 'import sys
 sys.exit("if (document.visibilityState !== \x27visible\x27) return;\n  tick++;" not in open(sys.argv[1]).read())' "$ROOT/share/pages/app/app.js"
 assert test "$(grep -c '^}, 1000);$' "$ROOT/share/pages/app/app.js")" = 1
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"

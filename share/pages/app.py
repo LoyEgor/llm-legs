@@ -154,10 +154,11 @@ def accounts(started):
     return {p: ACCOUNTS[p][1] if p in ACCOUNTS else ("claude", "") for p in started}
 
 
-def recent():
-    """session -> chat-find's row (name, transcript path, ctx, model, when it last spoke, cache ttl)."""
+def recent(sessions=()):
+    """session -> chat-find's row (name, transcript path, ctx, model, when it last spoke, cache ttl); sessions: just
+    those, whenever they last spoke."""
     finder = os.environ.get("APP_CHAT_FIND") or os.path.join(repo(), "bin", "chat-find")
-    out = run([sys.executable, finder, "--recent", "--json"], timeout=8)
+    out = run([sys.executable, finder, "--recent", "--json"] + [a for sid in sessions for a in ("--session", sid)], timeout=8)
     try:
         rows = json.loads(out) if out else []
     except ValueError:
@@ -319,7 +320,15 @@ def chats():
             held["status"] = doc["status"]
     return {"as_of": time.time(), "machine": machine, "chats": sorted(rows, key=key),
             "workers": sorted([w for w in workers if w["sid"] not in by_session], key=key),
-            "runs": sorted(found_runs, key=lambda r: -r["started"]), "client": client_version()}
+            "runs": sorted(found_runs, key=lambda r: -r["started"]), "pins": pins(), "client": client_version()}
+
+
+def pins():
+    """share/chat_pins.py's pinned sessions, oldest pin first (bin/chats lifts a closed one to the top)."""
+    try:
+        return shared("chat_pins").pinned()
+    except Exception:  # an unreadable pin file pins nothing
+        return []
 
 
 def client_version():
@@ -600,14 +609,29 @@ def parse_entry(entry):
     return []
 
 
+OLDER_ITEMS = 12  # an Earlier block reaches back until it holds this many items ...
+OLDER_HOPS = 8  # ... or this many windows
+
+
 def log(sid, after=None, before=None):
     """Items of the transcript: the tail (LOG_WINDOW) with no offsets, what came after byte `after`, or the window
-    that ends at byte `before`. -> {items, start, end}: offsets of whole lines, for the next call."""
+    that ends at byte `before` (reaching further back while it holds next to nothing: tool noise, sidechains).
+    -> {items, start, end}: offsets of whole lines, for the next call."""
     if not SID_RE.match(sid):
         return None
     path = PATHS.get(sid) or transcript(sid, cached("recent", 30, recent).get(sid))
     if not path:
         return None
+    doc = window(path, after, before)
+    hops = 1
+    while before is not None and doc["start"] > 0 and len(doc["items"]) < OLDER_ITEMS and hops < OLDER_HOPS:
+        more = window(path, None, doc["start"])
+        doc = dict(doc, items=more["items"] + doc["items"], start=more["start"])
+        hops += 1
+    return doc
+
+
+def window(path, after, before):
     with open(path, "rb") as handle:
         size = handle.seek(0, 2)
         if after is not None:
@@ -772,6 +796,19 @@ def screen(tty):
     return cached(("screen", tty), 0.8, lambda: terminal(in_tab(tty, "return contents of TAB")))
 
 
+HISTORY_CAP = 400 << 10  # chars of a tab's scrollback the Terminal sheet gets when he scrolls past the screen
+
+
+def history_of(tty):
+    """The tab's scrollback (Terminal's `history`), its last HISTORY_CAP chars from a line start."""
+    doc = dict(cached(("history", tty), 3, lambda: terminal(in_tab(tty, "return history of TAB"))))
+    text = doc.get("res") or ""
+    if doc.get("ok") and len(text) > HISTORY_CAP:
+        text = text[-HISTORY_CAP:]
+        doc["res"] = text[text.find("\n") + 1:]
+    return doc
+
+
 def clears(lines):
     """AppleScript setting c to `lines` × (Ctrl+U, Backspace), which empties that many input lines. Neither key
     interrupts a working chat; Ctrl+C does even with text in the input, and so does Esc."""
@@ -905,9 +942,13 @@ def send_key(tty, key, choose=None):
 
 def history():
     """chat-find --recent, newest real message first: every chat he can go back to (live ones too; the client marks
-    them), with what it last said."""
+    them), with what it last said; a pinned chat older than its window comes in too, as `chats` lists it."""
     rows = []
-    for r in cached("recent", 30, recent).values():
+    found = dict(cached("recent", 30, recent))
+    gone = tuple(p for p in pins() if p not in found)
+    if gone:
+        found.update(cached(("pinned", gone), 30, lambda: recent(gone)))
+    for r in found.values():
         rows.append({"sid": r["session"], "name": r.get("name") or "", "cwd": r.get("cwd") or "",
                      "branch": r.get("branch") or "", "model": r.get("model") or "",
                      "spoke": r.get("spoke") or r.get("at"), "role": r.get("role") or "",
@@ -1219,10 +1260,83 @@ def mic_stop(mic):
         mic.close()
 
 
+MIC_RESTORE_WAIT = 240  # s: a restore transcribes the whole cut take again
+
+
+def mic_bubble():
+    """What the Mac's voice pill shows and offers now (transcriptions-gpt `bubble`, its ipad-mic/PROTOCOL.md "Remote
+    take"): he works from the iPad and never sees that pill -> {ok, state, pill, polish_since, alt, degraded, restore}."""
+    answer = daemon("bubble") if daemon else None
+    try:
+        doc = json.loads(answer or "")
+    except ValueError:
+        doc = None
+    if not isinstance(doc, dict):
+        return 200, {"ok": False, "err": "transcriptions-gpt has no bubble" if answer else "transcriptions-gpt is not running"}
+    return 200, dict(doc, ok=True)
+
+
+def mic_usealt():
+    """The pill's click on a ready other result, or the polish seconds' paste-now; a take of ours gets that text."""
+    answer = daemon("usealt") if daemon else None
+    return 200, {"ok": answer == "ok", "err": "" if answer == "ok" else answer or "transcriptions-gpt is not running"}
+
+
+def mic_restore(body):
+    """A cut take back as text for the draft: transcriptions-gpt restores the named, else the offered, else the newest
+    cancelled take into a file instead of pasting on the Mac; a take of ours still recording is discarded by it."""
+    if daemon is None or daemon_state() is None:
+        return 503, {"ok": False, "err": "transcriptions-gpt is not running"}
+    with MIC_LOCK:
+        ours = list(MICS.values())
+    if any(m.stopping for m in ours):
+        return 409, {"ok": False, "err": "the last dictation is still being transcribed"}
+    path = os.path.join(scratch(), "restore-%s.txt" % os.urandom(8).hex())
+    request = {"deliver": path}
+    name = body.get("name") if isinstance(body, dict) else None
+    if isinstance(name, str) and name:
+        request["name"] = name
+    for m in ours:
+        m.stopping = True  # its idle cancel must not hit the restore
+    answer = daemon("restore", request)
+    if answer != "ok":
+        for m in ours:
+            m.stopping = False
+        return 409, {"ok": False, "err": "transcriptions-gpt: %s" % (answer or "no answer")}
+    for m in ours:
+        m.close()
+    deadline, idle_at = time.monotonic() + MIC_RESTORE_WAIT, None
+    try:
+        while time.monotonic() < deadline:
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as handle:
+                    return 200, {"ok": True, "text": handle.read()}
+            # The daemon's main loop takes the restore up a moment later: idle only counts once it has had time.
+            if daemon_state() in ("idle", None):
+                idle_at = idle_at or time.monotonic()
+                if time.monotonic() - idle_at > 6:
+                    return 200, {"ok": False, "err": "nothing was restored"}
+            else:
+                idle_at = None
+            time.sleep(0.2)
+        return 504, {"ok": False, "err": "no restored text in %d s" % MIC_RESTORE_WAIT}
+    finally:
+        for name in (path, path + ".part"):
+            try:
+                os.unlink(name)
+            except OSError:
+                pass
+
+
 def mic_post(path, body):
-    """POST /api/mic/start | /api/mic/<id>/(chunk|stop|cancel) -> (code, doc), or None when not a mic route."""
+    """POST /api/mic/(start|usealt|restore) | /api/mic/<id>/(chunk|stop|cancel) -> (code, doc), or None when not a mic
+    route."""
     if path == "/api/mic/start":
         return mic_start()
+    if path == "/api/mic/usealt":
+        return mic_usealt()
+    if path == "/api/mic/restore":
+        return mic_restore(body)
     m = re.fullmatch(r"/api/mic/([0-9a-f]{16})/(chunk|stop|cancel)", path)
     if not m:
         return None
@@ -1279,6 +1393,17 @@ def get(handler, path, query):
     if path == "/api/menu":
         handler.send_json(200, menu())
         return True
+    if path == "/api/mic/bubble":
+        handler.send_json(*mic_bubble())
+        return True
+    if path == "/api/load":
+        try:
+            with open(CHATS_JSON, encoding="utf-8") as handle:
+                doc = json.load(handle)
+        except (OSError, ValueError):
+            doc = {}
+        handler.send_json(200, {"title": doc.get("title") or "", "rows": doc.get("rows") or [], "as_of": doc.get("as_of")})
+        return True
     if path == "/api/pages":
         handler.send_json(200, {"pages": pages()})
         return True
@@ -1316,7 +1441,7 @@ def get(handler, path, query):
             handler.send_json(404, {"err": "not a live terminal chat"})
             return True
         started = time.monotonic()
-        doc = screen(tty)
+        doc = history_of(tty) if query.get("history") else screen(tty)
         if not doc.get("ok") or doc.get("res") == "no-tab":
             incident(("screen", sid), op="screen", sid=sid, error=str(doc.get("err") or doc.get("res"))[:300],
                      ms=int((time.monotonic() - started) * 1000))
@@ -1340,10 +1465,19 @@ def post(handler, path, body):
             store.event("app", op="mic", path=path[9:20], error=str(answer[1].get("err"))[:300])
         handler.send_json(*answer)
         return True
-    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue|open|close)", path)
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue|open|close|pin)", path)
     if not m:
         return False
     sid, sub = m.groups()
+    if sub == "pin":
+        if not SID_RE.match(sid):
+            handler.send_json(400, {"ok": False, "err": "bad session id"})
+            return True
+        on = body.get("on", True) if isinstance(body, dict) else True
+        handler.send_json(200, {"ok": True, "pins": shared("chat_pins").pin(sid, bool(on))})
+        with CACHE_LOCK:
+            CACHE.pop("chats", None)
+        return True
     if sub in ("open", "close"):
         if not SID_RE.match(sid):
             handler.send_json(400, {"ok": False, "err": "bad session id"})

@@ -13,7 +13,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 #root { display: flex; height: var(--vvh, 100%); transform: translateY(var(--vvt, 0px)); padding-top: env(safe-area-inset-top); }
 
 /* ---------------------------------------------------------------- sidebar */
-#side { width: 288px; flex: none; display: flex; flex-direction: column; background: var(--side);
+#side { position: relative; width: var(--sidew, 288px); flex: none; display: flex; flex-direction: column; background: var(--side);
   border-right: .5px solid var(--line); }
 #sidetop { display: flex; align-items: center; gap: 8px; padding: 10px 10px 6px 14px; min-height: 46px; }
 #machine { flex: 1; min-width: 0; display: grid; grid-template-columns: auto 1fr auto; gap: 3px 8px; align-items: center;
@@ -22,9 +22,12 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .bar i { position: absolute; top: 0; bottom: 0; border-radius: 2px; }
 .bar .a { background: var(--fg2); }
 .bar .b { background: var(--fg3); opacity: .45; }
+#machine { cursor: pointer; border-radius: var(--r-s); padding: 2px 4px; margin: -2px -4px; }
+#machine:hover, #machine.on { background: var(--hover); }
 #machine.alarm { color: var(--red); }
 #machine .warn { grid-column: 1 / -1; color: var(--red); font-family: var(--sans); font-size: 12px; }
 .tools { display: flex; gap: 2px; }
+.ib.none { opacity: .4; }
 .ib.warn::after { content: ""; position: absolute; top: 7px; right: 7px; width: 6px; height: 6px; border-radius: 3px;
   background: var(--amber); }
 #findbox { padding: 2px 10px 6px; }
@@ -38,7 +41,6 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 #pastbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 8px;
   padding: 8px 8px 8px 16px; border-radius: var(--r-xl); background: var(--pop); box-shadow: var(--shadow-pop); }
 #pastnote { color: var(--fg2); font-size: var(--fs-m); min-width: 0; }
-.endbtn { margin: 18px 8px 4px; }
 #list { flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 0 8px calc(12px + env(safe-area-inset-bottom)); }
 .sec { padding: 14px 8px 4px; font-size: 13px; font-weight: 500; color: var(--fg3); display: flex; gap: 6px; }
 .row .lead { flex: none; width: 16px; height: 20px; display: grid; place-items: center; color: var(--fg3); }
@@ -163,6 +165,15 @@ table.md th { font-weight: 600; }
 #opts .num { color: var(--fg3); font-variant-numeric: tabular-nums; min-width: 1ch; }
 #opts .q { padding: 6px 12px 4px; font-size: 13.5px; color: var(--fg2); white-space: pre-wrap; }
 #suggest:not(:empty) { margin-bottom: 8px; display: flex; }
+/* The Mac's voice pill, mirrored: a cut take to restore, the polish seconds, the other result. */
+#micbar:not(:empty) { margin-bottom: 8px; }
+.mb { display: flex; gap: 8px; align-items: center; }
+.mb .pill { padding: 7px 14px; gap: 8px; }
+.mb .pill small { color: var(--fg3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.mb .mt { color: var(--fg2); font-size: 13px; font-variant-numeric: tabular-nums; }
+.mb .ib { color: var(--fg3); }
+/* The Mac records through its fallback (the pill's red breathing border). */
+#composer.degraded { box-shadow: var(--shadow-comp), 0 0 0 1.5px var(--red); }
 .sug { padding: 7px 14px 7px 10px; }
 .sug .ic { color: var(--fg3); width: 16px; height: 16px; }
 .sug span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -173,7 +184,7 @@ table.md th { font-weight: 600; }
 #input::placeholder { color: var(--fg3); }
 .cbtn { display: flex; gap: 4px; align-items: center; flex: none; }
 #send.stop { background: var(--accent); color: #fff; }
-/* Dictating: Cancel at the far left, Send at the right, the level bars across everything between. */
+/* Dictating: Stop (the text goes into the box) at the far left, Send at the right, the level bars across everything between. */
 #wave { position: absolute; left: 48px; right: 48px; top: 6px; bottom: 6px; display: flex; align-items: center; gap: 10px;
   background: var(--comp); }
 #wavec { flex: 1; min-width: 0; height: 28px; }
@@ -190,10 +201,28 @@ table.md th { font-weight: 600; }
 #sheetb { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 0 8px 12px; }
 #sheet.pages { width: 400px; }
 #sheet.info { width: 340px; }
+#sheet.load { width: 560px; }
+/* What stays put under a sheet's list: End chat, All pages. */
+#sheetf { padding: 8px; border-top: .5px solid var(--line); }
+#sheetf .btn { width: 100%; justify-content: center; }
+#sheetf .btn + .btn { margin-top: 6px; }
+/* Both sidebars take his width: a drag on their inner edge, kept per sheet kind. */
+.grip { position: absolute; top: 0; bottom: 0; width: 14px; z-index: 2; cursor: col-resize; touch-action: none; }
+.grip::after { content: ""; position: absolute; top: 50%; width: 4px; height: 36px; margin-top: -18px; border-radius: 2px;
+  background: var(--line2); opacity: 0; transition: opacity .15s; }
+.grip:hover::after, .grip.drag::after { opacity: 1; }
+#sidegrip { right: -7px; } #sidegrip::after { left: 5px; }
+#sheetgrip { left: -7px; } #sheetgrip::after { left: 5px; }
+@media (pointer: coarse) { .grip::after { opacity: .7; } }
+body.dragging, body.dragging * { cursor: col-resize !important; user-select: none; -webkit-user-select: none; }
 pre.term { margin: 0; padding: 4px 8px 8px; font: 12px/1.35 var(--mono); white-space: pre; color: var(--fg); }
 .term-err { padding: 8px; color: var(--amber); font-size: 13px; }
 .mi { font: 12.5px/1.55 var(--mono); white-space: pre; padding: 1px 8px; border-radius: 8px; }
 .mi.dis { opacity: .55; }
+.mi.dim { color: var(--fg3); }
+.mi.alarm { color: var(--red); }
+.mi[data-sid] { cursor: pointer; }
+.mi[data-sid]:hover { background: var(--hover); }
 .mi.has { cursor: pointer; }
 .mi.has:hover { background: var(--hover); }
 .mi.has::after { content: "  ›"; color: var(--fg3); }
@@ -210,6 +239,10 @@ pre.term { margin: 0; padding: 4px 8px 8px; font: 12px/1.35 var(--mono); white-s
 .prow .t small { display: block; color: var(--fg3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .prow .at { font-size: 12px; color: var(--fg3); white-space: nowrap; }
 
+/* An update that waits (a dictation, a message on its way): one thin line across the top, a tap reloads. */
+#update { position: fixed; z-index: 30; top: env(safe-area-inset-top); left: 0; right: 0; height: 24px;
+  background: var(--accent); color: #fff; font-size: 12.5px; font-weight: 500; }
+body:has(#update:not([hidden])) #root { padding-top: calc(env(safe-area-inset-top) + 24px); }
 #offline { position: fixed; z-index: 30; top: calc(10px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
   padding: 6px 14px; border-radius: 999px; background: var(--pop); box-shadow: var(--shadow-pop); color: var(--amber);
   font-size: 13px; }
@@ -220,10 +253,13 @@ pre.term { margin: 0; padding: 4px 8px 8px; font: 12px/1.35 var(--mono); white-s
 #toast { bottom: calc(96px + env(safe-area-inset-bottom)); color: var(--red); }
 
 @media (min-width: 761px) { #sidetop .tools.solo { display: none; } }
-/* Wide: the sheet docks beside the thread (Codex's side panel) instead of covering it. */
-@media (min-width: 1000px) {
-  body.docked #main { margin-right: calc(var(--sheetw, 320px) + 8px); }
-  body.docked #scrim { display: none; }
+/* Room for the thread beside it (app.js roomy()): the sheet docks there (Codex's side panel) instead of covering it,
+   and the thread gets wider margins. */
+body.docked #main { margin-right: calc(var(--sheetw, 320px) + 8px); }
+body.docked #scrim { display: none; }
+@media (min-width: 761px) {
+  #log { padding-left: 32px; padding-right: 32px; }
+  #dock { padding-left: 32px; padding-right: 32px; }
 }
 /* A finger on the iPad: 44 pt targets (Apple's minimum) with room between the two composer buttons; the corner
    stays concentric with theirs (22 + the 6 px inset). */
@@ -243,7 +279,8 @@ pre.term { margin: 0; padding: 4px 8px 8px; font: 12px/1.35 var(--mono); white-s
   #head { padding-left: 8px; }
   #log { padding-left: 12px; padding-right: 12px; }
   #dock { padding-left: 10px; padding-right: 10px; }
-  #sheet, #sheet.pages, #sheet.info { left: 8px; width: auto; min-width: 0; }
+  #sheet, #sheet.pages, #sheet.info, #sheet.load { left: 8px; width: auto !important; min-width: 0; }
+  .grip { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .shimmer, .spin, .came, .older.busy { animation: none; } .seam { display: none; } }
 

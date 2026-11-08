@@ -14,10 +14,11 @@
 <link rel="stylesheet" href="/app/app.css">
 <title>Chats</title>
 <body>
+<button type="button" id="update" hidden>Update ready · tap to reload</button>
 <div id="root">
   <aside id="side">
     <header id="sidetop">
-      <div id="machine"></div>
+      <div id="machine" data-sheet="load" title="Load per chat"></div>
       <div class="tools solo">
         <button type="button" class="ib" data-sheet="pages" data-icon="pages" title="Pages"></button>
         <button type="button" class="ib" data-sheet="menu" data-icon="menu" title="Menu"></button>
@@ -26,6 +27,7 @@
     <div id="findbox"><input id="find" class="field" type="search" placeholder="Search chats" enterkeyhint="search"
       autocomplete="off" autocorrect="off" spellcheck="false"></div>
     <div id="list"></div>
+    <div class="grip" id="sidegrip" aria-hidden="true"></div>
   </aside>
   <main id="main">
     <header id="head">
@@ -33,7 +35,7 @@
       <div id="title"></div>
       <div class="tools">
         <button type="button" class="ib" id="termbtn" data-sheet="term" data-icon="term" title="Terminal"></button>
-        <button type="button" class="ib" data-sheet="pages" data-icon="pages" title="Pages"></button>
+        <button type="button" class="ib" id="pagesbtn" data-sheet="pages" data-icon="pages" title="Pages"></button>
         <button type="button" class="ib" data-sheet="menu" data-icon="menu" title="Menu"></button>
         <button type="button" class="ib" id="infobtn" data-sheet="info" data-icon="panel" title="Model, usage and changes"></button>
       </div>
@@ -46,6 +48,7 @@
           <button type="button" class="btn primary" id="openbtn">Open in Terminal</button></div>
         <div id="opts"></div>
         <div id="suggest"></div>
+        <div id="micbar"></div>
         <form id="composer">
           <textarea id="input" rows="1" enterkeyhint="enter" autocomplete="off" placeholder="Message"></textarea>
           <div id="wave" hidden><canvas id="wavec"></canvas><span id="wavet"></span></div>
@@ -63,6 +66,8 @@
 <aside id="sheet" class="sheet" hidden>
   <header><b id="sheett"></b><small id="sheets"></small><button type="button" id="sheetx" class="ib" data-icon="x" aria-label="Close"></button></header>
   <div id="sheetb"></div>
+  <footer id="sheetf" hidden></footer>
+  <div class="grip" id="sheetgrip" aria-hidden="true"></div>
 </aside>
 <div id="offline" hidden>No connection to the Mac</div>
 <div id="overlay" hidden><button id="close" type="button" data-icon="x" aria-label="Close"></button><iframe id="frame" title="page"></iframe></div>
