@@ -14,8 +14,12 @@ on an incompatible change.
   query; `page lan [ref]` prints that link (`http://<LocalHostName>.local:<port>/…`), copies it and
   draws a QR code.
 - **POST** also requires `Content-Type: application/json` (the upload route also takes `image/*` and
-  `application/octet-stream`) and, when an `Origin` header is present, an origin equal to the page's
-  own; else 403.
+  `application/octet-stream`, a mic chunk only the latter) and, when an `Origin` header is present, an
+  origin equal to the page's own, `http://` or `https://` + `Host`; else 403.
+- **HTTPS:** `page tailscale` runs tailscaled in userspace mode (LaunchAgent `com.llm-legs.tailscaled`,
+  socket `~/.local/state/tailscale/tailscaled.sock`) and `tailscale serve` 443 → `127.0.0.1:<port>`;
+  the proxied request keeps the tailnet `Host`, so it still needs the cookie. Safari gives a page the
+  microphone only over https.
 
 ## Routes
 | Route | Answer |
@@ -50,6 +54,10 @@ rules as above; `page lan --app` prints the link. Terminal is touched only throu
 | `GET /api/chat/<sid>/screen` | `{ok, res}`: the tab's visible text |
 | `POST /api/chat/<sid>/send` | `{text}` → one bracketed paste + Return in the tab → `{ok, err}` |
 | `POST /api/chat/<sid>/key` | `{key: esc\|enter\|up\|down}` or `{choose: N}` (arrows from the `❯` option, then Return) |
+| `POST /api/mic/start` | `{}` → a remote take on transcriptions-gpt (its ipad-mic/PROTOCOL.md "Remote take") → `{ok, id}` once it records; 409 while another runs, 503 with no daemon |
+| `POST /api/mic/<id>/chunk` | `application/octet-stream`, ≤ 256 KB of 16 kHz mono int16, in order: relayed as 20 ms receiver packets to `127.0.0.1:47654`, silence between bursts; 10 s with no chunk cancels the take |
+| `POST /api/mic/<id>/stop` | one `stop` to the daemon, then its transcript from the deliver file → `{ok, text}` (never pasted on the Mac) |
+| `POST /api/mic/<id>/cancel` | the daemon's `cancel`, sent only while it records or transcribes |
 | `GET /api/menu` | `{items}`: the menubar as `{r: [{t, c, a, b}], ck, dis, sub}`, cached 4 s |
 | `GET /api/pages` | every page's `{pid, title, chat, owner, module, updated}`, newest first |
 
@@ -113,7 +121,8 @@ extending one: `EXTEND.md`. The server knows only:
 | `page set <slug\|pid> <item> field=value…` | writes a field as `by: chat` |
 | `page list [--all]` | this chat's pages, or every page |
 | `page open <slug\|pid>` | opens the page in Dia |
-| `page lan [ref] [--app]` | the home-network link to a page, the index, or the chats app; clipboard + QR |
+| `page lan [ref] [--app]` | the link to a page, the index, or the chats app; https on the tailnet when `page tailscale` set it up, else the home network; clipboard + QR |
+| `page tailscale` | HTTPS on Egor's tailnet: the tailscaled agent, the login URL until he logs in, then `tailscale serve` |
 | `page doctor` | server up? port owner, deployed copy current, PAGES_DIR |
 | `page report [--days N]` | pages made per chat and module, the `.events.jsonl` problems and hints, kit commits |
 | `page serve` | the daemon (launchd runs `~/.local/libexec/pagesd`) |

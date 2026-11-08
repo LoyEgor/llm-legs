@@ -5,7 +5,8 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 WORK="$(cd -P "$(mktemp -d)" && pwd)"
-trap 'kill $(jobs -p) 2>/dev/null; [ -n "${chatpid:-}" ] && kill "$chatpid" 2>/dev/null; rm -rf "$WORK"' EXIT
+RT="$(mktemp -d /tmp/pa-XXXX)"  # the stub daemon's control socket: a unix socket path is capped at 104 bytes
+trap 'kill $(jobs -p) 2>/dev/null; [ -n "${chatpid:-}" ] && kill "$chatpid" 2>/dev/null; rm -rf "$WORK" "$RT"' EXIT
 asserts=0
 PAGE="$ROOT/bin/page"
 like() { [[ $1 == $2 ]]; }
@@ -73,8 +74,72 @@ else:
     print(json.dumps({"ok": True, "res": "sent"}))
 EOF
 chmod +x "$WORK/bin/hs"
+# The stub transcriptions-gpt: its control socket (status, remote-start, stop, cancel, and `stats` for this test)
+# and a UDP receiver counting the relayed audio packets; a stop writes the take's text to the deliver path.
+cat >"$WORK/bin/daemon-stub" <<'STUB'
+import json, os, socket, struct, sys, threading, time
+rt, log = sys.argv[1], sys.argv[2]
+st = {"state": "idle", "deliver": None, "packets": 0, "marked": 0, "silent": 0, "gaps": 0, "streams": []}
+udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp.bind(("127.0.0.1", 0))
+def receive():
+    last = {}
+    while True:
+        data = udp.recv(2048)
+        magic, stream, seq = struct.unpack("!4sII", data[:12])
+        if magic != b"TGMA" or len(data) != 652:
+            continue
+        if stream not in st["streams"]:
+            st["streams"].append(stream)
+        elif seq != last[stream] + 1:
+            st["gaps"] += 1
+        last[stream] = seq
+        st["packets"] += 1
+        st["marked"] += data[12:] == b"\x01\x02" * 320
+        st["silent"] += data[12:] == bytes(640)
+threading.Thread(target=receive, daemon=True).start()
+def finish():
+    time.sleep(0.3)
+    with open(st["deliver"], "w") as f:
+        f.write("текст с iPad")
+    st["state"] = "idle"
+srv = socket.socket(socket.AF_UNIX)
+srv.bind(os.path.join(rt, "control.sock"))
+srv.listen(8)
+with open(os.path.join(rt, "udp-port"), "w") as f:
+    f.write(str(udp.getsockname()[1]))
+while True:
+    conn, _ = srv.accept()
+    line = conn.recv(4096).decode().strip()
+    verb, _, arg = line.partition(" ")
+    if verb not in ("status", "stats"):
+        open(log, "a").write(line + "\n")
+    if verb == "status":
+        reply = st["state"]
+    elif verb == "stats":
+        reply = json.dumps({k: v for k, v in st.items() if k != "streams"} | {"streams": len(st["streams"])})
+    elif verb == "remote-start":
+        if not st["packets"]:
+            reply = "err no stream"
+        else:
+            st["deliver"], st["state"], reply = json.loads(arg)["deliver"], "recording", "ok"
+    elif verb == "stop" and st["state"] == "recording":
+        st["state"], reply = "processing", "ok"
+        threading.Thread(target=finish, daemon=True).start()
+    elif verb == "cancel":
+        st["state"], reply = "idle", "ok"
+    else:
+        reply = "ignored " + st["state"]
+    conn.sendall(reply.encode() + b"\n")
+    conn.close()
+STUB
+"$PY" "$WORK/bin/daemon-stub" "$RT" "$WORK/daemon.log" &
+for _ in $(seq 100); do [ -s "$RT/udp-port" ] && break; sleep 0.1; done
+[ -s "$RT/udp-port" ] || fail "no stub daemon"
+stats() { "$PY" -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"stats\n"); print(s.recv(4096).decode())' "$RT/control.sock"; }
 export PAGES_DIR="$WORK/pages" APP_SESSIONS="$WORK/sessions" APP_HS="$WORK/bin/hs" APP_CHAT_FIND="$WORK/bin/chat-find" \
-  APP_CHATS_JSON="$WORK/chats.json" STATUSLINE_CACHE_DIR="$WORK/tracks"
+  APP_CHATS_JSON="$WORK/chats.json" STATUSLINE_CACHE_DIR="$WORK/tracks" TRANSCRIBER_RUNTIME_DIR="$RT" \
+  APP_MIC_PORT="$(cat "$RT/udp-port")"
 
 "$PAGE" serve --port 0 >"$WORK/serve.out" 2>&1 &
 "$ROOT/bin/wait-until" --max 10 log "$WORK/serve.out" 'page serve: http' >/dev/null || fail "serve: $(cat "$WORK/serve.out")"
@@ -153,6 +218,42 @@ assert grep -qF 'do script (ASCII character 27) in tab i of window j' "$WORK/hs.
 assert test "$(post "/api/chat/$sid/key" '{"key": "rm"}')" = 502
 assert test "$(post "/api/chat/$sid/key" '{"choose": 99}')" = 400
 
+# The microphone: a remote take on transcriptions-gpt fed with the browser's PCM as receiver packets (its own
+# stream, contiguous seq, silence between bursts), the text back from the deliver file, one stop only.
+assert test "$(post /api/mic/start '{}')" = 200
+mic=$(jq -r .id "$WORK/body")
+assert like "$mic" "????????????????"
+assert grep -q "^remote-start {\"deliver\": \"/.*/pages-app/mic-$mic.txt\"}$" "$WORK/daemon.log"
+assert test "$(post /api/mic/start '{}')" = 409
+pcm() { "$PY" -c 'import sys; sys.stdout.buffer.write(b"\x01\x02" * int(sys.argv[1]))' "$1" >"$WORK/pcm"; }
+chunk() { curl -s -o "$WORK/body" -w '%{http_code}' -H "Content-Type: ${2:-application/octet-stream}" --data-binary @"$WORK/pcm" "$base/api/mic/$1/chunk"; }
+pcm 500
+assert test "$(chunk "$mic")" = 200
+pcm 140  # 1000 + 280 bytes: the torn tail of the first chunk goes out with the second, two whole frames
+assert test "$(chunk "$mic")" = 200
+assert test "$(chunk "$mic" text/plain)" = 403
+assert test "$(chunk 0123456789abcdef)" = 404
+"$PY" -c 'import sys; sys.stdout.buffer.write(bytes(300 << 10))' >"$WORK/pcm"
+assert test "$(chunk "$mic")" = 400
+before=$(stats | jq .silent)
+sleep 0.9
+assert test "$(stats | jq --argjson b "$before" '.silent > $b + 4')" = true
+assert test "$(stats | jq -r '[.marked, .gaps, .streams] | join(",")')" = "2,0,1"
+assert test "$(post "/api/mic/$mic/stop" '{}')" = 200
+assert test "$(jq -r '[.ok, .text] | join("|")' "$WORK/body")" = "true|текст с iPad"
+assert test "$(grep -c '^stop$' "$WORK/daemon.log")" = 1
+assert test -z "$(ls -A "$(python3 -c 'import tempfile; print(tempfile.gettempdir())')/pages-app" 2>/dev/null)"
+assert test "$(post "/api/mic/$mic/stop" '{}')" = 404
+# Cancel reaches the daemon only while it records: on an idle one it is the Esc of another track.
+assert test "$(post /api/mic/start '{}')" = 200
+mic=$(jq -r .id "$WORK/body")
+assert test "$(post "/api/mic/$mic/cancel" '{}')" = 200
+assert test "$(grep -c '^cancel$' "$WORK/daemon.log")" = 1
+pcm 320
+assert test "$(chunk "$mic")" = 404
+# Behind `tailscale serve` the page's origin is https.
+assert test "$(post "/api/chat/$sid/key" '{"key": "esc"}' -H "Origin: https://127.0.0.1:$port")" = 200
+
 # The screen, the menubar mirror, pages.
 assert test "$(get "$base/api/chat/$sid/screen")" = 200
 assert like "$(jq -r .res "$WORK/body")" "Pick a color*"
@@ -161,4 +262,4 @@ assert test "$(jq -r '.items[0].sub[0].r[0].c' "$WORK/body")" = e64033
 assert test "$(get "$base/api/pages")" = 200
 assert test "$(jq -r '.pages | length' "$WORK/body")" = 0
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, screen, menu mirror, pages"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages"

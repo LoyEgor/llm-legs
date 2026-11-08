@@ -432,6 +432,107 @@ async function send() {
   setTimeout(() => { pullScreen(); pullLog(); }, 400);
 }
 
+// ------------------------------------------------------------------ the microphone (transcriptions-gpt on the Mac)
+
+// '' -> starting (capture buffers while the Mac's take starts) -> live (250 ms uploads, in order) -> wait (the Mac
+// transcribes) -> ''; the text lands at the end of the draft of the chat the dictation began in, never sent by itself.
+const MIC = {state: '', id: null, sid: null, ctx: null, stream: null, frames: [], pump: null};
+
+function micButton() {
+  $('#mic').className = MIC.state;
+}
+
+async function micStart() {
+  if (!navigator.mediaDevices || !window.AudioWorkletNode) {
+    toast('⚠ the microphone needs the https link (page lan --app)');
+    return;
+  }
+  Object.assign(MIC, {state: 'starting', id: null, sid: S.sid, frames: []});
+  micButton();
+  try {
+    MIC.ctx = new AudioContext();  // inside the tap: iOS starts audio only from a gesture
+    MIC.stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1}});
+    await MIC.ctx.audioWorklet.addModule('/app/mic-worklet.js');
+    const node = new AudioWorkletNode(MIC.ctx, 'mic16k');
+    node.port.onmessage = (e) => { if (MIC.state === 'starting' || MIC.state === 'live') MIC.frames.push(e.data); };
+    MIC.ctx.createMediaStreamSource(MIC.stream).connect(node);
+    node.connect(MIC.ctx.destination);  // writes no output: silence, but the graph pulls it
+    await MIC.ctx.resume();
+    const d = await api('/api/mic/start', {});
+    if (!d.ok) throw new Error(d.err || 'the Mac did not start');
+    if (MIC.state !== 'starting') return;
+    Object.assign(MIC, {state: 'live', id: d.id});
+    micButton();
+    MIC.pump = micPump(d.id);
+  } catch (e) {
+    micDrop();
+    toast('⚠ ' + (e.message || e));
+  }
+}
+
+async function micPump(id) {
+  while (MIC.id === id && MIC.state === 'live') {
+    await new Promise((r) => setTimeout(r, 250));
+    if (!(await micFlush(id))) return;
+  }
+}
+
+// Everything buffered, in pieces under the server's 256 KB cap -> false when the server dropped the dictation.
+async function micFlush(id) {
+  while (MIC.frames.length) {
+    const take = MIC.frames.splice(0, 200);
+    const body = new Int16Array(take.length * 320);
+    take.forEach((f, k) => body.set(new Int16Array(f), k * 320));
+    const r = await fetch(`/api/mic/${id}/chunk`, {method: 'POST', body: body.buffer,
+      headers: {'Content-Type': 'application/octet-stream'}}).catch(() => null);
+    if (r && r.status === 404) {
+      if (MIC.id === id) { micDrop(); toast('⚠ the dictation was dropped on the Mac'); }
+      return false;
+    }
+  }
+  return true;
+}
+
+function micRelease() {
+  if (MIC.stream) MIC.stream.getTracks().forEach((t) => t.stop());
+  const ctx = MIC.ctx;
+  if (ctx) setTimeout(() => ctx.close().catch(() => {}), 100);
+  MIC.stream = MIC.ctx = null;
+}
+
+function micDrop() {
+  const id = MIC.id;
+  micRelease();
+  Object.assign(MIC, {state: '', id: null, frames: []});
+  micButton();
+  if (id) api(`/api/mic/${id}/cancel`, {}).catch(() => {});
+}
+
+async function micStop() {
+  const {id, sid} = MIC;
+  if (MIC.stream) MIC.stream.getTracks().forEach((t) => t.stop());
+  await new Promise((r) => setTimeout(r, 80));  // the worklet's last frames
+  MIC.state = 'wait';
+  micButton();
+  micRelease();
+  await MIC.pump;
+  if (!(await micFlush(id))) return;
+  const d = await api(`/api/mic/${id}/stop`, {}).catch(() => ({ok: false, err: 'offline'}));
+  Object.assign(MIC, {state: '', id: null});
+  micButton();
+  if (!d.ok) { toast('⚠ ' + (d.err || 'no transcript')); return; }
+  const text = (d.text || '').trim();
+  if (!text) return;
+  const join = (v) => (v && !/\s$/.test(v) ? v + ' ' : v || '') + text;
+  if (sid === S.sid) {
+    const box = $('#input');
+    box.value = join(box.value);
+    grow();
+  }
+  drafts[sid] = sid === S.sid ? $('#input').value : join(drafts[sid]);
+  keep('drafts', drafts);
+}
+
 function grow() {
   const box = $('#input');
   box.style.height = 'auto';
@@ -557,6 +658,10 @@ $('#composer').addEventListener('submit', (e) => { e.preventDefault(); send(); }
 $('#input').addEventListener('input', () => { grow(); if (S.sid) drafts[S.sid] = $('#input').value; });
 $('#input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+});
+$('#mic').addEventListener('click', () => {
+  if (MIC.state === '') micStart();
+  else if (MIC.state === 'live') micStop();
 });
 document.querySelector('.keys').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-key]');

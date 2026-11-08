@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -500,9 +501,7 @@ def screen(tty):
 
 def send_text(tty, text):
     """The text into the tab as one bracketed paste; `do script` appends the Return that submits it."""
-    folder = os.path.join(tempfile.gettempdir(), "pages-app")
-    os.makedirs(folder, mode=0o700, exist_ok=True)
-    fd, path = tempfile.mkstemp(dir=folder, suffix=".txt")
+    fd, path = tempfile.mkstemp(dir=scratch(), suffix=".txt")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
@@ -622,6 +621,170 @@ def pages():
     return sorted(out, key=lambda p: p["updated"], reverse=True)
 
 
+# ---------------------------------------------------------------- the microphone, through transcriptions-gpt
+
+daemon = None  # set by bin/page: one control line to transcriptions-gpt (verb, request=None) -> its reply or None
+MIC_PORT = int(os.environ.get("APP_MIC_PORT") or 47654)  # the daemon's iPad receiver (its ipad-mic/PROTOCOL.md)
+MIC_FRAME = 640  # 20 ms of 16 kHz mono int16, one audio packet
+MIC_CHUNK_CAP = 256 << 10
+MIC_PAD_AFTER = 0.4  # s without audio before silence frames keep the take under the daemon's 1.5 s stall limit
+MIC_IDLE_LIMIT = 10  # s without a chunk: the client is gone and its take is cancelled
+MIC_TAKE_LIMIT = 900
+MIC_WAIT = 120  # s from stop to the transcript
+MICS = {}
+MIC_LOCK = threading.Lock()
+
+
+class Mic:
+    """One remote take: the browser's PCM relayed to the receiver as audio packets (its own streamID), padded with
+    silence between HTTP bursts; the daemon writes the transcript to `path` instead of pasting it."""
+
+    def __init__(self):
+        self.id = os.urandom(8).hex()
+        self.stream = int.from_bytes(os.urandom(4), "big")
+        self.seq = 0
+        self.rest = b""
+        self.sent_at = self.chunk_at = self.born = time.monotonic()
+        self.lock = threading.Lock()
+        self.done = threading.Event()
+        self.stopping = False
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.path = os.path.join(scratch(), "mic-%s.txt" % self.id)
+        threading.Thread(target=self.pad, daemon=True).start()
+
+    def frames(self, pcm):
+        """Whole frames of rest + pcm go out now; a torn tail waits for the next chunk. Under self.lock."""
+        data = self.rest + pcm
+        whole = len(data) - len(data) % MIC_FRAME
+        for at in range(0, whole, MIC_FRAME):
+            packet = b"TGMA" + self.stream.to_bytes(4, "big") + self.seq.to_bytes(4, "big") + data[at:at + MIC_FRAME]
+            try:
+                self.sock.sendto(packet, ("127.0.0.1", MIC_PORT))
+            except OSError:
+                pass  # the receiver fills a lost frame with silence
+            self.seq = (self.seq + 1) & 0xFFFFFFFF
+        self.rest = data[whole:]
+        self.sent_at = time.monotonic()
+
+    def chunk(self, pcm):
+        with self.lock:
+            self.chunk_at = time.monotonic()
+            self.frames(pcm)
+
+    def pad(self):
+        while not self.done.wait(0.1):
+            now = time.monotonic()
+            with self.lock:
+                if now - self.sent_at > MIC_PAD_AFTER:
+                    self.frames(bytes(MIC_FRAME * 5))
+            if not self.stopping and (now - self.chunk_at > MIC_IDLE_LIMIT or now - self.born > MIC_TAKE_LIMIT):
+                cancel_take()
+                self.close()
+
+    def close(self):
+        self.done.set()
+        with MIC_LOCK:
+            if MICS.get(self.id) is self:
+                del MICS[self.id]
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        for name in (self.path, self.path + ".part"):
+            try:
+                os.unlink(name)
+            except OSError:
+                pass
+
+
+def scratch():
+    folder = os.path.join(tempfile.gettempdir(), "pages-app")
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    return folder
+
+
+def daemon_state():
+    answer = daemon("status")
+    return answer.split()[0] if answer else None
+
+
+def cancel_take():
+    # The daemon's cancel is its Esc: on an idle daemon it would hit the newest other track (a transform).
+    if daemon_state() in ("recording", "processing"):
+        daemon("cancel")
+
+
+def mic_start():
+    """A take on the Mac's transcriptions-gpt fed from this browser -> {ok, id} once it records."""
+    if daemon is None or daemon_state() is None:
+        return 503, {"ok": False, "err": "transcriptions-gpt is not running"}
+    with MIC_LOCK:
+        if MICS:
+            return 409, {"ok": False, "err": "another dictation is running"}
+        mic = Mic()
+        MICS[mic.id] = mic
+    with mic.lock:
+        mic.frames(bytes(MIC_FRAME * 5))  # the receiver must see the stream before remote-start
+    answer = daemon("remote-start", {"deliver": mic.path})
+    if answer != "ok":
+        mic.close()
+        return 409, {"ok": False, "err": "transcriptions-gpt: %s" % (answer or "no answer")}
+    deadline = time.monotonic() + 4
+    while time.monotonic() < deadline:
+        if daemon_state() == "recording":
+            # The capture attaches right after the state flips; the client's first chunk may not beat it.
+            time.sleep(0.25)
+            return 200, {"ok": True, "id": mic.id}
+        time.sleep(0.05)
+    cancel_take()
+    mic.close()
+    return 504, {"ok": False, "err": "transcriptions-gpt did not start recording"}
+
+
+def mic_stop(mic):
+    """The take ends; the daemon transcribes it and writes the text -> {ok, text}."""
+    mic.stopping = True
+    daemon("stop")
+    deadline, idle_at = time.monotonic() + MIC_WAIT, None
+    try:
+        while time.monotonic() < deadline:
+            if os.path.exists(mic.path):
+                with open(mic.path, encoding="utf-8") as handle:
+                    return 200, {"ok": True, "text": handle.read()}
+            state = daemon_state()
+            # One stop only: a second one reaching an idle daemon would start a take on the Mac.
+            if state in ("idle", None):
+                idle_at = idle_at or time.monotonic()
+                if time.monotonic() - idle_at > 2:
+                    return 200, {"ok": False, "err": "nothing was transcribed"}
+            time.sleep(0.15)
+        return 504, {"ok": False, "err": "no transcript in %d s" % MIC_WAIT}
+    finally:
+        mic.close()
+
+
+def mic_post(path, body):
+    """POST /api/mic/start | /api/mic/<id>/(chunk|stop|cancel) -> (code, doc), or None when not a mic route."""
+    if path == "/api/mic/start":
+        return mic_start()
+    m = re.fullmatch(r"/api/mic/([0-9a-f]{16})/(chunk|stop|cancel)", path)
+    if not m:
+        return None
+    with MIC_LOCK:
+        mic = MICS.get(m.group(1))
+    if mic is None:
+        return 404, {"ok": False, "err": "that dictation is over"}
+    if m.group(2) == "chunk":
+        mic.chunk(body)
+        return 200, {"ok": True}
+    if m.group(2) == "stop":
+        return mic_stop(mic)
+    mic.stopping = True
+    cancel_take()
+    mic.close()
+    return 200, {"ok": True}
+
+
 # ---------------------------------------------------------------- HTTP
 
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -685,7 +848,16 @@ def get(handler, path, query):
 
 
 def post(handler, path, body):
-    """POST /api/chat/<sid>/(send|key); True when handled. body is the parsed JSON object."""
+    """POST /api/chat/<sid>/(send|key) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
+    chunk's raw PCM bytes)."""
+    if path.startswith("/api/mic/"):
+        answer = mic_post(path, body)
+        if answer is None:
+            return False
+        if store is not None and not answer[1].get("ok"):
+            store.event("app", op="mic", path=path[9:20], error=str(answer[1].get("err"))[:300])
+        handler.send_json(*answer)
+        return True
     m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key)", path)
     if not m:
         return False

@@ -215,11 +215,22 @@ class Handler(BaseHTTPRequestHandler):
         ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
         path, _, query = self.path.partition("?")
         upload = re.fullmatch(r"/p/[^/]+/upload", path) is not None
-        if ctype != "application/json" and not (upload and ctype.startswith(UPLOAD_TYPES)):
+        pcm = re.fullmatch(r"/api/mic/[0-9a-f]{16}/chunk", path) is not None
+        if ctype != "application/json" and not (upload and ctype.startswith(UPLOAD_TYPES)) and not (
+                pcm and ctype == "application/octet-stream"):
             return self.reply(403, b"content type refused\n")
         origin = self.headers.get("Origin")
-        if origin is not None and origin != "http://" + self.headers["Host"]:
+        # https: the same server behind `tailscale serve` (`page lan --app`), which the iPad's microphone needs.
+        if origin is not None and origin not in ("http://" + self.headers["Host"], "https://" + self.headers["Host"]):
             return self.reply(403, b"origin refused\n")
+        if pcm:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if not 0 < length <= app.MIC_CHUNK_CAP:
+                return self.reply(400, b"bad body\n")
+            return None if app.post(self, path, self.rfile.read(length)) else self.reply(404, b"not found\n")
         if path.startswith("/api/"):
             try:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -352,15 +363,15 @@ def dictation_mark(tag, at, ref, note):
     return dictation_send("mark", {"tag": tag, "at": at, "ref": ref, "note": note})
 
 
-def dictation_send(verb, request):
-    """One control line to transcriptions-gpt -> its reply line, or None with no daemon. A server on another
-    PAGES_DIR (a test's) reaches only TRANSCRIBER_RUNTIME_DIR's socket."""
+def dictation_send(verb, request=None):
+    """One control line to transcriptions-gpt (`verb`, or `verb <json>`) -> its reply line, or None with no daemon.
+    A server on another PAGES_DIR (a test's) reaches only TRANSCRIBER_RUNTIME_DIR's socket."""
     runtime = os.environ.get("TRANSCRIBER_RUNTIME_DIR")
     if not runtime:
         if os.path.realpath(store.root()) != os.path.realpath(os.path.expanduser("~/Pages")):
             return None
         runtime = os.path.expanduser("~/.transcriptions-gpt")
-    line = "%s %s\n" % (verb, json.dumps(request, ensure_ascii=False))
+    line = verb + ("" if request is None else " " + json.dumps(request, ensure_ascii=False)) + "\n"
     try:
         with socket.socket(socket.AF_UNIX) as conn:
             conn.settimeout(1.0)
@@ -369,6 +380,9 @@ def dictation_send(verb, request):
             return conn.recv(4096).decode("utf-8", "replace").strip() or None
     except OSError:
         return None
+
+
+app.daemon = dictation_send
 
 
 def lan_token():
@@ -559,20 +573,102 @@ def cmd_open(args):
     open_page(url(lookup(args)[0]))
 
 
+TS_BIN = "/opt/homebrew/opt/tailscale/bin"
+TS_DIR = os.path.expanduser("~/.local/state/tailscale")
+TS_SOCK = os.path.join(TS_DIR, "tailscaled.sock")
+TS_LABEL = "com.llm-legs.tailscaled"
+
+
+def tailscale(*argv, timeout=10):
+    """The tailscale CLI against our userspace daemon -> CompletedProcess, or None when it is not installed."""
+    if not os.path.exists(os.path.join(TS_BIN, "tailscale")):
+        return None
+    try:
+        return subprocess.run([os.path.join(TS_BIN, "tailscale"), "--socket", TS_SOCK] + list(argv),
+                              capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def ts_status():
+    done = tailscale("status", "--json", timeout=4)
+    try:
+        return json.loads(done.stdout) if done and done.stdout else {}
+    except ValueError:
+        return {}
+
+
+def ts_host():
+    """This Mac's https name when `tailscale serve` fronts the server (`page tailscale`), else None."""
+    status = ts_status()
+    name = (status.get("Self") or {}).get("DNSName", "").rstrip(".")
+    if status.get("BackendState") != "Running" or not name:
+        return None
+    served = tailscale("serve", "status", timeout=4)
+    return name if served and "127.0.0.1:%d" % PORT in served.stdout else None
+
+
+def cmd_tailscale(args):
+    """HTTPS for the pages server on Egor's tailnet (Safari gives a page the microphone only over https): tailscaled
+    in userspace mode as a LaunchAgent (no system extension, no sudo), then `tailscale serve` -> 127.0.0.1:PORT."""
+    if not os.path.exists(os.path.join(TS_BIN, "tailscaled")):
+        raise store.Refused("no tailscale: brew install tailscale")
+    plist_path = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % TS_LABEL)
+    if not os.path.exists(plist_path):
+        os.makedirs(TS_DIR, mode=0o700, exist_ok=True)
+        with open(plist_path, "wb") as handle:
+            plistlib.dump({"Label": TS_LABEL, "ProgramArguments": [
+                os.path.join(TS_BIN, "tailscaled"), "--tun=userspace-networking", "--statedir=" + TS_DIR,
+                "--socket=" + TS_SOCK], "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Interactive",
+                "StandardErrorPath": os.path.expanduser("~/Library/Logs/tailscaled.log")}, handle)
+        subprocess.run(["launchctl", "bootstrap", "gui/%d" % os.getuid(), plist_path], capture_output=True)
+    status = {}
+    for _ in range(20):
+        status = ts_status()
+        if status.get("BackendState") not in (None, "NoState", "Starting"):
+            break
+        time.sleep(0.5)
+    if status.get("BackendState") != "Running":
+        if not status.get("AuthURL"):
+            # `up` waits for the login; it runs on in the background and the URL shows in status.
+            subprocess.Popen([os.path.join(TS_BIN, "tailscale"), "--socket", TS_SOCK, "up",
+                              "--hostname=" + (lan_host() or "mac").split(".")[0].lower()],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            for _ in range(20):
+                status = ts_status()
+                if status.get("AuthURL") or status.get("BackendState") == "Running":
+                    break
+                time.sleep(0.5)
+        if status.get("BackendState") != "Running":
+            print("log in at %s, then run `page tailscale` again" % (status.get("AuthURL") or "(no login URL yet)"))
+            return 1
+    if not ts_host():
+        done = tailscale("serve", "--bg", "--https=443", "http://127.0.0.1:%d" % PORT, timeout=20)
+        if done is None or done.returncode != 0 or not ts_host():
+            print(((done.stdout + done.stderr) if done else "tailscale serve timed out").strip())
+            return 1
+    print("https://%s/ -> 127.0.0.1:%d" % (ts_host(), PORT))
+    return 0
+
+
 def cmd_lan(args):
-    """A link to a page (or the index) for another device on the home network; on the clipboard too."""
+    """A link to a page (or the index) for another device; on the clipboard too. https on the tailnet when
+    `page tailscale` set it up (the microphone needs it), else http on the home network."""
     if not LAN:
         raise store.Refused("PAGES_LAN=0: the server answers loopback only")
-    host = lan_host()
-    if not host:
-        raise store.Refused("no LocalHostName (scutil --get LocalHostName)")
     path = "/app/" if args.app else "/p/%s/" % lookup(args)[0] if args.ref else "/"
-    link = "http://%s:%d%s?k=%s" % (host, PORT, path, lan_token())
+    secure = ts_host()
+    host = lan_host()
+    if not secure and not host:
+        raise store.Refused("no LocalHostName (scutil --get LocalHostName)")
+    base = "https://%s" % secure if secure else "http://%s:%d" % (host, PORT)
+    link = "%s%s?k=%s" % (base, path, lan_token())
     print(link)
     subprocess.run(["pbcopy"], input=link, text=True, check=False)
     if shutil.which("qrencode") and not args.no_qr:
         subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "1", link], check=False)
-    print("on the clipboard; the device needs the same network. A link without ?k= is refused.")
+    print("on the clipboard; %s. A link without ?k= is refused." % (
+        "any device on the tailnet" if secure else "the device needs the same network"))
 
 
 def cmd_help(args):
@@ -713,6 +809,7 @@ def main(argv):
     sub.add_parser("report").add_argument("--days", type=int, default=7)
     sub.add_parser("serve").add_argument("--port", type=int, default=PORT)
     sub.add_parser("install-agent")
+    sub.add_parser("tailscale")
     args = parser.parse_args(argv)
     try:
         if args.command == "serve":
