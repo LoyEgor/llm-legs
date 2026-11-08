@@ -45,6 +45,10 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
    secondary click. Nothing in the list selects, calls out or lifts for a drag (Egor 2026-11-08: a long press painted
    it blue); the row darkens while it is held. The menu and its name form span the sidebar, whatever its width. */
 #list, #list * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-user-drag: none; }
+/* While a finger rests on a row nothing on the page selects either: iPadOS carried the long press over to text
+   further down the screen (Egor 2026-11-08). */
+html.pressing, html.pressing * { -webkit-touch-callout: none !important; -webkit-user-select: none !important;
+  user-select: none !important; }
 #list .row.held { background: var(--sel); }
 #ctxscrim { position: fixed; inset: 0; z-index: 34; }
 .ctx { position: fixed; z-index: 35; box-sizing: border-box; padding: 6px; border-radius: var(--r-l); background: var(--pop);

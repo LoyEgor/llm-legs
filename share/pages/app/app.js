@@ -2138,6 +2138,7 @@ $('#list').addEventListener('touchstart', (e) => {
   clearTimeout(CTX.timer);
   const row = e.target.closest('a.row'), p = e.touches[0];
   if (!rowSid(row) || e.touches.length !== 1) return;
+  document.documentElement.classList.add('pressing');
   Object.assign(CTX, {x: p.clientX, y: p.clientY});
   CTX.timer = setTimeout(() => {
     CTX.fired = now();
@@ -2152,6 +2153,13 @@ $('#list').addEventListener('touchmove', (e) => {
   if (p && Math.hypot(p.clientX - CTX.x, p.clientY - CTX.y) > 10) clearTimeout(CTX.timer);
 }, {passive: true});
 for (const ev of ['touchend', 'touchcancel', 'scroll']) $('#list').addEventListener(ev, () => clearTimeout(CTX.timer), {passive: true});
+// The page selects again once the finger is up (a selection begun meanwhile anywhere is refused).
+for (const ev of ['touchend', 'touchcancel']) {
+  document.addEventListener(ev, () => document.documentElement.classList.remove('pressing'), {passive: true});
+}
+document.addEventListener('selectstart', (e) => {
+  if (document.documentElement.classList.contains('pressing')) e.preventDefault();
+});
 // A press in the list never starts a selection or a drag (the CSS says so too; old WebKit honours only these).
 for (const ev of ['selectstart', 'dragstart']) $('#list').addEventListener(ev, (e) => e.preventDefault());
 $('#list').addEventListener('contextmenu', (e) => {
