@@ -533,16 +533,21 @@ mark_org_blocked() { # name [cause]
   done < <(account_names)
 }
 
-# The rare re-check of a frozen account, from the heal pass of the collector's refresh: one CLI
-# call per frozen account an hour. A blocked org refuses it before any model work (cost 0, API
-# 0 ms on 2026-11-06), so only a served answer, positive proof, clears the state; anything else
-# re-stamps it, and nothing flaps.
+# The rare re-check of a frozen account: one CLI call per frozen account an hour. A blocked org
+# refuses it before any model work (cost 0, API 0 ms on 2026-11-06), so only a served answer,
+# positive proof, clears the state; anything else re-stamps it, and nothing flaps. Two callers:
+# the --heal pass, and every warm of the account — llm-refresh and the menu reach Claude only
+# through warm/revive, so a heal-only re-check left com/notcom frozen 2 days after the org paid.
+org_block_due() { # name [every]
+  jq -e --argjson now "$(date +%s)" --argjson every "${2:-$org_recheck_s}" \
+    '(.auth.status? // "") == "org-blocked" and ($now - (.auth.checked_at // 0)) >= $every' \
+    "$limits_dir/$1.json" >/dev/null 2>&1
+}
+
 org_block_recheck() {
   local name pid pids=''
   while IFS= read -r name; do
-    jq -e --argjson now "$(date +%s)" --argjson every "$org_recheck_s" \
-      '(.auth.status? // "") == "org-blocked" and ($now - (.auth.checked_at // 0)) >= $every' \
-      "$limits_dir/$name.json" >/dev/null 2>&1 || continue
+    org_block_due "$name" || continue
     org_block_recheck_one "$name" &
     pids="$pids $!"
   done < <(account_names)
@@ -2205,6 +2210,10 @@ warm_accounts() {
       warm_failure "$name" unknown-account 'unknown account'
       failed=1
       continue
+    fi
+    # A refresh the user asked for re-checks a frozen org at once; a robot's waits its hour.
+    if user_refresh_explicit && org_block_due "$name" 0 || org_block_due "$name"; then
+      org_block_recheck_one "$name"
     fi
     case "$CLAUDEB_OAUTH_BYPASS_BACKOFF" in
       1|true|TRUE|yes|YES|on|ON) until=0 ;;

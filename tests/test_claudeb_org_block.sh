@@ -131,5 +131,10 @@ age com $((now - 3700))
 assert recheck
 assert test "$(status_of com)" = ok
 assert test "$(status_of notcom)" = org-blocked
+# llm-refresh and the menu reach Claude only through warm, never the heal pass: a due warm re-checks.
+age notcom $((now - 3700))
+bash "$SCRIPT" warm notcom >/dev/null 2>&1 || true
+# Thawed; the stub store has no live token, so warm's own probe then reads it as logged out.
+assert test "$(status_of notcom)" != org-blocked
 
 echo "PASS: $asserts asserts; org block detected from the CLI's own error (an answer discussing it is no block), frozen across the organization, kept by usage reads and other verdicts, shown as org blocked with dimmed numbers in the collector, table and picker, skipped even when pinned, re-checked hourly and cleared only by a served answer"
