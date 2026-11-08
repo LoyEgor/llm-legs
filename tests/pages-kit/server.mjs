@@ -7,7 +7,7 @@ import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const KIT = path.resolve(process.env.PAGES_KIT_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), "../../share/pages/kit"));
-const TYPES = { ".js": "text/javascript", ".html": "text/html; charset=utf-8", ".md": "text/markdown",
+const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html; charset=utf-8", ".md": "text/markdown",
   ".png": "image/png", ".wav": "audio/wav" };
 
 function png(w, h, rgb, ch = 3) {   // ch 4: RGBA

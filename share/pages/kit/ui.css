@@ -1,0 +1,132 @@
+/* The UI kit shared by the chats app (/app/) and the pages (/p/<pid>/, the index): one look, after the Codex
+   desktop app. Served as /kit/ui.css. Change a component here and it changes everywhere.
+
+   Tokens are the Codex webview's own values (light, and dark as measured live): the same names the app uses.
+   Scales, nothing beside them:
+     type    --fs-s 12 · --fs-m 13 · --fs 14 (UI base) · --fs-l 16 (fields: no iOS zoom; big answers); --fw 400 · --fw-b 600
+     radius  --r-xs 6 · --r-s 10 · --r-m 12.5 · --r-l 15 · --r-xl 20 · --r-full
+   Components (each derived from an app component, or from Codex's webview CSS where the app has none):
+     .btn  .btn.primary  .btn.ghost     text buttons (app .older; primary = the send button)
+     .ib                                icon button, 34 px; 40 px under a finger (app .ib)
+     .round  .round.primary             round action, 32 px; 44 px under a finger (app #mic, #send)
+     .field                             input / textarea / a box holding one (app #composer, Codex compact composer)
+     .pill                              a suggestion chip (app .sug)
+     .card                              a raised group; rows in it form a grouped list (Codex surface-card)
+     .row                               a list row: hover, .sel (app .row)
+     .sheet                             the side sheet (app #sheet)
+     .seg                               segmented choice / toggle: buttons in a track, .on = chosen (Codex SegmentedControl)
+     .count                             a count badge (Codex unread count)
+     .meter                             a progress bar, <i style="width:…%"> inside (app info panel .sg .bt)
+     .toast                             a passing message (app #toast)
+   States, not variants: .on (pressed / chosen) on .btn .ib .seg>button; :disabled; .sel on .row. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --side: #f6f6f6; --fg: #1a1c1f; --fg2: #1a1c1fa6; --fg3: #1a1c1f7e; --line: #1a1c1f14;
+  --line2: #1a1c1f1e; --hover: #1a1c1f0e; --sel: #1a1c1f12; --pop: #ffffff; --comp: #ffffff; --code: #1a1c1f0b;
+  --bubble: #ece4fb; --bubble-fg: #1a1c1f; --accent: #7c4ddb; --link: #2c67c5; --green: #00a240; --amber: #e25507;
+  --red: #e02e2a; --send: #0d0d0d; --send-fg: #ffffff; --blue: #3a83f7; --purple: #924ff7; --yellow: #ffc300;
+  --shadow-pop: 0 0 0 .5px var(--line2), 0 8px 16px -4px #0000001f;
+  --shadow-comp: 0 0 0 1px #0000000a, 0 2px 8px 0 #0000000a, 0 4px 40px 8px #00000006;
+  --shimmer-base: #1a1c1f8c; --shimmer-hi: #1a1c1f;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  --col: 768px;
+  --fs-s: 12px; --fs-m: 13px; --fs: 14px; --fs-l: 16px; --fw: 400; --fw-b: 600;
+  --r-xs: 6px; --r-s: 10px; --r-m: 12.5px; --r-l: 15px; --r-xl: 20px; --r-full: 999px;
+  --tint: color-mix(in srgb, var(--blue) 15%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111111; --side: #1a1a1a; --fg: #fcfcfc; --fg2: #fcfcfca6; --fg3: #fcfcfc80; --line: #ffffff15;
+    --line2: #ffffff28; --hover: #ffffff0f; --sel: #ffffff14; --pop: #262626; --comp: #2f2f2f; --code: #ffffff0d;
+    --bubble: #4e2f88; --bubble-fg: #f8f5fd; --accent: #9b6dff; --link: #66b5ff; --green: #40c977; --amber: #ff8549;
+    --red: #ff6764; --send: #fcfcfc; --send-fg: #111111; --blue: #339cff; --purple: #ad7bf9; --yellow: #ffd240;
+    --shadow-pop: 0 0 0 .5px var(--line2), 0 8px 16px -4px #0000004d;
+    --shadow-comp: inset 0 0 1px 0 #fff3;
+    --shimmer-base: #fcfcfc73; --shimmer-hi: #fcfcfc;
+  }
+}
+
+/* ---------------------------------------------------------------- base */
+* { box-sizing: border-box; }
+html, body { background: var(--bg); color: var(--fg); font: var(--fw) var(--fs)/1.45 var(--sans);
+  -webkit-text-size-adjust: 100%; -webkit-font-smoothing: antialiased; }
+body { margin: 0; }
+[hidden] { display: none !important; }
+::selection { background: #539af859; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; }
+
+/* ---------------------------------------------------------------- buttons: one family */
+.btn, .ib, .round, .seg > button { font: inherit; color: inherit; background: none; border: 0; margin: 0; cursor: pointer;
+  -webkit-tap-highlight-color: transparent; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px;
+  border-radius: var(--r-s); background: var(--hover); color: var(--fg); font-size: var(--fs); white-space: nowrap;
+  text-decoration: none; }
+.btn:hover { background: var(--sel); }
+.btn.primary { background: var(--send); color: var(--send-fg); font-weight: var(--fw-b); }
+.btn.primary:hover { opacity: .88; }
+.btn.ghost { background: none; color: var(--fg2); }
+.btn.ghost:hover { background: var(--hover); color: var(--fg); }
+.btn.on, .btn.ghost.on { background: var(--tint); color: var(--link); }
+.btn:disabled, .ib:disabled, .round:disabled, .seg > button:disabled { opacity: .35; cursor: default; }
+.ib { width: 34px; height: 34px; border-radius: var(--r-s); display: inline-grid; place-items: center; flex: none;
+  color: var(--fg2); position: relative; }
+.ib:hover, .ib.on { background: var(--hover); color: var(--fg); }
+.round { width: 32px; height: 32px; border-radius: var(--r-full); display: inline-grid; place-items: center; flex: none;
+  color: var(--fg2); }
+.round:hover { background: var(--hover); color: var(--fg); }
+.round.primary { background: var(--send); color: var(--send-fg); }
+.round.primary:hover { opacity: .88; }
+
+/* ---------------------------------------------------------------- segmented choice / toggle */
+.seg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: var(--r-m); background: var(--hover);
+  max-width: 100%; }
+.seg > button { min-height: 28px; padding: 0 12px; border-radius: var(--r-s); color: var(--fg2); font-size: var(--fs);
+  white-space: nowrap; }
+.seg > button:hover { color: var(--fg); background: var(--hover); }
+.seg > button.on { background: var(--comp); color: var(--fg); font-weight: var(--fw-b); box-shadow: var(--shadow-pop); }
+
+/* ---------------------------------------------------------------- fields */
+.field { display: block; width: 100%; font: var(--fw) var(--fs-l)/1.45 var(--sans); color: var(--fg); background: var(--comp);
+  border: 1px solid var(--line2); border-radius: var(--r-m); padding: 6px 12px; }
+.field::placeholder, .field ::placeholder { color: var(--fg3); }
+.field:focus-visible, .field:focus-within { outline: 0; border-color: var(--blue); }
+.field > textarea, .field > input { display: block; width: 100%; font: inherit; color: inherit; background: none; border: 0;
+  outline: 0; padding: 6px 12px; }
+.field:has(> textarea, > input) { padding: 0; }
+textarea.field { resize: vertical; }
+
+/* ---------------------------------------------------------------- pill, count, meter, toast */
+.pill { display: inline-flex; gap: 8px; align-items: center; max-width: 100%; padding: 6px 14px; border-radius: var(--r-full);
+  background: var(--pop); box-shadow: var(--shadow-pop); font-size: var(--fs); color: var(--fg); }
+.count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 7px;
+  border-radius: var(--r-full); background: color-mix(in srgb, var(--link) 18%, transparent); color: var(--link);
+  font-size: var(--fs-s); font-weight: var(--fw-b); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.count:empty { display: none; }
+.meter { position: relative; height: 6px; border-radius: 3px; background: var(--line2); overflow: hidden; }
+.meter > i { display: block; height: 100%; border-radius: 3px; background: var(--fg2); }
+.toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 50;
+  max-width: 80vw; padding: 8px 16px; border-radius: var(--r-l); background: var(--pop); box-shadow: var(--shadow-pop);
+  font-size: var(--fs); color: var(--fg); }
+
+/* ---------------------------------------------------------------- card, row, sheet */
+.card { background: var(--pop); border-radius: var(--r-xl); box-shadow: var(--shadow-pop); padding: 16px; }
+.row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: var(--r-m); margin: 1px 0;
+  color: inherit; text-decoration: none; }
+a.row, button.row { cursor: pointer; }
+a.row:hover, button.row:hover { background: var(--hover); }
+.row.sel { background: var(--sel); }
+.sheet { position: fixed; z-index: 21; top: calc(8px + env(safe-area-inset-top)); right: 8px; bottom: 8px;
+  width: fit-content; min-width: 300px; max-width: calc(100vw - 16px); display: flex; flex-direction: column;
+  background: var(--pop); border-radius: var(--r-xl); box-shadow: var(--shadow-pop); animation: ui-slide .16s ease-out; }
+@keyframes ui-slide { from { transform: translateX(16px); opacity: 0; } }
+
+/* A finger: 44 pt targets (Apple's minimum). */
+@media (pointer: coarse) {
+  .ib { width: 40px; height: 40px; }
+  .round { width: 44px; height: 44px; }
+  .btn { height: 40px; }
+  .seg > button { min-height: 36px; }
+}
+@media (max-width: 760px) { .sheet { left: 8px; width: auto; min-width: 0; } }
+@media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }

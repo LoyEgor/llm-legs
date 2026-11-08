@@ -343,14 +343,23 @@ def index_html():
     for pid in store.all_pages():
         m = store.meta(pid)
         groups.setdefault(m.get("chat_name") or "?", []).append((m.get("updated") or "", pid, m.get("title") or pid))
-    out = ["<!doctype html><meta charset=utf-8><title>Pages</title><body style='font:15px system-ui'>"
-           "<p><a href='/app/'>Chats app</a></p>"]
+    # The UI kit's look (share/pages/kit/ui.css, shared with the chats app): a card of rows per chat.
+    out = ["<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+           "<title>Pages</title><link rel=stylesheet href='/kit/ui.css'><style>"
+           "header{display:flex;align-items:center;gap:8px;min-height:52px;padding:8px 8px 8px 16px;"
+           "border-bottom:.5px solid var(--line)}h1{flex:1;margin:0;font-size:var(--fs);font-weight:var(--fw-b)}"
+           "main{max-width:var(--col);margin:0 auto;padding:4px 16px 24px}"
+           "h2{display:flex;gap:6px;align-items:center;margin:0;padding:16px 8px 6px;font-size:var(--fs-m);"
+           "font-weight:var(--fw);color:var(--fg3)}.card{padding:6px 8px}.row .t{flex:1;min-width:0;"
+           "white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row small{flex:none;color:var(--fg3);"
+           "font-size:var(--fs-s);font-variant-numeric:tabular-nums}</style>"
+           "<header><h1>Pages</h1><a class='btn ghost' href='/app/'>Chats app</a></header><main>"]
     for chat, pages in sorted(groups.items(), key=lambda g: max(g[1])[0], reverse=True):
-        out.append("<h3>%s</h3><ul>" % html.escape(chat))
-        out += ["<li><a href='/p/%s/'>%s</a> <small>%s</small>" % (pid, html.escape(title), html.escape(at))
-                for at, pid, title in sorted(pages, reverse=True)]
-        out.append("</ul>")
-    return "".join(out)
+        out.append("<h2>%s<span class=count>%d</span></h2><div class=card>" % (html.escape(chat), len(pages)))
+        out += ["<a class=row href='/p/%s/'><span class=t>%s</span><small>%s</small></a>"
+                % (pid, html.escape(title), html.escape(at)) for at, pid, title in sorted(pages, reverse=True)]
+        out.append("</div>")
+    return "".join(out) + "</main>"
 
 
 DICTATED = set()  # (pid, name): marks a running dictation took, so a × on one takes it back out

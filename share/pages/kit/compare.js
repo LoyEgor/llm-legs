@@ -9,38 +9,38 @@ import { h, get, save, textBox, onState, doneWhen, nextOpen, firstOpen, capped, 
 
 const CSS = `
 .strip{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:8px}
-.strip i{min-width:24px;padding:0 4px;border-radius:4px;background:var(--line);color:var(--mute);font:600 11px/18px system-ui;text-align:center;font-style:normal;cursor:pointer}
-.strip i.v{background:var(--accent);color:var(--bg)}.strip i.cur{outline:2px solid var(--ink)}
+.strip i{min-width:24px;padding:0 5px;border-radius:var(--r-xs);background:var(--hover);color:var(--fg3);font-size:var(--fs-s);font-weight:var(--fw-b);line-height:20px;text-align:center;font-style:normal;font-variant-numeric:tabular-nums;cursor:pointer}
+.strip i.v{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green)}.strip i.cur{box-shadow:inset 0 0 0 1.5px var(--fg)}
 .upper{display:flex;gap:16px;align-items:flex-start}
 .pv{display:flex;gap:6px;flex:none}
-.pc{position:relative;overflow:hidden;border-radius:6px;cursor:crosshair;background:var(--bk,#fff);outline:1px solid var(--line)}
+.pc{position:relative;overflow:hidden;border-radius:var(--r-s);cursor:crosshair;background:var(--bk,#fff);outline:1px solid var(--line2)}
 .pc img{width:100%;height:100%;display:block;-webkit-user-drag:none}
-.pc i{position:absolute;border:2px solid var(--accent);box-shadow:0 0 0 1px #fff;pointer-events:none}
-.pc input,.vp>input{position:absolute;right:4px;top:4px;z-index:3;margin:0;width:16px;height:16px;cursor:pointer;accent-color:var(--accent)}.vp>input{right:6px;top:6px;width:18px;height:18px}.pc.off img{opacity:.35}
-.side{flex:1 1 340px;min-width:340px;display:flex;flex-direction:column;gap:8px}
-.ttl{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px}.nav{display:flex;gap:6px;align-items:center}
-.q{padding:6px 10px;border-left:3px solid var(--accent);background:var(--card);border-radius:6px;font-size:14px;white-space:pre-line}
-.votes{display:flex;gap:8px;flex-wrap:wrap}.votes button{flex:1 0 auto;font-size:17px;font-weight:600;padding:8px;white-space:nowrap}
-.trow,.tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}.trow b{width:16px}.trow button,.tools button{padding:3px 10px;font-size:13px}.hs{flex-basis:100%}.hs:empty{display:none}
-.lrow{display:grid;gap:8px;margin-top:10px}
-.vp[hidden]{display:none}.vp{position:relative;overflow:hidden;height:var(--lh,480px);background:var(--bk,#fff);border-radius:6px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;outline:1px solid var(--line)}
+.pc i{position:absolute;border:2px solid var(--blue);box-shadow:0 0 0 1px #fff;pointer-events:none}
+.pc input,.vp>input{position:absolute;right:4px;top:4px;z-index:3;margin:0;width:16px;height:16px;cursor:pointer;accent-color:var(--blue)}.vp>input{right:6px;top:6px;width:18px;height:18px}.pc.off img{opacity:.35}
+.side{flex:1 1 340px;min-width:340px;display:flex;flex-direction:column;gap:10px}.side>.pill{align-self:flex-start}
+.ttl{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px}.ttl strong{font-size:var(--fs-l);font-weight:var(--fw-b)}.nav{display:flex;gap:2px;align-items:center;color:var(--fg2)}
+.q{padding:10px 14px;background:var(--hover);border-radius:var(--r-l);white-space:pre-line}
+.votes{display:flex}.votes>button{flex:1 0 auto;min-height:40px;font-size:var(--fs-l)}
+.trow,.tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px}.trow b{width:16px}.hs{flex-basis:100%}.hs:empty{display:none}
+.lrow{display:grid;gap:8px;margin-top:12px}
+.vp[hidden]{display:none}.vp{position:relative;overflow:hidden;height:var(--lh,480px);background:var(--bk,#fff);border-radius:var(--r-s);cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;outline:1px solid var(--line2)}
 body.drag,body.drag .vp{cursor:grabbing}
 .vp img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;-webkit-user-drag:none}
-.bd{position:absolute;left:6px;top:4px;display:flex;gap:4px;z-index:1;pointer-events:none;font:600 12px/1.4 system-ui}
-.vp:has(>input) .bd{right:30px}.bd span{background:rgba(0,0,0,.6);color:#fff;padding:1px 6px;border-radius:4px}.bd span:first-child{font-size:14px}
+.bd{position:absolute;left:6px;top:6px;display:flex;gap:4px;z-index:1;pointer-events:none;font-size:var(--fs-s);font-weight:var(--fw-b);line-height:1.45}
+.vp:has(>input) .bd{right:30px}.bd span{background:rgba(0,0,0,.6);color:#fff;padding:1px 6px;border-radius:var(--r-xs)}.bd span:first-child{font-size:var(--fs-m)}
 .vp canvas{position:absolute;left:0;top:0;pointer-events:none}
 .pc .mk{position:absolute;border:2px solid #f0f;box-sizing:border-box;pointer-events:none}
 body.pin .vp{cursor:crosshair}.vp .band{position:absolute;border:1px dashed #f0f;background:rgba(255,0,255,.08);pointer-events:none;z-index:2}
 .pins{position:absolute;inset:0;pointer-events:none;overflow:hidden}.pins div{position:absolute;box-sizing:border-box;border:2px solid #f0f;box-shadow:0 0 0 1px #fff}
 .pins div.pt{border-radius:50%}.pins div.far{border-style:dashed;opacity:.55;box-shadow:none}
-.pins b{position:absolute;right:-2px;bottom:100%;background:#f0f;color:#fff;font:700 11px/14px system-ui;padding:0 4px;border-radius:3px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
-.gc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;cursor:pointer}
-.gi{display:flex;gap:4px;margin-top:4px}.gi figure{margin:0;flex:1;min-width:0}
-.gi img{width:100%;max-height:240px;object-fit:contain;background:var(--bk,#fff);border-radius:4px;display:block}
-.bk{display:inline-flex;gap:3px;align-items:center}.bk button{padding:3px 5px}.bk button i{display:block;width:14px;height:14px;border-radius:2px;outline:1px solid var(--line)}
+.pins b{position:absolute;right:-2px;bottom:100%;background:#f0f;color:#fff;font-size:var(--fs-s);font-weight:var(--fw-b);line-height:14px;padding:0 4px;border-radius:3px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+.gc.card{padding:10px 12px 12px;cursor:pointer}.gc:hover{box-shadow:var(--shadow-pop),0 0 0 1px var(--line2)}
+.gi{display:flex;gap:4px;margin-top:6px}.gi figure{margin:0;flex:1;min-width:0}
+.gi img{width:100%;max-height:240px;object-fit:contain;background:var(--bk,#fff);border-radius:var(--r-xs);display:block}
+.bk>button{padding:0 7px}.bk button i{display:block;width:14px;height:14px;border-radius:3px;outline:1px solid var(--line2)}
 .bk .bkc{position:relative}.bkc input{position:absolute;inset:0;width:100%;height:100%;opacity:0;padding:0;border:0;cursor:pointer}
-.gi figcaption{font-size:12px;color:var(--mute);text-align:center}
+.gi figcaption{font-size:var(--fs-s);color:var(--fg3);text-align:center;margin-top:2px}
 @media (max-width:900px){.upper{flex-direction:column}}`;
 const LETTERS = "ABCDEFGHIJ", KEYS = { A: "KeyA", B: "KeyB", tie: "KeyT" }, LINE = "rgba(0,229,255,.8)", MARK = "#f0f";
 const LIT = "#ffd400", LIT_BAND = "rgba(255,212,0,.16)"; // a bent grid line under the pointer, its corridor
@@ -111,7 +111,7 @@ function dropStale(keep) {
 function grid() {
   dropStale(new Set());
   cur = null; E = null; geo = null; L = null;
-  app.replaceChildren(h("div", { class: "grid" }, S.items.map((it, i) => h("div", { class: "gc", onclick: () => show(it.id) },
+  app.replaceChildren(h("div", { class: "grid" }, S.items.map((it, i) => h("div", { class: "gc card", onclick: () => show(it.id) },
     h("b", {}, `${num(it, i)}`), it.title ? h("span", { class: "mute" }, " · " + it.title) : null,
     h("div", { class: "gi" }, frames(it).map((f) => h("figure", {},
       lazy(h("img", { "data-src": f.src, alt: "", loading: "lazy" })), h("figcaption", {}, [f.side, f.name].filter(Boolean).join(" · ")))))))));
@@ -136,31 +136,31 @@ function show(id, keepView) {
   E = { vps, cells, imgs: vps.map((v) => v.querySelector("img")), boxes: cells.map((c) => c.querySelector("i")),
     // the hotspots' row is held from the start, so their late arrival never pushes the loupes down
     hs: h("span", { class: "tools hs" }, !S.zoom_levels && ((it.hotspots || []).length || (it.variants || []).length > 1)
-      ? h("button", { style: "visibility:hidden", tabindex: -1 }, "1") : null), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
-    gb: S.pixel_grid || it.grid ? h("button", { onclick: toggleLines, title: "G" }, "Сетка") : null,
+      ? h("button", { class: "btn", style: "visibility:hidden", tabindex: -1 }, "1") : null), strip: h("div", { class: "strip" }), cvs: vps.map((v) => v.querySelector("canvas")),
+    gb: S.pixel_grid || it.grid ? h("button", { class: "btn", onclick: toggleLines, title: "G" }, "Сетка") : null,
     ls: [].concat(it.grid || []).filter((g) => g.label).map((g) => {
       if (!seenLayers.has(g.label)) { seenLayers.add(g.label); if (g.hidden) hiddenLayers.add(g.label); } // `hidden`: off until pressed
-      return h("button", { onclick: () => toggleLayer(g.label), "data-l": g.label, title: "этот слой сетки: показать или скрыть" },
+      return h("button", { class: "btn", onclick: () => toggleLayer(g.label), "data-l": g.label, title: "этот слой сетки: показать или скрыть" },
         h("i", { class: "sw", style: `background:${g.color || LINE}` }), g.label);
     }),
-    mb: it.marks && it.marks.length ? h("button", { onclick: toggleMarks, title: "M" }, "Рамка") : null,
-    bk: S.backdrop ? h("span", { class: "bk", title: "фон под прозрачным" }, Object.entries(BK).map(([v, [ru]]) =>
+    mb: it.marks && it.marks.length ? h("button", { class: "btn", onclick: toggleMarks, title: "M" }, "Рамка") : null,
+    bk: S.backdrop ? h("span", { class: "bk seg", title: "фон под прозрачным" }, Object.entries(BK).map(([v, [ru]]) =>
       h("button", { "data-bk": v, title: ru, onclick: () => setBk(v) }, h("i", { style: `background:${bkCss(v, CHECK[v] && CHECK[v].px / 4)}` }))),
       h("button", { class: "bkc", title: "свой цвет: клик ставит его, в палитре — меняй" }, h("i", { style: `background:${myBk}` }),
         h("input", { type: "color", value: myBk, onclick: (e) => setBk(e.target.value), oninput: (e) => setBk(e.target.value) }))) : null,
-    pb: h("button", { onclick: togglePin, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка; картинка-метка в заметку" }, "Метка"),
-    vb: h("button", { onclick: togglePins, title: "H", hidden: true }, "Скрыть метки"),
+    pb: h("button", { class: "btn", onclick: togglePin, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка; картинка-метка в заметку" }, "Метка"),
+    vb: h("button", { class: "btn", onclick: togglePins, title: "H", hidden: true }, "Скрыть метки"),
     pls: vps.map((v) => v.querySelector(".pins")), note: textBox(id, "note", { placeholder: "заметка" }), ref: 0,
-    pos: h("span", { class: "mute num" }), votes: null, tags: [], sg: h("span", { class: "sg", hidden: true }),
-    lv: (S.zoom_levels || []).map((z, k) => h("button", { onclick: () => level(k), title: k < 9 ? `${k + 1}` : null }, `${z}×`)) };
-  E.votes = voting ? h("div", { class: "votes" }, opts().map((o) =>
+    pos: h("span", { class: "mute num" }), votes: null, tags: [], sg: h("span", { class: "sg pill", hidden: true }),
+    lv: (S.zoom_levels || []).map((z, k) => h("button", { class: "btn", onclick: () => level(k), title: k < 9 ? `${k + 1}` : null }, `${z}×`)) };
+  E.votes = voting ? h("div", { class: "votes seg" }, opts().map((o) =>
     h("button", { "data-v": o.id, onclick: () => vote_(o.id) }, o.label || o.id))) : null;
   E.tags = voting && S.tags ? fs.filter((f) => f.side).map((f) => h("div", { class: "trow", "data-side": f.side },
-    h("b", {}, f.side), S.tags.map((t) => h("button", { "data-t": t, onclick: () => tag(f.side, t) }, t)))) : [];
-  const nav = h("span", { class: "nav" }, S.mode === "view" ? h("button", { onclick: grid, title: "Esc" }, "▦") : null,
-    h("button", { onclick: () => go(-1) }, "←"), E.pos, h("button", { onclick: () => go(1) }, "→"));
+    h("b", {}, f.side), h("span", { class: "seg" }, S.tags.map((t) => h("button", { "data-t": t, onclick: () => tag(f.side, t) }, t))))) : [];
+  const nav = h("span", { class: "nav" }, S.mode === "view" ? h("button", { class: "ib", onclick: grid, title: "Esc" }, "▦") : null,
+    h("button", { class: "ib", onclick: () => go(-1) }, "←"), E.pos, h("button", { class: "ib", onclick: () => go(1) }, "→"));
   // with zoom_levels the first level fits and the digits are taken, so no fit button and no hotspots
-  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { onclick: fitView, title: "0" }, "целиком")], E.pb, E.vb, E.gb, E.ls, E.mb, E.bk);
+  const tools = h("div", { class: "tools" }, E.lv, S.zoom_levels ? null : [E.hs, h("button", { class: "btn", onclick: fitView, title: "0" }, "целиком")], E.pb, E.vb, E.gb, E.ls, E.mb, E.bk);
   E.note.addEventListener("input", paintPins);
   E.note.addEventListener("pictures", paintPins);
   E.pb.classList.toggle("on", pinTool);
@@ -188,7 +188,7 @@ function show(id, keepView) {
   sized.then(() => my === token && loaded(imgs.slice(it.original ? 1 : 0))).then(() => {
     if (my !== token) return;
     E.spots = hotspots(it);
-    E.hs.replaceChildren(...E.spots.map((_, k) => h("button", { onclick: () => jump(k) }, `${k + 1}`)));
+    E.hs.replaceChildren(...E.spots.map((_, k) => h("button", { class: "btn", onclick: () => jump(k) }, `${k + 1}`)));
   });
   sized.then(() => my === token && loaded(imgs)).then(() => {
     if (my !== token) return;
@@ -331,7 +331,9 @@ function wire(vp, k) {
   vp.addEventListener("wheel", (e) => {
     if (!L) return;
     e.preventDefault();
-    const b = vp.getBoundingClientRect(), px = e.clientX - b.left - b.width / 2, py = e.clientY - b.top - b.height / 2;
+    // the centre draw() uses (client size, whole px), so a loupe of fractional height still zooms at the pointer
+    const b = vp.getBoundingClientRect(), px = e.clientX - b.left - vp.clientLeft - vp.clientWidth / 2,
+      py = e.clientY - b.top - vp.clientTop - vp.clientHeight / 2;
     const d = e.deltaY * (e.deltaMode === 1 ? 16 : 1), nz = clampZ(L.z * Math.exp(-d * (e.ctrlKey ? 0.01 : 0.002)));
     setL({ cx: L.cx + px / L.z - px / nz, cy: L.cy + py / L.z - py / nz, z: nz });
   }, { passive: false });

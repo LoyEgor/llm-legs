@@ -293,12 +293,12 @@ const local = (cx, cy) => {
 };
 function zoomOpen(from) {
   if (!Z) {
-    const pos = h("span", { class: "zpos" }), msg = h("span", { class: "zmsg" }), sb = h("span", { class: "zsolo" });
+    const pos = h("span", { class: "zpos" }), msg = h("span", { class: "zmsg" }), sb = h("span", { class: "zsolo seg" });
     const band = h("div", { class: "zband", hidden: true });
-    const tb = h("button", { onclick: zoomTool, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка" }, "Метка");
+    const tb = h("button", { class: "btn ghost", onclick: zoomTool, title: "Q · или держи ⌥ · перо метит само: клик — точка, протяни — рамка" }, "Метка");
     const el = h("div", { class: "zoom", role: "dialog", "aria-modal": "true" }, band,
       h("div", { class: "zbar" }, pos, h("span", { class: "mute" }, "колесо — зум · тащи · клик — 1:1 или целиком · ← → · Esc"), msg, sb, tb,
-        h("button", { onclick: zoomClose, title: "Esc" }, "✕")));
+        h("button", { class: "ib", onclick: zoomClose, title: "Esc" }, "✕")));
     Z = { el, pos, msg, band, tb, sb, panes: [], solo: null, pts: new Map(), s: 1, x: 0, y: 0, fit: 1, tool: false, mark: null };
     const at = (s, px, py) => { s = Math.min(Math.max(s, Math.min(Z.fit / 2, 1)), 8); Z.x = px - (px - Z.x) * s / Z.s; Z.y = py - (py - Z.y) * s / Z.s; Z.s = s; zoomPaint(); };
     Z.at = at;
@@ -517,7 +517,7 @@ function slot(el) {
   if (!s) strips.set(el, s = { box: h("div", { class: "att", hidden: true }), msg: h("span", { class: "atm" }), chips: new Map(),
     coming: new Set(), gone: new Set() });   // coming: names a dictation will paste here; gone: those taken back with ×
   if (!s.box.isConnected) {
-    const had = document.activeElement === el, a = el.selectionStart, b = el.selectionEnd, wrap = h("div", { class: "atw" });
+    const had = document.activeElement === el, a = el.selectionStart, b = el.selectionEnd, wrap = h("div", { class: "atw field" });
     el.before(wrap);
     wrap.append(s.box, el);
     if (had) { el.focus({ preventScroll: true }); el.setSelectionRange(a, b); }

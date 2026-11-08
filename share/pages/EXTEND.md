@@ -15,6 +15,11 @@ Read this only when `page help <module>` has no key for what your page needs. Ev
   `kit/shell.js`. Saving (outbox, retries, flush), polling, keys, notes, skip, sitting cap and lazy
   media are the shell's: a module never does its own fetch or localStorage. A need the shell lacks
   is a shell export, so the next module gets it too.
+- The look is `kit/ui.css` (shared with the chats app, linked by `loader.html` and the index): its
+  tokens (`--fg`, `--fg2`, `--pop`, `--fs-*`, `--r-*` …) and components `.btn` (`.primary`, `.ghost`),
+  `.ib`, `.round` (`.primary`), `.field`, `.pill`, `.card`, `.row`, `.sheet`, `.seg` (votes, chips,
+  filters), `.count`, `.meter`, `.toast`; states `.on`, `.sel`, `:disabled`. A module's own CSS only
+  lays out; a missing control goes into `ui.css`, never a module-local button style.
 - A text field is `textBox`: pictures pasted or dropped into it, their names in the text and their
   paths in `page state` come with it.
 - A view overlay Egor switches on (a grid, a heat map) is drawn onto the «Метка» sheet while it is on

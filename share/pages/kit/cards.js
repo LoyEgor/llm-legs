@@ -7,20 +7,19 @@ import { h, get, save, textBox, onState, doneWhen, firstOpen, keys, lazy, num } 
 
 const CSS = `
 .cards{max-width:1440px;margin:0 auto}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px 10px 56px;margin:10px 0;position:relative}
-.card>.n{position:absolute;left:14px;top:12px;font:700 20px/1 system-ui;font-variant-numeric:tabular-nums}
-.card.done>.n{color:var(--on)}
-.card h2{font-size:15px;margin:0 0 4px}.card .tx{color:var(--mute);margin:0 0 6px;white-space:pre-line}
-.card img,.card video{max-width:100%;min-height:40px;border-radius:6px;display:block;margin:4px 0}.card audio{width:100%;margin:4px 0}
-.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0}.row>span:first-child{min-width:72px;color:var(--mute)}
-.row button{padding:3px 12px}.row button.on{background:var(--on);border-color:var(--on);color:#fff}
-.card>.atw{margin-top:4px}
+.cards>.card{padding:14px 16px 14px 56px;margin:12px 0;position:relative}
+.card>.n{position:absolute;left:16px;top:14px;font-size:var(--fs-l);font-weight:var(--fw-b);line-height:24px;color:var(--fg3);font-variant-numeric:tabular-nums}
+.card.done>.n{color:var(--green)}
+.card h2{font-size:var(--fs-l);font-weight:var(--fw-b);line-height:24px;margin:0 0 4px}.card .tx{color:var(--fg2);margin:0 0 6px;white-space:pre-line}
+.card img,.card video{max-width:100%;min-height:40px;border-radius:var(--r-s);display:block;margin:4px 0}.card audio{width:100%;margin:4px 0}
+.card .row{flex-wrap:wrap;align-items:center;margin:8px 0;padding:0}.card .row>.lbl{min-width:72px;color:var(--fg2);font-size:var(--fs-m)}
+.card>.atw{margin-top:8px}
 .card .mg{display:grid;gap:8px;align-items:start}.card figure{margin:4px 0}.card figure>img,.card figure>video{margin:0}
-.card figcaption{font-size:12px;color:var(--mute);margin-top:2px}
+.card figcaption{font-size:var(--fs-s);color:var(--fg3);margin-top:2px}
 .card .cg{display:grid;gap:4px;align-items:start;grid-column:1/-1}.card .cg img{margin:0}
 .card .md{position:relative}.card .md>img,.card .md>video{margin:0}
-.bdg{position:absolute;left:6px;top:6px;z-index:1;padding:1px 6px;border-radius:4px;background:rgba(0,0,0,.66);color:#fff;
-font:600 12px/1.45 system-ui;pointer-events:none;transition:opacity .15s}.md:hover>.bdg{opacity:0}
+.bdg{position:absolute;left:6px;top:6px;z-index:1;padding:1px 6px;border-radius:var(--r-xs);background:rgba(0,0,0,.66);color:#fff;
+font-size:var(--fs-s);font-weight:var(--fw-b);line-height:1.45;pointer-events:none;transition:opacity .15s}.md:hover>.bdg{opacity:0}
 .card .md.au{display:flex;align-items:center;gap:8px}.md.au>.bdg{position:static;opacity:1}`;
 const TAG = { image: "img", audio: "audio", video: "video" };
 const app = document.getElementById("app");
@@ -94,10 +93,10 @@ const values = (f) => f.kind === "scale"
   : f.options || [];
 
 function row(id, f) {
-  const label = h("span", {}, f.label || f.key);
+  const label = h("span", { class: "lbl" }, f.label || f.key);
   if (f.kind === "text") return h("div", { class: "row" }, label, textBox(id, f.key));
-  return h("div", { class: "row", "data-f": f.key }, label, values(f).map((o) =>
-    h("button", { "data-v": String(o.id), onclick: () => pick(id, f, o.id) }, o.label || String(o.id))));
+  return h("div", { class: "row", "data-f": f.key }, label, h("span", { class: "seg" }, values(f).map((o) =>
+    h("button", { "data-v": String(o.id), onclick: () => pick(id, f, o.id) }, o.label || String(o.id)))));
 }
 
 function suggest(it) {
@@ -107,7 +106,7 @@ function suggest(it) {
     const name = (x) => (opts.find((o) => String(o.id) === String(x)) || {}).label || String(x);
     return `${f ? f.label || f.key : k} ${[].concat(v).map(name).join(", ")}`;
   });
-  return h("div", { class: "row" }, h("span", { class: "sg" }, say.join(" · ")));
+  return h("div", { class: "row" }, h("span", { class: "sg pill" }, say.join(" · ")));
 }
 
 function pick(id, f, v) {
