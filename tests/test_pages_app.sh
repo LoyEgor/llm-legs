@@ -657,15 +657,15 @@ assert test "$(jq -r '.items[-1].t' "$WORK/body")" = "after the big one"
 s1=$("$PY" -c 'import sys; d = open(sys.argv[1], "rb").read(); print(d.rindex(b"\n", 0, len(d) - 1) + 1)' "$T")
 assert test "$(get "$base/api/chat/$sid/log?before=$s1")" = 200
 assert test "$(jq -r '[.end == '"$s1"', .start < '"$s1"' - 900000, .items[-1].k == "user"] | all' "$WORK/body")" = true
-# An Earlier block is a block: windows of a few big lines each are joined until it holds 12 items, so one scroll
-# of his brings a screenful, not three lines (the app then asked again and again on its own).
+# An Earlier block is a block: windows of a few big lines each are joined until six things were said in it, so one
+# scroll of his brings a screenful, not three lines (the app then asked again and again on its own).
 "$PY" -c 'import json, sys
 line = lambda t: json.dumps({"type": "user", "message": {"role": "user", "content": t}}) + "\n"
 open(sys.argv[1], "a").write("".join(line("b%02d " % i + "y" * 200000) for i in range(30)) + line("the end"))' "$T"
 assert test "$(get "$base/api/chat/$sid/log")" = 200
 s2=$(jq -r .start "$WORK/body")
 assert test "$(get "$base/api/chat/$sid/log?before=$s2")" = 200
-assert test "$(jq -r '[(.items | length >= 12), .end == '"$s2"', (.items[-1].t | startswith("b"))] | all' "$WORK/body")" = true
+assert test "$(jq -r '[(.items | length >= 6), .end == '"$s2"', (.items[-1].t | startswith("b"))] | all' "$WORK/body")" = true
 # The tail reaches back the same way, and on until something was said: a chat whose last 768 KB are two tool calls
 # and their screenshots opened on them alone (Egor 2026-11-08: nothing of what was said, only its spinner).
 "$PY" -c 'import json, sys
@@ -673,7 +673,18 @@ res = lambda: json.dumps({"type": "user", "message": {"role": "user", "content":
 said = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "before the tools"}]}}) + "\n"
 open(sys.argv[1], "a").write(said + "".join(res() for _ in range(3)))' "$T"
 assert test "$(get "$base/api/chat/$sid/log")" = 200
-assert test "$(jq -r '[(.items | length >= 12), ([.items[].t] | index("before the tools") != null)] | all' "$WORK/body")" = true
+assert test "$(jq -r '[(.items | length >= 6), ([.items[].t] | index("before the tools") != null)] | all' "$WORK/body")" = true
+# A block counts what was said, not tool calls: 8 MB of tool output between two exchanges is crossed in one block
+# (Egor 2026-11-08: Earlier brought one or two Bash calls and nothing said).
+"$PY" -c 'import json, sys
+res = lambda: json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "u1", "content": "z" * 800000}]}}) + "\n"
+said = lambda t: json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": t}]}}) + "\n"
+open(sys.argv[1], "a").write(said("s0") + "".join(res() for _ in range(10)) + "".join(said("s%d" % i) for i in range(1, 7)))' "$T"
+assert test "$(get "$base/api/chat/$sid/log")" = 200
+assert test "$(jq -r '[.items[] | select(.k == "asst") | .t] | join(",")' "$WORK/body")" = "s1,s2,s3,s4,s5,s6"
+s3=$(jq -r .start "$WORK/body")
+assert test "$(get "$base/api/chat/$sid/log?before=$s3")" = 200
+assert test "$(jq -r '([.items[].t] | index("s0") != null) and ([.items[] | select(.k == "result")] | length >= 10)' "$WORK/body")" = true
 
 # It costs Claude Code nothing: no model call, no settings or hooks touched; the only programs it runs are ps,
 # Hammerspoon, chat-find, chats (to open a past chat), the trash /trash uses and lsof (the ports a chat's processes

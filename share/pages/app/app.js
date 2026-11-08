@@ -790,6 +790,15 @@ async function pullLog() {
     if (L.first !== false) { L.first = false; outRender(); toBottom(true); }
     else if (items.length) grew();
   });
+  fillUp();
+}
+// A thread shorter than the screen has no scroll to bring Earlier with (Egor 2026-11-08): it loads on its own until
+// the thread overflows the screen, or there is no more.
+// Once per block: a block that did not move Earlier asks no more; a hidden thread (no height) asks nothing.
+function fillUp() {
+  const box = $('#log'), L = S.log;
+  if (!L || L.first !== false || !(L.start > 0) || L.filled === L.start || !box.clientHeight) return;
+  if (box.scrollHeight - box.clientHeight < 24) { L.filled = L.start; loadOlder(); }
 }
 
 async function loadOlder() {
@@ -822,6 +831,7 @@ async function loadOlder() {
     box.scrollTop += box.scrollHeight - h0;
     L.olderAt = performance.now();
   });
+  fillUp();
 }
 
 // Stick to the end only while he is there: new items, a growing dock or keyboard keep the last line in view, a

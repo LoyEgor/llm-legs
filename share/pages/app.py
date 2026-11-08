@@ -675,16 +675,21 @@ def parse_entry(entry):
     return []
 
 
-OLDER_ITEMS = 12  # the tail and an Earlier block reach back until they hold this many items and some speech ...
-OLDER_HOPS = 8  # ... or this many windows
+OLDER_SAID = 6  # the tail and an Earlier block reach back until they hold this many things said (his, Claude's) ...
+OLDER_BYTES = 32 << 20  # ... or have read this much (tool output of hundreds of MB stops somewhere)
 SPEECH = ("user", "asst", "away")
+
+
+def said(items):
+    return sum(1 for it in items if it.get("k") in SPEECH and not it.get("hide") and (it.get("t") or "").strip())
 
 
 def log(sid, after=None, before=None):
     """Items of the transcript: the tail (LOG_WINDOW) with no offsets, what came after byte `after`, or the window
-    that ends at byte `before`. The tail and a `before` window reach further back while they hold next to nothing
-    or no speech (tool noise, sidechains, screenshots: Egor 2026-11-08, a chat opened on two tool calls and its
-    spinner, nothing said). -> {items, start, end}: offsets of whole lines, for the next call."""
+    that ends at byte `before`. The tail and a `before` window reach further back until they hold OLDER_SAID things
+    said: what he reads is what was said, the tools between are folded (Egor 2026-11-08: a chat opened on two tool
+    calls and its spinner; an Earlier block brought one or two Bash calls). -> {items, start, end}: offsets of whole
+    lines, for the next call."""
     if not SID_RE.match(sid):
         return None
     path = PATHS.get(sid) or transcript(sid, cached("recent", 30, recent).get(sid))
@@ -692,12 +697,9 @@ def log(sid, after=None, before=None):
         return None
     cut = CUT_AT.get(sid)
     doc = window(path, after, before, cut)
-    hops = 1
-    thin = lambda items: len(items) < OLDER_ITEMS or not any(it.get("k") in SPEECH for it in items)
-    while after is None and doc["start"] > 0 and thin(doc["items"]) and hops < OLDER_HOPS:
+    while after is None and doc["start"] > 0 and said(doc["items"]) < OLDER_SAID and doc["end"] - doc["start"] < OLDER_BYTES:
         more = window(path, None, doc["start"], cut)
         doc = dict(doc, items=more["items"] + doc["items"], start=more["start"])
-        hops += 1
     return doc
 
 
