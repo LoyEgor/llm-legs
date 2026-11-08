@@ -197,7 +197,11 @@ indirectly (screen = WindowServer, kernel = kernel_task, signing = syspolicyd + 
 (unowned or ambiguous, Stop shuts it down), `ambiguous` (dim, no Stop). The floor holds only for orphan
 and ambiguous rows. A live chat's click raises its tab or copies its resume command. A `closed` or
 `orphan` row opens a submenu instead: `Stop · <GB>` runs `chat-load stop <key>` (a closed chat also
-keeps `Copy reopen command`).
+keeps `Copy reopen command`). After the chats, a `macOS & apps` row (the Mem line's other) whose `sub`
+lists the ten heaviest outside the chats by app (an .app bundle's processes as one, else the command
+name), by cores then GB. A chat with worker runs or review cells gets a `sub` of each run (title, else
+vendor · account) plus `this chat`. Sub rows have a row's shape (`text`, `dim`) with 15-minute sparks;
+the menu draws them after the row's own items; the iPad app's load sheet opens them in place.
 
 **orphan** is what nothing runs any more and no chat claims: a process of Egor's adopted by launchd
 (ppid 1) but not one of its jobs (`launchctl list`, asked only when a candidate exists, so apps never
