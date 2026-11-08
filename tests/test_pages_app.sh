@@ -16,9 +16,32 @@ past=eeeeeeee-2222-3333-4444-555555555555
 wsid=99999999-2222-3333-4444-555555555555
 
 # A live "chat": a process on a pty (script(1) gives it a tty) with its account in its environment; a worker: the
-# same with no tty. Python, not sleep: `ps -E` shows no environment of an Apple platform binary.
+# same with no tty. Python, not sleep: `ps -E` shows no environment of an Apple platform binary. The chat starts
+# what it runs on cue (a `spawn` file): a server listening on a port with a child of its own, and a hook's helper.
 PY=$(python3 -c 'import sys; print(sys.executable)')
-env -u CLAUDEGPT_ACCOUNT CLAUDE_LIMITS_ACCOUNT=fixacct script -q /dev/null "$PY" -c 'import time; time.sleep(300)' </dev/null >/dev/null 2>&1 &
+mkdir -p "$WORK/.claude/hooks"
+printf 'sleep 20\n' >"$WORK/.claude/hooks/keep.sh"
+cat >"$WORK/kid.py" <<'PYKID'
+import socket, subprocess, sys, time
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen()
+subprocess.Popen(["sleep", "300"])
+open(sys.argv[1] + "/port", "w").write(str(s.getsockname()[1]))
+time.sleep(300)
+PYKID
+cat >"$WORK/chat.py" <<'PYCHAT'
+import os, signal, subprocess, sys, time
+signal.signal(signal.SIGCHLD, signal.SIG_IGN)  # reaps what ends, as Claude Code does
+w = sys.argv[1]
+for _ in range(3000):
+    if os.path.exists(w + "/spawn"):
+        os.remove(w + "/spawn")
+        subprocess.Popen([sys.executable, "-c", open(w + "/kid.py").read(), w])
+        subprocess.Popen(["/bin/bash", w + "/.claude/hooks/keep.sh"])
+    time.sleep(0.1)
+PYCHAT
+env -u CLAUDEGPT_ACCOUNT CLAUDE_LIMITS_ACCOUNT=fixacct script -q /dev/null "$PY" "$WORK/chat.py" "$WORK" </dev/null >/dev/null 2>&1 &
 scriptpid=$!
 for _ in $(seq 50); do
   chatpid=$(pgrep -P "$scriptpid" | head -1)
@@ -592,8 +615,32 @@ assert test -z "$(grep 'close window' "$WORK/hs.log")"
 # A live chat's trash is its mark and its end; one that does not end keeps no mark.
 assert test "$(post "/api/chat/$sid/trash" '{}')" = 504
 assert test "$(tr '\n' '|' <"$WORK/trash.log")" = "mark $sid|unmark $sid|"
+# What a chat runs (Egor 2026-11-08: see it, stop it, end a chat that holds it): its children but Claude Code's own
+# (a hook's helper), each with its tree and the ports it listens on. A stop takes only one of them; an end or a
+# trash of a chat holding any asks first (409, how many), forced it stops them and ends the chat.
+spawned() { rm -f "$WORK/port"; touch "$WORK/spawn"; for _ in $(seq 50); do [ -s "$WORK/port" ] && break; sleep 0.1; done; cat "$WORK/port"; }
+port=$(spawned); sleep 2.6
+assert test "$(get "$base/api/chats")" = 200
+assert test "$(jq -r '.chats[0].procs' "$WORK/body")" = 1
+assert test "$(get "$base/api/chat/$sid/procs")" = 200
+assert test "$(jq -r '.procs[] | [.n, (.ports | join(",")), (.cmd | startswith("python -c import socket"))] | map(tostring) | join("|")' "$WORK/body")" = "2|$port|true"
+kid=$(jq -r '.procs[0].pid' "$WORK/body")
+assert test "$(get "$base/api/chat/$sid/info")" = 200
+assert test "$(jq -r '[.procs[].ports[]] | join(",")' "$WORK/body")" = "$port"
+assert test "$(post "/api/chat/$sid/stop" '{"pid": '"$$"'}')" = 404
+assert test "$(post "/api/chat/$sid/close" '{}')" = 409
+assert test "$(jq -r .procs "$WORK/body")" = 1
+assert test "$(post "/api/chat/$sid/trash" '{}')" = 409
+assert test "$(post "/api/chat/$sid/stop" '{"pid": '"$kid"'}')" = 200
+assert test "$(jq -r .stopped "$WORK/body")" = 2
+assert test -z "$(pgrep -P "$kid")"
+assert test -z "$(ps -o pid= -p "$kid")"
+port=$(spawned)
+assert test "$(get "$base/api/chat/$sid/procs")" = 200
+kid=$(jq -r '.procs[0].pid' "$WORK/body")
 touch "$WORK/exit-ok"
-assert test "$(post "/api/chat/$sid/close" '{}')" = 200
+assert test "$(post "/api/chat/$sid/close" '{"force": true}')" = 200
+assert test -z "$(ps -o pid= -p "$kid")"
 assert test "$(jq -r .window "$WORK/body")" = closed
 assert grep -qF 'if (count tabs of window j) is 1 then close window j' "$WORK/hs.log"
 assert test "$(get "$base/api/chats")" = 200
@@ -629,9 +676,11 @@ assert test "$(get "$base/api/chat/$sid/log")" = 200
 assert test "$(jq -r '[(.items | length >= 12), ([.items[].t] | index("before the tools") != null)] | all' "$WORK/body")" = true
 
 # It costs Claude Code nothing: no model call, no settings or hooks touched; the only programs it runs are ps,
-# Hammerspoon, chat-find, chats (to open a past chat) and the trash /trash uses, and the client polls only while it is on screen, at most once a second.
-assert test -z "$(grep -nE 'anthropic|openai|claude -p|settings\.json|hooks' "$ROOT/share/pages/app.py")"
-assert test "$(grep -oE 'run\(\[[^],]+' "$ROOT/share/pages/app.py" | sort -u | tr '\n' ' ')" = 'run(["ps" run([HS run([sys.executable run([TRASH '
+# Hammerspoon, chat-find, chats (to open a past chat), the trash /trash uses and lsof (the ports a chat's processes
+# listen on), and the client polls only while it is on screen, at most once a second.
+# (OWN_KID names the hooks' helpers' paths only to leave them out of what a chat runs.)
+assert test -z "$(grep -nE 'anthropic|openai|claude -p|settings\.json|hooks' "$ROOT/share/pages/app.py" | grep -v ':OWN_KID = ')"
+assert test "$(grep -oE 'run\(\[[^],]+' "$ROOT/share/pages/app.py" | sort -u | tr '\n' ' ')" = 'run(["lsof" run(["ps" run([HS run([sys.executable run([TRASH '
 assert test "$(grep -c 'setInterval(' "$ROOT/share/pages/app/app.js")" = 1
 assert "$PY" -c 'import sys
 sys.exit("if (document.visibilityState !== \x27visible\x27) return;\n  tick++;" not in open(sys.argv[1]).read())' "$ROOT/share/pages/app/app.js"
@@ -675,4 +724,4 @@ js = open(sys.argv[1]).read()
 start = js[js.index("async function micStart() {"):]
 sys.exit(not (start.index("micMacMic()") < start.index("getUserMedia") and "href=\"macmic://open\"" in js))' "$ROOT/share/pages/app/app.js"
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: kept streaming, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, MacMic first, a refusal linking to it, a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: kept streaming, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, MacMic first, a refusal linking to it, what a chat runs (its tree, ports, a stop of its own only, a forced end), a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash"

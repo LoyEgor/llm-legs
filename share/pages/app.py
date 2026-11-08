@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -369,7 +370,8 @@ def chats():
                "status_at": (rec.get("statusUpdatedAt") or 0) / 1000.0, "model": row.get("model") or "",
                "ctx": row.get("ctx"), "spoke": row.get("spoke") or row.get("at"), "ttl": row.get("ttl"),
                "until": row.get("until"), "warm": warm_in, "size": size, "away": held[1], "last": held[2],
-               "load": per.get(sid), "pages": pages_by.get(sid, 0), "started": (rec.get("startedAt") or 0) / 1000.0}
+               "load": per.get(sid), "pages": pages_by.get(sid, 0), "started": (rec.get("startedAt") or 0) / 1000.0,
+               "procs": len(tasks(rec["pid"]))}
         if tty and rec.get("entrypoint", "cli") == "cli":
             rows.append(doc)
         else:
@@ -825,7 +827,8 @@ def info(sid):
         return None
     rec, _ = find_live(sid)
     return {"status": status_lines(sid), "files": changes(sid, path)[:80],
-            "root": (rec or {}).get("cwd") or (row or {}).get("cwd") or ""}
+            "root": (rec or {}).get("cwd") or (row or {}).get("cwd") or "",
+            "procs": tasks(rec["pid"], ports=True) if rec else []}
 
 
 # ---------------------------------------------------------------- Terminal, through Hammerspoon
@@ -1082,13 +1085,174 @@ def open_chat(sid, fork=None):
 CLOSE_WAIT = float(os.environ.get("APP_CLOSE_WAIT") or 8)  # s for an /exit to end the chat; then the window stays
 
 
-def close_chat(sid):
-    """An idle live chat ends (/exit, as typed) and its Terminal window closes; a window with other tabs stays."""
+# ---------------------------------------------------------------- what a chat runs: its processes
+
+# Claude Code's own children, not his work: the sleep guard of a working turn and its event helpers.
+OWN_KID = re.compile(r"^(\S*/)?caffeinate\s|/\.claude[^/\s]*/hooks/|/claude-setup/hooks/")
+EVAL_RE = re.compile(r"&& eval '((?:[^']|'\\'')*)'")
+INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "bash", "sh", "zsh", "bun", "deno"}
+
+
+def ptree():
+    """Every process, one ps: ({pid: (ppid, seconds up, cpu %, rss KB, command)}, {ppid: [pid]})."""
+    out = run(["ps", "-A", "-ww", "-o", "pid=,ppid=,etime=,%cpu=,rss=,command="], env=dict(os.environ, LC_ALL="C")) or ""
+    procs, kids = {}, {}
+    for line in out.splitlines():
+        parts = line.split(None, 5)
+        if len(parts) < 6 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        try:
+            up = etime_seconds(parts[2])
+            pid, ppid, cpu, rss = int(parts[0]), int(parts[1]), float(parts[3]), int(parts[4])
+        except ValueError:
+            continue
+        procs[pid] = (ppid, up, cpu, rss, parts[5])
+        kids.setdefault(ppid, []).append(pid)
+    return procs, kids
+
+
+def etime_seconds(text):
+    """ps's elapsed time, [[dd-]hh:]mm:ss -> seconds."""
+    days, _, clock = text.rpartition("-")
+    total = 0
+    for part in clock.split(":"):
+        total = total * 60 + int(part)
+    return total + (int(days) * 86400 if days else 0)
+
+
+def subtree(kids, pid):
+    out, todo = [], [pid]
+    while todo:
+        p = todo.pop()
+        out.append(p)
+        todo.extend(kids.get(p, ()))
+    return out
+
+
+def short_command(cmd):
+    """A process's command as he would have typed it: the Bash tool's shell wrapper gone (its eval'd line), an
+    interpreter running a script shown as the script, paths under his home as ~."""
+    m = EVAL_RE.search(cmd)
+    if m:
+        cmd = m.group(1).replace("'\\''", "'")
+    cmd = re.sub(r"^cd \S+ && ", "", cmd.strip())
+    words = cmd.split(" ")
+    if words and words[0].startswith("/"):
+        words[0] = os.path.basename(words[0])
+    if words and words[0].lower().rstrip("0123456789.") in INTERPRETERS:
+        words[0] = words[0].lower()
+        if len(words) > 1 and words[1].startswith(("/", "~")):
+            words = [os.path.basename(words[1])] + words[2:]
+    return " ".join(words).replace(os.path.expanduser("~") + "/", "~/")[:300]
+
+
+def tasks(pid, ports=False, fresh=False):
+    """What a live chat runs: its children (the Bash tool's shells, background servers, monitors) minus Claude Code's
+    own, each with its subtree summed -> [{pid, cmd, up, cpu, mem, n, ports?}], longest running first."""
+    if fresh:
+        with CACHE_LOCK:
+            CACHE.pop("ptree", None)
+    procs, kids = cached("ptree", 2.5, ptree)
+    out = []
+    for kid in kids.get(pid, ()):
+        cmd = procs[kid][4]
+        if OWN_KID.search(cmd):
+            continue
+        tree = subtree(kids, kid)
+        out.append({"pid": kid, "cmd": short_command(cmd), "up": procs[kid][1], "tree": tree,
+                    "cpu": round(sum(procs[p][2] for p in tree if p in procs), 1),
+                    "mem": round(sum(procs[p][3] for p in tree if p in procs) / 1024.0), "n": len(tree)})
+    if ports and out:
+        heard = listening(sorted(p for t in out for p in t["tree"]))
+        for t in out:
+            t["ports"] = sorted({port for p in t["tree"] for port in heard.get(p, ())})
+    for t in out:
+        del t["tree"]
+    return sorted(out, key=lambda t: -t["up"])
+
+
+def listening(pids):
+    """pid -> the TCP ports it listens on (one lsof for the chat's processes, cached 5 s)."""
+    def look():
+        out = run(["lsof", "-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-p", ",".join(map(str, pids)), "-Fpn"], timeout=5) or ""
+        found, pid = {}, None
+        for line in out.splitlines():
+            if line.startswith("p") and line[1:].isdigit():
+                pid = int(line[1:])
+            elif line.startswith("n") and pid is not None:
+                port = line.rpartition(":")[2]
+                if port.isdigit():
+                    found.setdefault(pid, set()).add(int(port))
+        return found
+    return cached(("ports", tuple(pids)), 5, look)
+
+
+def stop_tree(root, kids=None):
+    """A process and everything under it: TERM, then KILL what is still there after 3 s -> how many there were."""
+    if kids is None:
+        kids = cached("ptree", 0, ptree)[1]
+    victims = subtree(kids, root)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for p in victims:
+            try:
+                os.kill(p, sig)
+            except OSError:
+                pass
+        deadline = time.monotonic() + 3
+        while sig == signal.SIGTERM and time.monotonic() < deadline and any(alive(p) for p in victims):
+            time.sleep(0.1)
+        victims = [p for p in victims if alive(p)]
+        if not victims:
+            break
+    with CACHE_LOCK:
+        CACHE.pop("ptree", None)
+        CACHE.pop("chats", None)
+    return len(subtree(kids, root))
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+
+
+def stop_task(sid, pid):
+    """One of a live chat's processes (its tree) stopped: only one its tasks list shows."""
+    rec, _ = find_live(sid)
+    if not rec:
+        return 404, {"ok": False, "err": "not a live chat"}
+    if not isinstance(pid, int) or pid not in [t["pid"] for t in tasks(rec["pid"], fresh=True)]:
+        return 404, {"ok": False, "err": "not a process of this chat (it ended?)"}
+    return 200, {"ok": True, "stopped": stop_tree(pid)}
+
+
+def close_chat(sid, force=False):
+    """An idle live chat ends (/exit, as typed) and its Terminal window closes; a window with other tabs stays.
+    A working one, or one holding processes (background servers: status shell), only when forced (Egor
+    2026-11-08: warn, he agrees, it ends): its turn interrupted (Esc), its processes stopped, then /exit."""
     rec, tty = find_live(sid)
     if not tty or rec.get("entrypoint", "cli") != "cli":
         return 404, {"ok": False, "err": "not a live terminal chat"}
-    if rec.get("status") in ("busy", "shell"):
-        return 409, {"ok": False, "err": "it is working: stop it first"}
+    held = tasks(rec["pid"], fresh=True)
+    if (rec.get("status") in ("busy", "shell") or held) and not force:
+        return 409, {"ok": False, "err": "it is working: stop it first", "status": rec.get("status"), "procs": len(held)}
+    if force and rec.get("status") == "busy":
+        send_key(tty, "esc")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            time.sleep(0.4)
+            with CACHE_LOCK:
+                CACHE.pop("live", None)
+            now_rec, _ = find_live(sid)
+            if not now_rec or now_rec.get("status") != "busy":
+                break
+    if force:
+        for t in tasks(rec["pid"], fresh=True):
+            stop_tree(t["pid"])
     with TYPING:
         sent = send_text(tty, "/exit", clear=2)
     if not sent.get("ok") or sent.get("res") == "no-tab":
@@ -1157,15 +1321,16 @@ def rename_chat(sid, name):
     return 200, {"ok": True, "live": bool(rec)}
 
 
-def trash_chat(sid):
+def trash_chat(sid, force=False):
     """The chat into the trash /trash uses (claude-setup's session-trash.sh: out of every history, restorable).
-    A live one is marked and ended (/exit, its window closed): its session end moves it; a closed one is marked
-    and swept at once."""
+    A live one is marked and ended (/exit, its window closed; a working one only forced, as close): its session end
+    moves it; a closed one is marked and swept at once."""
     rec, tty = find_live(sid)
     if rec and (not tty or rec.get("entrypoint", "cli") != "cli"):
         return 409, {"ok": False, "err": "not a terminal chat"}
-    if rec and rec.get("status") in ("busy", "shell"):
-        return 409, {"ok": False, "err": "it is working: stop it first"}
+    held = tasks(rec["pid"], fresh=True) if rec and not force else []
+    if rec and not force and (rec.get("status") in ("busy", "shell") or held):
+        return 409, {"ok": False, "err": "it is working: stop it first", "status": rec.get("status"), "procs": len(held)}
     path = None if rec else PATHS.get(sid) or transcript(sid, cached("recent", HISTORY_TTL, recent).get(sid))
     if not rec and not path:
         return 404, {"ok": False, "err": "no transcript"}
@@ -1174,7 +1339,7 @@ def trash_chat(sid):
         return 502, {"ok": False, "err": "trash: %s" % (FAILED.get(TRASH) or "it did not mark the chat")}
     window = None
     if rec:
-        code, doc = close_chat(sid)
+        code, doc = close_chat(sid, force)
         if not doc.get("ok"):
             run([TRASH, "unmark", sid], timeout=10)
             return code, doc
@@ -1651,9 +1816,14 @@ def get(handler, path, query):
         else:
             handler.send_json(200, {"chats": found})
         return True
-    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(log|screen|info)", path)
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(log|screen|info|procs)", path)
     if m:
         sid, sub = m.groups()
+        if sub == "procs":
+            rec, _ = find_live(sid)
+            handler.send_json(200 if rec else 404, {"procs": tasks(rec["pid"], ports=True, fresh=True)} if rec
+                              else {"err": "not a live chat"})
+            return True
         if sub == "info":
             doc = info(sid)
             handler.send_json(200 if doc else 404, doc or {"err": "no transcript"})
@@ -1682,7 +1852,7 @@ def get(handler, path, query):
 
 
 def post(handler, path, body):
-    """POST /api/chat/<sid>/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
+    """POST /api/chat/<sid>/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash|stop) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
     chunk's raw PCM bytes)."""
     if path == "/api/client-log":
         client_report(body)
@@ -1696,7 +1866,7 @@ def post(handler, path, body):
             store.event("app", op="mic", path=path[9:20], error=str(answer[1].get("err"))[:300])
         handler.send_json(*answer)
         return True
-    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash)", path)
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash|stop)", path)
     if not m:
         return False
     sid, sub = m.groups()
@@ -1709,6 +1879,13 @@ def post(handler, path, body):
         with CACHE_LOCK:
             CACHE.pop("chats", None)
         return True
+    if sub == "stop":
+        pid = body.get("pid") if isinstance(body, dict) else None
+        code, doc = stop_task(sid, pid) if SID_RE.match(sid) else (400, {"ok": False, "err": "bad session id"})
+        if store is not None:
+            store.event("app", op="stop", sid=sid, pid=pid, error=None if doc.get("ok") else str(doc.get("err"))[:300])
+        handler.send_json(code, doc)
+        return True
     if sub in ("open", "close", "rename", "branch", "trash", "untrash"):
         if not SID_RE.match(sid):
             handler.send_json(400, {"ok": False, "err": "bad session id"})
@@ -1717,9 +1894,10 @@ def post(handler, path, body):
         if name is None or (sub == "rename" and not name):
             handler.send_json(400, {"ok": False, "err": "a name, on one line"})
             return True
-        code, doc = {"open": lambda: open_chat(sid), "close": lambda: close_chat(sid),
+        force = isinstance(body, dict) and body.get("force") is True
+        code, doc = {"open": lambda: open_chat(sid), "close": lambda: close_chat(sid, force),
                      "rename": lambda: rename_chat(sid, name), "branch": lambda: open_chat(sid, fork=name),
-                     "trash": lambda: trash_chat(sid), "untrash": lambda: untrash_chat(sid)}[sub]()
+                     "trash": lambda: trash_chat(sid, force), "untrash": lambda: untrash_chat(sid)}[sub]()
         if store is not None and not doc.get("ok"):
             store.event("app", op=sub, sid=sid, error=str(doc.get("err"))[:300])
         handler.send_json(code, doc)

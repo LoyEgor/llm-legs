@@ -187,6 +187,7 @@ function chatRow(c, usual) {
   const acct = c.account && c.account !== usual ? c.account + ' · ' : '';
   return `<a class="row${S.sid === c.sid ? ' sel' : ''}${unread ? ' unread' : ''}" href="#chat/${esc(c.sid)}">` +
     `<span class="lead">${lead}</span><div class="body"><div class="l1"><span class="name">${esc(c.name)}</span>` +
+    (c.procs ? `<span class="np">${ICON.procs}${c.procs}</span>` : '') +
     `<span class="tm${warm ? ' warm' : ''}">${warm ? '◔ ' + warm : ago(c.spoke)}</span></div>` +
     `<div class="l2">${esc(acct + snippet(c))}</div></div></a>`;
 }
@@ -349,12 +350,11 @@ async function togglePin(sid) {
 }
 
 // End an idle chat (/exit, as if typed) and close its Terminal window: from its menu, after a confirm.
-async function closeLive(sid) {
+// The menu asked already (its confirm names what a forced end interrupts and stops).
+async function closeLive(sid, force) {
   const c = chat(sid);
   if (!live(c)) return;
-  if (busy(c)) { toast('⚠ it is working: stop it first'); return; }
-  if (!confirm(`End “${c.name}” and close its Terminal window?`)) return;
-  const d = await api(`/api/chat/${encodeURIComponent(sid)}/close`, {}, 30000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/close`, {force: !!force}, 40000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
   if (!d.ok) { toast('⚠ ' + (d.err || 'did not close')); return; }
   toast(d.window === 'closed' ? `Ended “${c.name}”, its window closed` : `Ended “${c.name}”; its window stays (${d.window === 'tabs' ? 'other tabs in it' : 'Terminal did not answer'})`);
   await refreshChats();
@@ -380,6 +380,29 @@ function chatMenu(row) {
   ctxShow(row, `<div class="ct">${esc(p.name || sid.slice(0, 8))}</div>` + item('rename', 'rename', 'Rename') +
     item('branch', 'branch', 'Branch') + item('pin', 'pin', S.pins.includes(sid) ? 'Unpin' : 'Pin to the top') +
     (live(c) ? item('end', 'power', 'End chat') : '') + item('trash', 'trash', 'Trash', 'red'));
+}
+// A live chat that works or holds processes, or any End: the menu asks first, naming what stops (Egor 2026-11-08:
+// warn, he agrees, it ends).
+const heavy = (c) => live(c) && (c.status === 'busy' || c.status === 'shell' || c.procs > 0);
+async function ctxConfirm(act) {
+  const sid = CTX.sid, c = chat(sid);
+  if (!c) return;
+  let procs = [];
+  if (c.procs || c.status === 'shell') {
+    const d = await api(`/api/chat/${encodeURIComponent(sid)}/procs`).catch(() => ({}));
+    if (CTX.sid !== sid) return;
+    procs = d.procs || [];
+  }
+  const what = [c.status === 'busy' ? 'interrupts its turn' : '',
+    procs.length ? (procs.length === 1 ? 'stops its process' : `stops its ${procs.length} processes`) : ''].filter(Boolean);
+  const verb = act === 'end' ? 'End' : 'Trash';
+  ctxShow(CTX.row, `<div class="ct">${esc(c.name)}</div><div class="cq">` +
+    (act === 'end' ? 'Ends the chat and closes its Terminal window.' : 'Ends the chat and moves it to the trash.') +
+    (what.length ? ` <b>It ${what.join(' and ')}.</b>` : '') + '</div>' +
+    (procs.length ? `<div class="prs">${procs.slice(0, 6).map((t) => procRow(t, false)).join('')}` +
+      (procs.length > 6 ? `<div class="none">+${procs.length - 6}</div>` : '') + '</div>' : '') +
+    `<div class="acts"><button type="button" class="btn ghost" data-act="cancel">Cancel</button>` +
+    `<button type="button" class="btn primary red" data-act="yes-${act}">${what.length ? verb + ' all' : verb}</button></div>`);
 }
 function ctxShow(row, html) {
   const box = $('#ctx');
@@ -419,10 +442,10 @@ function ctxName(act) {
   box.focus();
   box.select();
 }
-async function chatAct(act, sid, name) {
+async function chatAct(act, sid, name, force) {
   const c = chat(sid), p = c || pastRow(sid) || {sid, name: ''}, url = `/api/chat/${encodeURIComponent(sid)}/`;
   if (act === 'pin') return togglePin(sid);
-  if (act === 'end') return closeLive(sid);
+  if (act === 'end') return closeLive(sid, force);
   if (act === 'rename') {
     if (!name || name === p.name) return;
     S.local.names[sid] = {name, at: now()};
@@ -440,12 +463,11 @@ async function chatAct(act, sid, name) {
     S.opening = {sid, at: now(), cwd: p.cwd || '', known: new Set(S.chats.map((x) => x.sid)), follow: true};
     refreshChats();
   } else if (act === 'trash') {
-    if (busy(c)) { toast('⚠ it is working: stop it first'); return; }
     S.local.gone[sid] = now();
     localize();
     renderList();
     if (S.sid === sid) location.hash = '#';
-    const d = await api(url + 'trash', {}, 60000).catch((e) => ({ok: false, err: e.message}));
+    const d = await api(url + 'trash', {force: !!force}, 60000).catch((e) => ({ok: false, err: e.message}));
     if (!d.ok) { delete S.local.gone[sid]; refreshChats(); refreshHistory(); toast('⚠ trash: ' + (d.err || 'no answer')); return; }
     toast(`Trashed “${p.name || sid.slice(0, 8)}”`, {label: 'Undo', run: async () => {
       delete S.local.gone[sid];
@@ -1127,10 +1149,33 @@ function infoHtml(d) {
     return `<div class="fr"><span class="fn">${esc(rel.slice(cut + 1))}</span><span class="fd">${esc(cut > 0 ? rel.slice(0, cut) : '')}</span>` +
       `<span class="c-green">${f.add ? '+' + f.add : ''}</span><span class="c-red">${f.del ? '−' + f.del : ''}</span></div>`;
   }).join('');
+  const procs = d.procs || [];
   return (status ? `<div class="sgs">${status}</div>` : '') +
+    (procs.length ? `<div class="ch"><b>Running</b><span class="n">${procs.length}</span></div>` +
+      `<div class="prs">${procs.map((t) => procRow(t, true)).join('')}</div>` : '') +
     `<div class="ch"><b>Changes</b><span class="n">${files.length || ''}</span>` +
     `<span class="c-green">${files.length ? '+' + sum('add') : ''}</span><span class="c-red">${files.length ? '−' + sum('del') : ''}</span></div>` +
     (rows || '<div class="none">No files changed in this chat</div>');
+}
+
+// One process a chat runs (Egor 2026-11-08: what its terminal shows running, servers it holds): its command, the
+// ports it listens on, how long it has run, its CPU when it works; in the info panel a stop button (a second tap
+// within 3 s stops it and all under it).
+function procRow(t, stop) {
+  const armed = stop && S.armStop && S.armStop.pid === t.pid && now() - S.armStop.at < 3;
+  return `<div class="pr"><span class="pn">${esc(t.cmd)}</span>` +
+    `<span class="pp">${(t.ports || []).map((p) => `<i>:${p}</i>`).join('')}</span>` +
+    `<span class="pu">${t.cpu >= 5 ? `<b>${Math.round(t.cpu)}%</b> ` : ''}${ago(now() - t.up)}</span>` +
+    (stop ? `<button type="button" class="pstop${armed ? ' arm' : ''}" data-stop="${t.pid}" aria-label="Stop">` +
+      `${armed ? 'Stop' : ICON.x}</button>` : '') + '</div>';
+}
+async function stopProc(pid) {
+  const sid = S.sid;
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/stop`, {pid}, 20000).catch((e) => ({ok: false, err: e.message}));
+  if (!d.ok) toast('⚠ stop: ' + (d.err || 'no answer'));
+  S.armStop = null;
+  pullInfo();
+  refreshChats();
 }
 
 async function pullInfo() {
@@ -2096,6 +2141,13 @@ $('#composer').addEventListener('click', (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.sheet) closeSheet(); });
 $('#sheetb').addEventListener('click', (e) => {
+  const stop = e.target.closest('[data-stop]');
+  if (stop) {
+    const pid = +stop.dataset.stop;
+    if (S.armStop && S.armStop.pid === pid && now() - S.armStop.at < 3) stopProc(pid);
+    else { S.armStop = {pid, at: now()}; renderSheet(); setTimeout(() => { if (S.sheet === 'info') renderSheet(); }, 3100); }
+    return;
+  }
   const go = e.target.closest('.mi[data-sid]');
   if (go) {
     if (!document.body.classList.contains('docked')) closeSheet(true);
@@ -2178,7 +2230,9 @@ $('#ctx').addEventListener('click', (e) => {
   const act = b.dataset.act, sid = CTX.sid;
   if (act === 'cancel') { ctxClose(); return; }
   if (act === 'rename' || act === 'branch') { ctxName(act); return; }
+  if (act === 'end' || (act === 'trash' && heavy(chat(sid)))) { ctxConfirm(act); return; }
   ctxClose();
+  if (act === 'yes-end' || act === 'yes-trash') { chatAct(act.slice(4), sid, '', true); return; }
   chatAct(act, sid);
 });
 $('#ctx').addEventListener('submit', (e) => {
