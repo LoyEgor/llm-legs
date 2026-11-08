@@ -368,6 +368,10 @@ assert test "$(jq -c '[.items[] | [.k, .t, .op, .at, .mid, .hide]]' "$WORK/body"
 assert test "$(post "/api/chat/$sid/send" '{"text": "привет\nдве строки"}')" = 200
 assert grep -q "terminalScript('pages-app'" "$WORK/hs.log"
 assert grep -q "tty of tab i of window j is \"$(jq -r '.chats[0].tty' <(curl -s "$base/api/chats"))\"" "$WORK/hs.log"
+# The tab is found by two Apple Events, not two per window (each waits on Terminal's main thread, Hammerspoon with it:
+# audit 2026-11-09), and checked by its tty before the paste; the loop stays as the fallback.
+assert grep -qF 'set ts to tty of every tab of every window' "$WORK/hs.log"
+assert grep -qF "tty of tab i of window id (item j of ws) is \"$(jq -r '.chats[0].tty' <(curl -s "$base/api/chats"))\"" "$WORK/hs.log"
 assert grep -qF '[200~" & txt & e & "[201~"' "$WORK/hs.log"
 assert test "$(grep '^TEXT=' "$WORK/hs.log" | tail -1)" = 'TEXT="привет\nдве строки"'
 assert test -z "$(ls -A "$(python3 -c 'import tempfile; print(tempfile.gettempdir())')/pages-app" 2>/dev/null)"

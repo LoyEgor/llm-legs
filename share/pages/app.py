@@ -856,13 +856,25 @@ def terminal(script):
 
 
 def in_tab(tty, body):
-    """AppleScript running `body` against the Terminal tab whose tty is `tty`; TAB in body names the tab, spelled
-    out each time (`contents of` a variable holding the tab reads the reference, not the tab)."""
+    """AppleScript running `body` (it returns) against the Terminal tab whose tty is `tty`; TAB in body names the tab
+    and WIN its window, spelled out each time (`contents of` a variable holding the tab reads the reference, not the
+    tab). Two Apple Events find it, every window's id and every tab's tty, where the loop over windows sent two per
+    window, 16 ms each on Terminal's main thread (audit 2026-11-09: 65-235 ms a read by the tab's window, and
+    Hammerspoon, which runs the script, held 1-5 s while Terminal was busy). The tab found is checked by its tty
+    before the body runs; a lookup that fails or no longer matches falls back to the loop."""
     assert TTY_RE.match(tty)
-    return ('tell application id "com.apple.Terminal"\nrepeat with j from 1 to count windows\n'
-            'repeat with i from 1 to count tabs of window j\nif tty of tab i of window j is "%s" then\n'
-            '%s\nend if\nend repeat\nend repeat\nend tell\nreturn "no-tab"'
-            % (tty, body.replace("TAB", "tab i of window j")))
+    fast = "window id (item j of ws)"
+    return ('tell application id "com.apple.Terminal"\nset ws to {}\nset ts to {}\ntry\n'
+            'set ws to id of every window\nset ts to tty of every tab of every window\nend try\n'
+            'if (count ws) is (count ts) then\nrepeat with j from 1 to count ws\nset row to item j of ts\n'
+            'repeat with i from 1 to count row\nif item i of row is "%(tty)s" then\n'
+            'if tty of tab i of %(fast)s is "%(tty)s" then\n%(quick)s\nend if\nend if\nend repeat\nend repeat\nend if\n'
+            'repeat with j from 1 to count windows\n'
+            'repeat with i from 1 to count tabs of window j\nif tty of tab i of window j is "%(tty)s" then\n'
+            '%(slow)s\nend if\nend repeat\nend repeat\nend tell\nreturn "no-tab"'
+            % {"tty": tty, "fast": fast,
+               "quick": body.replace("TAB", "tab i of " + fast).replace("WIN", fast),
+               "slow": body.replace("TAB", "tab i of window j").replace("WIN", "window j")})
 
 
 def screen(tty):
@@ -1314,7 +1326,7 @@ def close_chat(sid, force=False):
     with CACHE_LOCK:
         CACHE.pop("live", None)
         CACHE.pop("chats", None)
-    doc = terminal(in_tab(tty, 'if (count tabs of window j) is 1 then\nclose window j\nreturn "closed"\n'
+    doc = terminal(in_tab(tty, 'if (count tabs of WIN) is 1 then\nclose WIN\nreturn "closed"\n'
                                 'end if\nreturn "tabs"'))
     res = doc.get("res")
     return 200, {"ok": True, "window": res if doc.get("ok") and res in ("closed", "tabs") else "left"}
