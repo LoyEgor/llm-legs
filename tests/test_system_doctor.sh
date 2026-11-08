@@ -1836,6 +1836,18 @@ gone = [r for f in glob.glob(os.path.join(state2, "pids", "*.jsonl")) for r in m
 check(len(gone) == 1 and [g[0] for g in gone[0]["gone"]] == [700, 701, 702]
       and gone[0]["gone"][0][3:] == ["llm-legs/bin/x.py", "own"] and own not in json.dumps(gone),
       "a dead interpreter's pid and script name are kept, no argv: %s" % gone)
+state3, was = os.path.join(work, "state3"), {n: open(os.path.join(fix, n)).read() for n in ("ps", "ps-children")}
+seen3 = []
+for paths in (["/x/uv/pw/driver/package/cli.js"] * 2, ["/x/app/node_modules/nx/cli.js"]):
+    put("ps", ps_rows([(1, 0, 0, "0:01.00", start, "/sbin/launchd")] + [
+        (710 + i, 1, uid, "0:00.10", start, "/opt/homebrew/bin/node %s run" % p) for i, p in enumerate(paths)]))
+    put("ps-children", open(os.path.join(fix, "ps")).read())
+    cli("tick", "--quiet", env={"SYSTEM_DOCTOR_DIR": state3})
+    seen3.append(m.read_json(os.path.join(state3, "origins.json"), {}).get("cli.js"))
+check(seen3 == ["/x/uv/pw/driver/package/cli.js", ""],
+      "a bare script name a second file runs under loses its first file as origin: %s" % seen3)
+for n, text in was.items():
+    put(n, text)
 os.environ["SYSTEM_DOCTOR_DIR"] = state2
 scripts = m.pid_scripts(time.time() + 60)
 os.environ["SYSTEM_DOCTOR_DIR"] = os.path.join(work, "state")

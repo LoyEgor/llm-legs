@@ -494,7 +494,8 @@ def ps_snapshot(with_children, known=None):
         cwd = functools.partial(machine_probe.proc_cwd, int(number))
         tag, owner, kind = describe(exe, rest, roots, cwd)
         key = "%s@%s" % (number, " ".join(start.split()))
-        place = locate(exe, rest, int(number), cwd) if known is not None and tag not in known else None
+        place = (locate(exe, rest, int(number), cwd) if known is not None and (
+            tag not in known or kind == "script" and "/" not in tag and known[tag]) else None)
         procs[key] = [int(ppid), cpu_seconds(cpu), tag, owner, int(number), int(uid), kind, int(rss), place]
         if kind == "inline":
             inline.append(key)
@@ -760,7 +761,16 @@ def tick(now=None):
     if gone:
         append_row("pids", {"t": round(now, 1), "gone": gone}, REPORT_DAYS + 1)
     write_json(path, state)
-    fresh = {entry[2]: entry[8] for entry in last.values() if entry[8] and entry[2] not in origins}
+    fresh = {}
+    for entry in last.values():
+        name, path = entry[2], entry[8]
+        had = fresh.get(name, origins.get(name))
+        if path and had is None:
+            fresh[name] = path
+        elif path and had and path != had and os.path.basename(path) == os.path.basename(had):
+            # A bare script name two files share (every node_modules cli.js) has no one origin: "" places neither
+            # (11-09: the first cli.js ever seen, chatgpt-web's, was blamed for a pnpm project's 20 core-hours).
+            fresh[name] = ""
     if fresh:
         write_json(origins_file, dict(list({**origins, **fresh}.items())[-BACKGROUND["origins"]:]))
     row["self"] = {"wall_s": round(time.time() - now, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
