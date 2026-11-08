@@ -143,6 +143,14 @@ async function refreshChats() {
   await once('chats', async () => {
     const d = await api('/api/chats');
     S.auth = true;
+    // New client files reload the app (a home-screen app has no reload button); the draft and the open chat stay,
+    // a running dictation or send finishes first.
+    if (d.client && !S.client) S.client = d.client;
+    if (d.client && d.client !== S.client && MIC.state === '' && !$('#send').disabled) {
+      if (S.sid) { drafts[S.sid] = $('#input').value; keep('drafts', drafts); }
+      location.reload();
+      return;
+    }
     S.chats = d.chats || [];
     S.workers = d.workers || [];
     let fresh = false;

@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 
 KIT = ""  # set by bin/page: <repo>/share/pages/kit, read from the main checkout even by the deployed daemon
 store = None  # bin/page's store module
@@ -311,7 +312,18 @@ def chats():
             workers.append(doc)
     key = lambda d: -(d.get("spoke") or d.get("started") or 0)
     return {"as_of": time.time(), "machine": machine, "chats": sorted(rows, key=key),
-            "workers": sorted(workers, key=key)}
+            "workers": sorted(workers, key=key), "client": client_version()}
+
+
+def client_version():
+    """The client files' fingerprint: a running client that sees it change reloads itself, since nobody reloads a
+    home-screen app by hand."""
+    folder = static_dir()
+    try:
+        stamp = sorted((name, os.stat(os.path.join(folder, name)).st_mtime_ns) for name in os.listdir(folder))
+    except OSError:
+        return ""
+    return "%08x" % zlib.crc32(repr(stamp).encode())
 
 
 def find_live(sid):

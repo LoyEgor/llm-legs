@@ -49,7 +49,7 @@ rules as above; `page lan --app` prints the link. Terminal is touched only throu
 | Route | Answer |
 |---|---|
 | `GET /app/` | the client (`index.html`, `app.js`, `app.css`, `icon.png`); `manifest.webmanifest` starts at `/app/?k=<token>`, so a home-screen app gets its own cookie |
-| `GET /api/chats` | `{machine, chats, workers}`: live registry records (`~/.claude*/sessions`, pid + `procStart` checked) with tty, account (the process env, `chat-account.sh` order), chat-find's name/ctx/model, warm cache `until`, memlogd load, last line, latest recap, page count. Workers = no tty or `entrypoint` ≠ `cli`, read-only |
+| `GET /api/chats` | `{machine, chats, workers, client}` (`client`: the client files' fingerprint; a running client that sees it change reloads itself, draft and open chat kept): live registry records (`~/.claude*/sessions`, pid + `procStart` checked) with tty, account (the process env, `chat-account.sh` order), chat-find's name/ctx/model, warm cache `until`, memlogd load, last line, latest recap, page count. Workers = no tty or `entrypoint` ≠ `cli`, read-only |
 | `GET /api/chat/<sid>/log[?after=N\|?before=N]` | `{items, start, end, size, pages}`: transcript items (`user`, `asst`, `tool`, `result`, `event`, `away`) of the tail, after byte N, or the window ending at N |
 | `GET /api/chat/<sid>/screen` | `{ok, res}`: the tab's visible text |
 | `POST /api/chat/<sid>/send` | `{text}` → one bracketed paste + Return in the tab → `{ok, err}` |

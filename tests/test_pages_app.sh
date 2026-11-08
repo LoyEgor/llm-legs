@@ -173,6 +173,7 @@ assert test "$(jq -r '.chats[0].last.t' "$WORK/body")" = "Done **here**."
 assert test "$(jq -r '.chats[0].away' "$WORK/body")" = "Goal: fixtures. Next: assert."
 assert test "$(jq -r '.workers | map(.sid + "|" + .account) | join(",")' "$WORK/body")" = "$wsid|wacct"
 assert test "$(jq -r '.machine.lines[0]' "$WORK/body")" = "CPU   1.0 chats +  2.0 other =  3.0 of 10 cores"
+assert like "$(jq -r '.client' "$WORK/body")" "????????"  # the client files' fingerprint: a change reloads the app
 
 # The transcript: speech, tool calls with their results, events, the recap; no meta, thinking or sidechain.
 assert test "$(get "$base/api/chat/$sid/log")" = 200
