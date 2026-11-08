@@ -520,7 +520,9 @@ across sizes; only lifted index tables (`c_*`) differ.
 - **Base grid (2026-11-08)** adds exact graphs for common sizes: squares 768/1024/1536/2048; ChatGPT 1024×1536 both
   ways; 720p and 1080p portrait; Gemini 1344×768 and 1184×864 both ways; QHD, 6 MP 3:2 and 12 MP 4:3 both ways; 4K
   portrait.
-  - Prices (`ck_mlx.py price`) are still to be measured on an idle machine.
+  - Built 2026-11-08: 19 sizes in 90 min under load 35–44 (2–10 min each), 35 sizes in the store, 1.8 GB.
+  - All 35 priced right after, under load 7–16 (not idle; `price.json` keeps it): 768² 0.9 s, 1024×1536 2.2 s,
+    1920×1152 5.0 s, 4096×3072 26 s. Reprice on an idle machine if a lost-seconds number ever looks wrong.
 
 **Next:**
 - the GPT chat wires `--remove-bg --composite` to its combination (Remove BG + GPT asked in words + ck-key and
