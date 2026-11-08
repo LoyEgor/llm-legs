@@ -108,7 +108,10 @@ esac
 EOF
 chmod +x "$WORK/bin/trash"
 cat >"$WORK/bin/chats" <<'EOF'
-import sys
+import json, sys
+if "--accounts" in sys.argv:
+    sys.exit(print(json.dumps({"accounts": [{"name": "acc3", "used": "10%", "warm": True, "default": True},
+                                            {"name": "acc4", "used": "", "warm": False, "default": False}], "gateway": False})))
 if "--new-command" in sys.argv:
     print("cd '%s' && claudeb profile acc4 --permission-mode bypassPermissions" % sys.argv[sys.argv.index("--new-command") + 1])
     sys.exit(print("account=acc4 source=pick"))
@@ -116,7 +119,7 @@ sid = sys.argv[sys.argv.index("--open-command") + 1]
 if sid.startswith("dead"):
     sys.exit("no transcript for " + sid)
 print('cd "/x/old" && claude --resume ' + sid)
-print("account=acc3 source=cache")
+print("account=%s source=asked" % sys.argv[sys.argv.index("--account") + 1] if "--account" in sys.argv else "account=acc3 source=cache")
 EOF
 printf 'v2 %s fixacct\n' "$(date +%s)" >"$WORK/tracks/cache-ttl-track-$sid"
 printf '{"title": "Chats/other  1.0/2.0 cores", "rows": [{"text": "CPU   1.0 chats +  2.0 other =  3.0 of 10 cores"}, "-", {"text": "full speed  Fixture chat           1.0 cores   2.5 GB  ▁▂▃", "session": "%s", "pid": %s}]}' \
@@ -126,6 +129,8 @@ printf '{"title": "Chats/other  1.0/2.0 cores", "rows": [{"text": "CPU   1.0 cha
 # file's text copied out before the server deletes it. With $WORK/queue holding a JSON list, the screen is Claude
 # Code's empty input over that queue, and Up (`"[A" & c`) writes their popAll lines to the transcript as the CLI
 # does and empties the queue.
+# With $WORK/trust, a new window is /dev/ttys077 and every screen Claude Code's folder-trust question, the cursor on
+# "No, exit"; a Down answers it.
 cat >"$WORK/bin/hs" <<EOF
 #!/usr/bin/env python3
 import json, os, re, sys
@@ -152,6 +157,13 @@ elif '"[A" & c' in lua and queue is not None:
         for text in queue:
             transcript.write(json.dumps({"type": "queue-operation", "operation": "popAll", "content": text}) + "\\n")
     json.dump([], open("$WORK/queue", "w"))
+    print(json.dumps({"ok": True, "res": "sent"}))
+elif "set t to do script" in lua and os.path.exists("$WORK/trust"):
+    print(json.dumps({"ok": True, "res": "/dev/ttys077"}))
+elif "return contents of tab" in lua and os.path.exists("$WORK/trust"):
+    print(json.dumps({"ok": True, "res": " Quick safety check\\n \\u276f No, exit\\n   Yes, I trust this folder\\n"}))
+elif '"[B")' in lua and os.path.exists("$WORK/trust"):
+    os.remove("$WORK/trust")
     print(json.dumps({"ok": True, "res": "sent"}))
 elif "close window j" in lua:
     print(json.dumps({"ok": True, "res": "closed"}))
@@ -598,6 +610,48 @@ assert grep -qF "do script \"cd \\\"/x/old\\\" && claude --resume $past\" end te
 assert test "$(post "/api/chat/dead0000-2222-3333-4444-555555555555/open" '{}')" = 502
 assert test "$(jq -r .err "$WORK/body")" = "no transcript for dead0000-2222-3333-4444-555555555555"
 assert test "$(post "/api/chat/abc/open" '{}')" = 400
+# Open in Terminal offers `chats --accounts`' list; an account he picks goes to `chats` as --account.
+assert test "$(get "$base/api/chat/$past/accounts")" = 200
+assert test "$(jq -c '[[.accounts[] | [.name, .used, .warm, .default]], .gateway]' "$WORK/body")" \
+  = '[[["acc3","10%",true,true],["acc4","",false,false]],false]'
+assert test "$(get "$base/api/chat/abc/accounts")" = 400
+asid=aaaaaaaa-2222-3333-4444-555555555555
+assert test "$(post "/api/chat/$asid/open" '{"account": "acc4"}')" = 200
+assert test "$(jq -r '[.account, .source] | join("|")' "$WORK/body")" = "acc4|asked"
+assert test "$(post "/api/chat/$asid/open" '{"account": "../x"}')" = 400
+# Folder trust (Egor 2026-11-09: a chat opened in the home folder stopped on Claude Code's question, unseen, and
+# Open in Terminal seemed to do nothing): the tab this app opened is answered yes, Down and the Return do script
+# adds, while the cursor sits on "No, exit"; the answer goes to the event log.
+: >"$WORK/trust"; : >"$WORK/hs.log"
+assert test "$(post "/api/chat/cccccccc-2222-3333-4444-555555555555/open" '{}')" = 200
+"$ROOT/bin/wait-until" --max 5 log "$WORK/hs.log" 'do script \(e & "\[B"\) in tab' >/dev/null
+assert test ! -e "$WORK/trust"
+assert test "$(jq -rs '[.[] | select(.op == "trust")] | [length, .[0].tty, .[0].error] | join("|")' "$PAGES_DIR/.events.jsonl")" \
+  = "1|/dev/ttys077|"
+# A message to a closed chat (Egor 2026-11-09: it did not go) opens it on its default account and goes in once the
+# chat runs and waits (idle twice); an open while it comes up is not a second resume. Without "open" it stays a 404.
+osid=dddddddd-2222-3333-4444-555555555555
+assert test "$(post "/api/chat/$osid/send" '{"text": "x"}')" = 404
+assert test "$(post "/api/chat/dead0000-2222-3333-4444-555555555555/send" '{"text": "x", "open": true}')" = 502
+assert test "$(post "/api/chat/$osid/send" '{"text": " ", "open": true}')" = 400
+: >"$WORK/hs.log"
+curl -s -o "$WORK/body2" -w '%{http_code}' -H 'Content-Type: application/json' -d '{"text": "hello closed", "open": true}' \
+  "$base/api/chat/$osid/send" >"$WORK/code2" &
+sendpost=$!
+"$ROOT/bin/wait-until" --max 5 log "$WORK/hs.log" "claude --resume $osid" >/dev/null
+assert test "$(post "/api/chat/$osid/open" '{}')" = 200
+assert test "$(jq -r .pending "$WORK/body")" = true
+assert test "$(grep -c "claude --resume $osid" "$WORK/hs.log")" = 1
+script -q /dev/null "$PY" -c 'import time; time.sleep(60)' </dev/null >/dev/null 2>&1 &
+oscript=$!
+for _ in $(seq 50); do opid=$(pgrep -P "$oscript" | head -1); [ -n "$opid" ] && break; sleep 0.1; done
+printf '{"pid": %s, "sessionId": "%s", "cwd": "/x/old", "procStart": "%s", "entrypoint": "cli", "status": "idle"}' \
+  "$opid" "$osid" "$(lstart "$opid")" >"$WORK/sessions/$opid.json"
+wait "$sendpost"
+assert test "$(cat "$WORK/code2")" = 200
+assert test "$(jq -r .opened "$WORK/body2")" = acc3
+assert test "$(grep '^TEXT=' "$WORK/hs.log")" = 'TEXT="hello closed"'
+kill "$opid" "$oscript" 2>/dev/null; rm -f "$WORK/sessions/$opid.json"
 # A chat's menu (Egor 2026-11-08). Rename: a live chat gets /rename typed, a closed one the custom-title line
 # /rename writes; branch: `chats`' command with --fork-session and the name, the chat open or not; trash:
 # session-trash marks it and sweeps its own config root (a live one is ended instead, below); untrash restores.
@@ -813,4 +867,4 @@ link = js[js.index("const outLink"):js.index("function inline(")]
 sys.exit(not (js.count("_blank") == 1 and "_blank" in link and "STANDALONE ? `<a href=\"x-safari-${url}\">" in link
   and "window.open" not in js and "STANDALONE && MIC.refused === \x27refused\x27" in js and "data-webreset" in js))' "$ROOT/share/pages/app/app.js"
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: a look keeps it asleep, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, the browser first, MacMic after a refusal, a refusal linking to it, what a chat runs (its tree, ports, a stop of its own only, a forced end), a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash, a new chat in a folder picked off the ones chats ran in"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: a look keeps it asleep, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, on a picked account, the folder-trust question answered, a message opening a closed chat, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, the browser first, MacMic after a refusal, a refusal linking to it, what a chat runs (its tree, ports, a stop of its own only, a forced end), a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash, a new chat in a folder picked off the ones chats ran in"

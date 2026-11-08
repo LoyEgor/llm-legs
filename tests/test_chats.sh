@@ -1135,6 +1135,23 @@ HOME="$OPEN_HOME" PATH="$WORK/open-bin:$PATH" CLAUDEB_WORKER_PICK=worker-pick "$
 assert [ "$?" -eq 1 ]
 assert grep -qx "chats: no such directory: $WORK/missing" "$WORK/open-error"
 
+# The Chats app's Open in Terminal (Egor 2026-11-09): the Anthropic accounts in worker-pick's order, the one holding
+# the chat's cache and the one --open-command takes marked; a gateway chat lists none; --account opens on one.
+accounts_test() {
+  HOME="$OPEN_HOME" PATH="$WORK/open-bin:$PATH" CHAT_FIND_ROOT="$OPEN_HOME/.claude/projects" WORKER_RUN_DIR="$RUNS" \
+    CLAUDEB_WORKER_PICK=worker-pick CHAT_FIND_CACHE="$WORK/open-cache.json" STATUSLINE_CACHE_DIR="$WORK/open-tracks" \
+    "$SCRIPT" --accounts "$@"
+}
+assert [ "$(accounts_test "$OPEN_SID")" = '{"accounts": [], "gateway": true}' ]
+rm -f "$CLAUDEGPT_HOME/sessions/$OPEN_SID"
+assert [ "$(accounts_test "$OPEN_SID")" = '{"accounts": [{"name": "picked", "used": "10%", "warm": true, "default": true}], "gateway": false}' ]
+OPEN=$(open_command_test "$OPEN_SID" --account picked --timeout 5)
+assert [ "$(printf '%s\n' "$OPEN" | tail -1)" = 'account=picked source=asked' ]
+assert test "${OPEN#*"profile picked --resume $OPEN_SID"}" != "$OPEN"
+open_command_test "$OPEN_SID" --account last > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 1 ]
+assert grep -qx 'chats: no logged-in account named last' "$WORK/open-error"
+
 echo "== pinned chats"
 # Egor 2026-11-08: a pinned chat that is open behaves like any other; a closed one is at the very top.
 pins_of() { python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["pins"]))' "$1"; }

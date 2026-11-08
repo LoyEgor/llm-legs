@@ -315,13 +315,32 @@ async function searchSaid() {
 
 const pastRow = (sid) => S.hist.find((r) => r.sid === sid) || (S.found && (S.found.rows || []).find((r) => r.sid === sid));
 
+// Open in Terminal picks the account (Egor 2026-11-09; a message opens the chat on its default one): the Anthropic
+// accounts in worker-pick's order with how much of each is used, a dot on the one still holding the chat's cache,
+// the default lit. A gateway chat has none to pick and opens at once.
+async function pickAccount() {
+  const sid = S.sid, box = $('#accts');
+  if (!box.hidden) { box.hidden = true; return; }
+  $('#openbtn').disabled = true;
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/accounts`, null, 30000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
+  $('#openbtn').disabled = false;
+  if (sid !== S.sid) return;
+  if (!d.ok) { $('#pastnote').textContent = '⚠ ' + (d.err || 'no accounts'); return; }
+  if (!d.accounts.length) { openPast(); return; }
+  box.innerHTML = d.accounts.map((a) => `<button type="button" class="acct${a.default ? ' def' : ''}" data-acct="${esc(a.name)}">` +
+    `${a.warm ? '<i class="dot"></i>' : ''}<span>${esc(a.name)}</span><small>${esc(a.used)}</small></button>`).join('');
+  box.dataset.sid = sid;
+  box.hidden = false;
+}
+
 // Open in Terminal: the server runs `chats --open-command` and types it into a new Terminal window; the chat then
 // shows up live (the same id, or a new one in the same folder) and the view follows it.
-async function openPast() {
+async function openPast(account) {
   const sid = S.sid, p = pastRow(sid) || {};
+  $('#accts').hidden = true;
   $('#openbtn').disabled = true;
   $('#pastnote').innerHTML = '<span class="shimmer">Opening in Terminal on the Mac…</span>';
-  const d = await api(`/api/chat/${encodeURIComponent(sid)}/open`, {}, 45000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/open`, account ? {account} : {}, 45000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
   $('#openbtn').disabled = false;
   if (!d.ok) { $('#pastnote').textContent = '⚠ ' + (d.err || 'did not open'); return; }
   if (d.live) { refreshChats(); return; }
@@ -936,12 +955,15 @@ async function deliver(o) {
   o.state = 'sending';
   o.unsure = false;
   o.at = now();
+  o.opening = closed(o.sid);
   outRender();
-  const d = await api(`/api/chat/${encodeURIComponent(o.sid)}/send`, {text: o.text}).catch(() => ({ok: false, err: 'no connection'}));
+  const d = await api(`/api/chat/${encodeURIComponent(o.sid)}/send`, o.opening ? {text: o.text, open: true} : {text: o.text},
+    o.opening ? 110000 : undefined).catch(() => ({ok: false, err: 'no connection'}));
   if (!OUT.includes(o)) return;
   o.state = d.ok ? 'sent' : 'failed';
   o.err = d.err || '';
   outRender();
+  if (d.ok && o.opening) refreshChats();
   if (d.ok && o.sid === S.sid) setTimeout(() => { pullScreen(); pullLog(); }, 400);
 }
 
@@ -967,7 +989,7 @@ function outRender() {
     col.appendChild(b);
     const s = node('state out-n' + (o.state === 'failed' ? ' err' : ''), o.state === 'failed'
       ? `Not sent: ${esc(o.err)}<button data-retry="${o.id}">Retry</button><button data-drop="${o.id}">Delete</button>`
-      : o.state === 'sending' ? 'Sending…' : 'Sent');
+      : o.state === 'sending' ? (o.opening ? 'Opening the chat on the Mac…' : 'Sending…') : 'Sent');
     col.appendChild(s);
   });
   if (mine.length) grew();
@@ -1113,6 +1135,7 @@ function renderHead() {
     const p = pastRow(S.sid);
     title(`<b>${esc(p && p.name || S.sid)}</b><small>${esc([p && base(p.cwd), p && ago(p.spoke), 'not open'].filter(Boolean).join(' · '))}</small>`);
     if (!S.opening || S.opening.sid !== S.sid) { $('#openbtn').disabled = false; $('#pastnote').textContent = 'Not open on the Mac'; }
+    if ($('#accts').dataset.sid !== S.sid) $('#accts').hidden = true;
     return;
   }
   // The chat's own statusline in full words and its colours, else what the screen shows under the prompt.
@@ -1273,7 +1296,7 @@ function renderDock() {
 function renderSend() {
   const b = $('#send'), c = chat(S.sid);
   const text = $('#input').value.trim();
-  const mode = MIC.state ? (MIC.state === 'wait' ? 'wait' : 'dict') : !live(c) ? 'idle' : text ? 'send' : busy(c) ? 'stop' : 'idle';
+  const mode = MIC.state ? (MIC.state === 'wait' ? 'wait' : 'dict') : !canSend(S.sid) ? 'idle' : text ? 'send' : live(c) && busy(c) ? 'stop' : 'idle';
   if (b.dataset.mode === mode) return;
   b.dataset.mode = mode;
   b.disabled = mode === 'idle' || mode === 'wait';
@@ -1282,9 +1305,14 @@ function renderSend() {
   b.title = {send: 'Send', stop: 'Stop the chat (Esc)', dict: 'Stop dictating and send', idle: 'Send', wait: 'Transcribing'}[mode];
 }
 
+// A closed chat takes a message too (Egor 2026-11-09): the server opens it on its default account and sends it once
+// it is up; Open in Terminal is for picking the account.
+const closed = (sid) => !chat(sid) && !runOf(sid) && !!pastRow(sid);
+const canSend = (sid) => live(chat(sid)) || closed(sid);
+
 function send() {
   const sid = S.sid;
-  if (!live(chat(sid))) return;
+  if (!canSend(sid)) return;
   const box = $('#input');
   const text = box.value;
   if (!text.trim()) return;
@@ -2180,7 +2208,7 @@ function route() {
 $('#composer').addEventListener('submit', (e) => {
   e.preventDefault();
   const mode = $('#send').dataset.mode;
-  if (mode === 'dict') micStop(live(chat(S.sid)) ? 'send' : '');  // a chat not open takes nothing: the draft keeps it
+  if (mode === 'dict') micStop(canSend(S.sid) ? 'send' : '');  // a worker takes nothing: the draft keeps it
   else if (mode === 'stop') key({key: 'esc'});
   else send();
 });
@@ -2276,7 +2304,8 @@ $('#list').addEventListener('click', (e) => {
   else if (e.target.closest('[data-more]')) { S.histN += 50; renderList(); }
   else if (e.target.closest('[data-said]')) searchSaid();
 });
-$('#openbtn').addEventListener('click', openPast);
+$('#openbtn').addEventListener('click', pickAccount);
+$('#accts').addEventListener('click', (e) => { const b = e.target.closest('[data-acct]'); if (b) openPast(b.dataset.acct); });
 $('#list').addEventListener('touchstart', (e) => {
   clearTimeout(CTX.timer);
   const row = e.target.closest('a.row'), p = e.touches[0];

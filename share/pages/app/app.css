@@ -74,6 +74,15 @@ html.pressing, html.pressing * { -webkit-touch-callout: none !important; -webkit
 #pastbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 8px;
   padding: 8px 8px 8px 16px; border-radius: var(--r-xl); background: var(--pop); box-shadow: var(--shadow-pop); }
 #pastnote { color: var(--fg2); font-size: var(--fs-m); min-width: 0; }
+/* Open in Terminal's accounts: worker-pick's order, the used share, a dot on the one holding the chat's cache. */
+#pastbar { flex-wrap: wrap; }
+#accts { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+#accts[hidden] { display: none; }
+.acct { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 16px; border: .5px solid var(--line);
+  background: var(--bg); color: var(--fg); font-size: var(--fs-m); }
+.acct small { color: var(--fg3); font: 12px var(--mono); }
+.acct .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.acct.def { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 #list { flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 0 8px calc(12px + env(safe-area-inset-bottom)); }
 .sec { padding: 14px 8px 4px; font-size: 13px; font-weight: 500; color: var(--fg3); display: flex; gap: 6px; }
 .row .lead { flex: none; width: 16px; height: 20px; display: grid; place-items: center; color: var(--fg3); }

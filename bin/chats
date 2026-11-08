@@ -51,8 +51,9 @@ PIN_KEY = "\x14"
 SPEED_DIR = os.environ.get("SPEED_DOCTOR_DIR") or os.path.expanduser("~/.cache/speed-doctor")
 MARKS = {"began": time.time(), "paint": None, "rows": None, "rank": None, "count": 0, "days": None,
          "written": False}
-USAGE = ("usage: chats --open-command SESSION [--timeout SECONDS]\n"
+USAGE = ("usage: chats --open-command SESSION [--account NAME] [--timeout SECONDS]\n"
          "usage: chats --new-command DIRECTORY [--timeout SECONDS]\n"
+         "usage: chats --accounts SESSION [--timeout SECONDS]\n"
          "usage: chats [--days N | --all] [--print]\n"
          "usage: chats --pin SESSION | --unpin SESSION\n"
          "  ↑↓ chat · ←→ account (one ring over both lines) · shift+↑↓ line\n"
@@ -869,7 +870,10 @@ def reopen_argv(row, vendor, account):
                                    gateway=vendor == "gpt"), False
 
 
-def open_command(session, timeout):
+def open_plan(session, timeout):
+    """What --open-command and --accounts weigh for a chat: (row, cwd, bar, order, used, chosen, default, cached),
+    the bar the accounts in worker-pick's order without the logged-out ones, `cached` the position of the one whose
+    prompt cache still holds the chat."""
     candidates = resolve_session(session)
     if len(candidates) != 1:
         die("session id is ambiguous: %s" % session)
@@ -891,13 +895,21 @@ def open_command(session, timeout):
     if not model:
         learn_buckets(("",) + BOARD_MODELS)
         model = next((m for m in BOARD_MODELS if board_of({"model": m}) == board_of(row)), None)
-    order, _, hidden, chosen = ranking(timeout, model)
+    order, used, hidden, chosen = ranking(timeout, model)
     names = arrange(names, order, hidden)
     default = current_profile(names, chosen)
-    position = account_for(row, time.time(), names, None)
+    return row, cwd, names, order, used, chosen, default, account_for(row, time.time(), names, None)
+
+
+def open_command(session, timeout, asked=None):
+    row, cwd, names, order, _, chosen, default, position = open_plan(session, timeout)
     source = "cache" if position is not None else (
         "pick" if ("claudeb", chosen) in names else "fallback")
     position = default if position is None else position
+    if asked:
+        if ("claudeb", asked) not in names:
+            die("no logged-in account named %s" % asked)
+        position, source = names.index(("claudeb", asked)), "asked"
     if position is None:
         die("no logged-in account to open it under")
     vendor, account = names[position]
@@ -914,6 +926,21 @@ def open_command(session, timeout):
     command += ["--permission-mode", "bypassPermissions"]
     print(chat_resume.resume_line([shlex.quote(word) for word in command], cwd))
     print("account=%s source=%s" % (account, source))
+
+
+def accounts_json(session, timeout):
+    """`chats --accounts SID`: the Anthropic accounts a chat can be opened under, in worker-pick's order, as JSON:
+    {accounts: [{name, used, warm, default}], gateway}; `warm` holds its prompt cache, `default` is the one
+    --open-command takes; a gateway chat opens on its own gateway, so it lists none."""
+    row, _, names, _, used, _, default, position = open_plan(session, timeout)
+    if chat_resume.is_gateway_chat(row["session"], row.get("model")):
+        print(json.dumps({"accounts": [], "gateway": True}))
+        return
+    take = names[default if position is None else position] if names else None
+    warm = names[position] if position is not None else None
+    print(json.dumps({"accounts": [{"name": entry[1], "used": used.get(entry, ""), "warm": entry == warm,
+                                    "default": entry == take} for entry in names if entry[0] == "claudeb"],
+                      "gateway": False}))
 
 
 def new_command(cwd, timeout):
@@ -960,17 +987,26 @@ def main():
             die("usage: chats --pin SESSION | --unpin SESSION")
         pin_command(sys.argv[2], sys.argv[1] == "--pin")
         return
-    if sys.argv[1:2] in (["--open-command"], ["--new-command"]):
+    if sys.argv[1:2] in (["--open-command"], ["--new-command"], ["--accounts"]):
         args = sys.argv[2:]
+        asked = None
+        if sys.argv[1] == "--open-command" and "--account" in args[1:-1]:
+            at = args.index("--account", 1)
+            asked = args[at + 1]
+            del args[at:at + 2]
         if len(args) not in (1, 3) or (len(args) == 3 and args[1] != "--timeout"):
-            die("usage: chats %s %s [--timeout SECONDS]" % (sys.argv[1], "SESSION" if sys.argv[1] == "--open-command" else "DIRECTORY"))
+            die("usage: chats %s %s [--timeout SECONDS]" % (
+                sys.argv[1], "DIRECTORY" if sys.argv[1] == "--new-command" else "SESSION"))
         try:
             timeout = float(args[2]) if len(args) == 3 else 20
             if not math.isfinite(timeout) or timeout <= 0:
                 raise ValueError
         except ValueError:
             die("--timeout must be a positive number of seconds")
-        (open_command if sys.argv[1] == "--open-command" else new_command)(args[0], timeout)
+        if sys.argv[1] == "--open-command":
+            open_command(args[0], timeout, asked)
+        else:
+            (accounts_json if sys.argv[1] == "--accounts" else new_command)(args[0], timeout)
         return
     locale.setlocale(locale.LC_ALL, "")
     # A window asked for by name is the whole list he wants: widening on scroll

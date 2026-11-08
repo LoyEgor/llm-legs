@@ -1092,19 +1092,65 @@ def search(q):
             for r in rows if isinstance(r, dict) and r.get("session")]
 
 
-def open_chat(sid, fork=None):
-    """A past chat into a new Terminal window, as `chats` opens it (its account: the live cache, else the best one).
-    A chat already open is not opened twice (a second resume forks it): the app just shows it. fork (a name, or ""):
-    a branch of it in a new window, open or not, under that name (claude --fork-session --name)."""
+def open_chat(sid, fork=None, account=None):
+    """A past chat into a new Terminal window, as `chats` opens it (its account: the live cache, else the best one;
+    `account` one he picked). A chat already open is not opened twice (a second resume forks it): the app just shows
+    it. fork (a name, or ""): a branch of it in a new window, open or not, under that name (claude --fork-session)."""
     rec, _ = find_live(sid)
     if rec and fork is None:
         return 200, {"ok": True, "live": True}
-    line, meta = chats_line("--open-command", sid)
+    # One typed in a moment ago and not up yet (a message sent while Open waits) is not resumed a second time.
+    if fork is None and time.time() - OPENED.get(sid, 0) < OPEN_WAIT:
+        return 200, {"ok": True, "pending": True}
+    line, meta = chats_line("--open-command", sid, *(["--account", account] if account else []))
     if line is None:
         return 502, {"ok": False, "err": meta}
     if fork is not None:
         line += " --fork-session" + (" --name=" + shlex.quote(fork) if fork else "")  # = : a name may start with -
-    return in_window(line, meta)
+    code, doc = in_window(line, meta)
+    if doc.get("ok") and fork is None:
+        OPENED[sid] = time.time()
+    return code, doc
+
+
+OPEN_WAIT = float(os.environ.get("APP_OPEN_WAIT") or 60)  # s for a chat opened by a message to come up
+OPENED = {}  # sid -> when this server typed its resume into a window
+ACCOUNT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def open_and_send(sid, text):
+    """A message to a closed chat (Egor 2026-11-09: it did not go, and opening was a separate step): the chat opens
+    as Open in Terminal opens it, on its default account, and once it runs and waits for him (idle twice, a second
+    apart) the message goes in as any send."""
+    code, doc = open_chat(sid)
+    if not doc.get("ok"):
+        return code, doc
+    end, idle = time.time() + OPEN_WAIT, 0
+    while time.time() < end:
+        rec, tty = find_live(sid)
+        idle = idle + 1 if rec and tty and rec.get("status") == "idle" else 0
+        if idle >= 2:
+            with TYPING:
+                answer = send_text(tty, text)
+            if answer.get("res") == "no-tab":
+                answer = {"ok": False, "err": "no Terminal tab on %s" % tty}
+            return (200 if answer.get("ok") else 502), dict(answer, opened=doc.get("account", "") or True)
+        time.sleep(1)
+    return 504, {"ok": False, "err": "it opened%s but did not come up in %d s" % (
+        " as " + doc["account"] if doc.get("account") else "", OPEN_WAIT)}
+
+
+def chat_accounts(sid):
+    """`chats --accounts SID` -> (code, {accounts, gateway}): what Open in Terminal offers."""
+    picker = os.environ.get("APP_CHATS") or os.path.join(repo(), "bin", "chats")
+    out = run([sys.executable, picker, "--accounts", sid, "--timeout", "8"], timeout=40)
+    try:
+        doc = json.loads(out) if out else None
+    except ValueError:
+        doc = None
+    if not isinstance(doc, dict) or not isinstance(doc.get("accounts"), list):
+        return 502, {"ok": False, "err": re.sub(r"^exit \d+: ", "", FAILED.get(sys.executable) or "chats printed nothing")}
+    return 200, dict(doc, ok=True)
 
 
 def chats_line(*args):
@@ -1120,12 +1166,42 @@ def chats_line(*args):
 
 
 def in_window(line, meta):
-    """A `chats` command line typed into a new Terminal window -> (code, doc with the account it picked)."""
+    """A `chats` command line typed into a new Terminal window -> (code, doc with the account it picked); the new
+    tab is watched for the folder-trust question (trust_watch)."""
     literal = line.replace("\\", "\\\\").replace('"', '\\"')
-    doc = terminal('tell application id "com.apple.Terminal"\ndo script "%s"\nend tell\nreturn "opened"' % literal)
+    doc = terminal('tell application id "com.apple.Terminal"\nset t to do script "%s"\nend tell\n'
+                   'tell application id "com.apple.Terminal" to return tty of t' % literal)
     if not doc.get("ok"):
         return 502, {"ok": False, "err": doc.get("err") or "Terminal did not open it"}
+    tty = doc.get("res") or ""
+    if TTY_RE.match(tty):
+        threading.Thread(target=trust_watch, args=(tty,), daemon=True).start()
     return 200, {"ok": True, "account": meta.get("account", ""), "source": meta.get("source", "")}
+
+
+TRUST_WAIT = float(os.environ.get("APP_TRUST_WAIT") or 40)  # s a chat this app opened is watched for the question
+
+
+def trust_watch(tty):
+    """Claude Code asks whether to trust a folder before a chat starts, and in the home folder every time (it never
+    keeps that answer there): a chat opened from this app stopped on it, unseen (Egor 2026-11-09, 'Open in Terminal'
+    waited and showed nothing). In the tab this app just opened, with the cursor on "No, exit" over "Yes, I trust
+    this folder", it is answered yes (he opened his own chat, or a new one in a folder of his chats); anything else
+    on that screen is left alone. The watch ends once a chat runs on that tab, or after TRUST_WAIT."""
+    end = time.time() + TRUST_WAIT
+    while time.time() < end:
+        time.sleep(0.8)
+        if any(t == tty for _, t, _, _ in live()):
+            return
+        with CACHE_LOCK:
+            CACHE.pop(("screen", tty), None)
+        text = (screen(tty) or {}).get("res") or ""
+        if "Yes, I trust this folder" in text and re.search(r"❯\s*No, exit", text):
+            with TYPING:
+                answer = send_key(tty, "down")  # do script adds the Return: Down, then Enter on "Yes"
+            if store is not None:
+                store.event("app", op="trust", tty=tty, error=None if answer.get("ok") else str(answer.get("err"))[:300])
+            return
 
 
 def new_chat(cwd):
@@ -1944,9 +2020,13 @@ def get(handler, path, query):
         else:
             handler.send_json(200, {"chats": found})
         return True
-    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(log|screen|info|procs)", path)
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(log|screen|info|procs|accounts)", path)
     if m:
         sid, sub = m.groups()
+        if sub == "accounts":
+            code, doc = chat_accounts(sid) if SID_RE.match(sid) else (400, {"ok": False, "err": "bad session id"})
+            handler.send_json(code, doc)
+            return True
         if sub == "procs":
             rec, _ = find_live(sid)
             handler.send_json(200 if rec else 404, {"procs": tasks(rec["pid"], ports=True, fresh=True)} if rec
@@ -2029,7 +2109,11 @@ def post(handler, path, body):
             handler.send_json(400, {"ok": False, "err": "a name, on one line"})
             return True
         force = isinstance(body, dict) and body.get("force") is True
-        code, doc = {"open": lambda: open_chat(sid), "close": lambda: close_chat(sid, force),
+        account = body.get("account") if isinstance(body, dict) else None
+        if account is not None and not (isinstance(account, str) and ACCOUNT_RE.match(account)):
+            handler.send_json(400, {"ok": False, "err": "bad account"})
+            return True
+        code, doc = {"open": lambda: open_chat(sid, account=account), "close": lambda: close_chat(sid, force),
                      "rename": lambda: rename_chat(sid, name), "branch": lambda: open_chat(sid, fork=name),
                      "trash": lambda: trash_chat(sid, force), "untrash": lambda: untrash_chat(sid)}[sub]()
         if store is not None and not doc.get("ok"):
@@ -2037,6 +2121,16 @@ def post(handler, path, body):
         handler.send_json(code, doc)
         return True
     rec, tty = find_live(sid)
+    if sub == "send" and not rec and isinstance(body, dict) and body.get("open") is True and SID_RE.match(sid):
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text.encode()) > SEND_CAP:
+            handler.send_json(400, {"ok": False, "err": "empty or too long"})
+            return True
+        code, doc = open_and_send(sid, text)
+        if store is not None and not doc.get("ok"):
+            store.event("app", op="send-open", sid=sid, error=str(doc.get("err"))[:300])
+        handler.send_json(code, doc)
+        return True
     if not tty or rec.get("entrypoint", "cli") != "cli":
         handler.send_json(404, {"ok": False, "err": "not a live terminal chat"})
         return True
