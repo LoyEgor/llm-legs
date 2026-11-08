@@ -126,6 +126,11 @@ TOP_J=$(git -C "$REPO_J" rev-parse --show-toplevel)
 
 DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 BLUE=$'\033[34m'; CYAN=$'\033[36m'
+# The warm cache's death time right after `ctx` (its percentage may be cut): a bare dim HH:MM, no
+# arrow (Egor 2026-11-08), so no character of its own marks it and the place does.
+WARM_TIME_RE="ctx( [^ ]+)? "$'\033\\[2m'"[0-9]{2}:[0-9]{2}"$'\033\\[0m'
+warm_shown() { [[ $1 =~ $WARM_TIME_RE ]]; }
+warm_hidden() { ! warm_shown "$1"; }
 STATE_DIR="$HOME/.cache/claude-statusline"
 # The statusline's clock: its display zone, C day names.
 hm_at() { LC_ALL=C TZ=Europe/Kyiv date -r "$1" "${2:-+%H:%M}"; }
@@ -2313,7 +2318,7 @@ RUN_STATUSLINE_DEFAULT_ACCOUNT=acctgen
 t_reset; t_assist $((NOW - 20)); t_stamp ctx-warm-lo
 warm_a=$(run_statusline "$(statusline_payload ctx-warm-lo "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 a_death=$(hm_at $((NOW - 20 + 3600)))
-assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}→${a_death}${RESET}" <<< "$warm_a"
+assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}${a_death}${RESET}" <<< "$warm_a"
 assert test "${warm_a#*50k}" = "$warm_a"
 assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-warm-lo"
 
@@ -2322,18 +2327,19 @@ payload_zero_extra=$(jq -cn --arg tp "$TRANSCRIPT" '
    context_window:{used_percentage:20,current_usage:{input_tokens:50000}}}')
 t_stamp ctx-payload-zero
 payload_zero=$(run_statusline "$(statusline_payload ctx-payload-zero "$payload_zero_extra")")
-assert grep -Fq "${DIM}→${a_death}${RESET}" <<< "$payload_zero"
+assert grep -Fq "${DIM}${a_death}${RESET}" <<< "$payload_zero"
 
 t_stamp ctx-warm-hi
 warm_b=$(run_statusline "$(statusline_payload ctx-warm-hi "$(warm_extra "$TRANSCRIPT" 60 350000)")")
-assert grep -Fq "ctx ${YELLOW}60%${RESET} ${DIM}→" <<< "$warm_b"
+assert grep -Fq "ctx ${YELLOW}60%${RESET} ${DIM}" <<< "$warm_b"
+assert warm_shown "$warm_b"
 assert test "${warm_b#*350k}" = "$warm_b"
 
 # Response older than the TTL -> cold (dim: 50k < 90k), no death time.
 t_reset; t_assist $((NOW - 4000))
 warm_c=$(run_statusline "$(statusline_payload ctx-stale "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 assert grep -Fq "${DIM}50k${RESET}" <<< "$warm_c"
-assert test "${warm_c#*→}" = "$warm_c"
+assert warm_hidden "$warm_c"
 
 # Reopened dead chat: --resume touches the file (fresh mtime + a freshly
 # timestamped file-history-snapshot) before any request — must stay COLD.
@@ -2341,25 +2347,25 @@ t_reset; t_user $((NOW - 172800)); t_assist $((NOW - 172799))
 printf '{"type":"file-history-snapshot","timestamp":"%s"}\n' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
 resume_lie=$(run_statusline "$(statusline_payload ctx-resume-lie "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}111k${RESET}" <<< "$resume_lie"
-assert test 0 -eq "$(grep -c '→' <<< "$resume_lie")"
+assert warm_hidden "$resume_lie"
 
 # Fresh real response wins over an older mtime (entries are the source of truth).
 t_reset; t_user $((NOW - 65)); t_assist $((NOW - 60)); t_stamp ctx-ts-warm
 touch -t "$(date -r $((NOW - 4000)) +%Y%m%d%H%M.%S)" "$TRANSCRIPT"
 ts_warm=$(run_statusline "$(statusline_payload ctx-ts-warm "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 ts_death=$(hm_at $((NOW - 60 + 3600)))
-assert grep -Fq "${DIM}→${ts_death}${RESET}" <<< "$ts_warm"
+assert grep -Fq "${DIM}${ts_death}${RESET}" <<< "$ts_warm"
 
 # A partially written final entry must not hide the preceding completed response.
 t_reset; t_assist $((NOW - 20)); t_stamp ctx-streaming
 printf '{"type":"assistant","timestamp":"' >> "$TRANSCRIPT"
 streaming_out=$(run_statusline "$(statusline_payload ctx-streaming "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 streaming_death=$(hm_at $((NOW - 20 + 3600)))
-assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}→${streaming_death}${RESET}" <<< "$streaming_out"
+assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}${streaming_death}${RESET}" <<< "$streaming_out"
 
 printf '\n{"type":"system","subtype":"local_command","timestamp":"%s"}\n' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
 shell_only=$(run_statusline "$(statusline_payload ctx-streaming "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-assert grep -Fq "${DIM}→${streaming_death}${RESET}" <<< "$shell_only"
+assert grep -Fq "${DIM}${streaming_death}${RESET}" <<< "$shell_only"
 
 t_reset; t_assist $((NOW - 20)); t_stamp ctx-tool-tail
 printf '{"type":"tool-result","timestamp":"%s","content":"' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
@@ -2367,14 +2373,14 @@ head -c 350000 /dev/zero | tr '\0' x >> "$TRANSCRIPT"
 printf '"}\n' >> "$TRANSCRIPT"
 tool_tail=$(run_statusline "$(statusline_payload ctx-tool-tail "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 tool_tail_death=$(hm_at $((NOW - 20 + 3600)))
-assert grep -Fq "${DIM}→${tool_tail_death}${RESET}" <<< "$tool_tail"
+assert grep -Fq "${DIM}${tool_tail_death}${RESET}" <<< "$tool_tail"
 
 # Sidechain (subagent) entries hit different cache prefixes — not this chat's warmth.
 t_reset; t_user $((NOW - 172800))
 printf '{"type":"assistant","isSidechain":true,"timestamp":"%s","message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":50000}}}\n' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
 side_cold=$(run_statusline "$(statusline_payload ctx-sidechain "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}111k${RESET}" <<< "$side_cold"
-assert test "${side_cold#*→}" = "$side_cold"
+assert warm_hidden "$side_cold"
 
 # <synthetic> assistant entries (API-error placeholders) are not responses.
 t_reset; t_assist $((NOW - 172799)); t_assist "$NOW" '<synthetic>' 0 0
@@ -2386,7 +2392,7 @@ printf '{"type":"assistant","timestamp":"%s","uuid":"zero-error","message":{"rol
   "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
 zero_error=$(run_statusline "$(statusline_payload ctx-zero-error "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 zero_error_death=$(hm_at $((NOW - 20 + 3600)))
-assert grep -Fq "${DIM}→${zero_error_death}${RESET}" <<< "$zero_error"
+assert grep -Fq "${DIM}${zero_error_death}${RESET}" <<< "$zero_error"
 
 # --- account switch invalidates the cache (per-organization on Anthropic) ---
 t_reset; t_assist $((NOW - 600))
@@ -2396,7 +2402,7 @@ assert grep -Fq "${YELLOW}111k${RESET}" <<< "$sw_out"
 # A NEW response under the current account re-warms and re-stamps it.
 t_assist $((NOW - 5))
 sw2_out=$(run_statusline "$(statusline_payload ctx-swacct "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}→" <<< "$sw2_out"
+assert warm_shown "$sw2_out"
 assert test "${sw2_out#*111k}" = "$sw2_out"
 assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-swacct"
 # A gateway chat's reply went through the Codex account CLAUDEGPT_ACCOUNT names, not the claudeb
@@ -2413,13 +2419,13 @@ assert grep -q '^v2 [0-9]* gwacct .* gwacct$' "$STATE_DIR/cache-ttl-track-ctx-ga
 t_reset; t_assist $((NOW - 600))
 noattr_out=$(run_statusline "$(statusline_payload ctx-noattr "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$noattr_out"
-assert test "${noattr_out#*→}" = "$noattr_out"
+assert warm_hidden "$noattr_out"
 assert grep -q '^v2 [0-9]* ? 0' "$STATE_DIR/cache-ttl-track-ctx-noattr"
 
 t_reset; t_assist $((NOW - 5))
 fresh_noattr=$(run_statusline "$(statusline_payload ctx-fresh-noattr "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fresh_noattr"
-assert test "${fresh_noattr#*→}" = "$fresh_noattr"
+assert warm_hidden "$fresh_noattr"
 assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fresh-noattr"
 
 # --- a 1M-context session still matches its bare transcript model id ---
@@ -2427,7 +2433,7 @@ t_reset; t_assist $((NOW - 20)); t_stamp ctx-model-1m
 onem_extra=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "fixmodel[1m]"')
 onem_out=$(run_statusline "$(statusline_payload ctx-model-1m "$onem_extra")")
 onem_death=$(hm_at $((NOW - 20 + 3600)))
-assert grep -Fq "${DIM}→${onem_death}${RESET}" <<< "$onem_out"
+assert grep -Fq "${DIM}${onem_death}${RESET}" <<< "$onem_out"
 assert test "${onem_out#*111k}" = "$onem_out"
 onem_other=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "othermodel[1m]"')
 onem_cold=$(run_statusline "$(statusline_payload ctx-model-1m "$onem_other")")
@@ -2445,7 +2451,7 @@ model_cold=$(run_statusline "$(statusline_payload ctx-model-sw "$model_extra")")
 assert grep -Fq "${YELLOW}111k${RESET}" <<< "$model_cold"
 # Switching back to the model that built the cache re-warms (cache still alive).
 model_warm=$(run_statusline "$(statusline_payload ctx-model-sw "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}→" <<< "$model_warm"
+assert warm_shown "$model_warm"
 
 t_reset; t_assist $((NOW - 60)) fixmodel
 fix_uuid="$LAST_ASSIST_UUID"
@@ -2455,18 +2461,18 @@ printf 'v1 %s acctgen 3600 %s 262144\n' "$((NOW - 60))" "$fix_uuid" \
   > "$STATE_DIR/cache-ttl-track-ctx-model-current.model-fixmodel"
 current_fix=$(run_statusline "$(statusline_payload ctx-model-current "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 fix_death=$(hm_at $((NOW - 60 + 3600)))
-assert grep -Fq "${DIM}→${fix_death}${RESET}" <<< "$current_fix"
+assert grep -Fq "${DIM}${fix_death}${RESET}" <<< "$current_fix"
 current_other_extra=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "othermodel"')
 current_other=$(run_statusline "$(statusline_payload ctx-model-current "$current_other_extra")")
 other_death=$(hm_at $((NOW - 30 + 3600)))
-assert grep -Fq "${DIM}→${other_death}${RESET}" <<< "$current_other"
+assert grep -Fq "${DIM}${other_death}${RESET}" <<< "$current_other"
 current_fix_again=$(run_statusline "$(statusline_payload ctx-model-current "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}→${fix_death}${RESET}" <<< "$current_fix_again"
+assert grep -Fq "${DIM}${fix_death}${RESET}" <<< "$current_fix_again"
 
 noid_extra=$(warm_extra "$TRANSCRIPT" 20 50000 | jq -c 'del(.model)')
 noid_out=$(run_statusline "$(statusline_payload ctx-model-noid "$noid_extra")")
 assert grep -Fq "${DIM}? 50k${RESET}" <<< "$noid_out"
-assert test "${noid_out#*→}" = "$noid_out"
+assert warm_hidden "$noid_out"
 
 # --- /compact kills the cache until the next response ---
 t_reset; t_assist $((NOW - 60)); t_boundary $((NOW - 30))
@@ -2478,11 +2484,11 @@ compact_cold=$(run_statusline "$(statusline_payload ctx-compact "$(warm_extra "$
 # The payload still reports the pre-compact usage until the next request lands,
 # so the context reads empty, not 111k.
 assert grep -Fq "ctx ${DIM}0%${RESET} ${DIM}0k${RESET}" <<< "$compact_cold"
-assert test "${compact_cold#*→}" = "$compact_cold"
+assert warm_hidden "$compact_cold"
 # The first response after the boundary re-warms.
 t_assist $((NOW - 5))
 compact_warm=$(run_statusline "$(statusline_payload ctx-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}→" <<< "$compact_warm"
+assert warm_shown "$compact_warm"
 compact_current=$(run_statusline "$(statusline_payload ctx-compact-current \
   "$(jq -cn --arg tp "$TRANSCRIPT" \
     '{transcript_path:$tp,context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
@@ -2494,7 +2500,7 @@ assert grep -Fq "ctx ${DIM}?${RESET} ${DIM}? 51k${RESET}" <<< "$compact_current"
 t_reset; t_assist $((NOW - 30)); t_boundary $((NOW - 30))
 compact_equal=$(run_statusline "$(statusline_payload ctx-compact-equal "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "ctx ${DIM}0%${RESET} ${DIM}0k${RESET}" <<< "$compact_equal"
-assert test "${compact_equal#*→}" = "$compact_equal"
+assert warm_hidden "$compact_equal"
 
 # /branch re-emits pre-compact entries after the boundary: they keep their old
 t_reset; t_boundary $((NOW - 30))
@@ -2618,7 +2624,7 @@ t_far_boundary_case() {
   assert test "$(tail -c 262144 "$TRANSCRIPT" | grep -c '"type":"assistant"')" -eq 0
   far_live=$(run_statusline "$(statusline_payload "$1" "$(warm_extra "$TRANSCRIPT" 55 111000)")")
   far_live_death=$(hm_at $((NOW - 60 + 3600)))
-  assert grep -Fq "${DIM}→${far_live_death}${RESET}" <<< "$far_live"
+  assert grep -Fq "${DIM}${far_live_death}${RESET}" <<< "$far_live"
   assert test "${far_live#*0k}" = "$far_live"
 }
 
@@ -2681,7 +2687,7 @@ t_reset; t_assist $((NOW - 60)); t_stamp ctx-bnd-shrunk-warm
 printf '900000 %s\n' "$(iso_utc $((NOW - 7200)))" > "$(bnd_file ctx-bnd-shrunk-warm)"
 shrunk_warm=$(run_statusline "$(statusline_payload ctx-bnd-shrunk-warm "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 shrunk_death=$(hm_at $((NOW - 60 + 3600)))
-assert grep -Fq "${DIM}→${shrunk_death}${RESET}" <<< "$shrunk_warm"
+assert grep -Fq "${DIM}${shrunk_death}${RESET}" <<< "$shrunk_warm"
 assert_eq "$(stat -f %z "$TRANSCRIPT") -" "$(cat "$(bnd_file ctx-bnd-shrunk-warm)")"
 
 # --- a pure cache-read response proves warmth: the read refreshes the TTL ---
@@ -2689,7 +2695,7 @@ t_reset; t_assist $((NOW - 600)) fixmodel 50000 500 1h
 t_assist $((NOW - 60)) fixmodel 50000 0 none; t_stamp ctx-pure-read
 pure_read=$(run_statusline "$(statusline_payload ctx-pure-read "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 pure_read_death=$(hm_at $((NOW - 60 + 3600)))
-assert grep -Fq "${DIM}→${pure_read_death}${RESET}" <<< "$pure_read"
+assert grep -Fq "${DIM}${pure_read_death}${RESET}" <<< "$pure_read"
 assert test "${pure_read#*111k}" = "$pure_read"
 
 # An all-zero bucket map is the same case as no map at all.
@@ -2697,20 +2703,20 @@ t_reset; t_assist $((NOW - 600)) fixmodel 50000 500 5m
 t_assist $((NOW - 60)) fixmodel 50000 0 5m; t_stamp ctx-pure-read-zero
 pure_zero=$(run_statusline "$(statusline_payload ctx-pure-read-zero "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 pure_zero_death=$(hm_at $((NOW - 60 + 300)))
-assert grep -Fq "${DIM}→${pure_zero_death}${RESET}" <<< "$pure_zero"
+assert grep -Fq "${DIM}${pure_zero_death}${RESET}" <<< "$pure_zero"
 
 # With no older bucket-bearing response in the window there is nothing to inherit.
 t_reset; t_assist $((NOW - 60)) fixmodel 50000 0 none; t_stamp ctx-pure-read-alone
 pure_alone=$(run_statusline "$(statusline_payload ctx-pure-read-alone "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$pure_alone"
-assert test "${pure_alone#*→}" = "$pure_alone"
+assert warm_hidden "$pure_alone"
 
 # A different model's bucket is a different cache entry - not inheritable.
 t_reset; t_assist $((NOW - 600)) othermodel 50000 500 1h
 t_assist $((NOW - 60)) fixmodel 50000 0 none; t_stamp ctx-pure-read-model
 pure_model=$(run_statusline "$(statusline_payload ctx-pure-read-model "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$pure_model"
-assert test "${pure_model#*→}" = "$pure_model"
+assert warm_hidden "$pure_model"
 
 PARENT_TRANSCRIPT="$WORK/parent-sid.jsonl"
 t_assist_fork() {
@@ -2728,7 +2734,7 @@ fork_only=$(run_statusline "$(statusline_payload ctx-fork-only \
   "$(jq -cn --arg tp "$TRANSCRIPT" \
     '{transcript_path:$tp,model:{id:"fixmodel"},context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
 assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}? 111k${RESET}" <<< "$fork_only"
-assert test "${fork_only#*→}" = "$fork_only"
+assert warm_hidden "$fork_only"
 
 # A branch of an UNCOMPACTED chat: the copied tail is all there is, and it agrees
 # with the payload, so the number is measured rather than inherited and renders
@@ -2758,7 +2764,7 @@ printf 'v2 %s acctgen 7 3600 fixmodel parent-new 262144\n' "$((NOW - 300))" > "$
 printf 'v1 %s acctgen 3600 parent-new\n' "$((NOW - 300))" > "$STATE_DIR/cache-ttl-track-parent-sid.model-fixmodel"
 fork_warm=$(run_statusline "$(statusline_payload ctx-fork "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 fork_death=$(hm_at $((NOW - 300 + 3600)))
-assert grep -Fq "${DIM}→${fork_death}${RESET}" <<< "$fork_warm"
+assert grep -Fq "${DIM}${fork_death}${RESET}" <<< "$fork_warm"
 assert test "${fork_warm#*111k}" = "$fork_warm"
 assert test "$(awk '{print NF}' "$STATE_DIR/cache-ttl-track-ctx-fork")" -ge 10
 
@@ -2771,7 +2777,7 @@ printf 'v2 %s acctgen 0 3600 fixmodel skipped-parent-response 262144\n' "$((NOW 
 printf 'v1 %s acctgen 3600 skipped-parent-response\n' "$((NOW - 550))" > "$STATE_DIR/cache-ttl-track-parent-sid.model-fixmodel"
 fork_mid=$(run_statusline "$(statusline_payload ctx-fork-mid "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fork_mid"
-assert test "${fork_mid#*→}" = "$fork_mid"
+assert warm_hidden "$fork_mid"
 
 t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 600)) fork-anchor
 printf '{"type":"system","subtype":"compact_boundary","timestamp":"%s"}\n' \
@@ -2784,7 +2790,7 @@ printf 'v1 %s acctgen 3600 post-compact\n' "$((NOW - 300))" \
   > "$STATE_DIR/cache-ttl-track-parent-sid.model-fixmodel"
 fork_compact=$(run_statusline "$(statusline_payload ctx-fork-parent-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_compact"
-assert test "${fork_compact#*→}" = "$fork_compact"
+assert warm_hidden "$fork_compact"
 
 t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 10)) fork-anchor
 t_assist_fork $((NOW - 10)) parent-sid fork-anchor
@@ -2793,14 +2799,14 @@ assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fork_fresh"
 # The fork's own NEW response (no forkedFrom) resumes normal self-stamping.
 t_assist $((NOW - 5))
 fork_own=$(run_statusline "$(statusline_payload ctx-fork-fresh "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}→" <<< "$fork_own"
+assert warm_shown "$fork_own"
 assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-fork-fresh"
 
 t_reset; t_assist $((NOW - 600)) fixmodel; t_assist $((NOW - 5)) othermodel
 printf 'v2 %s alona 0\n' "$((NOW - 700))" > "$STATE_DIR/cache-ttl-track-ctx-model-fallback"
 fallback_model=$(run_statusline "$(statusline_payload ctx-model-fallback "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fallback_model"
-assert test "${fallback_model#*→}" = "$fallback_model"
+assert warm_hidden "$fallback_model"
 
 PARENT_TRANSCRIPT="$WORK/parent-cache.jsonl"
 t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 300)) cache-anchor
@@ -2825,7 +2831,7 @@ printf '{"type":"system","subtype":"compact_boundary","timestamp":"%s"}\n' \
 fork_cache_changed=$(PATH="$TAIL_BIN:$PATH" TAIL_LOG="$TAIL_LOG" \
   run_statusline "$(statusline_payload ctx-fork-cache "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_cache_changed"
-assert test "${fork_cache_changed#*→}" = "$fork_cache_changed"
+assert warm_hidden "$fork_cache_changed"
 assert_eq 2 "$(grep -Fc "$PARENT_TRANSCRIPT" "$TAIL_LOG")"
 
 # A parent bigger than the 8 MiB scan window: the anchor is in the scanned tail with
@@ -2843,7 +2849,7 @@ printf 'v1 %s acctgen 3600 big-anchor\n' "$((NOW - 300))" \
   > "$STATE_DIR/cache-ttl-track-parent-big.model-fixmodel"
 fork_big=$(run_statusline "$(statusline_payload ctx-fork-big "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 fork_big_death=$(hm_at $((NOW - 300 + 3600)))
-assert grep -Fq "${DIM}→${fork_big_death}${RESET}" <<< "$fork_big"
+assert grep -Fq "${DIM}${fork_big_death}${RESET}" <<< "$fork_big"
 assert test "${fork_big#*111k}" = "$fork_big"
 assert grep -q $'^v4\x1fparent-big\x1fbig-anchor\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
 assert grep -q $'\x1ftail\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
@@ -2851,7 +2857,7 @@ assert grep -q $'\x1ftail\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
 printf '{"type":"system","subtype":"stop_hook_summary","timestamp":"%s","uuid":"big-hooks"}\n{"type":"system","subtype":"turn_duration","timestamp":"%s","uuid":"big-turn"}\n' \
   "$(iso_utc $((NOW - 298)))" "$(iso_utc $((NOW - 298)))" >> "$PARENT_TRANSCRIPT"
 fork_big_hooks=$(run_statusline "$(statusline_payload ctx-fork-big "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}→${fork_big_death}${RESET}" <<< "$fork_big_hooks"
+assert grep -Fq "${DIM}${fork_big_death}${RESET}" <<< "$fork_big_hooks"
 assert grep -q $'\x1ftail\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
 # The same oversized parent with an own entry after the anchor is a mid fork, not unknown.
 printf '{"type":"user","timestamp":"%s","uuid":"big-after"}\n' "$(iso_utc $((NOW - 280)))" >> "$PARENT_TRANSCRIPT"
@@ -2872,7 +2878,7 @@ printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"bran
 printf 'v1 %s acctgen 3600 cross-anchor\n' "$((NOW - 300))" \
   > "$STATE_DIR/cache-ttl-track-parent-cross.model-fixmodel"
 cross_fork=$(run_statusline "$(statusline_payload ctx-cross-fork "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}→" <<< "$cross_fork"
+assert warm_shown "$cross_fork"
 
 TRANSCRIPT="$WORK/empty-session-child.jsonl"
 PARENT_TRANSCRIPT="$WORK/empty-session-parent-sid.jsonl"
@@ -2883,7 +2889,7 @@ printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"bran
 printf 'v1 %s acctgen 3600 empty-anchor\n' "$((NOW - 300))" \
   > "$STATE_DIR/cache-ttl-track-empty-session-parent-sid.model-fixmodel"
 empty_session_fork=$(run_statusline "$(statusline_payload "" "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}→" <<< "$empty_session_fork"
+assert warm_shown "$empty_session_fork"
 
 TRANSCRIPT="$WORK/transcript.jsonl"
 
@@ -2941,7 +2947,7 @@ assert grep -Fq "${DIM}60k${RESET}" <<< "$warm_d"
 
 warm_e=$(run_statusline "$(statusline_payload ctx-nopath "$(warm_extra "" 20 50000)")")
 assert grep -Fq "${DIM}? 50k${RESET}" <<< "$warm_e"
-assert test "${warm_e#*→}" = "$warm_e"
+assert warm_hidden "$warm_e"
 
 UNREADABLE_TRANSCRIPT="$WORK/unreadable.jsonl"
 printf '{}\n' > "$UNREADABLE_TRANSCRIPT"
@@ -2953,7 +2959,7 @@ chmod 600 "$UNREADABLE_TRANSCRIPT"
 t_reset
 clear_out=$(run_statusline "$(statusline_payload ctx-clear "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 assert grep -Fq "${DIM}50k${RESET}" <<< "$clear_out"
-assert test "${clear_out#*→}" = "$clear_out"
+assert warm_hidden "$clear_out"
 
 printf 'not-json\n' > "$TRANSCRIPT"
 garbage_out=$(run_statusline "$(statusline_payload ctx-garbage \
@@ -2970,25 +2976,25 @@ NOW=$(date +%s)
 t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 5m; t_stamp ctx-bk5
 bk5_out=$(run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
 bk5_death=$(hm_at $((NOW - 30 + 300)))
-assert grep -Fq "${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$bk5_out"
+assert grep -Fq "${DIM}${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$bk5_out"
 assert test "${bk5_out#*100k}" = "$bk5_out"
 # The death time is the tokens part and the cache warning an alarm: both outlive the ctx percentage,
 # down to the line-2 floor.
 bk5_fit=$(FIT_COLUMNS=45 run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
-assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$bk5_fit"
+assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$bk5_fit"
 for bk5_cols in 30 12; do
   bk5_fit=$(FIT_COLUMNS=$bk5_cols run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
-  assert grep -Fq "ctx ${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET} 5h" <<< "$bk5_fit"
+  assert grep -Fq "ctx ${DIM}${bk5_death}${RESET}${YELLOW}↓5m${RESET} 5h" <<< "$bk5_fit"
 done
 
 t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 mixed; t_stamp ctx-mixed
 mixed_out=$(run_statusline "$(statusline_payload ctx-mixed "$(warm_extra "$TRANSCRIPT" 20 100000)")")
-assert grep -Fq "${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$mixed_out"
+assert grep -Fq "${DIM}${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$mixed_out"
 
 t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 1h; t_stamp ctx-bk1
 bk1_out=$(run_statusline "$(statusline_payload ctx-bk1 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
 bk1_death=$(hm_at $((NOW - 30 + 3600)))
-assert grep -Fq "${DIM}→${bk1_death}${RESET}" <<< "$bk1_out"
+assert grep -Fq "${DIM}${bk1_death}${RESET}" <<< "$bk1_out"
 
 # An account under Anthropic's cache keepalive: its 5m bucket is touched alive for the flag's window,
 # so twenty minutes on it still reads warm until the window ends, with no downgrade warning.
@@ -2998,7 +3004,7 @@ printf '%s\n' '{"cachedGrowthBookFeatures":{"tengu_sequential_cloud":{"enabled":
 t_reset; t_assist $((NOW - 1200)) fixmodel 100000 500 5m; t_stamp ctx-keepalive
 ka_out=$(CLAUDE_CONFIG_DIR="$KA_CFG" run_statusline "$(statusline_payload ctx-keepalive "$(warm_extra "$TRANSCRIPT" 20 100000)")")
 ka_death=$(hm_at $((NOW - 1200 + 3600)))
-assert grep -Fq "${DIM}→${ka_death}${RESET}" <<< "$ka_out"
+assert grep -Fq "${DIM}${ka_death}${RESET}" <<< "$ka_out"
 assert test "${ka_out#*↓5m}" = "$ka_out"
 # A render of an unchanged transcript under an unchanged flag file reads the flag from its memo: 2 jq
 # starts on 2026-10-14 where it took 3 (the limits views already share one jq).
@@ -3021,13 +3027,13 @@ CLAUDE_CONFIG_DIR="$KA_CFG" PATH="$KA_JQ_BIN:$PATH" run_statusline "$ka_payload"
 assert test ! -s "$KA_JQ_LOG.sort"
 printf '%s\n' '{"cachedGrowthBookFeatures":{"tengu_sequential_cloud":{"enabled":false}}}' > "$KA_CFG/.claude.json"
 ka_off=$(CLAUDE_CONFIG_DIR="$KA_CFG" run_statusline "$(statusline_payload ctx-keepalive "$(warm_extra "$TRANSCRIPT" 20 100000)")")
-assert test "${ka_off#*→}" = "$ka_off"
+assert warm_hidden "$ka_off"
 
 t_reset; t_assist $((NOW - 50)) fixmodel 50000 500 -; t_stamp ctx-no-bucket
 printf '7200\n' > "$HOME/.claude/statusline-cache-ttl"
 no_bucket=$(run_statusline "$(statusline_payload ctx-no-bucket "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 assert grep -Fq "${DIM}? 50k${RESET}" <<< "$no_bucket"
-assert test "${no_bucket#*→}" = "$no_bucket"
+assert warm_hidden "$no_bucket"
 rm -f "$HOME/.claude/statusline-cache-ttl"
 rm -f "$STATE_DIR"/cache-ttl-track-*
 : > "$TRANSCRIPT"

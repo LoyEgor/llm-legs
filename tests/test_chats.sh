@@ -43,6 +43,8 @@ printf 'v2 1785996700 alona 0 3600 anthropic.ccr.astra reply-1 872000 1785996700
 export CLAUDEGPT_HOME="$WORK/claudegpt"
 # Never his real Speed journal: every launch the picker sees writes a chats-start line.
 export SPEED_DOCTOR_DIR="$WORK/speed"
+# Never his real pins: every picker run reads them, and a pin the window lacks is fetched.
+export CHAT_PINS_FILE="$WORK/pins.json"
 mkdir -p "$CLAUDEGPT_HOME/accounts" "$CLAUDEGPT_HOME/sessions"
 # A Claude chat once reopened through claudegpt keeps that launch's stamp for good.
 printf 'v1 borodatch astra\n' > "$CLAUDEGPT_HOME/sessions/6ebc3bbe-66ec-498e-9f3d-736e61eed0ba"
@@ -1117,5 +1119,144 @@ open_command_test unknown > "$WORK/open-out" 2> "$WORK/open-error"
 assert [ "$?" -eq 1 ]
 assert [ ! -s "$WORK/open-out" ]
 assert [ "$(wc -l < "$WORK/open-error" | tr -d ' ')" = 1 ]
+
+echo "== pinned chats"
+# Egor 2026-11-08: a pinned chat that is open behaves like any other; a closed one is at the very top.
+pins_of() { python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["pins"]))' "$1"; }
+pin_test() {
+  HOME="$OPEN_HOME" CHAT_FIND_ROOT="$OPEN_HOME/.claude/projects" WORKER_RUN_DIR="$RUNS" \
+    CHAT_PINS_FILE="$WORK/pins-cli.json" "$SCRIPT" "$@"
+}
+assert [ "$(pin_test --pin "${OPEN_SID:0:8}")" = "pinned $OPEN_SID" ]
+# A worker session pins the chat that launched it, as --open-command reads it.
+assert [ "$(pin_test --pin worker-open)" = "pinned $OPEN_SID" ]
+pin_test --pin "$NO_CWD_SID" >/dev/null
+pin_test --pin "$OPEN_SID" >/dev/null
+assert [ "$(pins_of "$WORK/pins-cli.json")" = "$OPEN_SID $NO_CWD_SID" ]
+assert [ "$(pin_test --unpin "$OPEN_SID")" = "unpinned $OPEN_SID" ]
+assert [ "$(pins_of "$WORK/pins-cli.json")" = "$NO_CWD_SID" ]
+pin_test --pin > /dev/null 2> "$WORK/pin-error"
+assert [ "$?" -eq 1 ]
+assert grep -qx 'chats: usage: chats --pin SESSION | --unpin SESSION' "$WORK/pin-error"
+# The rows of pins the picker's window does not reach: those chats alone, whatever their age.
+PINNED_ROWS=$(HOME="$OPEN_HOME" CHAT_FIND_ROOT="$OPEN_HOME/.claude/projects" WORKER_RUN_DIR="$RUNS" \
+  "$ROOT/bin/chat-find" --recent --json --session "$OPEN_SID" --session "$GONE_CWD_SID" |
+  python3 -c 'import json,sys; print(" ".join(sorted(row["session"] for row in json.load(sys.stdin))))')
+assert [ "$PINNED_ROWS" = "$(printf '%s\n' "$OPEN_SID" "$GONE_CWD_SID" | sort | tr '\n' ' ' | sed 's/ $//')" ]
+# Concurrent pickers: every pin lands, none overwrites another's.
+for writer in 1 2 3 4 5 6 7 8; do
+  CHAT_PINS_FILE="$WORK/pins-race.json" python3 - "$ROOT/share" "$writer" <<'PYRACE' &
+import sys
+sys.path.insert(0, sys.argv[1])
+import chat_pins
+for n in range(6):
+    chat_pins.pin("w%s-%d" % (sys.argv[2], n))
+chat_pins.pin("w%s-0" % sys.argv[2], False)
+PYRACE
+done
+wait
+assert [ "$(pins_of "$WORK/pins-race.json" | wc -w | tr -d ' ')" = 40 ]
+assert [ -z "$(pins_of "$WORK/pins-race.json" | tr ' ' '\n' | grep -- '-0$')" ]
+# Open = a session record whose pid still exists, in ~/.claude or any profile.
+LIVE_HOME="$WORK/live-home"
+mkdir -p "$LIVE_HOME/.claude/sessions" "$LIVE_HOME/.claude-profiles/p/sessions"
+sh -c 'exit 0' & dead_pid=$!
+wait "$dead_pid"
+printf '{"pid":%s,"sessionId":"alive-sid"}' "$$" > "$LIVE_HOME/.claude-profiles/p/sessions/$$.json"
+printf '{"pid":%s,"sessionId":"dead-sid"}' "$dead_pid" > "$LIVE_HOME/.claude/sessions/$dead_pid.json"
+printf '{"sessionId":"no-pid"}' > "$LIVE_HOME/.claude/sessions/0.json"
+assert [ "$(HOME="$LIVE_HOME" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import chat_names
+print(" ".join(sorted(chat_names.live_sessions())))' "$ROOT/share")" = alive-sid ]
+
+CHAT_PINS_FILE="$WORK/pins-run.json" python3 - "$SCRIPT" "$WORK" <<'PYPINS'
+import importlib.machinery, importlib.util, json, sys, time
+from unittest.mock import patch
+
+loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
+spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+c = chats.curses
+rows = [dict(session=s, cwd=sys.argv[2], at=0) for s in "abcd"]
+order = lambda listed: [row["session"] for row in listed]
+
+# d closed, b open: d lifts to the top in pin order, b keeps its place.
+closed = chats.closed_pins(["d", "b"], {"b"})
+assert closed == ["d"], closed
+assert order(chats.pin_first(rows, closed)) == ["d", "a", "b", "c"]
+assert order(chats.pin_first(rows, chats.closed_pins(["c", "a", "zz"], set()))) == ["c", "a", "b", "d"]
+assert order(chats.pin_first(rows, [])) == ["a", "b", "c", "d"]
+# A fetched pin joins only while the window lacks it.
+extra = {"a": dict(rows[0], text="stale"), "old": dict(session="old", at=0)}
+assert order(chats.listed(rows, extra)) == ["a", "b", "c", "d", "old"]
+
+
+class Screen:
+    def __init__(self, events=()):
+        self.events, self.cells = iter(events), {}
+
+    def getmaxyx(self):
+        return 9, 80
+
+    def timeout(self, delay):
+        pass
+
+    def get_wch(self):
+        event = next(self.events)
+        if event is None:
+            time.sleep(0.02)
+            raise c.error("no input")
+        return event
+
+    def erase(self):
+        self.cells = {}
+
+    def addstr(self, y, x, text, attribute=0):
+        line = self.cells.get(y, "").ljust(x)
+        self.cells[y] = line[:x] + text + line[x + len(text):]
+
+    def refresh(self):
+        pass
+
+
+# The glyph marks the closed pin alone, in the cursor's column pair, so every row stays aligned.
+screen = Screen()
+names = [("claudeb", "alpha")]
+chats.paint(screen, chats.pin_first(rows, closed), {"cursor": 0, "top": 0, "now": 0, "window": "w",
+                                                    "closed": set(closed)}, names, 0, "", {}, "")
+assert [screen.cells[y][:3] for y in range(1, 5)] == ["▸⚑ ", "   ", "   ", "   "], screen.cells
+assert len({screen.cells[y].index("—") for y in range(1, 5)}) == 1, screen.cells
+assert "^T pin" in screen.cells[8], screen.cells[8]
+
+
+def play(events, live=(), fetched=()):
+    screen = Screen(events)
+    with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None, mousemask=lambda _: None,
+                        use_default_colors=lambda: None, mouseinterval=lambda _: None), \
+            patch.object(chats, "draw"), \
+            patch.object(chats, "account_for", return_value=0), \
+            patch.object(chats, "live_sessions", return_value=set(live)), \
+            patch.object(chats, "fetch_pinned", return_value=list(fetched)) as fetch:
+        result = chats.run(screen, list(rows), names, {}, 0, 0, (7,))
+    return result[1]["session"], fetch.call_args_list
+
+
+# ^T on a closed chat pins it: it lifts to the top and the cursor goes with it.
+down = c.KEY_DOWN
+assert play([down, down, chats.PIN_KEY, "\n"]) == ("c", [])
+assert chats.chat_pins.pinned() == ["c"]
+assert play(["\n"]) == ("c", [])
+# An open pinned chat sits where it would anyway; ^T on it again unpins it.
+assert play(["\n"], live={"c"}) == ("a", [])
+assert play([chats.PIN_KEY, "\n"]) == ("c", [])
+assert chats.chat_pins.pinned() == []
+# A closed pin older than the window is fetched once, off the key loop, and listed first.
+chats.chat_pins.pin("old")
+picked, calls = play([None] * 5 + ["\n"], fetched=[dict(session="old", cwd=sys.argv[2], at=0)])
+assert picked == "old" and [call.args for call in calls] == [(("old",),)], (picked, calls)
+assert json.load(open(sys.argv[2] + "/pins-run.json")) == {"version": 1, "pins": ["old"]}
+print("pins ok")
+PYPINS
+assert [ "$?" -eq 0 ]
 
 echo "PASS: chats ($asserts assertions)"

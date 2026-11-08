@@ -451,6 +451,32 @@ def store_name(session, store=None):
     return (store_names() if store is None else store).get(session)
 
 
+def live_sessions():
+    """Session ids with a running process: a live session record whose pid still exists.
+
+    EPERM is a process that exists under another user, alive (invariant `ar`); only a pid that is
+    gone, or a record that names none, drops the chat.
+    """
+    found = set()
+    for path in session_store_files():
+        try:
+            entry = json.loads(path.read_text())
+            pid = int(entry["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        session = str(entry.get("sessionId") or "")
+        if not session or pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            pass
+        except OSError:
+            continue
+        found.add(session)
+    return found
+
+
 def cache_path():
     override = os.environ.get(CACHE_ENV)
     if override:

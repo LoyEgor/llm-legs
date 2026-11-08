@@ -505,13 +505,14 @@ def measured(path, key):
             "spoke": facts["spoke"], "uuid": facts["uuid"], "ttl": facts["ttl"]}
 
 
-def scan_recent(root, days, cache_path, agents=False, limit=None):
+def scan_recent(root, days, cache_path, agents=False, limit=None, only=None):
     """Every chat whose last real message falls in the window, newest first.
 
     File mtime is an upper bound on that message — a transcript is only written
     after something is said in it — so the window drops most files without
     opening them, and an unchanged (size, mtime) pair means the cached answer
-    still holds. Those two facts are what keep a 6000-transcript corpus fast.
+    still holds. Those two facts are what keep a 6000-transcript corpus fast. `only`, a set of
+    session ids, lists those chats alone: the picker's pins that its window does not reach.
     """
     now = time.time()
     horizon = now - days * 86400 if days is not None else None
@@ -537,6 +538,8 @@ def scan_recent(root, days, cache_path, agents=False, limit=None):
             dirs[:] = []
         for name in names:
             if not name.endswith(".jsonl"):
+                continue
+            if only is not None and name[: -len(".jsonl")] not in only:
                 continue
             path = os.path.join(base, name)
             try:
@@ -620,8 +623,10 @@ def report_recent(args):
     # A corpus that is not his own (a test fixture, or anything CHAT_FIND_ROOT
     # points at) gets no cache unless one is named: the shared cache is keyed by
     # path alone and must not mix corpora.
-    cache_path = args.cache or (CACHE if args.root == HIS_CORPUS else None)
-    rows = scan_recent(args.root, args.days, cache_path, args.agents, args.limit)
+    # A few named chats are measured directly: the cache would cost more to load than they do.
+    only = set(args.session) if args.session else None
+    cache_path = args.cache or (CACHE if args.root == HIS_CORPUS and only is None else None)
+    rows = scan_recent(args.root, args.days, cache_path, args.agents, args.limit, only)
     launchers, store = worker_run_launchers(), store_names()
     for row in rows:
         row["name"] = chat_name(row["session"], row.pop("title", None),
@@ -671,6 +676,8 @@ def main():
     parser.add_argument("--agents", action="store_true",
                         help="also match and list headless runs — workers, benches, subagents")
     parser.add_argument("--days", type=float, help="only chats whose last message is within N days")
+    parser.add_argument("--session", action="append", metavar="ID",
+                        help="with --recent: list only this chat (full session id), whatever its age; repeatable")
     parser.add_argument("--limit", type=int, default=None,
                         help="candidates to print (default 5 when searching, all with --recent)")
     parser.add_argument("--all", action="store_true", help="also match tool output and file contents")
@@ -693,6 +700,8 @@ def main():
             die("--recent lists every chat; it takes no search terms")
         report_recent(args)
         return
+    if args.session:
+        die("--session narrows --recent; searching takes words")
     if not args.terms:
         die("nothing to search for (pass words, or --recent to list every chat)")
     if args.limit is None:

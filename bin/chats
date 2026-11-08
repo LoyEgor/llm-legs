@@ -24,7 +24,8 @@ import unicodedata
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "share"))
-from chat_names import fold_session, project_label, resolve_session  # noqa: E402
+from chat_names import fold_session, live_sessions, project_label, resolve_session  # noqa: E402
+import chat_pins  # noqa: E402
 import chat_resume  # noqa: E402
 import limit_hit  # noqa: E402
 
@@ -41,6 +42,10 @@ WINDOWS = (7, 30, 120, 0)
 # conversation itself off the right edge.
 CAPS = (22, 12, 10)
 FOOTER = ("claudeb", "gpt")
+# The mark of a pinned chat that is not open, which is what lifts it to the top (Egor 2026-11-08);
+# one column wide on every terminal (east-asian width N), so the rows below it stay aligned.
+PIN_GLYPH = "⚑"
+PIN_KEY = "\x14"
 # What he waits for after typing `chats`, one line a launch for the Speed doctor (C10 background
 # journals): the first paint, the first rows, the account order landing. Filled by run().
 SPEED_DIR = os.environ.get("SPEED_DOCTOR_DIR") or os.path.expanduser("~/.cache/speed-doctor")
@@ -48,11 +53,13 @@ MARKS = {"began": time.time(), "paint": None, "rows": None, "rank": None, "count
          "written": False}
 USAGE = ("usage: chats --open-command SESSION [--timeout SECONDS]\n"
          "usage: chats [--days N | --all] [--print]\n"
+         "usage: chats --pin SESSION | --unpin SESSION\n"
          "  ↑↓ chat · ←→ account (one ring over both lines) · shift+↑↓ line\n"
-         "  type to filter · enter opens it here\n"
+         "  type to filter · enter opens it here · ^T pins/unpins it\n"
+         "  a pinned chat that is not open sits at the very top, marked %s\n"
          "  the account follows the chat's live cache, else the optimal one\n"
          "  mouse: click row · click again opens\n"
-         "  scrolling past the last row, or filtering, loads more history")
+         "  scrolling past the last row, or filtering, loads more history") % PIN_GLYPH
 
 
 class Fatal(Exception):
@@ -80,6 +87,38 @@ def fetch_chats(days):
         raise RuntimeError("chat-find returned no usable listing")
     learn_buckets(row.get("model") for row in chats if isinstance(row, dict))
     return chats
+
+
+def fetch_pinned(sessions):
+    """The listing rows of these chats whatever their age: pins the loaded window does not reach."""
+    command = [os.path.join(HERE, "chat-find"), "--recent", "--json"]
+    for session in sorted(sessions):
+        command += ["--session", session]
+    try:
+        rows = json.loads(subprocess.run(command, capture_output=True, text=True, check=True).stdout)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        raise RuntimeError("chat-find could not list the pinned chats: %s" % error)
+    learn_buckets(row.get("model") for row in rows if isinstance(row, dict))
+    return annotate([row for row in rows if isinstance(row, dict)])
+
+
+def closed_pins(pins, live):
+    """The pinned chats that are not open, oldest pin first: the ones the top of the list is for."""
+    return [session for session in pins if session not in live]
+
+
+def pin_first(rows, closed):
+    """The closed pinned chats first, in pin order, then everything else in its own order; an open
+    pinned chat keeps its place, as any other chat does."""
+    rank = {session: position for position, session in enumerate(closed)}
+    top = sorted((row for row in rows if row.get("session") in rank), key=lambda row: rank[row["session"]])
+    return top + [row for row in rows if row.get("session") not in rank]
+
+
+def listed(chats, extra):
+    """The window's rows plus the pinned rows fetched past it; the window's own copy wins."""
+    have = {row.get("session") for row in chats}
+    return chats + [row for session, row in extra.items() if session not in have]
 
 
 def fetcher(days):
@@ -519,7 +558,8 @@ def paint(screen, rows, view, names, profile, needle, used, note):
             break
         cells = columns(rows[index], view["now"], view.get("dated", False))
         chosen = index == view["cursor"]
-        fields = ["▸ " if chosen else "  ", cells[0]]
+        lifted = rows[index].get("session") in view.get("closed", ())
+        fields = [("▸" if chosen else " ") + (PIN_GLYPH if lifted else " ") + " ", cells[0]]
         for cell, size in zip(cells[1:3], sizes[:2]):
             fields.append(pad(cell, size))
         fields.append(pad(cells[3], sizes[2], right=True))
@@ -547,7 +587,7 @@ def paint(screen, rows, view, names, profile, needle, used, note):
             label = clip(label, span - 1 - column)
             screen.addstr(top + number, column, label, attribute)
             column += width(label)
-    hint = ("   ↵ open · ^C quit · esc clear · "
+    hint = ("   ↵ open · ^T pin · ^C quit · esc clear · "
             "account: chat's cache, else optimal")
     if column < span - 1:
         screen.addstr(height - 1, column, clip(hint, span - 1 - column))
@@ -576,8 +616,11 @@ def run(screen, chats, names, used, profile, level, windows):
         pass
     view = {"cursor": 0, "top": 0, "now": time.time()}
     needle, note, scrolled, landed, opening = "", "", False, None, None
-    listing, ranked = Job(), Job()
+    listing, ranked, pinning = Job(), Job(), Job()
     ready, pending, pinned = chats is not None, None, False
+    # Pins and open chats are file reads, so the first paint already has them; the rows of pins
+    # older than the window come from one chat-find call of their own, off the key loop.
+    pins, live, extra, asked, follow = chat_pins.pinned(), live_sessions(), {}, set(), None
     if not ready:
         chats, pending = [], 0
         listing.start(fetcher(windows[0]))
@@ -606,10 +649,27 @@ def run(screen, chats, names, used, profile, level, windows):
                     die("no chat found in that window (try: chats --all)")
                 pending = level + 1
                 listing.start(fetcher(windows[pending]))
+            live = live_sessions()
+        got = pinning.take()
+        if isinstance(got, list):
+            extra.update((row["session"], row) for row in got if row.get("session"))
+        closed = closed_pins(pins, live)
+        # Asked once a pin, after the window settled: a wider window landing later supersedes it.
+        if ready and pending is None and windows[level] and not pinning.thread and set(closed) - asked:
+            have = {row.get("session") for row in chats}
+            missing = tuple(session for session in closed if session not in asked and session not in have)
+            asked.update(closed)
+            if missing:
+                pinning.start(lambda wanted=missing: fetch_pinned(wanted))
+        view["closed"] = set(closed)
         if ranked.landed():
             boards, shown = ranked.take(), None
             MARKS["rank"] = MARKS["rank"] or time.time()
-        rows = [row for row in chats if matches(row, needle)]
+        rows = pin_first([row for row in listed(chats, extra) if matches(row, needle)], closed)
+        if follow is not None:
+            view["cursor"] = next((index for index, row in enumerate(rows)
+                                   if row.get("session") == follow), view["cursor"])
+            follow = None
         # The bar is the ranking of the bucket the landed chat spends, so a Fable chat and an
         # Opus chat are each offered the account freest for their own model.
         want = board_of(rows[max(0, min(view["cursor"], len(rows) - 1))] if rows else {})
@@ -665,7 +725,7 @@ def run(screen, chats, names, used, profile, level, windows):
         # tick would redraw an idle picker ten times a second for nothing. While a load
         # is in flight it ticks every 10 ms: at 100 ms the wait for the tick was a third
         # of the time to the first rows (2026-10-30).
-        screen.timeout(10 if listing.thread or ranked.thread else 100)
+        screen.timeout(10 if listing.thread or ranked.thread or pinning.thread else 100)
         key = None
         if opening is not None and rows and rows[view["cursor"]].get("session") == opening:
             key = curses.KEY_ENTER
@@ -678,7 +738,8 @@ def run(screen, chats, names, used, profile, level, windows):
             except KeyboardInterrupt:
                 return None
             except curses.error:
-                if listing.landed() or ranked.landed() or (expires and time.time() >= expires):
+                if listing.landed() or ranked.landed() or pinning.landed() or \
+                        (expires and time.time() >= expires):
                     break
         if key is None:
             continue
@@ -755,6 +816,18 @@ def run(screen, chats, names, used, profile, level, windows):
             needle = ""
         elif key == "\x04":
             return None
+        elif key == PIN_KEY:
+            if not rows:
+                continue
+            follow = rows[view["cursor"]].get("session")
+            on = follow not in pins
+            try:
+                pins = chat_pins.pin(follow, on)
+            except (OSError, ValueError) as error:
+                note = "cannot pin: %s" % error
+                continue
+            live = live_sessions()
+            note = "unpinned" if not on else "pinned · open, stays in place" if follow in live else "pinned"
         elif key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
             needle = needle[:-1]
         elif key in ("\n", "\r", curses.KEY_ENTER):
@@ -842,7 +915,29 @@ def open_command(session, timeout):
     print("account=%s source=%s" % (account, source))
 
 
+def pin_command(token, on):
+    """`chats --pin/--unpin`: the chat a prefix or a worker session names, as --open-command reads it."""
+    candidates = resolve_session(token)
+    if len(candidates) != 1:
+        die("session id is ambiguous: %s" % token)
+    session = fold_session(candidates[0])
+    if not session:
+        die("no chat found for %s" % candidates[0])
+    try:
+        chat_pins.pin(session, on)
+    except ValueError as error:
+        die(str(error))
+    except OSError as error:
+        die("cannot write the pins (%s)" % error)
+    print("%s %s" % ("pinned" if on else "unpinned", session))
+
+
 def main():
+    if sys.argv[1:2] in (["--pin"], ["--unpin"]):
+        if len(sys.argv) != 3:
+            die("usage: chats --pin SESSION | --unpin SESSION")
+        pin_command(sys.argv[2], sys.argv[1] == "--pin")
+        return
     if sys.argv[1:2] == ["--open-command"]:
         args = sys.argv[2:]
         if len(args) not in (1, 3) or (len(args) == 3 and args[1] != "--timeout"):

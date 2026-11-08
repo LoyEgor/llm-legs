@@ -1796,7 +1796,7 @@ ctx_warn_part=""
 if [ "$cache_state" = warm ]; then
   TZ=Europe/Kyiv printf -v death_time '%(%H:%M)T' "$((warm_ts + warm_ttl))" 2>/dev/null
   if [ -n "$death_time" ]; then
-    ctx_tokens_part=" ${DIM}→${death_time}${RESET}"
+    ctx_tokens_part=" ${DIM}${death_time}${RESET}"
     [ "$keepalive" = 0 ] && [ "$warm_ttl" -lt 3600 ] 2>/dev/null && ctx_warn_part="${YELLOW}↓5m${RESET}"
   fi
 elif [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -ge 0 ] 2>/dev/null; then
