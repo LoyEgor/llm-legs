@@ -1124,6 +1124,11 @@ MIC_PAD_AFTER = 0.4  # s without audio before silence frames keep the take under
 MIC_IDLE_LIMIT = 10  # s without a chunk: the client is gone and its take is cancelled (no cap on a live take's length:
 # a 15-minute one threw away a quarter hour of his dictation)
 MIC_WAIT = 120  # s from stop to the transcript
+# MacMic (transcriptions-gpt ipad-mic/, a native iPad app) streams the iPad microphone to the daemon. iPadOS refuses
+# the browser the microphone at times (Egor 2026-11-08: NotAllowedError, no prompt, through reloads and an app
+# relaunch) while it gives it to MacMic: each look of the app at the pill keeps MacMic streaming this long, and a take
+# records MacMic's stream instead of the browser's.
+MACMIC_WANT = 2 * 3600
 MICS = {}
 MIC_LOCK = threading.Lock()
 
@@ -1132,7 +1137,8 @@ class Mic:
     """One remote take: the browser's PCM relayed to the receiver as audio packets (its own streamID), padded with
     silence between HTTP bursts; the daemon writes the transcript to `path` instead of pasting it."""
 
-    def __init__(self):
+    def __init__(self, relay=True):
+        self.relay = relay  # False: MacMic's stream is the take, nothing of ours goes to the receiver
         self.id = os.urandom(8).hex()
         self.stream = int.from_bytes(os.urandom(4), "big")
         self.seq = 0
@@ -1168,7 +1174,7 @@ class Mic:
         while not self.done.wait(0.1):
             now = time.monotonic()
             with self.lock:
-                if now - self.sent_at > MIC_PAD_AFTER:
+                if self.relay and now - self.sent_at > MIC_PAD_AFTER:
                     self.frames(bytes(MIC_FRAME * 5))
             if not self.stopping and now - self.chunk_at > MIC_IDLE_LIMIT:
                 cancel_take()
@@ -1207,10 +1213,32 @@ def cancel_take():
         daemon("cancel")
 
 
-def mic_start():
-    """A take on the Mac's transcriptions-gpt fed from this browser -> {ok, id} once it records."""
+def macmic_fields():
+    """The daemon's `ipad-mic` line -> its fields, {} with no daemon or receiver."""
+    answer = daemon("ipad-mic") if daemon else None
+    if not answer or not answer.startswith("ok "):
+        return {}
+    return {k: v.strip('"') for k, v in re.findall(r'(\w+)=("(?:[^"\\]|\\.)*"|\S+)', answer[3:])}
+
+
+def macmic_state(fields=None):
+    """MacMic -> "streaming" (the receiver hears a peer that is not this Mac, whose packets are our own relay),
+    "asleep", or "" with no daemon or receiver."""
+    fields = macmic_fields() if fields is None else fields
+    if not fields:
+        return ""
+    local = fields.get("peer", "None") in ("None", "127.0.0.1", "::1", "::ffff:127.0.0.1")
+    return "streaming" if fields.get("present") == "True" and not local else "asleep"
+
+
+def mic_start(body=None):
+    """A take on the Mac's transcriptions-gpt fed from this browser, or with {"via": "macmic"} recording MacMic's
+    stream -> {ok, id, via} once it records."""
     if daemon is None or daemon_state() is None:
         return 503, {"ok": False, "err": "transcriptions-gpt is not running"}
+    relay = not (isinstance(body, dict) and body.get("via") == "macmic")
+    if not relay and macmic_state() != "streaming":
+        return 409, {"ok": False, "err": "MacMic is not streaming: open it on the iPad"}
     # A new start is his only take: one still open lost its page (a reload, a cancel that never arrived) and would
     # refuse him for MIC_IDLE_LIMIT seconds. One being transcribed is kept, its text is on the way.
     with MIC_LOCK:
@@ -1222,10 +1250,11 @@ def mic_start():
     with MIC_LOCK:
         if MICS:
             return 409, {"ok": False, "err": "the last dictation is still being transcribed"}
-        mic = Mic()
+        mic = Mic(relay)
         MICS[mic.id] = mic
-    with mic.lock:
-        mic.frames(bytes(MIC_FRAME * 5))  # the receiver must see the stream before remote-start
+    if relay:
+        with mic.lock:
+            mic.frames(bytes(MIC_FRAME * 5))  # the receiver must see the stream before remote-start
     answer = daemon("remote-start", {"deliver": mic.path})
     if answer != "ok":
         mic.close()
@@ -1235,7 +1264,7 @@ def mic_start():
         if daemon_state() == "recording":
             # The capture attaches right after the state flips; the client's first chunk may not beat it.
             time.sleep(0.25)
-            return 200, {"ok": True, "id": mic.id}
+            return 200, {"ok": True, "id": mic.id, "via": "browser" if relay else "macmic"}
         time.sleep(0.05)
     cancel_take()
     mic.close()
@@ -1277,7 +1306,8 @@ def mic_bubble():
         doc = None
     if not isinstance(doc, dict):
         return 200, {"ok": False, "err": "transcriptions-gpt has no bubble" if answer else "transcriptions-gpt is not running"}
-    return 200, dict(doc, ok=True)
+    daemon("ipad-want %d" % MACMIC_WANT)  # the app looks every 10 s while on screen
+    return 200, dict(doc, ok=True, macmic=macmic_state())
 
 
 def mic_usealt():
@@ -1333,15 +1363,15 @@ def mic_restore(body):
 
 
 def mic_post(path, body):
-    """POST /api/mic/(start|usealt|restore) | /api/mic/<id>/(chunk|stop|cancel) -> (code, doc), or None when not a mic
+    """POST /api/mic/(start|usealt|restore) | /api/mic/<id>/(chunk|alive|stop|cancel) -> (code, doc), or None when not a mic
     route."""
     if path == "/api/mic/start":
-        return mic_start()
+        return mic_start(body)
     if path == "/api/mic/usealt":
         return mic_usealt()
     if path == "/api/mic/restore":
         return mic_restore(body)
-    m = re.fullmatch(r"/api/mic/([0-9a-f]{16})/(chunk|stop|cancel)", path)
+    m = re.fullmatch(r"/api/mic/([0-9a-f]{16})/(chunk|alive|stop|cancel)", path)
     if not m:
         return None
     with MIC_LOCK:
@@ -1351,6 +1381,14 @@ def mic_post(path, body):
     if m.group(2) == "chunk":
         mic.chunk(body)
         return 200, {"ok": True}
+    if m.group(2) == "alive":  # a MacMic take's client is still there (it sends no audio); level draws its wave
+        mic.chunk_at = time.monotonic()
+        fields = macmic_fields()
+        try:
+            level = float(fields.get("level", 0))
+        except ValueError:
+            level = 0.0
+        return 200, {"ok": True, "level": level, "macmic": macmic_state(fields)}
     if m.group(2) == "stop":
         return mic_stop(mic)
     mic.stopping = True

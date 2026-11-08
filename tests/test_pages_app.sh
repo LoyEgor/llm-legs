@@ -122,7 +122,7 @@ chmod +x "$WORK/bin/hs"
 cat >"$WORK/bin/daemon-stub" <<'STUB'
 import json, os, socket, struct, sys, threading, time
 rt, log = sys.argv[1], sys.argv[2]
-st = {"state": "idle", "deliver": None, "packets": 0, "marked": 0, "silent": 0, "gaps": 0, "streams": []}
+st = {"state": "idle", "deliver": None, "packets": 0, "marked": 0, "silent": 0, "gaps": 0, "streams": [], "macmic": False}
 udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 udp.bind(("127.0.0.1", 0))
 def receive():
@@ -177,6 +177,12 @@ while True:
         reply = json.dumps(dict(BUBBLE, state=st["state"], remote=st["deliver"] is not None))
     elif verb == "usealt":
         reply = "ok" if st["state"] == "processing" else "ignored " + st["state"]
+    elif verb == "ipad-want":
+        reply = "ok"
+    elif verb == "ipad-mic":
+        reply = "ok present=%s connected=False peer=%s level=%s" % (st["macmic"], "fe80::1" if st["macmic"] else "None", 0.25 if st["macmic"] else 0.0)
+    elif verb == "macmic-on":
+        st["macmic"], reply = True, "ok"
     elif verb == "restore" and st["state"] in ("idle", "recording"):
         st["deliver"], st["state"], reply = json.loads(arg)["deliver"], "processing", "ok"
         threading.Thread(target=finish, args=("пятнадцать минут диктовки",), daemon=True).start()
@@ -384,6 +390,27 @@ assert test "$(chunk "$mic")" = 404
 sleep 0.3
 assert test "$(grep -c '^cancel$' "$WORK/daemon.log")" = "$cancels"
 assert test -z "$(ls -A "$(python3 -c 'import tempfile; print(tempfile.gettempdir())')/pages-app" 2>/dev/null)"
+# MacMic (Egor 2026-11-08: iPadOS refused the browser the microphone, no prompt, through reloads and a relaunch,
+# while it gave it to MacMic): each look at the pill keeps MacMic streaming 2 h (ipad-want), and a take via MacMic
+# records its stream: no packet of ours reaches the receiver, the client's /alive beats stand for its chunks.
+assert test "$(get "$base/api/mic/bubble")" = 200
+assert test "$(jq -r .macmic "$WORK/body")" = asleep
+assert grep -q '^ipad-want 7200$' "$WORK/daemon.log"
+assert test "$(post /api/mic/start '{"via": "macmic"}')" = 409
+"$PY" -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"macmic-on\n"); s.recv(64)' "$RT/control.sock"
+assert test "$(get "$base/api/mic/bubble")" = 200
+assert test "$(jq -r .macmic "$WORK/body")" = streaming
+packets=$(stats | jq .packets)
+assert test "$(post /api/mic/start '{"via": "macmic"}')" = 200
+assert test "$(jq -r .via "$WORK/body")" = macmic
+mic=$(jq -r .id "$WORK/body")
+sleep 0.9
+assert test "$(post "/api/mic/$mic/alive" '{}')" = 200
+assert test "$(jq -r '[.level, .macmic] | join("|")' "$WORK/body")" = "0.25|streaming"
+assert test "$(stats | jq .packets)" = "$packets"
+assert test "$(post "/api/mic/$mic/stop" '{}')" = 200
+assert test "$(jq -r '[.ok, .text] | join("|")' "$WORK/body")" = "true|текст с iPad"
+assert test "$(post "/api/mic/$mic/alive" '{}')" = 404
 # Behind `tailscale serve` the page's origin is https.
 assert test "$(post "/api/chat/$sid/key" '{"key": "esc"}' -H "Origin: https://127.0.0.1:$port")" = 200
 
@@ -569,5 +596,11 @@ assert "$PY" -c 'import re, sys
 css = open(sys.argv[1]).read()
 z = lambda sel: int(re.search(re.escape(sel) + r" \{[^}]*z-index: (\d+)", css).group(1))
 sys.exit(not z("#takepill") > max(z("#overlay"), z("#close")))' "$ROOT/share/pages/app/app.css"
+# MacMic: while it streams a tap records it and never asks the page's microphone (which would interrupt it); a
+# refusal links to it.
+assert "$PY" -c 'import sys
+js = open(sys.argv[1]).read()
+start = js[js.index("async function micStart() {"):]
+sys.exit(not (start.index("micMacMic()") < start.index("getUserMedia") and "href=\"macmic://open\"" in js))' "$ROOT/share/pages/app/app.js"
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: kept streaming, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, MacMic first, a refusal linking to it"
