@@ -52,8 +52,12 @@ T="$WORK/proj/$sid.jsonl"
 # chat-find --recent: the live chat and a past one that spoke earlier (listed first: the history sorts); a search
 # prints $WORK/search.json (none: it fails) and leaves its arguments in $WORK/search-args. Both run by the
 # server's python, as `chats --open-command` is: a past chat's resume line on its account, or a dead one's error.
-printf '[{"session": "%s", "name": "Old chat", "cwd": "/x/old", "spoke": %s, "role": "user", "text": "old words"}, {"session": "%s", "name": "Fixture chat", "path": "%s", "ctx": 42000, "model": "claude-opus-5-5", "spoke": %s, "ttl": 3600, "cwd": "/x/proj"}]' \
-  "$past" "$(($(date +%s) - 5000))" "$sid" "$T" "$(date +%s)" >"$WORK/chat-find.json"
+# The past chat's transcript sits in a config root of its own (root/projects/<dir>/), as the trash finds it.
+PT="$WORK/root/projects/-x-old/$past.jsonl"
+mkdir -p "$(dirname "$PT")"
+printf '{"type":"user","message":{"role":"user","content":"old words"}}' >"$PT"
+printf '[{"session": "%s", "name": "Old chat", "path": "%s", "cwd": "/x/old/.claude/worktrees/b1", "spoke": %s, "role": "user", "text": "old words"}, {"session": "%s", "name": "Fixture chat", "path": "%s", "ctx": 42000, "model": "claude-opus-5-5", "spoke": %s, "ttl": 3600, "cwd": "/x/proj"}]' \
+  "$past" "$PT" "$(($(date +%s) - 5000))" "$sid" "$T" "$(date +%s)" >"$WORK/chat-find.json"
 cat >"$WORK/bin/chat-find" <<EOF
 import sys
 if "--recent" in sys.argv:
@@ -65,6 +69,21 @@ try:
 except OSError:
     sys.exit("index gone")
 EOF
+# claude-setup's session-trash (stub): its verbs in trash.log, a sweep's config root too; a sweep trashes what is
+# marked, as the real one does with a chat no process holds.
+cat >"$WORK/bin/trash" <<EOF
+#!/bin/bash
+case \$1 in
+  sweep) echo "sweep \$CLAUDE_CONFIG_DIR" >>"$WORK/trash.log"; sed 's/^/trashed /' "$WORK/marks" 2>/dev/null; : >"$WORK/marks" ;;
+  *) echo "\$1 \$2" >>"$WORK/trash.log" ;;
+esac
+case \$1 in
+  mark) echo "\$2" >>"$WORK/marks"; echo "marked \$2" ;;
+  unmark) grep -v "\$2" "$WORK/marks" >"$WORK/marks.n"; mv "$WORK/marks.n" "$WORK/marks"; echo "unmarked \$2" ;;
+  restore) echo "restored \$2" ;;
+esac
+EOF
+chmod +x "$WORK/bin/trash"
 cat >"$WORK/bin/chats" <<'EOF'
 import sys
 sid = sys.argv[sys.argv.index("--open-command") + 1]
@@ -226,7 +245,8 @@ mkrun "codex-$((now - 70))-1-aa05" "$workerpid" "$((began - 1000))" '' >/dev/nul
 mkrun "codex-$((now - 80))-1-aa06" 0 "$began" '' >/dev/null
 export PAGES_DIR="$WORK/pages" APP_SESSIONS="$WORK/sessions" APP_HS="$WORK/bin/hs" APP_CHAT_FIND="$WORK/bin/chat-find" \
   APP_CHATS_JSON="$WORK/chats.json" STATUSLINE_CACHE_DIR="$WORK/tracks" TRANSCRIBER_RUNTIME_DIR="$RT" \
-  APP_MIC_PORT="$(cat "$RT/udp-port")" WORKER_RUN_DIR="$WORK/runs" APP_CHATS="$WORK/bin/chats" APP_CLOSE_WAIT=1
+  APP_MIC_PORT="$(cat "$RT/udp-port")" WORKER_RUN_DIR="$WORK/runs" APP_CHATS="$WORK/bin/chats" APP_CLOSE_WAIT=1 \
+  APP_TRASH="$WORK/bin/trash" CHAT_PINS_FILE="$WORK/pins.json"
 
 "$PAGE" serve --port 0 >"$WORK/serve.out" 2>&1 &
 "$ROOT/bin/wait-until" --max 10 log "$WORK/serve.out" 'page serve: http' >/dev/null || fail "serve: $(cat "$WORK/serve.out")"
@@ -497,6 +517,11 @@ rm "$WORK/queue"
 # search hands chat-find his words and maps its rows; a failed search is a 502 and is not cached.
 assert test "$(get "$base/api/history")" = 200
 assert test "$(jq -r '[.chats[] | .sid + "|" + .name + "|" + .text] | join(",")' "$WORK/body")" = "$sid|Fixture chat|,$past|Old chat|old words"
+# Its project is the folder `chats` shows (a worktree's main checkout); its hash spares an unchanged list.
+assert test "$(jq -r '[.chats[].project] | join(",")' "$WORK/body")" = "proj,old"
+h=$(jq -r .h "$WORK/body")
+assert test "$(get "$base/api/history?h=$h")" = 200
+assert test "$(jq -c . "$WORK/body")" = "{\"same\":true,\"h\":\"$h\"}"
 assert test "$(get "$base/api/search?q=old%20%20words")" = 502
 assert like "$(jq -r .err "$WORK/body")" "chat-find failed: *index gone*"
 printf '[{"session": "%s", "name": "Old chat", "at": 1000, "cwd": "/x/old", "title": "t", "snippet": "…old words…"}]' "$past" >"$WORK/search.json"
@@ -515,16 +540,39 @@ assert grep -qF "do script \"cd \\\"/x/old\\\" && claude --resume $past\" end te
 assert test "$(post "/api/chat/dead0000-2222-3333-4444-555555555555/open" '{}')" = 502
 assert test "$(jq -r .err "$WORK/body")" = "no transcript for dead0000-2222-3333-4444-555555555555"
 assert test "$(post "/api/chat/abc/open" '{}')" = 400
+# A chat's menu (Egor 2026-11-08). Rename: a live chat gets /rename typed, a closed one the custom-title line
+# /rename writes; branch: `chats`' command with --fork-session and the name, the chat open or not; trash:
+# session-trash marks it and sweeps its own config root (a live one is ended instead, below); untrash restores.
+: >"$WORK/hs.log"
+assert test "$(post "/api/chat/$sid/rename" '{"name": "  New\n name  "}')" = 200
+assert test "$(grep '^TEXT=' "$WORK/hs.log")" = 'TEXT="/rename New name"'
+assert test "$(post "/api/chat/$past/rename" '{"name": "Старый, но новый"}')" = 200
+assert test "$(tail -1 "$PT" | jq -r '[.type, .customTitle, .sessionId] | join("|")')" = "custom-title|Старый, но новый|$past"
+assert test "$(head -1 "$PT" | jq -r .type)" = user
+assert test "$(post "/api/chat/$past/rename" '{"name": " "}')" = 400
+: >"$WORK/hs.log"
+assert test "$(post "/api/chat/$sid/branch" '{"name": "a branch"}')" = 200
+assert grep -qF "claude --resume $sid --fork-session --name 'a branch'\" end tell" "$WORK/hs.log"
+assert test "$(post "/api/chat/$past/trash" '{}')" = 200
+assert test "$(tr '\n' '|' <"$WORK/trash.log")" = "mark $past|sweep $WORK/root|"
+assert test "$(post "/api/chat/$past/untrash" '{}')" = 200
+assert test "$(tail -1 "$WORK/trash.log")" = "restore $past"
 # End: only a live terminal chat, never one at work; /exit typed into it, then its window closes once it is gone.
 # One that does not exit in time keeps its window.
 assert test "$(post "/api/chat/$wsid/close" '{}')" = 404
 sed -i '' 's/"status": "idle"/"status": "busy"/' "$WORK/sessions/$chatpid.json"; sleep 1.6
 assert test "$(post "/api/chat/$sid/close" '{}')" = 409
+: >"$WORK/trash.log"
+assert test "$(post "/api/chat/$sid/trash" '{}')" = 409
+assert test ! -s "$WORK/trash.log"
 sed -i '' 's/"status": "busy"/"status": "idle"/' "$WORK/sessions/$chatpid.json"; sleep 1.6
 : >"$WORK/hs.log"
 assert test "$(post "/api/chat/$sid/close" '{}')" = 504
 assert test "$(grep '^TEXT=' "$WORK/hs.log")" = 'TEXT="/exit"'
 assert test -z "$(grep 'close window' "$WORK/hs.log")"
+# A live chat's trash is its mark and its end; one that does not end keeps no mark.
+assert test "$(post "/api/chat/$sid/trash" '{}')" = 504
+assert test "$(tr '\n' '|' <"$WORK/trash.log")" = "mark $sid|unmark $sid|"
 touch "$WORK/exit-ok"
 assert test "$(post "/api/chat/$sid/close" '{}')" = 200
 assert test "$(jq -r .window "$WORK/body")" = closed
@@ -562,9 +610,9 @@ assert test "$(get "$base/api/chat/$sid/log")" = 200
 assert test "$(jq -r '[(.items | length >= 12), ([.items[].t] | index("before the tools") != null)] | all' "$WORK/body")" = true
 
 # It costs Claude Code nothing: no model call, no settings or hooks touched; the only programs it runs are ps,
-# Hammerspoon, chat-find and chats (to open a past chat), and the client polls only while it is on screen, at most once a second.
+# Hammerspoon, chat-find, chats (to open a past chat) and the trash /trash uses, and the client polls only while it is on screen, at most once a second.
 assert test -z "$(grep -nE 'anthropic|openai|claude -p|settings\.json|hooks' "$ROOT/share/pages/app.py")"
-assert test "$(grep -oE 'run\(\[[^],]+' "$ROOT/share/pages/app.py" | sort -u | tr '\n' ' ')" = 'run(["ps" run([HS run([sys.executable '
+assert test "$(grep -oE 'run\(\[[^],]+' "$ROOT/share/pages/app.py" | sort -u | tr '\n' ' ')" = 'run(["ps" run([HS run([sys.executable run([TRASH '
 assert test "$(grep -c 'setInterval(' "$ROOT/share/pages/app/app.js")" = 1
 assert "$PY" -c 'import sys
 sys.exit("if (document.visibilityState !== \x27visible\x27) return;\n  tick++;" not in open(sys.argv[1]).read())' "$ROOT/share/pages/app/app.js"
@@ -608,4 +656,4 @@ js = open(sys.argv[1]).read()
 start = js[js.index("async function micStart() {"):]
 sys.exit(not (start.index("micMacMic()") < start.index("getUserMedia") and "href=\"macmic://open\"" in js))' "$ROOT/share/pages/app/app.js"
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: kept streaming, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, MacMic first, a refusal linking to it"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: kept streaming, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, MacMic first, a refusal linking to it, a chat's menu (rename live/closed, branch, trash and its undo, a busy or unended one refused), Earlier's project and hash"

@@ -24,5 +24,12 @@ export const ICON = {
   check: line('M5 12.5l4.5 4.5L19 7.5', 2.2),
   x: line('M6.5 6.5l11 11M17.5 6.5l-11 11', 2),
   back: line('M15 5l-7 7 7 7', 2.2),
+  rename: line('M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4'),
+  branch: line('M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9'),
+  pin: line('M5 21V4h11l-2 4 2 4H5'),
+  power: line('M12 3v8M7.1 6.2a7 7 0 1 0 9.8 0'),
+  trash: line('M4 7h16M9 7V4.5h6V7M6 7l1 13h10l1-13'),
+  folder: line('M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z'),
+  clock: line('M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2'),
   tab: line('M4 12h11M11 8l4 4-4 4M19.5 6v12', 1.9),
 };

@@ -41,6 +41,30 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .more { display: block; width: 100%; text-align: left; padding: 8px; border-radius: var(--r-m); color: var(--fg2); font-size: var(--fs-m); }
 @media (hover: hover) { .more:hover { background: var(--hover); color: var(--fg); } }
 .row.past .lead { color: var(--fg3); }
+/* A chat's own menu (Egor 2026-11-08: its actions in the list, not in the info panel): a long press on its row, or a
+   secondary click. No callout or selection on a held row; the row darkens while it is held. */
+#list .row { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+#list .row.held { background: var(--sel); }
+#ctxscrim { position: fixed; inset: 0; z-index: 34; }
+.ctx { position: fixed; z-index: 35; width: 264px; padding: 6px; border-radius: var(--r-l); background: var(--pop);
+  box-shadow: var(--shadow-pop); }
+.ctx .ct { padding: 6px 10px 8px; font-size: var(--fs-s); color: var(--fg3); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.ctx .ci { display: flex; width: 100%; gap: 12px; align-items: center; padding: 9px 10px; border: 0; background: none;
+  border-radius: var(--r-m); font: inherit; font-size: var(--fs); color: var(--fg); text-align: left; cursor: pointer; }
+.ctx .ci .ic { width: 18px; height: 18px; color: var(--fg2); }
+.ctx .ci.red, .ctx .ci.red .ic { color: var(--red); }
+@media (hover: hover) { .ctx .ci:hover { background: var(--hover); } }
+.ctx form { display: grid; gap: 8px; padding: 2px 4px 4px; }
+.ctx form .acts { display: flex; gap: 8px; justify-content: flex-end; }
+/* Earlier: newest first, or by project folder (the folder of its newest chat first, a tap opens it). */
+.sec .seg { margin-left: auto; padding: 1px; }
+.sec .seg > button { min-height: 22px; padding: 0 7px; }
+.sec .seg .ic { width: 15px; height: 15px; }
+.row.fold { width: 100%; border: 0; background: none; font: inherit; color: inherit; text-align: left; }
+.row.fold .lead .ic { width: 16px; height: 16px; }
+.row.fold .count { margin-left: 6px; }
+.row.infold { padding-left: 20px; }
 .sec .shimmer { font-weight: 400; }
 #pastbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 8px;
   padding: 8px 8px 8px 16px; border-radius: var(--r-xl); background: var(--pop); box-shadow: var(--shadow-pop); }
@@ -269,6 +293,8 @@ body:has(#update:not([hidden])) #root { padding-top: calc(env(safe-area-inset-to
 #close { position: fixed; top: calc(8px + env(safe-area-inset-top)); right: 10px; z-index: 41; width: 36px; height: 36px;
   border-radius: 18px; display: grid; place-items: center; background: #000000a0; color: #fff; }
 #toast { bottom: calc(96px + env(safe-area-inset-bottom)); color: var(--red); }
+#toast.acts { color: var(--fg); display: flex; gap: 12px; align-items: center; }
+#toast .pill { padding: 4px 12px; }
 
 @media (min-width: 761px) { #sidetop .tools.solo { display: none; } }
 /* Room for the thread beside it (app.js roomy()): the sheet docks there (Codex's side panel) instead of covering it,

@@ -20,7 +20,9 @@ if (draft.text == null) {
 const saveDraft = () => { draft.text = $('#input').value; keep('draft', draft); };
 const S = {chats: [], workers: [], runs: [], machine: null, sid: null, log: null, running: {}, menuOpen: new Set(),
   pages: null, screen: '', screenAt: 0, screenFails: 0, screenErr: '', scr: parseScreen(''), auth: true, sheet: '',
-  activity: '', hist: [], histN: 25, q: '', found: null, opening: null, pins: []};
+  activity: '', hist: [], histN: 25, q: '', found: null, opening: null, pins: [], histH: '',
+  local: {names: {}, gone: {}}, earlier: localStorage.getItem('earlier') === 'projects' ? 'projects' : 'recent',
+  folds: kept('folds')};
 
 document.body.insertAdjacentHTML('afterbegin', DEFS);
 for (const el of document.querySelectorAll('[data-icon]')) el.innerHTML = ICON[el.dataset.icon] || '';
@@ -28,12 +30,21 @@ for (const el of document.querySelectorAll('[data-icon]')) el.innerHTML = ICON[e
 // ------------------------------------------------------------------ plumbing
 
 let toastTimer = 0;
-function toast(text) {
+function toast(text, act) {
   const t = $('#toast');
   t.textContent = text;
+  t.classList.toggle('acts', !!act);
+  if (act) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pill';
+    b.textContent = act.label;
+    b.onclick = () => { t.hidden = true; act.run(); };
+    t.append(' ', b);
+  }
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+  toastTimer = setTimeout(() => { t.hidden = true; }, act ? 8000 : 4000);
 }
 
 // What went wrong on this side, for `page report` (the server caps it): a lost connection once it is back.
@@ -206,24 +217,46 @@ function histRow(r, pin) {
     `<span class="tm">${ago(r.spoke)}</span></div><div class="l2">${esc(sub)}</div></div></a>`;
 }
 
-// A pinned chat that is not open sits at the very top, as `chats` lists it (⚑); an open one is where it would be.
-function pinnedHtml(hit) {
-  const open = new Set(S.chats.map((c) => c.sid));
-  const rows = S.pins.filter((sid) => !open.has(sid)).map((sid) => pastRow(sid) || {sid, name: '', cwd: ''})
-    .filter((r) => hit(r.name, r.cwd, r.text));
-  return rows.length ? '<div class="sec">Pinned</div>' + rows.map((r) => histRow(r, true)).join('') : '';
+// Earlier (Egor 2026-11-08): a pinned chat that is not open heads it (⚑), as `chats` lists it; then every other
+// one newest first, or by project folder: the folder whose chat spoke last first, a tap opens or shuts it.
+const FOLD_N = 20;
+function earlierHtml(past) {
+  const pinned = past.filter((r) => S.pins.includes(r.sid)), rest = past.filter((r) => !S.pins.includes(r.sid));
+  const seg = `<span class="seg">${[['recent', 'clock', 'Newest first'], ['projects', 'folder', 'By project']].map(([k, ic, t]) =>
+    `<button type="button" class="${S.earlier === k ? 'on' : ''}" data-earlier="${k}" title="${t}">${ICON[ic]}</button>`).join('')}</span>`;
+  let html = `<div class="sec">Earlier${seg}</div>` + pinned.map((r) => histRow(r, true)).join('');
+  if (S.earlier !== 'projects') {
+    html += rest.slice(0, S.histN).map((r) => histRow(r)).join('');
+    if (rest.length > S.histN) html += `<button type="button" class="more" data-more>Show more · ${rest.length - S.histN}</button>`;
+    return html;
+  }
+  const groups = new Map();
+  for (const r of rest) {
+    const k = r.project || base(r.cwd) || '?';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  for (const [k, rows] of groups) {
+    const open = S.folds[k], n = (open && open.n) || FOLD_N;
+    html += `<button type="button" class="row fold" data-fold="${esc(k)}"><span class="lead">${ICON.folder}</span>` +
+      `<div class="body"><div class="l1"><span class="name">${esc(k)}<span class="count">${rows.length}</span></span>` +
+      `<span class="tm">${ago(rows[0].spoke)}</span></div><div class="l2">${esc(rows[0].name || '')}</div></div></button>`;
+    if (!open) continue;
+    html += rows.slice(0, n).map((r) => histRow(r).replace('class="row past', 'class="row past infold')).join('');
+    if (rows.length > n) html += `<button type="button" class="more" data-foldmore="${esc(k)}">Show more · ${rows.length - n}</button>`;
+  }
+  return html;
 }
 
 function historyHtml(q, hit) {
-  const open = new Set(S.chats.concat(S.workers, S.runs).map((c) => c.sid).filter(Boolean).concat(S.pins));
+  const open = new Set(S.chats.concat(S.workers, S.runs).map((c) => c.sid).filter(Boolean));
   const past = S.hist.filter((r) => !open.has(r.sid));
-  let html = '';
-  if (!q) {
-    if (!past.length) return '';
-    html = '<div class="sec">Earlier</div>' + past.slice(0, S.histN).map((r) => histRow(r)).join('');
-    if (past.length > S.histN) html += `<button type="button" class="more" data-more>Show more · ${past.length - S.histN}</button>`;
-    return html;
+  // A pin whose chat the list does not hold (an old search hit) still heads Earlier.
+  for (const sid of S.pins) {
+    if (!open.has(sid) && !past.some((r) => r.sid === sid) && !S.local.gone[sid]) past.unshift(pastRow(sid) || {sid, name: '', cwd: ''});
   }
+  let html = '';
+  if (!q) return past.length ? earlierHtml(past) : '';
   const near = past.filter((r) => hit(r.name, r.cwd, r.text)).slice(0, 50);
   if (near.length) html += '<div class="sec">Earlier</div>' + near.map((r) => histRow(r)).join('');
   const f = S.found && S.found.q === q ? S.found : null;
@@ -234,13 +267,33 @@ function historyHtml(q, hit) {
   return html + (f.rows || []).map((r) => histRow(open.has(r.sid) ? Object.assign({}, r, {text: ['open', r.text].filter(Boolean).join(' · ')}) : r)).join('');
 }
 
+// The list's hash goes along: an unchanged Earlier costs one short answer, so it is asked every 15 s and at once
+// after anything that moves a chat (one closed, pinned, renamed, trashed, branched; the app shown again).
 async function refreshHistory() {
   await once('history', async () => {
-    const d = await api('/api/history');
+    const d = await api('/api/history?h=' + encodeURIComponent(S.histH));
+    if (d.same) return;
     S.hist = d.chats || [];
+    S.histH = d.h || '';
+    localize();
     renderList();
     if (S.sid && !chat(S.sid)) renderHead();
   });
+}
+
+// What he did here shows at once: a new name or a trashed chat holds over the server's lists until they show it
+// (2 minutes at most), so no list is fetched again just to show his own edit.
+function localize() {
+  const t = now(), L = S.local;
+  for (const [sid, o] of Object.entries(L.names)) {
+    const rows = S.hist.concat(S.chats).filter((r) => r.sid === sid);
+    // A row the server sent with the new name ends the hold; rows renamed here carry .renamed.
+    if (t - o.at > 120 || rows.some((r) => !r.renamed && r.name === o.name)) { delete L.names[sid]; continue; }
+    rows.forEach((r) => { r.name = o.name; r.renamed = true; });
+  }
+  for (const [sid, at] of Object.entries(L.gone)) if (t - at > 120) delete L.gone[sid];
+  S.hist = S.hist.filter((r) => !L.gone[r.sid]);
+  S.chats = S.chats.filter((r) => !L.gone[r.sid]);
 }
 
 async function searchSaid() {
@@ -278,25 +331,26 @@ async function openPast() {
 function followOpening() {
   const o = S.opening;
   if (!o) return;
-  if (chat(o.sid)) { S.opening = null; if (S.sid === o.sid) openChat(o.sid); return; }
+  if (!o.follow && chat(o.sid)) { S.opening = null; if (S.sid === o.sid) openChat(o.sid); return; }
   const fresh = S.chats.find((c) => !o.known.has(c.sid) && (!o.cwd || c.cwd === o.cwd));
-  if (fresh) { S.opening = null; if (S.sid === o.sid) location.hash = '#chat/' + encodeURIComponent(fresh.sid); return; }
+  if (fresh) { S.opening = null; if (o.follow || S.sid === o.sid) location.hash = '#chat/' + encodeURIComponent(fresh.sid); return; }
   if (now() - o.at > 60) { S.opening = null; if (S.sid === o.sid) $('#pastnote').textContent = 'Opened in Terminal; it has not shown up here yet'; }
 }
 
 // Pin: the chat stays at the top of the list while it is not open (share/chat_pins.py, the same pins as `chats`).
-async function togglePin() {
-  const sid = S.sid, on = !S.pins.includes(sid);
-  const d = await api(`/api/chat/${encodeURIComponent(sid)}/pin`, {on}, 10000).catch(() => ({ok: false}));
-  if (!d.ok) { toast('⚠ the pin did not change'); return; }
-  S.pins = d.pins || [];
+async function togglePin(sid) {
+  const on = !S.pins.includes(sid), was = S.pins;
+  S.pins = on ? S.pins.concat(sid) : S.pins.filter((x) => x !== sid);
   renderList();
-  renderSheet();
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/pin`, {on}, 10000).catch(() => ({ok: false}));
+  if (!d.ok) { S.pins = was; renderList(); toast('⚠ the pin did not change'); return; }
+  S.pins = d.pins || S.pins;
+  renderList();
 }
 
-// End an idle chat (/exit, as if typed) and close its Terminal window: from the info panel, after a confirm.
-async function closeLive() {
-  const sid = S.sid, c = chat(sid);
+// End an idle chat (/exit, as if typed) and close its Terminal window: from its menu, after a confirm.
+async function closeLive(sid) {
+  const c = chat(sid);
   if (!live(c)) return;
   if (busy(c)) { toast('⚠ it is working: stop it first'); return; }
   if (!confirm(`End “${c.name}” and close its Terminal window?`)) return;
@@ -306,6 +360,92 @@ async function closeLive() {
   await refreshChats();
   refreshHistory();
   renderHead();
+}
+
+// ------------------------------------------------------------------ a chat's menu: long press on its row
+
+// Egor 2026-11-08: a chat's actions live on its row in the list (a long press, as iPad apps do; a secondary click
+// with a trackpad), not in the info panel: rename, branch under a name, pin, end, trash (restorable: Undo).
+const CTX = {sid: null, timer: 0, row: null, x: 0, y: 0, fired: 0};
+function rowSid(row) {
+  const m = row && !row.classList.contains('run') && (row.getAttribute('href') || '').match(/^#chat\/(.+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+function chatMenu(row) {
+  const sid = rowSid(row);
+  if (!sid) return;
+  const c = chat(sid), p = c || pastRow(sid) || {sid, name: ''};
+  CTX.sid = sid;
+  const item = (act, ic, label, cls = '') => `<button type="button" class="ci ${cls}" data-act="${act}">${ICON[ic]}${label}</button>`;
+  ctxShow(row, `<div class="ct">${esc(p.name || sid.slice(0, 8))}</div>` + item('rename', 'rename', 'Rename') +
+    item('branch', 'branch', 'Branch') + item('pin', 'pin', S.pins.includes(sid) ? 'Unpin' : 'Pin to the top') +
+    (live(c) ? item('end', 'power', 'End chat') : '') + item('trash', 'trash', 'Trash', 'red'));
+}
+function ctxShow(row, html) {
+  const box = $('#ctx');
+  box.innerHTML = html;
+  box.hidden = false;
+  $('#ctxscrim').hidden = false;
+  const r = row.getBoundingClientRect(), h = box.offsetHeight, room = window.innerHeight - 12;
+  box.style.left = Math.min(r.left + 12, window.innerWidth - box.offsetWidth - 8) + 'px';
+  box.style.top = (r.bottom + 4 + h <= room ? r.bottom + 4 : Math.max(12, r.top - 4 - h)) + 'px';
+  CTX.row = row;
+}
+function ctxClose() {
+  $('#ctx').hidden = true;
+  $('#ctxscrim').hidden = true;
+  if (CTX.row) CTX.row.classList.remove('held');
+  CTX.sid = CTX.row = null;
+}
+// Rename and Branch ask for the name in the menu itself: Enter or the button does it.
+function ctxName(act) {
+  const sid = CTX.sid, p = chat(sid) || pastRow(sid) || {};
+  const label = act === 'rename' ? 'Rename' : 'Branch';
+  ctxShow(CTX.row, `<form data-name="${act}"><input class="field" name="n" value="${esc(p.name || '')}" maxlength="100"` +
+    ` enterkeyhint="done" autocomplete="off" placeholder="${act === 'rename' ? 'Name' : 'Name of the branch'}">` +
+    `<div class="acts"><button type="button" class="btn ghost" data-act="cancel">Cancel</button>` +
+    `<button type="submit" class="btn primary">${label}</button></div></form>`);
+  const box = $('#ctx input');
+  box.focus();
+  box.select();
+}
+async function chatAct(act, sid, name) {
+  const c = chat(sid), p = c || pastRow(sid) || {sid, name: ''}, url = `/api/chat/${encodeURIComponent(sid)}/`;
+  if (act === 'pin') return togglePin(sid);
+  if (act === 'end') return closeLive(sid);
+  if (act === 'rename') {
+    if (!name || name === p.name) return;
+    S.local.names[sid] = {name, at: now()};
+    localize();
+    renderList();
+    renderHead();
+    const d = await api(url + 'rename', {name}, 20000).catch((e) => ({ok: false, err: e.message}));
+    if (!d.ok) { delete S.local.names[sid]; toast('⚠ rename: ' + (d.err || 'no answer')); }
+    refreshChats();
+    refreshHistory();
+  } else if (act === 'branch') {
+    toast('Branching in Terminal on the Mac…');
+    const d = await api(url + 'branch', {name}, 45000).catch((e) => ({ok: false, err: e.message}));
+    if (!d.ok) { toast('⚠ branch: ' + (d.err || 'no answer')); return; }
+    S.opening = {sid, at: now(), cwd: p.cwd || '', known: new Set(S.chats.map((x) => x.sid)), follow: true};
+    refreshChats();
+  } else if (act === 'trash') {
+    if (busy(c)) { toast('⚠ it is working: stop it first'); return; }
+    S.local.gone[sid] = now();
+    localize();
+    renderList();
+    if (S.sid === sid) location.hash = '#';
+    const d = await api(url + 'trash', {}, 60000).catch((e) => ({ok: false, err: e.message}));
+    if (!d.ok) { delete S.local.gone[sid]; refreshChats(); refreshHistory(); toast('⚠ trash: ' + (d.err || 'no answer')); return; }
+    toast(`Trashed “${p.name || sid.slice(0, 8)}”`, {label: 'Undo', run: async () => {
+      delete S.local.gone[sid];
+      const u = await api(url + 'untrash', {}, 30000).catch((e) => ({ok: false, err: e.message}));
+      if (!u.ok) toast('⚠ restore: ' + (u.err || 'no answer'));
+      refreshHistory();
+    }});
+    refreshChats();
+    refreshHistory();
+  }
 }
 
 let listHtml = '';
@@ -319,7 +459,7 @@ function renderList() {
   const q = S.q.trim().toLowerCase();
   const hit = (...xs) => !q || q.split(/\s+/).every((w) => xs.some((x) => String(x || '').toLowerCase().includes(w)));
   const chats = S.chats.filter((c) => hit(c.name, c.cwd, snippet(c)));
-  let html = pinnedHtml(hit) + (chats.length || !q ? '<div class="sec">Chats</div>' + chats.map((c) => chatRow(c, usual)).join('') : '');
+  let html = (chats.length || !q ? '<div class="sec">Chats</div>' + chats.map((c) => chatRow(c, usual)).join('') : '');
   const others = S.workers.map((w) => Object.assign({}, w, {vendor: 'claude', title: w.name, started: w.started, sid: w.sid}));
   const runs = S.runs.filter((r) => hit(r.title, r.account)), more = others.filter((r) => hit(r.title));
   if (runs.length || more.length) {
@@ -354,10 +494,13 @@ async function refreshChats() {
       if (MIC.state === '' && !OUT.some((o) => o.state === 'sending')) { reload(); return; }
       $('#update').hidden = false;
     }
+    const was = S.chats.map((c) => c.sid).join();
     S.chats = d.chats || [];
     S.workers = d.workers || [];
     S.runs = d.runs || [];
     S.pins = d.pins || [];
+    localize();
+    if (was && was !== S.chats.map((c) => c.sid).join()) refreshHistory();  // one closed or opened: Earlier moves
     let fresh = false;
     for (const c of S.chats.concat(S.workers)) {
       // A chat the app has never shown starts read: the dot means "spoke since you last looked here".
@@ -1809,10 +1952,6 @@ function renderSheet() {
     $('#sheett').textContent = d && d.root ? base(d.root) : 'Info';
     $('#sheets').textContent = '';
     html = d ? infoHtml(d) : '';
-    if (!runOf(S.sid) && !S.workers.some((w) => w.sid === S.sid)) {
-      foot = `<button type="button" class="btn ghost" data-pin>${S.pins.includes(S.sid) ? 'Unpin' : '⚑ Pin to the top'}</button>`;
-    }
-    if (live(chat(S.sid))) foot += '<button type="button" class="btn" data-end>End chat · close its window</button>';
   } else if (S.sheet === 'pages') {
     // This chat's pages; all of them a tap away (and with no chat open).
     const mine = S.sid && !S.pagesAll, all = S.pages || [];
@@ -1932,9 +2071,7 @@ $('#sheetx').addEventListener('click', closeSheet);
 $('#scrim').addEventListener('click', () => closeSheet(true));
 $('#sheetb').addEventListener('scroll', termScroll, {passive: true});
 $('#sheetf').addEventListener('click', (e) => {
-  if (e.target.closest('[data-end]')) closeLive();
-  else if (e.target.closest('[data-pin]')) togglePin();
-  else if (e.target.closest('[data-allpages]')) { S.pagesAll = !S.pagesAll; renderSheet(); }
+  if (e.target.closest('[data-allpages]')) { S.pagesAll = !S.pagesAll; renderSheet(); }
 });
 $('#update').addEventListener('click', reload);
 $('#composer').addEventListener('click', (e) => {
@@ -1972,10 +2109,61 @@ $('#find').addEventListener('input', () => { S.q = $('#find').value; renderList(
 $('#find').addEventListener('focus', () => { if (now() - (S.histAt || 0) > 20) { S.histAt = now(); refreshHistory(); } });
 $('#find').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchSaid(); } });
 $('#list').addEventListener('click', (e) => {
-  if (e.target.closest('[data-more]')) { S.histN += 50; renderList(); }
+  if (now() - CTX.fired < 0.8 && e.target.closest('.row')) { e.preventDefault(); return; }  // the long press's own click
+  const fold = e.target.closest('[data-fold]'), fmore = e.target.closest('[data-foldmore]'), mode = e.target.closest('[data-earlier]');
+  if (mode) { S.earlier = mode.dataset.earlier; localStorage.setItem('earlier', S.earlier); renderList(); }
+  else if (fold) {
+    const k = fold.dataset.fold;
+    if (S.folds[k]) delete S.folds[k]; else S.folds[k] = {n: FOLD_N};
+    keep('folds', S.folds);
+    renderList();
+  } else if (fmore) { S.folds[fmore.dataset.foldmore].n += 50; keep('folds', S.folds); renderList(); }
+  else if (e.target.closest('[data-more]')) { S.histN += 50; renderList(); }
   else if (e.target.closest('[data-said]')) searchSaid();
 });
 $('#openbtn').addEventListener('click', openPast);
+$('#list').addEventListener('touchstart', (e) => {
+  clearTimeout(CTX.timer);
+  const row = e.target.closest('a.row'), p = e.touches[0];
+  if (!rowSid(row) || e.touches.length !== 1) return;
+  Object.assign(CTX, {x: p.clientX, y: p.clientY});
+  CTX.timer = setTimeout(() => {
+    CTX.fired = now();
+    row.classList.add('held');
+    chatMenu(row);
+  }, 480);
+}, {passive: true});
+$('#list').addEventListener('touchmove', (e) => {
+  const p = e.touches[0];
+  if (p && Math.hypot(p.clientX - CTX.x, p.clientY - CTX.y) > 10) clearTimeout(CTX.timer);
+}, {passive: true});
+for (const ev of ['touchend', 'touchcancel', 'scroll']) $('#list').addEventListener(ev, () => clearTimeout(CTX.timer), {passive: true});
+$('#list').addEventListener('contextmenu', (e) => {
+  const row = e.target.closest('a.row');
+  if (!rowSid(row)) return;
+  e.preventDefault();
+  if (now() - CTX.fired < 0.8) return;  // the long press opened it already
+  chatMenu(row);
+});
+// The long press's own finger lifts over the scrim: that click is not a tap outside.
+$('#ctxscrim').addEventListener('click', () => { if (now() - CTX.fired > 0.8) ctxClose(); });
+$('#ctxscrim').addEventListener('touchstart', (e) => { e.preventDefault(); ctxClose(); }, {passive: false});
+$('#ctx').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const act = b.dataset.act, sid = CTX.sid;
+  if (act === 'cancel') { ctxClose(); return; }
+  if (act === 'rename' || act === 'branch') { ctxName(act); return; }
+  ctxClose();
+  chatAct(act, sid);
+});
+$('#ctx').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const form = e.target, act = form.dataset.name, sid = CTX.sid, name = norm(form.n.value);
+  ctxClose();
+  chatAct(act, sid, name);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#ctx').hidden) ctxClose(); });
 $('#close').addEventListener('click', () => { $('#overlay').hidden = true; $('#frame').src = 'about:blank'; });
 $('#takepill').addEventListener('click', (e) => {
   if (e.target.closest('#takex')) { if (MIC.state === 'live') micStop(); else if (MIC.state === 'starting') micDrop(); return; }
@@ -1988,6 +2176,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   NET.visibleAt = now();
   refreshChats();
+  refreshHistory();
   pullBubble();  // back from MacMic: its stream is what the next tap records
   if (S.sid) { pullLog(); pullScreen(); }
 });
@@ -2047,7 +2236,7 @@ function tapEnd() {
   TAPS.cur = null;
   if (!tap) return;
   tap.held = Math.round(performance.now() - tap.t);
-  if (tap.moved) { tap.obs.disconnect(); return; }
+  if (tap.moved || tap.held > 450) { tap.obs.disconnect(); return; }  // a long press opens a menu, not a click
   TAPS.ended = tap;
   setTimeout(() => {
     tap.obs.disconnect();
@@ -2075,7 +2264,7 @@ setInterval(() => {
   if (document.visibilityState !== 'visible') return;
   tick++;
   if (tick % 3 === 0) refreshChats();
-  if (tick % 60 === 30) refreshHistory();
+  if (tick % 15 === 7) refreshHistory();
   if (S.sid) {
     pullLog();
     const c = chat(S.sid);

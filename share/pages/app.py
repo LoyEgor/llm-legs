@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -944,16 +945,29 @@ def send_key(tty, key, choose=None):
 
 # ---------------------------------------------------------------- past chats: the list, a search, open, close
 
+HISTORY_TTL = 3  # s
+
+
+def history_doc(seen=""):
+    """{chats, h}: h the list's hash; {same, h} when the client already holds that list."""
+    rows = history()
+    h = "%08x" % zlib.crc32(json.dumps(rows, sort_keys=True).encode())
+    return {"same": True, "h": h} if seen == h else {"chats": rows, "h": h}
+
+
 def history():
     """chat-find --recent, newest real message first: every chat he can go back to (live ones too; the client marks
     them), with what it last said; a pinned chat older than its window comes in too, as `chats` lists it."""
     rows = []
-    found = dict(cached("recent", 30, recent))
+    # chat-find answers from its own cache in a tenth of a second: a closed chat is in Earlier within seconds.
+    found = dict(cached("recent", HISTORY_TTL, recent))
     gone = tuple(p for p in pins() if p not in found)
     if gone:
-        found.update(cached(("pinned", gone), 30, lambda: recent(gone)))
+        found.update(cached(("pinned", gone), HISTORY_TTL, lambda: recent(gone)))
+    label = shared("chat_names").project_label
     for r in found.values():
         rows.append({"sid": r["session"], "name": r.get("name") or "", "cwd": r.get("cwd") or "",
+                     "project": label(r.get("cwd") or ""),
                      "branch": r.get("branch") or "", "model": r.get("model") or "",
                      "spoke": r.get("spoke") or r.get("at"), "role": r.get("role") or "",
                      "text": (r.get("text") or "")[:240]})
@@ -978,11 +992,12 @@ def search(q):
             for r in rows if isinstance(r, dict) and r.get("session")]
 
 
-def open_chat(sid):
+def open_chat(sid, fork=None):
     """A past chat into a new Terminal window, as `chats` opens it (its account: the live cache, else the best one).
-    A chat already open is not opened twice (a second resume forks it): the app just shows it."""
+    A chat already open is not opened twice (a second resume forks it): the app just shows it. fork (a name, or ""):
+    a branch of it in a new window, open or not, under that name (claude --fork-session --name)."""
     rec, _ = find_live(sid)
-    if rec:
+    if rec and fork is None:
         return 200, {"ok": True, "live": True}
     picker = os.environ.get("APP_CHATS") or os.path.join(repo(), "bin", "chats")
     out = run([sys.executable, picker, "--open-command", sid, "--timeout", "8"], timeout=40)
@@ -991,7 +1006,10 @@ def open_chat(sid):
         why = (FAILED.get(sys.executable) if out is None else None) or "chats printed nothing"
         return 502, {"ok": False, "err": re.sub(r"^exit \d+: ", "", why)}
     meta = dict(word.split("=", 1) for word in (lines[1] if len(lines) > 1 else "").split() if "=" in word)
-    literal = lines[0].strip().replace("\\", "\\\\").replace('"', '\\"')
+    line = lines[0].strip()
+    if fork is not None:
+        line += " --fork-session" + (" --name " + shlex.quote(fork) if fork else "")
+    literal = line.replace("\\", "\\\\").replace('"', '\\"')
     doc = terminal('tell application id "com.apple.Terminal"\ndo script "%s"\nend tell\nreturn "opened"' % literal)
     if not doc.get("ok"):
         return 502, {"ok": False, "err": doc.get("err") or "Terminal did not open it"}
@@ -1030,6 +1048,94 @@ def close_chat(sid):
                                 'end if\nreturn "tabs"'))
     res = doc.get("res")
     return 200, {"ok": True, "window": res if doc.get("ok") and res in ("closed", "tabs") else "left"}
+
+
+TRASH = os.environ.get("APP_TRASH") or os.path.expanduser("~/.local/bin/trash")
+NAME_CAP = 100
+
+
+def chat_title(body):
+    """The name a rename or a branch asked for, on one line -> str ("" for none), None when malformed."""
+    name = body.get("name", "") if isinstance(body, dict) else None
+    if not isinstance(name, str):
+        return None
+    return " ".join(name.split())[:NAME_CAP]
+
+
+def forget_lists():
+    with CACHE_LOCK:
+        for key in [k for k in CACHE if k in ("recent", "chats", "live") or (isinstance(k, tuple) and k[0] == "pinned")]:
+            CACHE.pop(key, None)
+
+
+def rename_chat(sid, name):
+    """A live terminal chat gets `/rename <name>` typed (Claude Code records it and titles its window); a closed one
+    gets the line /rename writes, a custom-title event at the end of its transcript, which every name reader and the
+    next resume take."""
+    rec, tty = find_live(sid)
+    if rec:
+        if not tty or rec.get("entrypoint", "cli") != "cli":
+            return 409, {"ok": False, "err": "not a terminal chat"}
+        with TYPING:
+            sent = send_text(tty, "/rename " + name, clear=2)
+        if not sent.get("ok") or sent.get("res") == "no-tab":
+            return 502, {"ok": False, "err": sent.get("err") or "no Terminal tab on %s" % tty}
+    else:
+        path = PATHS.get(sid) or transcript(sid, cached("recent", HISTORY_TTL, recent).get(sid))
+        if not path or not os.path.isfile(path):
+            return 404, {"ok": False, "err": "no transcript"}
+        with open(path, "rb") as handle:
+            handle.seek(max(0, os.path.getsize(path) - 1))
+            torn = handle.read(1) not in (b"", b"\n")
+        line = json.dumps({"type": "custom-title", "customTitle": name, "sessionId": sid}, ensure_ascii=False)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(("\n" if torn else "") + line + "\n")
+    forget_lists()
+    return 200, {"ok": True, "live": bool(rec)}
+
+
+def trash_chat(sid):
+    """The chat into the trash /trash uses (claude-setup's session-trash.sh: out of every history, restorable).
+    A live one is marked and ended (/exit, its window closed): its session end moves it; a closed one is marked
+    and swept at once."""
+    rec, tty = find_live(sid)
+    if rec and (not tty or rec.get("entrypoint", "cli") != "cli"):
+        return 409, {"ok": False, "err": "not a terminal chat"}
+    if rec and rec.get("status") in ("busy", "shell"):
+        return 409, {"ok": False, "err": "it is working: stop it first"}
+    path = None if rec else PATHS.get(sid) or transcript(sid, cached("recent", HISTORY_TTL, recent).get(sid))
+    if not rec and not path:
+        return 404, {"ok": False, "err": "no transcript"}
+    FAILED.pop(TRASH, None)
+    if "marked" not in (run([TRASH, "mark", sid], timeout=10) or ""):
+        return 502, {"ok": False, "err": "trash: %s" % (FAILED.get(TRASH) or "it did not mark the chat")}
+    window = None
+    if rec:
+        code, doc = close_chat(sid)
+        if not doc.get("ok"):
+            run([TRASH, "unmark", sid], timeout=10)
+            return code, doc
+        window = doc.get("window")
+    else:
+        root = os.path.dirname(os.path.dirname(os.path.dirname(path)))
+        out = run([TRASH, "sweep"], timeout=60, env=dict(os.environ, CLAUDE_CONFIG_DIR=root))
+        if ("trashed %s" % sid) not in (out or ""):
+            run([TRASH, "unmark", sid], timeout=10)
+            return 502, {"ok": False, "err": "trash: %s" % (FAILED.get(TRASH) or "it did not take the chat")}
+    if sid in pins():
+        shared("chat_pins").pin(sid, False)
+    forget_lists()
+    return 200, {"ok": True, "live": bool(rec), "window": window}
+
+
+def untrash_chat(sid):
+    """A trashed chat back where it was (session-trash.sh restore)."""
+    FAILED.pop(TRASH, None)
+    out = run([TRASH, "restore", sid], timeout=30)
+    if ("restored %s" % sid) not in (out or ""):
+        return 502, {"ok": False, "err": "trash: %s" % (FAILED.get(TRASH) or "nothing to restore")}
+    forget_lists()
+    return 200, {"ok": True}
 
 
 MENU_LUA = r"""
@@ -1470,7 +1576,7 @@ def get(handler, path, query):
         handler.send_json(200, {"pages": pages()})
         return True
     if path == "/api/history":
-        handler.send_json(200, {"chats": history()})
+        handler.send_json(200, history_doc((query.get("h") or [""])[0]))
         return True
     if path == "/api/search":
         q = " ".join((query.get("q") or [""])[0].split())[:200]
@@ -1513,7 +1619,7 @@ def get(handler, path, query):
 
 
 def post(handler, path, body):
-    """POST /api/chat/<sid>/(send|key|unqueue|open|close) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
+    """POST /api/chat/<sid>/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
     chunk's raw PCM bytes)."""
     if path == "/api/client-log":
         client_report(body)
@@ -1527,7 +1633,7 @@ def post(handler, path, body):
             store.event("app", op="mic", path=path[9:20], error=str(answer[1].get("err"))[:300])
         handler.send_json(*answer)
         return True
-    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue|open|close|pin)", path)
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash)", path)
     if not m:
         return False
     sid, sub = m.groups()
@@ -1540,11 +1646,17 @@ def post(handler, path, body):
         with CACHE_LOCK:
             CACHE.pop("chats", None)
         return True
-    if sub in ("open", "close"):
+    if sub in ("open", "close", "rename", "branch", "trash", "untrash"):
         if not SID_RE.match(sid):
             handler.send_json(400, {"ok": False, "err": "bad session id"})
             return True
-        code, doc = open_chat(sid) if sub == "open" else close_chat(sid)
+        name = chat_title(body) if sub in ("rename", "branch") else ""
+        if name is None or (sub == "rename" and not name):
+            handler.send_json(400, {"ok": False, "err": "a name, on one line"})
+            return True
+        code, doc = {"open": lambda: open_chat(sid), "close": lambda: close_chat(sid),
+                     "rename": lambda: rename_chat(sid, name), "branch": lambda: open_chat(sid, fork=name),
+                     "trash": lambda: trash_chat(sid), "untrash": lambda: untrash_chat(sid)}[sub]()
         if store is not None and not doc.get("ok"):
             store.event("app", op=sub, sid=sid, error=str(doc.get("err"))[:300])
         handler.send_json(code, doc)
