@@ -29,7 +29,8 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
   It refuses (exit 2) an empty text, more than 4000 chars, or a channel. Nothing edits or deletes.
 - `send` also writes as Egor does (claude-setup `hooks/lib/owner_text.py` `as_egor`): an opening
   greeting goes when the chat already talked today (a person: any message, a group: his own), and the
-  person's name used as an address (`Славо, …` / `…, Слава!`) always; `dropped: …` says what went, a
+  person's name used as an address (`Славо, …` / `…, Слава!`) and the message's final period (not an
+  ellipsis or `т.д.`) always; `dropped: …` says what went, a
   text that was only a greeting is refused (exit 2). `--as-written` keeps both, only when his own words
   for that message carry them.
 - `wait` runs as a background Bash right after `send` (which prints its line), so the answer wakes the
