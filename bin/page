@@ -586,8 +586,10 @@ def tailscale(*argv, timeout=10):
     try:
         return subprocess.run([os.path.join(TS_BIN, "tailscale"), "--socket", TS_SOCK] + list(argv),
                               capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return None
+    except subprocess.TimeoutExpired as late:
+        # `serve` waits while Serve is off on the tailnet; what it printed by then is the URL that turns it on.
+        out = lambda v: v.decode("utf-8", "replace") if isinstance(v, bytes) else v or ""
+        return subprocess.CompletedProcess(late.cmd, -1, out(late.stdout), out(late.stderr))
 
 
 def ts_status():
@@ -645,7 +647,9 @@ def cmd_tailscale(args):
     if not ts_host():
         done = tailscale("serve", "--bg", "--https=443", "http://127.0.0.1:%d" % PORT, timeout=20)
         if done is None or done.returncode != 0 or not ts_host():
-            print(((done.stdout + done.stderr) if done else "tailscale serve timed out").strip())
+            said = ((done.stdout + done.stderr) if done else "").strip()
+            print(said or "tailscale serve gave no answer in 20 s")
+            print("then run `page tailscale` again")
             return 1
     print("https://%s/ -> 127.0.0.1:%d" % (ts_host(), PORT))
     return 0
