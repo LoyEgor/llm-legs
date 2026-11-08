@@ -1,0 +1,717 @@
+"""The chats app on the pages server: Egor's live Mac chats on the iPad, every account in one list.
+
+A chat is never resumed or re-spawned: what he types goes into the same Terminal tab the chat already runs in, so the
+same process answers on the same account with its prompt cache still warm. Reading is files (the session registry,
+the transcript, memlogd's chats.json); every touch of Terminal goes through Hammerspoon's ChatGate.terminalScript,
+the one bounded AppleScript path (Hammerspoon already holds the Automation grant, the launchd daemon does not), and
+the menubar mirror is llm-limits' read-only menuItems(). The interface is CONTRACT.md "App".
+"""
+
+import glob
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+KIT = ""  # set by bin/page: <repo>/share/pages/kit, read from the main checkout even by the deployed daemon
+store = None  # bin/page's store module
+
+SESSIONS = os.environ.get("APP_SESSIONS")  # a test's registry dir; else chat_names.session_store_files()
+CHATS_JSON = os.environ.get("APP_CHATS_JSON") or os.path.expanduser("~/Library/Logs/memlogd/chats.json")
+HS = os.environ.get("APP_HS") or "/opt/homebrew/bin/hs"
+LOG_WINDOW = 768 << 10
+RESULT_CAP = 2400
+TEXT_CAP = 60000
+SEND_CAP = 200 << 10
+TTY_RE = re.compile(r"^/dev/ttys[0-9]{1,4}$")
+SID_RE = re.compile(r"^[A-Za-z0-9-]{8,80}$")
+ENV_RE = re.compile(r"(?:^|\s)(CLAUDE_LIMITS_ACCOUNT|CLAUDE_CONFIG_DIR|CLAUDEGPT_ACCOUNT)=(\S*)")
+LOAD_RE = re.compile(r"^(.{11})(.*?)\s+([0-9.]+) cores\s+([0-9.]+) GB\s*(.*)$")
+PASTED_RE = re.compile(r"<pasted_content id=[^>]*>(.*?)</pasted_content id=[^>]*>", re.S)
+TAG_RE = re.compile(r"<(command-name|command-args|local-command-stdout|local-command-stderr|bash-input|bash-stdout|"
+                    r"bash-stderr|command-message)>(.*?)</\1>", re.S)
+MACHINERY = ("<system-reminder>", "Caveat:", "<local-command-caveat>")
+HS_LOCK = threading.Lock()
+CACHE = {}
+CACHE_LOCK = threading.Lock()
+
+
+def repo():
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(KIT))))
+
+
+def static_dir():
+    return os.path.join(os.path.dirname(os.path.realpath(KIT)), "app")
+
+
+def cached(key, ttl, make):
+    """make() at most once per ttl seconds per key; concurrent callers share the one answer."""
+    with CACHE_LOCK:
+        held = CACHE.get(key)
+        if held and time.time() - held[0] < ttl:
+            return held[1]
+    value = make()
+    with CACHE_LOCK:
+        CACHE[key] = (time.time(), value)
+    return value
+
+
+FAILED = {}  # argv[0] -> why its last call failed, for the error an endpoint answers with
+
+
+def run(argv, timeout=5, env=None):
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env,
+                              stdin=subprocess.DEVNULL)  # hs -c reads an open stdin and never returns
+    except (OSError, subprocess.TimeoutExpired) as error:
+        FAILED[argv[0]] = str(error)[:200]
+        return None
+    if done.returncode != 0:
+        FAILED[argv[0]] = "exit %d: %s" % (done.returncode, (done.stderr or done.stdout).strip()[:200])
+        return None
+    return done.stdout
+
+
+# ---------------------------------------------------------------- the live chats
+
+def shared(name):
+    """A module of the repo's share/ (chat_names), imported once."""
+    if name not in sys.modules:
+        folder = os.path.join(repo(), "share")
+        if folder not in sys.path:
+            sys.path.append(folder)
+    return __import__(name)
+
+
+def registry():
+    """pid -> the session registry record of every claude process this Mac knows (the same file shows up in
+    every profile through the shared symlink)."""
+    found = {}
+    paths = glob.glob(os.path.join(SESSIONS, "*.json")) if SESSIONS else shared("chat_names").session_store_files()
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                doc = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and isinstance(doc.get("pid"), int) and doc.get("sessionId"):
+            found.setdefault(doc["pid"], doc)
+    return found
+
+
+def processes(pids):
+    """pid -> (tty, lstart) of the live ones, lstart in the registry's own format (C locale, UTC)."""
+    if not pids:
+        return {}
+    env = dict(os.environ, LC_ALL="C", TZ="UTC")
+    out = run(["ps", "-o", "pid=,tty=,lstart=", "-p", ",".join(str(p) for p in pids)], env=env) or ""
+    live = {}
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit():
+            live[int(parts[0])] = (parts[1], " ".join(parts[2].split()))
+    return live
+
+
+ACCOUNTS = {}
+
+
+def accounts(started):
+    """{pid: lstart} -> {pid: (vendor, account)} from each process's own environment, by share/chat-account.sh's
+    order: the claudegpt gateway, then CLAUDE_LIMITS_ACCOUNT, then the config dir's name. Read once per process
+    (pid + start time: a reused pid is another process)."""
+    for pid in [p for p, held in ACCOUNTS.items() if started.get(p, held[0]) != held[0]]:
+        del ACCOUNTS[pid]
+    missing = [p for p in started if p not in ACCOUNTS]
+    if missing:
+        out = run(["ps", "-E", "-o", "pid=,command=", "-p", ",".join(str(p) for p in missing)]) or ""
+        for line in out.splitlines():
+            head, _, rest = line.strip().partition(" ")
+            if not head.isdigit():
+                continue
+            env, pid = dict(ENV_RE.findall(rest)), int(head)
+            if pid not in started:
+                continue
+            gateway, named, config = (env.get("CLAUDEGPT_ACCOUNT"), env.get("CLAUDE_LIMITS_ACCOUNT"),
+                                      env.get("CLAUDE_CONFIG_DIR"))
+            if gateway and gateway != "-":
+                found = ("codex", gateway)
+            elif named and named != "-":
+                found = ("claude", named)
+            elif config and os.path.realpath(config) != os.path.realpath(os.path.expanduser("~/.claude")):
+                found = ("claude", os.path.basename(config.rstrip("/")))
+            else:
+                found = ("claude", "")
+            ACCOUNTS[pid] = (started[pid], found)
+    return {p: ACCOUNTS[p][1] if p in ACCOUNTS else ("claude", "") for p in started}
+
+
+def recent():
+    """session -> chat-find's row (name, transcript path, ctx, model, when it last spoke, cache ttl)."""
+    finder = os.environ.get("APP_CHAT_FIND") or os.path.join(repo(), "bin", "chat-find")
+    out = run([sys.executable, finder, "--recent", "--json"], timeout=8)
+    try:
+        rows = json.loads(out) if out else []
+    except ValueError:
+        rows = []
+    return {r["session"]: r for r in rows if isinstance(r, dict) and r.get("session")}
+
+
+_CHATS_MODULE = []
+
+
+def warm(row):
+    """bin/chats' warm_account: the account whose prompt cache holds the chat, and row["until"]."""
+    if not _CHATS_MODULE:
+        try:
+            loader = importlib.machinery.SourceFileLoader("chats_picker", os.path.join(repo(), "bin", "chats"))
+            spec = importlib.util.spec_from_loader("chats_picker", loader)
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            _CHATS_MODULE.append(module)
+        except Exception:
+            _CHATS_MODULE.append(None)
+    module = _CHATS_MODULE[0]
+    if module is None or not row.get("session"):
+        return None
+    try:
+        return module.warm_account(row)
+    except Exception:
+        return None
+
+
+def load():
+    """memlogd's chats.json: the machine's CPU/memory header and each chat's state, cores, GB and sparkline."""
+    try:
+        with open(CHATS_JSON, encoding="utf-8") as handle:
+            doc = json.load(handle)
+    except (OSError, ValueError):
+        return {}, {}
+    per, header = {}, []
+    for row in doc.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        m = LOAD_RE.match(row.get("text") or "")
+        if row.get("session") and m:
+            per[row["session"]] = {"state": m.group(1).strip(), "cores": float(m.group(3)),
+                                   "gb": float(m.group(4)), "spark": m.group(5)}
+        elif row.get("text", "").startswith(("CPU", "Mem")):
+            header.append(row["text"])
+    machine = {"title": doc.get("title") or "", "lines": header, "as_of": doc.get("as_of"),
+               "alarm": bool(doc.get("alarm"))}
+    return machine, per
+
+
+def tail_lines(path, size):
+    try:
+        with open(path, "rb") as handle:
+            end = handle.seek(0, 2)
+            start = max(0, end - size)
+            handle.seek(start)
+            data = handle.read(end - start)
+    except OSError:
+        return []
+    if start:
+        data = data.partition(b"\n")[2]
+    return data.splitlines()
+
+
+def headline(path):
+    """The chat's latest recap (Claude's away_summary) and its last spoken line, from the transcript's tail."""
+    away, last = None, None
+    for raw in reversed(tail_lines(path, 256 << 10)):
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            continue
+        if away is None and entry.get("type") == "system" and entry.get("subtype") == "away_summary":
+            away = (entry.get("content") or "")[:400]
+        if last is None and not entry.get("isSidechain"):
+            for item in parse_entry(entry):
+                if item["k"] in ("user", "asst"):
+                    last = {"role": item["k"], "t": item["t"][:300]}
+                    break
+        if away is not None and last is not None:
+            break
+    return away, last
+
+
+def transcript(sid, row=None):
+    path = (row or {}).get("path")
+    if path and os.path.exists(path):
+        return path
+    try:
+        found = shared("chat_names").transcript_path(sid)
+        return str(found) if found else None
+    except Exception:
+        return None
+
+
+def live():
+    """The live claude processes: [(record, tty, vendor, account)], workers (no tty) included."""
+    return cached("live", 1.5, scan)
+
+
+def scan():
+    records = registry()
+    procs = processes(sorted(records))
+    out = []
+    for pid, rec in records.items():
+        proc = procs.get(pid)
+        if not proc or (rec.get("procStart") and " ".join(rec["procStart"].split()) != proc[1]):
+            continue
+        tty = "/dev/" + proc[0] if proc[0] not in ("??", "-") else None
+        out.append((rec, tty))
+    names = accounts({rec["pid"]: procs[rec["pid"]][1] for rec, _ in out})
+    return [(rec, tty) + names[rec["pid"]] for rec, tty in out]
+
+
+HEADLINES = {}
+PATHS = {}
+
+
+def chats():
+    found = recent()
+    machine, per = load()
+    rows, workers = [], []
+    pages_by = {}
+    if store is not None:
+        for sid in os.listdir(os.path.join(store.root(), ".by-session")) if os.path.isdir(
+                os.path.join(store.root(), ".by-session")) else []:
+            pages_by[sid] = len(store.owner_pages(sid))
+    for rec, tty, vendor, account in live():
+        sid = rec["sessionId"]
+        row = dict(found.get(sid) or {"session": sid})
+        warm_in = warm(row)
+        path = transcript(sid, row)
+        if path:
+            PATHS[sid] = path
+        size = os.path.getsize(path) if path and os.path.exists(path) else 0
+        held = HEADLINES.get(sid)
+        if not held or held[0] != size:
+            held = (size,) + headline(path) if path else (0, None, None)
+            HEADLINES[sid] = held
+        doc = {"sid": sid, "pid": rec["pid"], "tty": tty, "name": row.get("name") or rec.get("name") or sid[:8],
+               "cwd": rec.get("cwd") or row.get("cwd") or "", "branch": row.get("branch") or "",
+               "vendor": vendor, "account": account, "status": rec.get("status") or "",
+               "status_at": (rec.get("statusUpdatedAt") or 0) / 1000.0, "model": row.get("model") or "",
+               "ctx": row.get("ctx"), "spoke": row.get("spoke") or row.get("at"), "ttl": row.get("ttl"),
+               "until": row.get("until"), "warm": warm_in, "size": size, "away": held[1], "last": held[2],
+               "load": per.get(sid), "pages": pages_by.get(sid, 0), "started": (rec.get("startedAt") or 0) / 1000.0}
+        if tty and rec.get("entrypoint", "cli") == "cli":
+            rows.append(doc)
+        else:
+            workers.append(doc)
+    key = lambda d: -(d.get("spoke") or d.get("started") or 0)
+    return {"as_of": time.time(), "machine": machine, "chats": sorted(rows, key=key),
+            "workers": sorted(workers, key=key)}
+
+
+def find_live(sid):
+    for rec, tty, vendor, account in live():
+        if rec["sessionId"] == sid:
+            return rec, tty
+    return None, None
+
+
+# ---------------------------------------------------------------- the transcript
+
+def clip(text, cap):
+    return text if len(text) <= cap else text[:cap] + "\n… (%d more chars)" % (len(text) - cap)
+
+
+def user_text(text):
+    """What he typed, without the wrappers the client adds: pasted blocks unwrapped, slash commands as he typed
+    them. None when the line is machinery, a dict {k, t} when it is an event rather than speech."""
+    stripped = text.lstrip()
+    if stripped.startswith("<task-notification>"):
+        summary = re.search(r"<summary>(.*?)</summary>", stripped, re.S)
+        return {"k": "event", "t": (summary.group(1) if summary else "task notification").strip()}
+    if stripped.startswith(MACHINERY):
+        return None
+    tags = dict(TAG_RE.findall(text))
+    if "command-name" in tags:
+        return {"k": "user", "t": (tags["command-name"] + " " + tags.get("command-args", "")).strip()}
+    if "bash-input" in tags:
+        return {"k": "user", "t": "! " + tags["bash-input"]}
+    if stripped.startswith(("<local-command-stdout>", "<bash-stdout>", "<local-command-stderr>", "<bash-stderr>")):
+        body = "\n".join(v for k, v in tags.items() if k != "command-message").strip()
+        return {"k": "event", "t": clip(body, 600)} if body else None
+    text = PASTED_RE.sub(lambda m: m.group(1), text)
+    return {"k": "user", "t": clip(text, TEXT_CAP)}
+
+
+def tool_summary(name, args):
+    if not isinstance(args, dict):
+        return ""
+    if isinstance(args.get("questions"), list):
+        return " · ".join(q.get("question", "") for q in args["questions"] if isinstance(q, dict))[:500]
+    if isinstance(args.get("todos"), list):
+        return "%d todos" % len(args["todos"])
+    for field in ("description", "command", "file_path", "pattern", "url", "query", "prompt", "skill", "path"):
+        value = args.get(field)
+        if isinstance(value, str) and value:
+            if field == "description" and isinstance(args.get("command"), str):
+                return value + "\n" + args["command"][:400]
+            return value[:500]
+    return json.dumps(args, ensure_ascii=False)[:300]
+
+
+def result_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text") or "")
+            elif isinstance(block, dict) and block.get("type") == "image":
+                parts.append("[image]")
+        return "\n".join(parts)
+    return ""
+
+
+def parse_entry(entry):
+    """One transcript line -> the app's items: user/asst speech, tool calls and their results, recaps, events."""
+    kind, msg = entry.get("type"), entry.get("message") or {}
+    at = entry.get("timestamp") or ""
+    if entry.get("isSidechain") or msg.get("model") == "<synthetic>":
+        return []
+    if kind == "system":
+        if entry.get("subtype") == "away_summary" and entry.get("content"):
+            return [{"k": "away", "t": entry["content"], "at": at}]
+        if entry.get("subtype") == "compact_boundary":
+            return [{"k": "event", "t": "— compacted —", "at": at}]
+        return []
+    content = msg.get("content")
+    if kind == "user":
+        if entry.get("isMeta") or entry.get("isCompactSummary"):
+            return []
+        if isinstance(content, str):
+            item = user_text(content)
+            return [dict(item, at=at)] if item else []
+        items, words = [], []
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_result":
+                items.append({"k": "result", "id": block.get("tool_use_id"), "err": bool(block.get("is_error")),
+                              "t": clip(result_text(block.get("content")), RESULT_CAP), "at": at})
+            elif block.get("type") == "text" and isinstance(block.get("text"), str):
+                item = user_text(block["text"])
+                if item and item["k"] == "user":
+                    words.append(item["t"])
+            elif block.get("type") == "image":
+                words.append("[image]")
+        if words:
+            items.insert(0, {"k": "user", "t": "\n".join(words), "at": at})
+        return items
+    if kind == "assistant":
+        items = []
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text" and (block.get("text") or "").strip():
+                items.append({"k": "asst", "t": clip(block["text"], TEXT_CAP), "at": at})
+            elif block.get("type") == "tool_use":
+                items.append({"k": "tool", "id": block.get("id"), "n": block.get("name") or "?",
+                              "s": tool_summary(block.get("name"), block.get("input")), "at": at})
+        return items
+    return []
+
+
+def log(sid, after=None, before=None):
+    """Items of the transcript: the tail (LOG_WINDOW) with no offsets, what came after byte `after`, or the window
+    that ends at byte `before`. -> {items, start, end}: offsets of whole lines, for the next call."""
+    if not SID_RE.match(sid):
+        return None
+    path = PATHS.get(sid) or transcript(sid, cached("recent", 30, recent).get(sid))
+    if not path:
+        return None
+    with open(path, "rb") as handle:
+        size = handle.seek(0, 2)
+        if after is not None:
+            start, end = min(after, size), size
+        elif before is not None:
+            end = min(before, size)
+            start = max(0, end - LOG_WINDOW)
+        else:
+            end, start = size, max(0, size - LOG_WINDOW)
+        handle.seek(start)
+        data = handle.read(end - start)
+    if start and after is None:
+        cut = data.find(b"\n") + 1
+        start, data = start + cut, data[cut:]
+    if not data.endswith(b"\n"):
+        cut = data.rfind(b"\n") + 1
+        end, data = start + cut, data[:cut]
+    items = []
+    for raw in data.splitlines():
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            items += parse_entry(entry)
+    return {"items": items, "start": start, "end": end, "size": size}
+
+
+# ---------------------------------------------------------------- Terminal, through Hammerspoon
+
+def hs(lua, timeout=6):
+    """One Lua chunk in the running Hammerspoon -> its printed answer (a JSON string), or None."""
+    with HS_LOCK:
+        return run([HS, "-t", str(timeout - 1), "-c", lua], timeout=timeout)
+
+
+def terminal(script):
+    """An AppleScript through ChatGate.terminalScript -> {"ok": bool, "res": str|None, "err": str|None}."""
+    lua = ("local g=package.loaded['chat_gate'] if not g then return hs.json.encode({ok=false,err='chat_gate not"
+           " loaded'}) end local ok,res,d=g.terminalScript('pages-app', [==[%s]==]) return hs.json.encode({ok=ok"
+           " and true or false,res=type(res)=='string' and res or nil,err=(not ok) and"
+           " (type(d)=='string' and d or hs.inspect(d)) or nil})" % script)
+    out = hs(lua)
+    try:
+        doc = json.loads(out) if out else None
+    except ValueError:
+        doc = None
+    return doc if isinstance(doc, dict) else {"ok": False, "err": "Hammerspoon did not answer (%s)" % FAILED.get(HS)}
+
+
+def in_tab(tty, body):
+    """AppleScript running `body` against the Terminal tab whose tty is `tty`; TAB in body names the tab, spelled
+    out each time (`contents of` a variable holding the tab reads the reference, not the tab)."""
+    assert TTY_RE.match(tty)
+    return ('tell application id "com.apple.Terminal"\nrepeat with j from 1 to count windows\n'
+            'repeat with i from 1 to count tabs of window j\nif tty of tab i of window j is "%s" then\n'
+            '%s\nend if\nend repeat\nend repeat\nend tell\nreturn "no-tab"'
+            % (tty, body.replace("TAB", "tab i of window j")))
+
+
+def screen(tty):
+    return cached(("screen", tty), 0.8, lambda: terminal(in_tab(tty, "return contents of TAB")))
+
+
+def send_text(tty, text):
+    """The text into the tab as one bracketed paste; `do script` appends the Return that submits it."""
+    folder = os.path.join(tempfile.gettempdir(), "pages-app")
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    fd, path = tempfile.mkstemp(dir=folder, suffix=".txt")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        body = ('set txt to read POSIX file "%s" as «class utf8»\nset e to ASCII character 27\n'
+                'do script (e & "[200~" & txt & e & "[201~") in TAB\nreturn "sent"' % path)
+        return terminal(in_tab(tty, body))
+    finally:
+        os.unlink(path)
+
+
+def menu_cursor(text):
+    """The number of the menu option the ❯ cursor is on, from the bottom of the screen, or None."""
+    for line in reversed((text or "").splitlines()[-40:]):
+        m = re.match(r"^\s*[│ ]*\s*❯\s*(\d+)\.", line)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def send_key(tty, key, choose=None):
+    """esc / enter / up / down, or choose=N: arrows from the ❯ option to N; `do script` appends the Enter."""
+    seq = {"esc": '(ASCII character 27)', "enter": '""', "up": '(e & "[A")', "down": '(e & "[B")'}.get(key)
+    if choose is not None:
+        current = menu_cursor((screen(tty) or {}).get("res"))
+        if current is None:
+            return {"ok": False, "err": "no menu on the screen"}
+        step = '(e & "[B")' if choose > current else '(e & "[A")'
+        seq = " & ".join([step] * abs(choose - current)) or '""'
+        with CACHE_LOCK:
+            CACHE.pop(("screen", tty), None)
+    if seq is None:
+        return {"ok": False, "err": "unknown key"}
+    return terminal(in_tab(tty, 'set e to ASCII character 27\ndo script %s in TAB\nreturn "sent"' % seq))
+
+
+# ---------------------------------------------------------------- the menubar mirror
+
+MENU_LUA = r"""
+local m = package.loaded['llm-limits']
+if not m or not m.menuItems then return hs.json.encode({err='llm-limits not loaded'}) end
+local function hex(c)
+  if type(c) ~= 'table' then return nil end
+  local r, g, b = c.red, c.green, c.blue
+  if r == nil and c.white ~= nil then r, g, b = c.white, c.white, c.white end
+  if r == nil then return nil end
+  return string.format('%02x%02x%02x', math.floor(r*255+0.5), math.floor(g*255+0.5), math.floor(b*255+0.5)),
+    c.alpha or 1
+end
+local function runs(title)
+  if type(title) == 'string' then return {{t=title}} end
+  if type(title) ~= 'userdata' then return {{t=tostring(title or '')}} end
+  local ok, tb = pcall(function() return title:asTable() end)
+  if not ok or type(tb) ~= 'table' then return {{t=title:getString()}} end
+  local s, out, at = tb[1] or '', {}, 1
+  for i = 2, #tb do
+    local r = tb[i]
+    if type(r) == 'table' and r.starts then
+      -- asTable's starts lands on the LAST byte of a multibyte first character (ends is right): step back
+      -- to its lead byte, and keep any byte no run covers as plain text.
+      local first = r.starts
+      while first > at and first > 1 and (s:byte(first) or 0) >= 0x80 and (s:byte(first) or 0) < 0xC0 do
+        first = first - 1
+      end
+      if first > at then out[#out+1] = {t=s:sub(at, first - 1)} end
+      at = math.max(at, r.ends + 1)
+      local a = r.attributes or {}
+      local seg = {t=s:sub(first, r.ends)}
+      local c, al = hex(a.color)
+      if c then seg.c = c; seg.a = al end
+      if a.font and type(a.font.name) == 'string' and a.font.name:find('Bold') then seg.b = true end
+      out[#out+1] = seg
+    end
+  end
+  if at <= #s then out[#out+1] = {t=s:sub(at)} end
+  return out
+end
+local function conv(items, depth)
+  local out = {}
+  for _, it in ipairs(items or {}) do
+    if it.title == '-' then out[#out+1] = {sep=true}
+    else
+      local e = {r=runs(it.title)}
+      if it.checked then e.ck = true end
+      if it.disabled then e.dis = true end
+      if type(it.menu) == 'table' and depth < 4 then e.sub = conv(it.menu, depth+1) end
+      out[#out+1] = e
+    end
+  end
+  return out
+end
+local ok, items = pcall(m.menuItems)
+if not ok then return hs.json.encode({err=tostring(items)}) end
+return hs.json.encode({items=conv(items, 1)})
+"""
+
+
+def menu():
+    def make():
+        out = hs(MENU_LUA)
+        try:
+            doc = json.loads(out) if out else None
+        except ValueError:
+            doc = None
+        return doc if isinstance(doc, dict) else {"err": "Hammerspoon did not answer (%s)" % FAILED.get(HS)}
+    return cached("menu", 4, make)
+
+
+# ---------------------------------------------------------------- pages
+
+def pages():
+    out = []
+    for pid in store.all_pages():
+        m = store.meta(pid)
+        out.append({"pid": pid, "title": m.get("title") or pid, "chat": m.get("chat_name") or "",
+                    "owner": m.get("owner") or "", "module": m.get("module") or "",
+                    "updated": m.get("updated") or "", "created": m.get("created") or ""})
+    return sorted(out, key=lambda p: p["updated"], reverse=True)
+
+
+# ---------------------------------------------------------------- HTTP
+
+TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+         ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml"}
+
+
+def get(handler, path, query):
+    """GET /app/... and /api/...; True when handled."""
+    if path in ("/app", "/app/"):
+        path = "/app/index.html"
+    if path == "/app/manifest.webmanifest":
+        token = getattr(handler.server, "lan_token", None)
+        start = "/app/?k=%s" % token if token else "/app/"
+        doc = {"name": "Mac chats", "short_name": "Chats", "start_url": start, "scope": "/",
+               "display": "standalone", "background_color": "#1c1c1e", "theme_color": "#1c1c1e",
+               "icons": [{"src": "/app/icon.png", "sizes": "512x512", "type": "image/png"}]}
+        handler.reply(200, json.dumps(doc).encode(), "application/manifest+json", [("Cache-Control", "no-cache")])
+        return True
+    if path.startswith("/app/"):
+        name = path[5:]
+        if not re.fullmatch(r"[a-z0-9-]+\.(html|js|css|png|svg)", name):
+            handler.reply(404, b"not found\n")
+            return True
+        full = os.path.join(static_dir(), name)
+        try:
+            with open(full, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            handler.reply(404, b"not found\n")
+            return True
+        handler.reply(200, body, TYPES[os.path.splitext(name)[1]], [("Cache-Control", "no-cache")])
+        return True
+    if path == "/api/chats":
+        handler.send_json(200, cached("chats", 2.5, chats))
+        return True
+    if path == "/api/menu":
+        handler.send_json(200, menu())
+        return True
+    if path == "/api/pages":
+        handler.send_json(200, {"pages": pages()})
+        return True
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(log|screen)", path)
+    if m:
+        sid, sub = m.groups()
+        if sub == "log":
+            number = lambda k: int(query[k][0]) if query.get(k, [""])[0].isdigit() else None
+            doc = log(sid, number("after"), number("before"))
+            if doc is None:
+                handler.send_json(404, {"err": "no transcript"})
+            else:
+                doc["pages"] = [{"pid": p, "title": store.meta(p).get("title") or p} for p in store.owner_pages(sid)]
+                handler.send_json(200, doc)
+            return True
+        rec, tty = find_live(sid)
+        if not tty:
+            handler.send_json(404, {"err": "not a live terminal chat"})
+            return True
+        handler.send_json(200, screen(tty))
+        return True
+    return False
+
+
+def post(handler, path, body):
+    """POST /api/chat/<sid>/(send|key); True when handled. body is the parsed JSON object."""
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key)", path)
+    if not m:
+        return False
+    sid, sub = m.groups()
+    rec, tty = find_live(sid)
+    if not tty or rec.get("entrypoint", "cli") != "cli":
+        handler.send_json(404, {"ok": False, "err": "not a live terminal chat"})
+        return True
+    if sub == "send":
+        text = body.get("text") if isinstance(body, dict) else None
+        if not isinstance(text, str) or not text.strip() or len(text.encode()) > SEND_CAP:
+            handler.send_json(400, {"ok": False, "err": "empty or too long"})
+            return True
+        answer = send_text(tty, text)
+    else:
+        key = body.get("key") if isinstance(body, dict) else None
+        choose = body.get("choose") if isinstance(body, dict) else None
+        if choose is not None and not (isinstance(choose, int) and 0 < choose < 30):
+            handler.send_json(400, {"ok": False, "err": "bad choice"})
+            return True
+        answer = send_key(tty, key, choose)
+    if answer.get("res") == "no-tab":
+        answer = {"ok": False, "err": "no Terminal tab on %s" % tty}
+    with CACHE_LOCK:
+        CACHE.pop(("screen", tty), None)
+    if store is not None and not answer.get("ok"):
+        store.event("app", op=sub, sid=sid, error=str(answer.get("err"))[:300])
+    handler.send_json(200 if answer.get("ok") else 502, answer)
+    return True

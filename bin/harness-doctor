@@ -4901,6 +4901,7 @@ DEPLOYS = (
                                          ("agents", "com.llm-legs.system-doctor.plist", "program", "system-doctor"))),
     ("bin/page install-agent", (("libexec", "pagesd/pagesd", "copy", "bin/page"),
                                 ("libexec", "pagesd/store.py", "copy", "share/pages/store.py"),
+                                ("libexec", "pagesd/app.py", "copy", "share/pages/app.py"),
                                 ("agents", "com.llm-legs.pages.plist", "program", "pagesd/pagesd"))),
     (None, (("libexec", "harness-doctor", "copy", "launchd/harness-doctor"),
             ("agents", "com.egor.harness-doctor.plist", "copy", "launchd/com.egor.harness-doctor.plist"))),

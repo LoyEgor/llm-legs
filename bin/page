@@ -2,8 +2,8 @@
 """Local browser pages for Egor: the server and the chat's whole CLI over share/pages/store.py.
 
 The interface is share/pages/CONTRACT.md. launchd runs a deployed copy, ~/.local/libexec/pagesd/pagesd (with
-store.py beside it), because TCC refuses a LaunchAgent that execs off /Volumes/Work (as bin/memlogd);
-harness-doctor's DEPLOYS reruns `page install-agent` once an edit of either file lands in main.
+store.py and app.py, the chats app's /app/ and /api/, beside it), because TCC refuses a LaunchAgent that execs off
+/Volumes/Work (as bin/memlogd); harness-doctor's DEPLOYS reruns `page install-agent` once an edit of any lands in main.
 """
 
 import argparse
@@ -30,8 +30,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path[:0] = [HERE, os.path.join(os.path.dirname(HERE), "share", "pages")]
 import store  # noqa: E402
+import app  # noqa: E402
 
 KIT = os.environ.get("PAGES_KIT_DIR") or os.path.join(os.path.dirname(HERE), "share", "pages", "kit")
+app.KIT, app.store = KIT, store
 PORT = int(os.environ.get("PAGES_PORT") or 4791)
 LABEL = "com.llm-legs.pages"
 DEPLOY_DIR = os.path.expanduser("~/.local/libexec/pagesd")
@@ -126,6 +128,9 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.unquote(self.path.partition("?")[0])
         if path == "/":
             return self.reply(200, index_html().encode(), "text/html; charset=utf-8", [("Cache-Control", "no-cache")])
+        if path.startswith(("/app", "/api/")) and app.get(
+                self, path, urllib.parse.parse_qs(self.path.partition("?")[2])):
+            return None
         if path == "/healthz":
             return self.send_json(200, {"pages": 1, "schema": 1, "pid": os.getpid(), "dir": store.root()})
         if path.startswith("/kit/"):
@@ -215,6 +220,15 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin is not None and origin != "http://" + self.headers["Host"]:
             return self.reply(403, b"origin refused\n")
+        if path.startswith("/api/"):
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length)) if 0 < length <= app.SEND_CAP * 2 else None
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                return self.reply(400, b"bad body\n")
+            return None if app.post(self, path, body) else self.reply(404, b"not found\n")
         m = re.fullmatch(r"/p/([^/]+)/(patch|error|upload|drop)", path)
         if not m or not store.page_dir(m.group(1)):
             return self.reply(404, b"not found\n")
@@ -318,7 +332,8 @@ def index_html():
     for pid in store.all_pages():
         m = store.meta(pid)
         groups.setdefault(m.get("chat_name") or "?", []).append((m.get("updated") or "", pid, m.get("title") or pid))
-    out = ["<!doctype html><meta charset=utf-8><title>Pages</title><body style='font:15px system-ui'>"]
+    out = ["<!doctype html><meta charset=utf-8><title>Pages</title><body style='font:15px system-ui'>"
+           "<p><a href='/app/'>Chats app</a></p>"]
     for chat, pages in sorted(groups.items(), key=lambda g: max(g[1])[0], reverse=True):
         out.append("<h3>%s</h3><ul>" % html.escape(chat))
         out += ["<li><a href='/p/%s/'>%s</a> <small>%s</small>" % (pid, html.escape(title), html.escape(at))
@@ -551,7 +566,7 @@ def cmd_lan(args):
     host = lan_host()
     if not host:
         raise store.Refused("no LocalHostName (scutil --get LocalHostName)")
-    path = "/p/%s/" % lookup(args)[0] if args.ref else "/"
+    path = "/app/" if args.app else "/p/%s/" % lookup(args)[0] if args.ref else "/"
     link = "http://%s:%d%s?k=%s" % (host, PORT, path, lan_token())
     print(link)
     subprocess.run(["pbcopy"], input=link, text=True, check=False)
@@ -588,7 +603,8 @@ def cmd_doctor(args):
     listen = subprocess.run(["lsof", "-nP", "-iTCP:%d" % PORT, "-sTCP:LISTEN", "-Fpc"], capture_output=True, text=True)
     held = dict((l[0], l[1:]) for l in listen.stdout.splitlines() if l[:1] in "pc")
     print("port owner: %s" % ("%s (pid %s)" % (held.get("c"), held.get("p")) if held else "nobody"))
-    sources = {"pagesd": os.path.realpath(__file__), "store.py": os.path.realpath(store.__file__)}
+    sources = {"pagesd": os.path.realpath(__file__), "store.py": os.path.realpath(store.__file__),
+               "app.py": os.path.realpath(app.__file__)}
     drift = []
     for name, source in sources.items():
         target = os.path.join(DEPLOY_DIR, name)
@@ -634,7 +650,8 @@ def cmd_install_agent(args):
     if os.path.realpath(HERE) == os.path.realpath(DEPLOY_DIR):
         raise store.Refused("run install-agent from the repo checkout, not the deployed copy")
     os.makedirs(DEPLOY_DIR, exist_ok=True)
-    for source, name in ((os.path.realpath(__file__), "pagesd"), (os.path.realpath(store.__file__), "store.py")):
+    for source, name in ((os.path.realpath(__file__), "pagesd"), (os.path.realpath(store.__file__), "store.py"),
+                         (os.path.realpath(app.__file__), "app.py")):
         shutil.copyfile(source, os.path.join(DEPLOY_DIR, name + ".tmp"))
         os.chmod(os.path.join(DEPLOY_DIR, name + ".tmp"), 0o755)
         os.replace(os.path.join(DEPLOY_DIR, name + ".tmp"), os.path.join(DEPLOY_DIR, name))
@@ -691,6 +708,7 @@ def main(argv):
     p = sub.add_parser("lan", parents=[chat])
     p.add_argument("ref", nargs="?")
     p.add_argument("--no-qr", action="store_true")
+    p.add_argument("--app", action="store_true", help="the chats app (/app/) instead of a page or the index")
     sub.add_parser("doctor")
     sub.add_parser("report").add_argument("--days", type=int, default=7)
     sub.add_parser("serve").add_argument("--port", type=int, default=PORT)

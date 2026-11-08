@@ -36,6 +36,23 @@ on an incompatible change.
 
 `pid` matches `^[a-z0-9][a-z0-9-]{0,63}$`; anything else is 404 before any path join.
 
+## App (`share/pages/app.py`, client `share/pages/app/`)
+Egor's live Mac chats on the iPad, every account in one list. A chat is never resumed: text goes into the
+Terminal tab the chat already runs in (same process, same account, warm cache). Same host check and POST
+rules as above; `page lan --app` prints the link. Terminal is touched only through Hammerspoon's
+`ChatGate.terminalScript` (`hs -c`), the menubar only through llm-limits' read-only `menuItems()`.
+
+| Route | Answer |
+|---|---|
+| `GET /app/` | the client (`index.html`, `app.js`, `app.css`, `icon.png`); `manifest.webmanifest` starts at `/app/?k=<token>`, so a home-screen app gets its own cookie |
+| `GET /api/chats` | `{machine, chats, workers}`: live registry records (`~/.claude*/sessions`, pid + `procStart` checked) with tty, account (the process env, `chat-account.sh` order), chat-find's name/ctx/model, warm cache `until`, memlogd load, last line, latest recap, page count. Workers = no tty or `entrypoint` ≠ `cli`, read-only |
+| `GET /api/chat/<sid>/log[?after=N\|?before=N]` | `{items, start, end, size, pages}`: transcript items (`user`, `asst`, `tool`, `result`, `event`, `away`) of the tail, after byte N, or the window ending at N |
+| `GET /api/chat/<sid>/screen` | `{ok, res}`: the tab's visible text |
+| `POST /api/chat/<sid>/send` | `{text}` → one bracketed paste + Return in the tab → `{ok, err}` |
+| `POST /api/chat/<sid>/key` | `{key: esc\|enter\|up\|down}` or `{choose: N}` (arrows from the `❯` option, then Return) |
+| `GET /api/menu` | `{items}`: the menubar as `{r: [{t, c, a, b}], ck, dis, sub}`, cached 4 s |
+| `GET /api/pages` | every page's `{pid, title, chat, owner, module, updated}`, newest first |
+
 ## Served spec
 This is `spec.json` with three changes:
 - every media path is replaced by its `/p/<pid>/m/<n>?v=…` URL;
@@ -96,6 +113,7 @@ extending one: `EXTEND.md`. The server knows only:
 | `page set <slug\|pid> <item> field=value…` | writes a field as `by: chat` |
 | `page list [--all]` | this chat's pages, or every page |
 | `page open <slug\|pid>` | opens the page in Dia |
+| `page lan [ref] [--app]` | the home-network link to a page, the index, or the chats app; clipboard + QR |
 | `page doctor` | server up? port owner, deployed copy current, PAGES_DIR |
 | `page report [--days N]` | pages made per chat and module, the `.events.jsonl` problems and hints, kit commits |
 | `page serve` | the daemon (launchd runs `~/.local/libexec/pagesd`) |

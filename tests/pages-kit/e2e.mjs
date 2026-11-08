@@ -23,16 +23,17 @@ for (const dir of process.argv.slice(2)) {
 if (!browser) { console.log("SKIP: no headless Chromium for any playwright-core found"); process.exit(3); }
 
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pages-e2e-")));
+// The daemon's socket lives in a short dir: under run-suites the tmp path passes the 104-byte sun_path limit (EINVAL).
+const sockDir = fs.mkdtempSync("/tmp/pk-");
 const F = fixtures(path.join(tmp, "media"));
 fs.mkdirSync(path.join(tmp, "bin"));
 fs.writeFileSync(path.join(tmp, "bin/chat-name"), '#!/bin/sh\necho \'{"name": "e2e chat"}\'\n', { mode: 0o755 });
 const env = { ...process.env, PATH: `${tmp}/bin:${process.env.PATH}`, PAGES_DIR: path.join(tmp, "pages"),
-  PAGES_KIT_DIR: path.join(ROOT, "share/pages/kit"), CLAUDE_CODE_SESSION_ID: "chat-e2e", TRANSCRIBER_RUNTIME_DIR: path.join(tmp, "tgpt") };
+  PAGES_KIT_DIR: path.join(ROOT, "share/pages/kit"), CLAUDE_CODE_SESSION_ID: "chat-e2e", TRANSCRIBER_RUNTIME_DIR: sockDir };
 delete env.CLAUDE_LAUNCHER_SESSION;
 // A stand-in for transcriptions-gpt's daemon (its MARKS.md): every mark line the server relays, answered by `daemon`.
 const marks = [];
 let daemon = () => "ignored idle";
-fs.mkdirSync(env.TRANSCRIBER_RUNTIME_DIR);
 const fake = net.createServer((c) => {
   let got = "";
   c.on("data", (d) => { got += d; if (got.endsWith("\n")) {
@@ -309,6 +310,7 @@ try {
   server.kill();
   fake.close();
   fs.rmSync(tmp, { recursive: true, force: true });
+  fs.rmSync(sockDir, { recursive: true, force: true });
 }
 console.log(failed ? `FAIL: ${failed} of ${checks} end-to-end checks` : `PASS: ${checks} end-to-end checks`);
 process.exit(failed ? 1 : 0);

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Chats">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="/app/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/app/icon.png">
+<link rel="stylesheet" href="/app/app.css">
+<title>Chats</title>
+<body>
+<div id="root">
+  <aside id="side">
+    <header id="machine"></header>
+    <div id="list"></div>
+    <nav id="views">
+      <a href="#menu" data-view="menu">▤ Menu</a>
+      <a href="#pages" data-view="pages">◫ Pages</a>
+    </nav>
+  </aside>
+  <main id="main">
+    <header id="head">
+      <a id="back" href="#">‹</a>
+      <div id="title"></div>
+      <div id="chips"></div>
+    </header>
+    <section id="chat" hidden>
+      <div id="log"></div>
+      <div id="opts"></div>
+      <pre id="screen"></pre>
+      <form id="composer">
+        <textarea id="input" rows="1" enterkeyhint="enter" autocomplete="off"></textarea>
+        <div class="keys">
+          <button type="button" data-key="esc" title="Esc">esc</button>
+          <button type="button" data-key="enter" title="Enter">⏎</button>
+          <button type="submit" id="send" title="Send (⌘⏎)">↑</button>
+        </div>
+      </form>
+    </section>
+    <section id="menu" hidden></section>
+    <section id="pages" hidden></section>
+    <section id="empty"><div>⌘</div></section>
+  </main>
+</div>
+<div id="overlay" hidden><button id="close" type="button">×</button><iframe id="frame" title="page"></iframe></div>
+<div id="toast" hidden></div>
+<script type="module" src="/app/app.js"></script>
