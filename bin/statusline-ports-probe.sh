@@ -54,7 +54,7 @@ LSOF_CMD="${STATUSLINE_LSOF:-lsof}"
 
 write_cache() {
   # Trailing newline even on empty: a 1-byte file still reads back as "" (probed, no servers).
-  probe_publish "$cache_file" "$1"$'\n'
+  probe_publish "$cache_file" "$1"$'\n' 15 30
 }
 
 # Every listener this user owns, in one call: the pid list can no longer be narrowed to the

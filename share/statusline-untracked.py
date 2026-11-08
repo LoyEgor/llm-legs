@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Line count of a repository's untracked files for bin/statusline.sh.
 
-stdin: `git ls-files --others --exclude-standard -z` of <top>; prints `<lines>\t0\t\tU<files>`.
+stdin: `git ls-files --others --exclude-standard -z` of <top>, or with a third argument `status` the
+render's `git status --porcelain=v2` text; prints `<lines>\t0\t\tU<files>`.
 Each file's `grep -cI ''` is cached per repository on its (dev, inode, size, mtime, ctime): a
 cache of file content only, pruned to the files listed now. Runs under `python3 -E -S` on every
 render, so it imports builtin modules only (marshal, zlib) and subprocess only when it greps.
@@ -72,10 +73,20 @@ def save(cache_dir, cache_file, cache):
 def cached_total(top, names, cache_dir):
     # A crc32 clash only shares a file between two repositories: entries are keyed on dev+inode.
     cache_file = os.path.join(cache_dir, '%08x.cache' % zlib.crc32(top))
+    # Every stamp of the listing as one string: the same as the last clean run's, its total stands and
+    # the per-file cache is never unpacked (20 ms for 8 000 files, as long as the stats themselves).
+    sigs = [stamp(os.path.join(top, name)) for name in names]
+    listing = marshal.dumps((names, sigs))
+    try:
+        with open(cache_file + '.sum', 'rb') as stream:
+            last_listing, last_total = marshal.load(stream)
+        if last_listing == listing and type(last_total) is int:
+            return last_total
+    except (OSError, ValueError, EOFError, TypeError):
+        pass
     old = load(cache_file)
-    fresh, total, misses = {}, 0, []
-    for name in names:
-        sig = stamp(os.path.join(top, name))
+    fresh, total, misses, clean = {}, 0, [], True
+    for name, sig in zip(names, sigs):
         record = old.get(name)
         if (sig is not None and type(record) is tuple and len(record) == 2 and record[0] == sig
                 and type(record[1]) is int):
@@ -89,10 +100,14 @@ def cached_total(top, names, cache_dir):
         count = counts.get(name, 0)
         total += count
         # A write racing grep must not file the old count under the new file's stamp.
-        if sig is not None and len(fresh) < MAX_ENTRIES and stamp(os.path.join(top, name)) == sig:
+        if stamp(os.path.join(top, name)) != sig:
+            clean = False
+        elif sig is not None and len(fresh) < MAX_ENTRIES:
             fresh[name] = (sig, count)
     if fresh != old:
         save(cache_dir, cache_file, fresh)
+    if clean:
+        save(cache_dir, cache_file + '.sum', (listing, total))
     return total
 
 
@@ -112,7 +127,10 @@ def xargs_total(top, names):
 
 def main():
     top, cache_dir = os.fsencode(sys.argv[1]), sys.argv[2]
-    names = [name for name in sys.stdin.buffer.read().split(b'\0') if name]
+    data = sys.stdin.buffer.read()
+    # `status`: stdin is the render's `git status --porcelain=v2` text, its `? ` lines the listing.
+    names = ([line[2:] for line in data.split(b'\n') if line.startswith(b'? ')] if sys.argv[3:] == ['status']
+             else [name for name in data.split(b'\0') if name])
     # grep reads a leading `-` as an option and prints a newline inside a name: the uncached
     # xargs pass keeps what that did to the count.
     if any(name.startswith(b'-') or b'\n' in name for name in names):

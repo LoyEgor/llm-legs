@@ -1529,6 +1529,7 @@ run_statusline_counted() { : > "$GIT_COUNT_LOG"; PATH="$GIT_COUNT_BIN:$PATH" run
 counted_wt_output=$(run_statusline_counted "$(statusline_payload status-in-wt '' "$REPO_E")") || fail "statusline counted worktree failed"
 assert_eq "$in_wt_output" "$counted_wt_output"
 assert_eq 0 "$(grep -c 'worktree list' "$GIT_COUNT_LOG")"
+rm -f "$STATE_DIR"/render-repo-status-sepdir-* # a cold render: the answer is not cached yet
 counted_sep_output=$(run_statusline_counted "$(statusline_payload status-sepdir '' "$REPO_G")") || fail "statusline counted separate-git-dir failed"
 assert_eq "$sepdir_output" "$counted_sep_output"
 assert test "$(grep -c 'worktree list' "$GIT_COUNT_LOG")" -ge 1
@@ -1561,6 +1562,62 @@ for dirty_round in 1 2; do
   assert grep -Fq "${GREEN}+8${RESET}/${RED}-0${RESET}" <<< "$dirty_fresh"
   assert test "$(grep -c ' diff ' "$GIT_COUNT_LOG")" -ge 1
 done
+# Work not done: past 32 untracked names the counter reads the status text itself, and a line added to one is seen.
+for n in $(seq 1 40); do printf 'x\n' > "$DIRTY_REPO/many-$n.txt"; done
+touch -t 202001010000 "$DIRTY_REPO"/many-*.txt
+many_out=$(run_statusline "$dirty_payload") || fail "statusline many untracked failed"
+assert grep -Fq "${GREEN}+48${RESET}/${RED}-0${RESET}" <<< "$many_out"
+printf 'y\n' >> "$DIRTY_REPO/many-7.txt"
+many_out=$(run_statusline "$dirty_payload") || fail "statusline many untracked edited failed"
+assert grep -Fq "${GREEN}+49${RESET}/${RED}-0${RESET}" <<< "$many_out"
+
+# Work not done: a dir that is its own toplevel keeps its repo_dirs answer while its `.git`, git dir, `commondir`,
+# common dir and `config` keep their stat; a moved `.git` is seen on the very next render.
+RDC_TOP="$FIXTURES/repo-dirs-cache"
+git init -q -b main "$RDC_TOP"
+RDC_TOP=$(cd "$RDC_TOP" && pwd -P)
+touch -t 202001010000 "$RDC_TOP/.git" "$RDC_TOP/.git/config"
+rdc_payload=$(statusline_payload status-repo-cache '' "$RDC_TOP")
+rdc_first=$(run_statusline_counted "$rdc_payload") || fail "statusline repo cache first failed"
+assert grep -Fq '⎇ main' <<< "$rdc_first"
+rdc_second=$(run_statusline_counted "$rdc_payload") || fail "statusline repo cache second failed"
+assert_eq "$rdc_first" "$rdc_second"
+assert_eq 0 "$(grep -c 'rev-parse --show-toplevel' "$GIT_COUNT_LOG")"
+mv "$RDC_TOP/.git" "$RDC_TOP/.git-moved"
+rdc_moved=$(run_statusline_counted "$rdc_payload") || fail "statusline repo cache moved failed"
+assert test "${rdc_moved#*⎇}" = "$rdc_moved"
+
+# Work not done: the limits jq's answer stands until an input or the clock could move it — a rewritten cache shows
+# at once, and so does a reset reached on a later render.
+JQ_COUNT_BIN="$FIXTURES/jq-count-bin"
+mkdir -p "$JQ_COUNT_BIN"
+printf '#!/usr/bin/env bash\ncase "$*" in *want_claude*) echo limits >> "%s" ;; esac\nexec "%s" "$@"\n' \
+  "$WORK/jq-count-log" "$(command -v jq)" > "$JQ_COUNT_BIN/jq"
+chmod +x "$JQ_COUNT_BIN/jq"
+lc_now=$(( $(date +%s) + 10 ))
+lc_bucket() { jq -cn --argjson now "$lc_now" --argjson h5 "$1" '{five_hour:{used_percentage:$h5,resets_at:($now+50),as_of:($now-100),
+  origin:"session"},seven_day:{used_percentage:20,resets_at:($now+86400),as_of:($now-100),origin:"session"}}' > "$CLAUDEB_FIX/limits/lcache.json"; }
+lc_render() { : > "$WORK/jq-count-log"; STATUSLINE_NOW=$1 PATH="$JQ_COUNT_BIN:$PATH" run_statusline "$(statusline_payload status-limits-cache)" lcache; }
+lc_bucket 30
+assert grep -Fq "5h ${GREEN}30%" <<< "$(lc_render "$lc_now")"
+assert grep -Fq "5h ${GREEN}30%" <<< "$(lc_render $((lc_now + 1)))"
+assert_eq "" "$(< "$WORK/jq-count-log")"
+lc_bucket 45
+assert grep -Fq "5h ${GREEN}45%" <<< "$(lc_render $((lc_now + 2)))"
+assert grep -Fq "5h ${DIM}0%" <<< "$(lc_render $((lc_now + 50)))"
+
+# Work not done: a probe's interval doubles while its output repeats, up to max, back to base on the first change;
+# the render waits that interval unless the transcript moved since the last run.
+pb_cache="$WORK/probe-backoff"
+assert_eq "4 8 16 30 30 4 " "$(. "$ROOT/share/statusline-probe.sh"
+  for c in a a a a a b; do probe_publish "$pb_cache" "$c" 4 30; printf '%s ' "$(< "$pb_cache.ivl")"; done)"
+pb_due() ( eval "$(sed -n '/^probe_due() {/,/^}/p' "$STATUSLINE")"; now=$1 transcript_path=$2
+  probe_due "$pb_cache" "$3" 4 && echo due || echo wait )
+printf '30\n' > "$pb_cache.ivl"
+touch -t 202001010000 "$WORK/pb-transcript-old"
+touch -t 202101010000 "$pb_cache"
+touch "$WORK/pb-transcript-new"
+assert_eq "wait due due" "$(pb_due 100 "$WORK/pb-transcript-old" 80) $(pb_due 111 "$WORK/pb-transcript-old" 80) $(pb_due 100 "$WORK/pb-transcript-new" 80)"
 
 # A foreign repository keeps `»` and always shows its branch.
 place_set status-foreign "$TOP_D"
@@ -3413,6 +3470,8 @@ with patch.object(subprocess, 'run', counted):
     assert len(greps) == 1
     assert count() == 8
     assert len(greps) == 1, 'a warm cache must not read content'
+    with patch.object(module, 'load', side_effect=AssertionError('unpacked')):
+        assert count() == 8, 'an unchanged listing never unpacks the per-file cache'
     text = top / 'text: with spaces'
     st = text.stat()
     text.write_bytes(b'abc\n')
@@ -3438,6 +3497,8 @@ with patch.object(subprocess, 'run', counted):
     assert sorted(marshal.loads(cache_file().read_bytes())) == sorted(names()), \
         'the cache holds the files listed now and nothing else'
     cache_file().write_bytes(b'\xffbroken')
+    for summary in Path(cache_dir).glob('*.sum'):
+        summary.write_bytes(b'\xffbroken')
     assert count() == uncached() == 7, 'a corrupt cache must recover'
     # A write racing grep: counted this render, never filed under the file's new stamp.
     (top / 'racy').write_bytes(b'1\n')
@@ -3452,6 +3513,8 @@ with patch.object(subprocess, 'run', counted):
     assert b'racy' not in marshal.loads(cache_file().read_bytes())
     assert count() == uncached() == 9
     module.MAX_ENTRIES = 2
+    for summary in Path(cache_dir).glob('*.sum'):
+        summary.unlink()  # an unchanged listing never rewrites the cache; a cold one does
     assert count() == uncached() == 9
     assert len(marshal.loads(cache_file().read_bytes())) == 2, 'the cache is bounded'
     assert count() == uncached() == 9

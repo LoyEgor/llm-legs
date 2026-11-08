@@ -226,7 +226,7 @@ repo_dirs() {
     { IFS= read -r common; IFS= read -r gitdir; IFS= read -r REPO_TOP; } <<< "$resolved"
     [ -n "$common" ] && [ -n "$gitdir" ] && [ -n "$REPO_TOP" ] || return 1
   fi
-  REPO_COMMON="$common"
+  REPO_COMMON="$common" REPO_GITDIR="$gitdir"
   if [ "$common" != "$gitdir" ]; then
     REPO_IS_WT=1
     # Only a plain `<root>/.git` common dir names its root; `--separate-git-dir`, a bare repo and
@@ -251,6 +251,35 @@ repo_dirs() {
     REPO_ROOT="$REPO_TOP"
   fi
   REPO_NAME="${REPO_ROOT##*/}"
+}
+
+# repo_dirs for a dir that is its own toplevel, kept per session and call site (render-repo-<sid>-<slot>)
+# while every file git reads for the answer is unchanged — the dir's `.git`, the git dir and its
+# `commondir`, the common dir and its `config`: five stats in place of a git process. An answer is
+# filed only once all of them are 2 s old (git's racy-stat rule), so a later write always moves the key.
+repo_dirs_key() { # var dir gitdir common -> status 1 while one of them moved under 2 s ago
+  local p id k='' rc=0
+  for p in "$2/.git" "$3" "$3/commondir" "$4" "$4/config"; do
+    file_ident_to id "$p" || id=-
+    [ "$id" = - ] || [ "$((EPOCHSECONDS - ${id##* }))" -ge 2 ] || rc=1
+    k+="$id|"
+  done
+  printf -v "$1" '%s' "$k"
+  return "$rc"
+}
+repo_dirs_cached() { # slot dir -> repo_dirs' variables
+  local cache="$statusline_cache_dir/render-repo-$session_id-$1" d k top common root wt gitdir end key
+  [ -n "$session_id" ] || { repo_dirs "$2"; return; }
+  { IFS=$'\x1f' read -r d k top common root wt gitdir end < "$cache"; } 2>/dev/null
+  if [ "$d" = "$2" ] && [ "$end" = . ] && repo_dirs_key key "$2" "$gitdir" "$common" && [ "$key" = "$k" ]; then
+    REPO_TOP=$top REPO_COMMON=$common REPO_ROOT=$root REPO_IS_WT=$wt REPO_GITDIR=$gitdir REPO_NAME=${root##*/}
+    return 0
+  fi
+  repo_dirs "$2" || return 1
+  phys_dir d "$2" && [ "$d" = "$REPO_TOP" ] && repo_dirs_key key "$2" "$REPO_GITDIR" "$REPO_COMMON" && ensure_dir "$statusline_cache_dir" &&
+    printf '%s\x1f' "$2" "$key" "$REPO_TOP" "$REPO_COMMON" "$REPO_ROOT" "$REPO_IS_WT" "$REPO_GITDIR" > "$cache.$$" &&
+    printf '.\n' >> "$cache.$$" && /bin/mv -f "$cache.$$" "$cache" 2>/dev/null
+  return 0
 }
 
 dirty_state_key() { # var git-dir status-v2 -> 0 when every entry's stat is older than 2 s (git's own racy-stat rule)
@@ -834,6 +863,18 @@ if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then wall_vendor=codex; wall_account=$CLAUDE
 # the store's wall window (d). Each section is the program a jq of its own used to run, over the same
 # input, so a section that errors or finds nothing prints an empty line, as its jq printed nothing; the
 # store file is read once, and unreadable or invalid it leaves b, c and d empty.
+# Its answer is kept per session (render-limits-<sid>) on every input but the clock — the arguments, the
+# store's identity, this script's and limits-view.sh's — until the first second a comparison with the
+# clock could turn: line 5, every number and ISO time of the rows read, as is and past each threshold.
+file_ident_to limits_ident "$limits_file"; limits_ident_mtime=${limits_ident##* }
+file_ident_to limits_code "$statusline_self"
+file_ident_to limits_lib "$statusline_dir/../share/limits-view.sh"
+printf -v limits_key '%s\x1f' "$rl_json" "$want_rl" "$want_claude" "$want_codex" "${rl_mtime:-0}" "$limits_mtime" \
+  "$acct" "${CLAUDEGPT_ACCOUNT:-}" "$wall_vendor" "$wall_account" "$limits_ident" "$limits_code" "$limits_lib"
+limits_cache="$statusline_cache_dir/render-limits-$session_id" limits_lines='' lc_key='' lc_from='' lc_until=''
+[ -z "$session_id" ] || { IFS= read -r -d '' lc_key && IFS= read -r -d '' lc_from && IFS= read -r -d '' lc_until &&
+  IFS= read -r -d '' limits_lines; } 2>/dev/null < "$limits_cache"
+if ! { [ "$lc_key" = "$limits_key" ] && [ "$lc_from" -le "$now" ] && [ "$now" -lt "$lc_until" ]; } 2>/dev/null; then
 limits_lines=$(jq -nr --arg rl "$rl_json" --argjson want_rl "$want_rl" --argjson want_claude "$want_claude" \
   --argjson want_codex "$want_codex" --argjson now "$now" --argjson rl_mtime "${rl_mtime:-0}" \
   --argjson limits_mtime "$limits_mtime" \
@@ -895,12 +936,23 @@ limits_lines=$(jq -nr --arg rl "$rl_json" --argjson want_rl "$want_rl" --argjson
   (try [input] catch null) as $doc
   | ($doc != null) as $ok
   | $doc[0] as $L
-  | [ (if $want_rl == 1 then first(try ($rl | fromjson | sl_a) catch "") // "" else "" end),
+  | ([ (if $want_rl == 1 then first(try ($rl | fromjson | sl_a) catch "") // "" else "" end),
       (if $want_claude == 1 and $ok then first(try ($L | sl_b) catch "") // "" else "" end),
       (if $want_codex == 1 and $ok then first(try ($L | sl_c) catch "") // "" else "" end),
       (if $ok then first(try ($L | sl_d) catch "") // "" else "" end) ]
-  | map(split("\n")[0] // "")[]
+    | map(split("\n")[0] // "")[]),
+    ([($rl | try fromjson catch null), $rl_mtime, $limits_mtime,
+      ($L | try (.vendors.claude.accounts[]? | select(.account == $acct)) catch null),
+      ($L | try (.vendors.codex.accounts[]? | select(.account == $gpt)) catch null),
+      ($L | try (.vendors[$wall_v] | (.accounts // [.])[]? | select((.account // "main") == $wall_a)) catch null)]
+     | [.. | numbers, (strings | try limits_store_epoch catch null | numbers)
+         | (., . + $thr5, . + $thrw, . + 86400) | (., . + 1) | select(. > $now)]
+     | [min // ($now + 3600), $now + 3600] | min | floor)
 ' "$limits_file" 2>/dev/null)
+  [ -z "$session_id" ] || ! [[ "${limits_lines##*$'\n'}" =~ ^[0-9]+$ ]] || [ "$((now - ${limits_ident_mtime:-0}))" -lt 2 ] ||
+    { ensure_dir "$statusline_cache_dir" && printf '%s\0' "$limits_key" "$now" "${limits_lines##*$'\n'}" "$limits_lines" \
+      > "$limits_cache.$$" && /bin/mv -f "$limits_cache.$$" "$limits_cache"; } 2>/dev/null
+fi
 { IFS= read -r limits_a; IFS= read -r limits_b; IFS= read -r limits_c; IFS= read -r limits_d; } <<< "$limits_lines"
 
 [ "$want_rl" = 1 ] && IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim wk_origin h5_absent <<< "$limits_a"
@@ -932,7 +984,7 @@ esac
 dir=${dir_path%"${dir_path##*[!/]}"}
 dir=${dir##*/}; [ -z "$dir_path" ] || dir=${dir:-/}
 project_top=""; project_common=""; project_root=""; project_name=""; project_is_wt=0
-if repo_dirs "$dir_path"; then
+if repo_dirs_cached p "$dir_path"; then
   project_top="$REPO_TOP"; project_common="$REPO_COMMON"
   project_root="$REPO_ROOT"; project_name="$REPO_NAME"; project_is_wt="$REPO_IS_WT"
   # A chat launched inside a linked worktree would otherwise be labelled by the
@@ -972,7 +1024,7 @@ if [ -n "$session_id" ] && [ -s "$place_journal" ]; then
     [ -n "$place_main" ] && [ -d "$place_main" ] && shown_tree=$place_main
   fi
 fi
-if [ -n "$shown_tree" ] && [ "$shown_tree" != "$project_top" ] && repo_dirs "$shown_tree"; then
+if [ -n "$shown_tree" ] && [ "$shown_tree" != "$project_top" ] && repo_dirs_cached s "$shown_tree"; then
   git_dir="$shown_tree"
   adopt_repo_dirs
 else
@@ -1024,11 +1076,13 @@ ahead=""
 head_known=0
 git_status_rc=1
 branch_oid=""; branch_upstream=""; branch_ab=""; branch=""; has_untracked=0; status_dirty=0
-status_untracked=(); status_untracked_quoted=0
+status_untracked_quoted=0; status_lines=(); status_i=0
 if [ -n "$active_top" ]; then
   status_v2=$(git -C "$active_top" -c core.quotePath=false status --porcelain=v2 --branch --untracked-files=all --ahead-behind 2>/dev/null)
   git_status_rc=$?
-  while IFS= read -r status_line; do
+  mapfile -t status_lines <<< "$status_v2"
+  for ((status_i = 0; status_i < ${#status_lines[@]}; status_i++)); do
+    status_line=${status_lines[status_i]}
     case "$status_line" in
       '# branch.oid '*) branch_oid=${status_line#\# branch.oid } ;;
       '# branch.head '*) branch=${status_line#\# branch.head } ;;
@@ -1037,11 +1091,14 @@ if [ -n "$active_top" ]; then
         branch_ab=${status_line#\# branch.ab }
         status_rest=${branch_ab#+}
         ahead=${status_rest%% *}; behind=${status_rest#* -} ;;
-      '? '*) has_untracked=1; status_dirty=1; status_untracked+=("${status_line#\? }")
-             [[ "$status_line" = '? "'* ]] && status_untracked_quoted=1 ;;
+      # git prints the untracked entries last, so status_i stops at the first: one line at a time
+      # they cost 250 ms a render in a tree of 8 184 untracked files.
+      '? '*) has_untracked=1; status_dirty=1
+             [[ $status_v2 == *$'\n? "'* ]] && status_untracked_quoted=1
+             break ;;
       '1 '* | '2 '* | 'u '*) status_dirty=1 ;;
     esac
-  done <<< "$status_v2"
+  done
 fi
 if [ -n "$active_top" ]; then
   [ "$branch" != '(detached)' ] || branch=HEAD
@@ -1082,7 +1139,8 @@ if [ -n "$active_top" ]; then
     udiff_add=0; udiff_del=0; f_new=0; f_del=0; f_mod=0; diff_entries=0; diff_creates=0; diff_deletes=0
     dirty_key=""; dirty_hit=0
     dirty_cache="$statusline_cache_dir/render-dirty-$session_id"
-    if [ -n "$session_id" ] && dirty_state_key dirty_key "$git_dir" "$status_v2"; then
+    # Past 4 header lines + 200 entries the key refuses anyway: no 400 KB here-string walk to learn it.
+    if [ -n "$session_id" ] && [ "${#status_lines[@]}" -le 204 ] && dirty_state_key dirty_key "$git_dir" "$status_v2"; then
       { IFS= read -r -d '' dirty_prev_key && IFS= read -r -d '' dirty_prev_val; } 2>/dev/null < "$dirty_cache"
       if [ "$dirty_prev_key" = "$dirty_key" ] && [ -n "$dirty_prev_val" ]; then
         IFS=$'\x1f' read -r udiff_add udiff_del fparts diff_show <<< "$dirty_prev_val"
@@ -1121,16 +1179,21 @@ if [ -n "$active_top" ]; then
         # count must be repo-wide even when git_dir is a subdirectory.
         if [ "$has_untracked" = 1 ]; then
           # The status above already listed them; a quoted path or a failed status takes the NUL-separated listing.
-          if [ "$git_status_rc" -eq 0 ] && [ "$status_untracked_quoted" = 0 ]; then
-            untracked_names=("${status_untracked[@]}")
-          else
+          untracked_names=() untracked_n=$((${#status_lines[@]} - status_i))
+          if [ "$git_status_rc" -ne 0 ] || [ "$status_untracked_quoted" = 1 ]; then
             mapfile -d '' untracked_names < <(git -C "$active_top" ls-files --others --exclude-standard -z 2>/dev/null)
+            untracked_n=${#untracked_names[@]}
+          elif [ "$untracked_n" -le 32 ]; then
+            untracked_names=("${status_lines[@]:status_i}"); untracked_names=("${untracked_names[@]#\? }")
           fi
-          # python's start costs three greps: a short listing is cheaper counted afresh.
-          if [ "${#untracked_names[@]}" -gt 32 ]; then
-            printf '%s\0' "${untracked_names[@]}" |
-              python3 -E -S "$statusline_dir/../share/statusline-untracked.py" "$active_top" "$statusline_cache_dir/untracked-lines"
-          elif [ "${#untracked_names[@]}" -gt 0 ]; then
+          # python's start costs three greps: a short listing is cheaper counted afresh. A long one
+          # goes to it as the status text itself, never through a bash array.
+          if [ "$untracked_n" -gt 32 ]; then
+            untracked_status=status; [ "${#untracked_names[@]}" = 0 ] || untracked_status=''
+            if [ -n "$untracked_status" ]; then printf '%s\n' "$status_v2"; else printf '%s\0' "${untracked_names[@]}"; fi |
+              python3 -E -S "$statusline_dir/../share/statusline-untracked.py" "$active_top" "$statusline_cache_dir/untracked-lines" \
+                $untracked_status
+          elif [ "$untracked_n" -gt 0 ]; then
             printf '0\t0\t\tU%s\n' "${#untracked_names[@]}"
             printf '%s\0' "${untracked_names[@]}" | ( cd "$active_top" 2>/dev/null && xargs -0 grep -cI '' 2>/dev/null ) |
               while IFS= read -r untracked_count; do printf '%s\t0\t\tL\n' "${untracked_count##*:}"; done
@@ -1882,6 +1945,16 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
+# A probe runs again once its cache is older than the interval it left in <cache>.ivl (doubled while its
+# output repeats, share/statusline-probe.sh) — or than base, when the transcript moved since: the chat acted.
+probe_due() { # cache mtime base -> status 0 when the probe is due
+  local ivl=''
+  [[ "$2" =~ ^[0-9]+$ ]] || return 0
+  { read -r ivl < "$1.ivl"; } 2>/dev/null
+  [[ "$ivl" =~ ^[0-9]+$ ]] && ! [ "$transcript_path" -nt "$1" ] || ivl=$3
+  [ "$((now - $2))" -gt "$ivl" ]
+}
+
 # Too slow for the render path: read the cache, fire the probe in the background
 # when it's >15s stale, and hide the segment once it's >60s stale (probe presumed dead).
 # The probe collects every tree of the session's own project and writes the tree beside each port;
@@ -1896,7 +1969,7 @@ if [ -n "$session_id" ]; then
   probe_bin="$statusline_dir/statusline-ports-probe.sh"
   ports_cache="$statusline_cache_dir/ports-$session_id"
   file_mtime_to ports_mtime "$ports_cache"
-  if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
+  if probe_due "$ports_cache" "$ports_mtime" 15 && [ -x "$probe_bin" ]; then
     if [ -n "$project_top" ]; then ports_top=$project_top ports_common=$project_common
     else ports_top=$active_top ports_common=$active_common; fi
     ( "$probe_bin" "$session_id" "$PPID" "$ports_top" "$ports_common" >/dev/null 2>&1 & ) 2>/dev/null
@@ -2281,7 +2354,7 @@ if [ -n "$session_id" ]; then
   work_bin="$statusline_dir/statusline-work-probe.sh"
   work_cache="$statusline_cache_dir/work-$session_id"
   file_mtime_to work_mtime "$work_cache"
-  if { ! [[ "$work_mtime" =~ ^[0-9]+$ ]] || [ "$((now - work_mtime))" -gt 4 ]; } && [ -x "$work_bin" ]; then
+  if probe_due "$work_cache" "$work_mtime" 4 && [ -x "$work_bin" ]; then
     ( "$work_bin" "$session_id" "$PPID" >/dev/null 2>&1 & ) 2>/dev/null
   fi
   if [[ "$work_mtime" =~ ^[0-9]+$ ]] && [ "$((now - work_mtime))" -le 15 ]; then

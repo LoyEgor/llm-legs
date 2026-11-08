@@ -50,7 +50,10 @@ fi
 trap 'rmdir "$lock" 2>/dev/null; probe_journal work "$probe_start_us"' EXIT
 
 write_cache() {
-  probe_publish "$cache_file" "$1"$'\n'
+  # Backs off only while it finds no work: a line it shows must still leave within seconds.
+  local max=60
+  [ -z "$1" ] || max=4
+  probe_publish "$cache_file" "$1"$'\n' 4 "$max"
 }
 
 snapshot_take ps_snap ps-snapshot 3 "$PS_CMD" snapshot_ps || { write_cache ""; exit 0; }
