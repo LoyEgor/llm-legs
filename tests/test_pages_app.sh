@@ -208,6 +208,8 @@ while True:
     elif verb == "remote-start":
         if not st["packets"]:
             reply = "err no stream"
+        elif st["state"] != "idle":
+            reply = "ignored " + st["state"]
         else:
             st["deliver"], st["state"], reply = json.loads(arg)["deliver"], "recording", "ok"
     elif verb == "stop" and st["state"] == "recording":
@@ -228,6 +230,8 @@ while True:
         reply = "ok"
     elif verb == "macmic-wakeable":
         st["wakeable"], reply = True, "ok"
+    elif verb == "orphan":
+        st["deliver"], st["state"], reply = "/gone/take.txt", "recording", "ok"
     elif verb == "restore" and st["state"] in ("idle", "recording"):
         st["deliver"], st["state"], reply = json.loads(arg)["deliver"], "processing", "ok"
         threading.Thread(target=finish, args=("пятнадцать минут диктовки",), daemon=True).start()
@@ -459,6 +463,14 @@ assert test "$(stats | jq .packets)" = "$packets"
 assert test "$(post "/api/mic/$mic/stop" '{}')" = 200
 assert test "$(jq -r '[.ok, .text] | join("|")' "$WORK/body")" = "true|текст с iPad"
 assert test "$(post "/api/mic/$mic/alive" '{}')" = 404
+# A take of ours that outlived its page, its cancel lost (Egor 2026-11-08: each tap then got "ignored recording"
+# until the daemon gave up on it): a new start ends it and records. A take not of ours (no file) is left alone.
+"$PY" -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"orphan\n"); s.recv(64)' "$RT/control.sock"
+: >"$WORK/daemon.log"
+assert test "$(post /api/mic/start '{}')" = 200
+assert test "$(grep -E '^(remote-start|cancel|bubble)' "$WORK/daemon.log" | cut -d' ' -f1 | tr '\n' ' ')" = "remote-start bubble cancel remote-start "
+mic=$(jq -r .id "$WORK/body")
+assert test "$(post "/api/mic/$mic/cancel" '{}')" = 200
 # Behind `tailscale serve` the page's origin is https.
 assert test "$(post "/api/chat/$sid/key" '{"key": "esc"}' -H "Origin: https://127.0.0.1:$port")" = 200
 

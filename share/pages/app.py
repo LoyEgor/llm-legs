@@ -1457,8 +1457,9 @@ MIC_PORT = int(os.environ.get("APP_MIC_PORT") or 47654)  # the daemon's iPad rec
 MIC_FRAME = 640  # 20 ms of 16 kHz mono int16, one audio packet
 MIC_CHUNK_CAP = 256 << 10
 MIC_PAD_AFTER = 0.4  # s without audio before silence frames keep the take under the daemon's 1.5 s stall limit
-MIC_IDLE_LIMIT = 10  # s without a chunk: the client is gone and its take is cancelled (no cap on a live take's length:
-# a 15-minute one threw away a quarter hour of his dictation)
+MIC_IDLE_LIMIT = 45  # s without a chunk or beat: the client is gone and its take is cancelled (no cap on a live take's
+# length: a 15-minute one threw away a quarter hour of his dictation). A page iPadOS suspends a while (another app in
+# front, MacMic opened) keeps its take: silence pads the gap (Egor 2026-11-08: 10 s dropped a take mid-dictation)
 MIC_WAIT = 120  # s from stop to the transcript
 # MacMic (transcriptions-gpt ipad-mic/, a native iPad app) streams the iPad microphone to the daemon. iPadOS refuses
 # the browser the microphone at times (Egor 2026-11-08: NotAllowedError, no prompt, through reloads and an app
@@ -1514,7 +1515,7 @@ class Mic:
                 if self.relay and now - self.sent_at > MIC_PAD_AFTER:
                     self.frames(bytes(MIC_FRAME * 5))
             if not self.stopping and now - self.chunk_at > MIC_IDLE_LIMIT:
-                cancel_take()
+                cancel_take("idle-cancel")
                 self.close()
 
     def close(self):
@@ -1544,10 +1545,34 @@ def daemon_state():
     return answer.split()[0] if answer else None
 
 
-def cancel_take():
-    # The daemon's cancel is its Esc: on an idle daemon it would hit the newest other track (a transform).
-    if daemon_state() in ("recording", "processing"):
-        daemon("cancel")
+def cancel_take(why="cancel"):
+    """The daemon's take of ours ends unsaid -> the state it settled in (within 3 s). The daemon's cancel is its Esc:
+    on an idle daemon it would hit the newest other track (a transform)."""
+    before = daemon_state()
+    if before not in ("recording", "processing"):
+        return before
+    answer = daemon("cancel")
+    deadline, state = time.monotonic() + 3, before
+    while time.monotonic() < deadline:
+        state = daemon_state()
+        if state != before:
+            break
+        time.sleep(0.1)
+    if store is not None:
+        store.event("app", op="mic", path=why, error=None if state != before else
+                    "cancel (%s) left the daemon %s" % (answer, state))
+    return state
+
+
+def our_orphan():
+    """The daemon records a remote take while no page has one open here: ours, its page and its end lost."""
+    try:
+        doc = json.loads(daemon("bubble") or "")
+    except ValueError:
+        return False
+    with MIC_LOCK:
+        open_here = bool(MICS)
+    return isinstance(doc, dict) and doc.get("remote") is True and doc.get("state") == "recording" and not open_here
 
 
 def macmic_fields():
@@ -1612,6 +1637,9 @@ def mic_start(body=None):
         with mic.lock:
             mic.frames(bytes(MIC_FRAME * 5))  # the receiver must see the stream before remote-start
     answer = daemon("remote-start", {"deliver": mic.path})
+    if answer == "ignored recording" and our_orphan_after(mic):
+        # A take of ours that outlived its page (its cancel lost): his new tap ends it and starts.
+        answer = daemon("remote-start", {"deliver": mic.path})
     if answer != "ok":
         mic.close()
         return 409, {"ok": False, "err": "transcriptions-gpt: %s" % (answer or "no answer")}
@@ -1625,6 +1653,16 @@ def mic_start(body=None):
     cancel_take()
     mic.close()
     return 504, {"ok": False, "err": "transcriptions-gpt did not start recording"}
+
+
+def our_orphan_after(mic):
+    with MIC_LOCK:
+        MICS.pop(mic.id, None)
+    try:
+        return our_orphan() and cancel_take("orphan-cancel") == "idle"
+    finally:
+        with MIC_LOCK:
+            MICS[mic.id] = mic
 
 
 def mic_stop(mic):

@@ -44,7 +44,8 @@ function toast(text, act) {
   }
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, act ? 8000 : 4000);
+  // A warning stays until it can be read (Egor 2026-11-08: a dictation error gone before he read it); a tap hides it.
+  toastTimer = setTimeout(() => { t.hidden = true; }, act ? 8000 : /^⚠/.test(text) ? 15000 : 4000);
 }
 
 // What went wrong on this side, for `page report` (the server caps it): a lost connection once it is back.
@@ -412,11 +413,19 @@ function ctxShow(row, html) {
   CTX.row = row;
   ctxPlace();
 }
-// The sidebar's width, under the row, else above it; within what the keyboard leaves of the screen.
+// The sidebar's width, under the row, else above it; within what the keyboard leaves of the screen. The list redraws
+// under an open menu (each poll, a confirm's wait): the row is found again by its chat, else its last place is kept
+// (Egor 2026-11-08: the menu of the last chat before Workers jumped to the top of the screen).
 function ctxPlace() {
-  const box = $('#ctx'), row = CTX.row;
-  if (box.hidden || !row) return;
-  const side = $('#side').getBoundingClientRect(), r = row.getBoundingClientRect();
+  const box = $('#ctx');
+  if (box.hidden || !CTX.row) return;
+  if (!CTX.row.isConnected) {
+    const again = [...document.querySelectorAll('#list a.row')].find((a) => rowSid(a) === CTX.sid);
+    if (again) { again.classList.add('held'); CTX.row = again; }
+  }
+  const side = $('#side').getBoundingClientRect();
+  const r = CTX.row.isConnected ? (CTX.rect = CTX.row.getBoundingClientRect()) : CTX.rect;
+  if (!r) return;
   const vv = window.visualViewport, top0 = vv ? vv.offsetTop : 0, room = (vv ? vv.height : window.innerHeight) + top0 - 8;
   box.style.left = (side.left + 8) + 'px';
   box.style.width = (side.width - 16) + 'px';
@@ -2245,6 +2254,7 @@ $('#ctx').addEventListener('click', (e) => {
   if (act === 'yes-end' || act === 'yes-trash') { chatAct(act.slice(4), sid, '', true); return; }
   chatAct(act, sid);
 });
+$('#toast').addEventListener('click', (e) => { if (!e.target.closest('.pill')) $('#toast').hidden = true; });
 $('#ctx').addEventListener('submit', (e) => {
   e.preventDefault();
   const form = e.target, act = form.dataset.name, sid = CTX.sid, name = norm(form.n.value);
