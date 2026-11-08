@@ -1877,6 +1877,28 @@ async function refreshMenu() {
   });
 }
 
+// A new chat (Egor 2026-11-08): every folder a chat ran in, the latest first, a tap on one opens a new chat there in
+// a new Terminal window (worker-pick's account for a chat, the default model), and the view follows it once it is up.
+async function refreshProjects() {
+  await once('projects', async () => {
+    const d = await api('/api/projects');
+    S.projects = d.projects || [];
+    if (S.sheet === 'new') renderSheet();
+  });
+}
+async function startNew(cwd) {
+  if (S.newBusy) return;
+  S.newBusy = cwd;
+  renderSheet();
+  const d = await api('/api/new', {cwd}, 45000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
+  S.newBusy = '';
+  if (!d.ok) { renderSheet(); toast('⚠ new chat: ' + (d.err || 'did not open')); return; }
+  closeSheet();
+  toast(`New chat in ${base(cwd)}${d.account ? ' as ' + d.account : ''} · opening on the Mac…`);
+  S.opening = {sid: 'new', at: now(), cwd, known: new Set(S.chats.map((c) => c.sid)), follow: true};
+  refreshChats();
+}
+
 async function refreshPages() {
   await once('pages', async () => {
     const d = await api('/api/pages');
@@ -1923,6 +1945,7 @@ function openSheet(kind) {
   dock();
   if (kind === 'menu') refreshMenu();
   if (kind === 'pages') refreshPages();
+  if (kind === 'new') { S.newQ = ''; refreshProjects(); }
   if (kind === 'term') pullScreen();
   if (kind === 'info') pullInfo();
   if (kind === 'load') refreshLoad();
@@ -2033,6 +2056,27 @@ function renderSheet() {
       body.scrollTop = tm.end ? body.scrollHeight : top;
       dock();
     }
+    footer('');
+    return;
+  }
+  if (S.sheet === 'new') {
+    // The filter is drawn once (a redraw would take his typing and the keyboard); only the list under it changes.
+    $('#sheett').textContent = 'New chat';
+    $('#sheets').textContent = S.projects ? String(S.projects.length) : '';
+    if (!$('#newq')) {
+      body.innerHTML = '<div id="newbox"><input id="newq" class="field" type="search" placeholder="Folder" ' +
+        'enterkeyhint="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div><div id="newl"></div>';
+      sheetHtml = '';
+    }
+    const q = (S.newQ || '').trim().toLowerCase(), all = S.projects;
+    const list = (all || []).filter((f) => !q || f.cwd.toLowerCase().includes(q));
+    const rows = list.map((f) =>
+      `<div class="prow${S.newBusy === f.cwd ? ' busy' : ''}" data-cwd="${esc(f.cwd)}"><div class="t"><b><i class="fi">${ICON.folder}</i>` +
+      `<span>${esc(f.name)}</span></b><small>${esc(f.cwd.replace(/^\/Users\/[^/]+/, '~'))}</small></div>` +
+      `<span class="at">${S.newBusy === f.cwd ? '<span class="shimmer">opening…</span>' : f.n + ' · ' + ago(f.spoke)}</span></div>`).join('') ||
+      (all ? '<div class="none">No such folder</div>' : '');
+    const l = $('#newl');
+    if (l.dataset.h !== rows) { l.dataset.h = rows; l.innerHTML = rows; }
     footer('');
     return;
   }
@@ -2182,7 +2226,10 @@ $('#composer').addEventListener('click', (e) => {
   else if (e.target.closest('[data-usealt]')) api('/api/mic/usealt', {}, 5000).then((d) => { if (!d.ok) toast('⚠ ' + (d.err || 'nothing to use')); pullBubble(); }).catch(() => {});
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.sheet) closeSheet(); });
+$('#sheetb').addEventListener('input', (e) => { if (e.target.id === 'newq') { S.newQ = e.target.value; renderSheet(); } });
 $('#sheetb').addEventListener('click', (e) => {
+  const nc = e.target.closest('[data-cwd]');
+  if (nc) { startNew(nc.dataset.cwd); return; }
   const stop = e.target.closest('[data-stop]');
   if (stop) {
     const pid = +stop.dataset.stop;
@@ -2329,7 +2376,7 @@ if (VV) {
 // on something that acts but followed by no click within 0.7 s goes to `page report` (op client, kind tap-lost) with
 // what happened under the finger: the touched node gone (a redraw), how much of the page changed meanwhile, a scroll
 // still gliding, the keyboard up, how long the finger stayed.
-const ACTS = 'a[href],button,summary,input,textarea,select,label,[data-sheet],[data-pid],[data-sid],.mi.has';
+const ACTS = 'a[href],button,summary,input,textarea,select,label,[data-sheet],[data-pid],[data-sid],[data-cwd],.mi.has';
 const TAPS = {cur: null, ended: null, scroll: 0, sent: 0};
 const describe = (el) => !el ? '' : el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') +
   (el.classList.length ? '.' + [...el.classList].join('.') : '') +

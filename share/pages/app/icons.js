@@ -18,6 +18,7 @@ export const ICON = {
   menu: line('M5 20v-7M12 20V4M19 20v-11'),
   panel: line('M4.5 4.5h15a1.5 1.5 0 0 1 1.5 1.5v12a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18V6a1.5 1.5 0 0 1 1.5-1.5zM15 4.5v15'),
   mic: line('M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3'),
+  plus: line('M12 5v14M5 12h14', 2),
   up: line('M12 19V5M6 11l6-6 6 6', 2.2),
   down: line('M12 5v14M6 13l6 6 6-6', 2),
   stop: svg('<rect x="7" y="7" width="10" height="10" rx="2.5" fill="currentColor"/>'),

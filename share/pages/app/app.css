@@ -248,6 +248,14 @@ table.md th { font-weight: 600; }
 /* A fixed width, not the widest line's: the scrollback coming in must not flip the sheet from docked to covering. */
 #sheet.term { width: 480px; }
 #sheet.menu { width: 440px; }
+/* New chat: its folder picked off the whole screen. */
+#sheet.new { left: 8px; width: auto !important; }
+#sheet.new .grip { display: none; }
+#newbox { padding: 2px 8px 8px; }
+#newl .prow { padding: 10px 8px; }
+#newl .prow .fi { display: inline-flex; flex: none; color: var(--fg3); }
+#newl .prow .fi svg { width: 16px; height: 16px; }
+#newl .prow.busy { opacity: .6; }
 /* What stays put under a sheet's list: End chat, All pages. */
 #sheetf { padding: 8px; border-top: .5px solid var(--line); }
 #sheetf .btn { width: 100%; justify-content: center; }

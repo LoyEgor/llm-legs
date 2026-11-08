@@ -1042,6 +1042,26 @@ def history():
     return sorted(rows, key=lambda r: -(r["spoke"] or 0))
 
 
+TEMP_DIRS = ("/tmp/", "/private/tmp/")
+
+
+def projects():
+    """The folders a new chat can start in: every one a chat ran in that is still there, a worktree's as its main
+    checkout, temp ones left out; the latest first, with how many chats it holds."""
+    names = shared("chat_names")
+    folders = {}
+    for r in cached("recent", HISTORY_TTL, recent).values():
+        cwd = r.get("cwd") or ""
+        cut = cwd.find(names.WORKTREES)
+        cwd = (cwd[:cut] if cut > 0 else cwd).rstrip("/")
+        if not cwd.startswith("/") or (cwd + "/").startswith(TEMP_DIRS):
+            continue
+        f = folders.setdefault(cwd, {"cwd": cwd, "name": names.project_label(cwd), "spoke": 0, "n": 0})
+        f["n"] += 1
+        f["spoke"] = max(f["spoke"], r.get("spoke") or r.get("at") or 0)
+    return sorted((f for f in folders.values() if os.path.isdir(f["cwd"])), key=lambda f: -f["spoke"])
+
+
 def search(q):
     """chat-find <words> --json: the chats where he said it, newest first (it reads every transcript: seconds)."""
     terms = q.split()[:8]
@@ -1067,21 +1087,42 @@ def open_chat(sid, fork=None):
     rec, _ = find_live(sid)
     if rec and fork is None:
         return 200, {"ok": True, "live": True}
+    line, meta = chats_line("--open-command", sid)
+    if line is None:
+        return 502, {"ok": False, "err": meta}
+    if fork is not None:
+        line += " --fork-session" + (" --name=" + shlex.quote(fork) if fork else "")  # = : a name may start with -
+    return in_window(line, meta)
+
+
+def chats_line(*args):
+    """`chats --open-command SID` / `--new-command DIR`: (the command line, {account, source}), or (None, why)."""
     picker = os.environ.get("APP_CHATS") or os.path.join(repo(), "bin", "chats")
-    out = run([sys.executable, picker, "--open-command", sid, "--timeout", "8"], timeout=40)
+    out = run([sys.executable, picker] + list(args) + ["--timeout", "8"], timeout=40)
     lines = (out or "").splitlines()
     if not lines or not lines[0].strip():
         why = (FAILED.get(sys.executable) if out is None else None) or "chats printed nothing"
-        return 502, {"ok": False, "err": re.sub(r"^exit \d+: ", "", why)}
+        return None, re.sub(r"^exit \d+: ", "", why)
     meta = dict(word.split("=", 1) for word in (lines[1] if len(lines) > 1 else "").split() if "=" in word)
-    line = lines[0].strip()
-    if fork is not None:
-        line += " --fork-session" + (" --name=" + shlex.quote(fork) if fork else "")  # = : a name may start with -
+    return lines[0].strip(), meta
+
+
+def in_window(line, meta):
+    """A `chats` command line typed into a new Terminal window -> (code, doc with the account it picked)."""
     literal = line.replace("\\", "\\\\").replace('"', '\\"')
     doc = terminal('tell application id "com.apple.Terminal"\ndo script "%s"\nend tell\nreturn "opened"' % literal)
     if not doc.get("ok"):
         return 502, {"ok": False, "err": doc.get("err") or "Terminal did not open it"}
     return 200, {"ok": True, "account": meta.get("account", ""), "source": meta.get("source", "")}
+
+
+def new_chat(cwd):
+    """A new chat in a folder he picked, in a new Terminal window: `chats --new-command` (worker-pick's account for
+    a chat, the default model)."""
+    if not isinstance(cwd, str) or not cwd.startswith("/") or not os.path.isdir(cwd):
+        return 400, {"ok": False, "err": "no such folder"}
+    line, meta = chats_line("--new-command", cwd)
+    return (502, {"ok": False, "err": meta}) if line is None else in_window(line, meta)
 
 
 CLOSE_WAIT = float(os.environ.get("APP_CLOSE_WAIT") or 8)  # s for an /exit to end the chat; then the window stays
@@ -1861,6 +1902,9 @@ def get(handler, path, query):
     if path == "/api/history":
         handler.send_json(200, history_doc((query.get("h") or [""])[0]))
         return True
+    if path == "/api/projects":
+        handler.send_json(200, {"projects": projects()})
+        return True
     if path == "/api/search":
         q = " ".join((query.get("q") or [""])[0].split())[:200]
         found = cached(("search", q), 120, lambda: search(q))
@@ -1907,7 +1951,7 @@ def get(handler, path, query):
 
 
 def post(handler, path, body):
-    """POST /api/chat/<sid>/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash|stop) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
+    """POST /api/chat/<sid>/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash|stop), /api/new and /api/mic/...; True when handled. body is the parsed JSON object (a mic
     chunk's raw PCM bytes)."""
     if path == "/api/client-log":
         client_report(body)
@@ -1920,6 +1964,12 @@ def post(handler, path, body):
         if store is not None and not answer[1].get("ok"):
             store.event("app", op="mic", path=path[9:20], error=str(answer[1].get("err"))[:300])
         handler.send_json(*answer)
+        return True
+    if path == "/api/new":
+        code, doc = new_chat(body.get("cwd") if isinstance(body, dict) else None)
+        if store is not None and not doc.get("ok"):
+            store.event("app", op="new", error=str(doc.get("err"))[:300])
+        handler.send_json(code, doc)
         return True
     m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash|stop)", path)
     if not m:

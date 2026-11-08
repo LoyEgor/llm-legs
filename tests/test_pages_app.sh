@@ -109,6 +109,9 @@ EOF
 chmod +x "$WORK/bin/trash"
 cat >"$WORK/bin/chats" <<'EOF'
 import sys
+if "--new-command" in sys.argv:
+    print("cd '%s' && claudeb profile acc4 --permission-mode bypassPermissions" % sys.argv[sys.argv.index("--new-command") + 1])
+    sys.exit(print("account=acc4 source=pick"))
 sid = sys.argv[sys.argv.index("--open-command") + 1]
 if sid.startswith("dead"):
     sys.exit("no transcript for " + sid)
@@ -717,6 +720,23 @@ s3=$(jq -r .start "$WORK/body")
 assert test "$(get "$base/api/chat/$sid/log?before=$s3")" = 200
 assert test "$(jq -r '([.items[].t] | index("s0") != null) and ([.items[] | select(.k == "result")] | length >= 10)' "$WORK/body")" = true
 
+# A new chat (Egor 2026-11-08): the folders chats ran in, still there, a worktree's as its checkout, no temp ones,
+# the latest first with their counts; a tap opens `chats --new-command` in a new Terminal window.
+mkdir -p "$WORK/p1/.claude/worktrees/w1" "$WORK/p2"
+"$PY" -c 'import json, sys, time
+w, t = sys.argv[1], time.time()
+row = lambda cwd, ago: {"session": "%08d-0000-4000-8000-000000000000" % int(ago), "cwd": cwd, "spoke": t - ago}
+json.dump([row(w + "/p1", 300), row(w + "/p2", 100), row(w + "/p1/.claude/worktrees/w1", 50), row("/private/tmp", 10),
+           row(w + "/gone", 5)], open(w + "/chat-find.json", "w"))' "$WORK"
+sleep 3.1
+assert test "$(get "$base/api/projects")" = 200
+assert test "$(jq -r '[.projects[] | "\(.name):\(.n)"] | join(",")' "$WORK/body")" = "p1:2,p2:1"
+: >"$WORK/hs.log"
+assert test "$(post /api/new "{\"cwd\": \"$WORK/p2\"}")" = 200
+assert test "$(jq -r .account "$WORK/body")" = acc4
+assert grep -qF "do script \"cd '$WORK/p2' && claudeb profile acc4 --permission-mode bypassPermissions\" end tell" "$WORK/hs.log"
+assert test "$(post /api/new '{"cwd": "/no/such"}')" = 400
+
 # It costs Claude Code nothing: no model call, no settings or hooks touched; the only programs it runs are ps,
 # Hammerspoon, chat-find, chats (to open a past chat), the trash /trash uses and lsof (the ports a chat's processes
 # listen on), and the client polls only while it is on screen, at most once a second.
@@ -773,4 +793,4 @@ link = js[js.index("const outLink"):js.index("function inline(")]
 sys.exit(not (js.count("_blank") == 1 and "_blank" in link and "STANDALONE ? `<a href=\"x-safari-${url}\">" in link
   and "window.open" not in js and "STANDALONE && MIC.refused === \x27refused\x27" in js and "data-webreset" in js))' "$ROOT/share/pages/app/app.js"
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: kept streaming, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, MacMic first, a refusal linking to it, what a chat runs (its tree, ports, a stop of its own only, a forced end), a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: kept streaming, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, MacMic first, a refusal linking to it, what a chat runs (its tree, ports, a stop of its own only, a forced end), a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash, a new chat in a folder picked off the ones chats ran in"

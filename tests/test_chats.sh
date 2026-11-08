@@ -1120,6 +1120,21 @@ assert [ "$?" -eq 1 ]
 assert [ ! -s "$WORK/open-out" ]
 assert [ "$(wc -l < "$WORK/open-error" | tr -d ' ')" = 1 ]
 
+# A new chat (the Chats app's +, Egor 2026-11-08): in the folder he picked, on the account worker-pick gives a chat.
+cat > "$WORK/open-bin/worker-pick" <<'PICK'
+#!/bin/sh
+printf 'claudeb\tlast\t0\tlogin\nclaudeb\tpicked\t10\tok\nNEXT\tclaudeb\tpicked\n'
+PICK
+mkdir -p "$WORK/new dir"
+NEW=$(HOME="$OPEN_HOME" PATH="$WORK/open-bin:$PATH" CLAUDEB_DIR="$OPEN_HOME/.claude-profiles/.claudeb" \
+  CLAUDEB_WORKER_PICK=worker-pick "$SCRIPT" --new-command "$WORK/new dir")
+assert [ "$NEW" = "cd '$WORK/new dir' && $ROOT/bin/claudeb profile picked --permission-mode bypassPermissions
+account=picked source=pick" ]
+HOME="$OPEN_HOME" PATH="$WORK/open-bin:$PATH" CLAUDEB_WORKER_PICK=worker-pick "$SCRIPT" --new-command "$WORK/missing" \
+  > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 1 ]
+assert grep -qx "chats: no such directory: $WORK/missing" "$WORK/open-error"
+
 echo "== pinned chats"
 # Egor 2026-11-08: a pinned chat that is open behaves like any other; a closed one is at the very top.
 pins_of() { python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["pins"]))' "$1"; }
