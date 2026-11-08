@@ -6,8 +6,8 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Chats">
-<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111111" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="/app/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/app/icon.png">
 <link rel="stylesheet" href="/app/app.css">
@@ -15,38 +15,50 @@
 <body>
 <div id="root">
   <aside id="side">
-    <header id="machine"></header>
+    <header id="sidetop">
+      <div id="machine"></div>
+      <div class="tools solo">
+        <button type="button" class="ib" data-sheet="pages" data-icon="pages" title="Pages"></button>
+        <button type="button" class="ib" data-sheet="menu" data-icon="menu" title="Menu"></button>
+      </div>
+    </header>
     <div id="list"></div>
-    <nav id="views">
-      <a href="#menu" data-view="menu">▤ Menu</a>
-      <a href="#pages" data-view="pages">◫ Pages</a>
-    </nav>
   </aside>
   <main id="main">
     <header id="head">
-      <a id="back" href="#">‹</a>
+      <a id="back" href="#" data-icon="back" aria-label="Chats"></a>
       <div id="title"></div>
-      <div id="chips"></div>
+      <div class="tools">
+        <button type="button" class="ib" id="termbtn" data-sheet="term" data-icon="term" title="Terminal"></button>
+        <button type="button" class="ib" data-sheet="pages" data-icon="pages" title="Pages"></button>
+        <button type="button" class="ib" data-sheet="menu" data-icon="menu" title="Menu"></button>
+      </div>
     </header>
     <section id="chat" hidden>
-      <div id="log"></div>
-      <div id="opts"></div>
-      <pre id="screen"></pre>
-      <form id="composer">
-        <textarea id="input" rows="1" enterkeyhint="enter" autocomplete="off"></textarea>
-        <div class="keys">
-          <button type="button" id="mic" title="Dictate: transcriptions-gpt on the Mac">🎤</button>
-          <button type="button" data-key="esc" title="Esc">esc</button>
-          <button type="button" data-key="enter" title="Enter">⏎</button>
-          <button type="submit" id="send" title="Send (⌘⏎)">↑</button>
-        </div>
-      </form>
+      <div id="log"><div id="col"></div><div id="activity"></div></div>
+      <button type="button" id="jump" data-icon="down" aria-label="To the end" hidden></button>
+      <div id="dock">
+        <div id="opts"></div>
+        <div id="suggest"></div>
+        <form id="composer">
+          <textarea id="input" rows="1" enterkeyhint="enter" autocomplete="off" placeholder="Message"></textarea>
+          <div id="wave" hidden><canvas id="wavec"></canvas><span id="wavet"></span></div>
+          <div class="cbtn">
+            <button type="button" id="mic" data-icon="mic" title="Dictate"></button>
+            <button type="submit" id="send" data-icon="up" title="Send"></button>
+          </div>
+        </form>
+      </div>
     </section>
-    <section id="menu" hidden></section>
-    <section id="pages" hidden></section>
-    <section id="empty"><div>⌘</div></section>
+    <section id="empty"><div>Pick a chat</div></section>
   </main>
 </div>
-<div id="overlay" hidden><button id="close" type="button">×</button><iframe id="frame" title="page"></iframe></div>
+<div id="scrim" hidden></div>
+<aside id="sheet" hidden>
+  <header><b id="sheett"></b><small id="sheets"></small><button type="button" id="sheetx" class="ib" data-icon="x" aria-label="Close"></button></header>
+  <div id="sheetb"></div>
+</aside>
+<div id="offline" hidden>No connection to the Mac</div>
+<div id="overlay" hidden><button id="close" type="button" data-icon="x" aria-label="Close"></button><iframe id="frame" title="page"></iframe></div>
 <div id="toast" hidden></div>
 <script type="module" src="/app/app.js"></script>

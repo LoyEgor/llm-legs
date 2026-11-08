@@ -49,9 +49,10 @@ rules as above; `page lan --app` prints the link. Terminal is touched only throu
 | Route | Answer |
 |---|---|
 | `GET /app/` | the client (`index.html`, `app.js`, `app.css`, `icon.png`); `manifest.webmanifest` starts at `/app/?k=<token>`, so a home-screen app gets its own cookie |
-| `GET /api/chats` | `{machine, chats, workers, client}` (`client`: the client files' fingerprint; a running client that sees it change reloads itself, draft and open chat kept): live registry records (`~/.claude*/sessions`, pid + `procStart` checked) with tty, account (the process env, `chat-account.sh` order), chat-find's name/ctx/model, warm cache `until`, memlogd load, last line, latest recap, page count. Workers = no tty or `entrypoint` ≠ `cli`, read-only |
-| `GET /api/chat/<sid>/log[?after=N\|?before=N]` | `{items, start, end, size, pages}`: transcript items (`user`, `asst`, `tool`, `result`, `event`, `away`) of the tail, after byte N, or the window ending at N |
-| `GET /api/chat/<sid>/screen` | `{ok, res}`: the tab's visible text |
+| `GET /api/chats` | `{machine, chats, workers, runs, client}` (`client`: the client files' fingerprint; a running client that sees it change reloads itself, draft and open chat kept): live registry records (`~/.claude*/sessions`, pid + `procStart` checked) with tty, account (the process env, `chat-account.sh` order), chat-find's name/ctx/model, warm cache `until`, memlogd load, last line, latest recap, page count. Workers = no tty or `entrypoint` ≠ `cli`, read-only, minus those `runs` names |
+| ↳ `runs` | worker-run's live runs of every vendor, newest first: `{id, vendor, account, model, effort, title, started, launcher, phase, round, queued, sid, tokens, status}` from run dirs launched within 2 days with no `exit_code`, alive by shared-invariants row `ar` (one `ps` for all); `sid` only for a claude run whose transcript exists (then `/api/chat/<sid>/log` reads it) |
+| `GET /api/chat/<sid>/log[?after=N\|?before=N]` | `{items, start, end, size, pages}`: transcript items (`user`, `asst`, `tool`, `result`, `event`, `away`, `queued`, `unqueued`) of the tail, after byte N, or the window ending at N. A message typed while the chat works is `queued` (its `enqueue`), then `unqueued` (`op`: `remove`, `dequeue`, `popAll`); one absorbed mid-turn comes back as `user` with `mid: true` and its own time |
+| `GET /api/chat/<sid>/screen` | `{ok, res}`: the tab's visible text; a failure or `no-tab` is an `.events.jsonl` line, one per chat per minute with the count it swallowed |
 | `POST /api/chat/<sid>/send` | `{text}` → one bracketed paste + Return in the tab → `{ok, err}` |
 | `POST /api/chat/<sid>/key` | `{key: esc\|enter\|up\|down}` or `{choose: N}` (arrows from the `❯` option, then Return) |
 | `POST /api/mic/start` | `{}` → a remote take on transcriptions-gpt (its ipad-mic/PROTOCOL.md "Remote take") → `{ok, id}` once it records; 409 while another runs, 503 with no daemon |
@@ -60,6 +61,7 @@ rules as above; `page lan --app` prints the link. Terminal is touched only throu
 | `POST /api/mic/<id>/cancel` | the daemon's `cancel`, sent only while it records or transcribes |
 | `GET /api/menu` | `{items}`: the menubar as `{r: [{t, c, a, b}], ck, dis, sub}`, cached 4 s |
 | `GET /api/pages` | every page's `{pid, title, chat, owner, module, updated}`, newest first |
+| `POST /api/client-log` | `{kind, msg, path, ms, count, hidden, sid, ua}` → `.events.jsonl` (`op: client`), 20 a minute: what failed on the iPad (a lost connection once it is back, a script error) |
 
 ## Served spec
 This is `spec.json` with three changes:

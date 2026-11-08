@@ -22,7 +22,7 @@ eq() { [ "$1" = "$2" ] || { printf 'expected: %s\n  actual: %s\n' "$2" "$1" >&2;
 # awk ERE has no \b: the leading class stands in for it.
 MODEL_RE='(^|[^A-Za-z0-9_])(claude-(opus|sonnet|haiku|fable)-[0-9]|claude-[0-9]|gpt-(image-)?[0-9]|gemini-[0-9]|grok-?[0-9]|grok-imagine-|(imagen|veo)-[0-9]|(opus|sonnet|haiku|fable|flash|pro)-?[0-9]+|(deepseek|glm|kimi|qwen|minimax|mimo)-[a-z]?[0-9]|[0-9]+[.][0-9]+[.][0-9]+)'
 LEGS_SPEC=(bin share lib hooks hammerspoon '*.lua' '*.py' '*.sh' '*.jq'
-  ':!tests' ':!test' ':!docs' ':!*fixture*' ':!*.json' ':!share/image-caps')
+  ':!tests' ':!test' ':!docs' ':!*fixture*' ':!*.json' ':!share/image-caps' ':!*.png')  # awk dies on PNG bytes
 
 list_files() { # <dir> <display-prefix> <pathspec...> -> "<abs path><TAB><display path>"
   local dir=$1 label=$2

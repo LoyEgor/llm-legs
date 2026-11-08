@@ -311,8 +311,15 @@ def chats():
         else:
             workers.append(doc)
     key = lambda d: -(d.get("spoke") or d.get("started") or 0)
+    found_runs = runs()
+    by_session = {r["sid"]: r for r in found_runs if r.get("sid")}
+    for doc in workers:
+        held = by_session.get(doc["sid"])
+        if held:
+            held["status"] = doc["status"]
     return {"as_of": time.time(), "machine": machine, "chats": sorted(rows, key=key),
-            "workers": sorted(workers, key=key), "client": client_version()}
+            "workers": sorted([w for w in workers if w["sid"] not in by_session], key=key),
+            "runs": sorted(found_runs, key=lambda r: -r["started"]), "client": client_version()}
 
 
 def client_version():
@@ -324,6 +331,135 @@ def client_version():
     except OSError:
         return ""
     return "%08x" % zlib.crc32(repr(stamp).encode())
+
+
+# ---------------------------------------------------------------- worker runs, every vendor
+
+RUNS = os.environ.get("WORKER_RUN_DIR") or os.path.expanduser("~/.cache/claude-worker-runs")
+RUN_NAME = re.compile(r"^([a-z]+)-([0-9]{9,11})-[0-9]+-[0-9a-f]+$")
+RUN_HORIZON = 2 * 86400  # launched earlier: past every cap worker-run puts on a run, so never read
+PID_SLACK = 30  # share/run-liveness.sh PID_START_SLACK: a supervisor started further from its stamp is a reused pid
+VENDORS = {"claudeb": "claude", "codex": "codex", "gemini": "gemini", "grok": "grok"}
+
+
+def read_doc(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            doc = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def first_line(path, cap=200):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.readline(4096).strip()[:cap]
+    except OSError:
+        return ""
+
+
+def etime(text):
+    """ps etime, [[dd-]hh:]mm:ss -> seconds, None for any other shape."""
+    parts = re.split(r"[-:]", text)
+    scale = {2: (60, 1), 3: (3600, 60, 1), 4: (86400, 3600, 60, 1)}.get(len(parts))
+    if not scale or not all(p.isdigit() for p in parts):
+        return None
+    return sum(int(p) * s for p, s in zip(parts, scale))
+
+
+def runs():
+    """worker-run's live runs of every vendor: a run dir named with a launch epoch inside RUN_HORIZON (so the
+    thousand old dirs cost one listdir), no exit_code, and its supervisor pid still running since its stamp
+    (one ps for all of them)."""
+    now = time.time()
+    try:
+        names = os.listdir(RUNS)
+    except OSError:
+        return []
+    found = []
+    for name in names:
+        m = RUN_NAME.match(name)
+        if not m or now - int(m.group(2)) > RUN_HORIZON:
+            continue
+        folder = os.path.join(RUNS, name)
+        if os.path.exists(os.path.join(folder, "exit_code")):
+            continue
+        meta = read_doc(os.path.join(folder, "meta.json"))
+        state = read_doc(os.path.join(folder, "state.json"))
+        if state.get("phase") == "done" or not isinstance(meta.get("pid"), int) or meta["pid"] <= 0:
+            continue
+        found.append((name, folder, meta, state, int(m.group(2))))
+    if not found:
+        return []
+    up = {}
+    for line in (run(["ps", "-o", "pid=,etime=", "-p", ",".join(str(f[2]["pid"]) for f in found)]) or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit():
+            up[int(parts[0])] = etime(parts[1])
+    out = []
+    for name, folder, meta, state, launched in found:
+        elapsed, stamp = up.get(meta["pid"]), meta.get("pid_started_at")
+        if meta["pid"] not in up or (elapsed is not None and isinstance(stamp, int)
+                                     and abs(now - elapsed - stamp) > PID_SLACK):
+            continue
+        vendor = VENDORS.get(meta.get("vendor"), meta.get("vendor") or "")
+        if meta.get("light"):
+            vendor = VENDORS.get(meta["light"], meta["light"])
+        wsid = first_line(os.path.join(folder, "worker-session"), 80)
+        path = first_line(os.path.join(folder, "session-file"), 1000)
+        sid = None
+        if vendor == "claude" and SID_RE.match(wsid) and path.endswith(".jsonl") and os.path.isfile(path):
+            sid, PATHS[wsid] = wsid, path
+        tokens = first_line(os.path.join(folder, "tokens"), 20)
+        out.append({"id": name, "vendor": vendor, "account": state.get("account") or meta.get("account") or "",
+                    "model": state.get("model") or meta.get("model") or "",
+                    "effort": state.get("effort") or meta.get("effort") or "",
+                    "title": first_line(os.path.join(folder, "title")) or name,
+                    "started": state.get("started_epoch") or meta.get("started_at") or launched,
+                    "launcher": state.get("session") or first_line(os.path.join(folder, "launcher"), 80),
+                    "phase": state.get("phase") or "", "round": state.get("round_id") or "",
+                    "queued": "cli_pid" not in meta and "slot_at" in meta, "sid": sid,
+                    "tokens": int(tokens) if tokens.isdigit() else None, "status": ""})
+    return out
+
+
+# ---------------------------------------------------------------- what went wrong, for `page report`
+
+INCIDENTS = {}  # key -> (monotonic time of its last line, how many were swallowed since)
+CLIENT_REPORTS = []  # monotonic times of the client's reports this minute
+CLIENT_CAP = 20
+
+
+def incident(key, **fields):
+    """store.event for a repeating failure (a screen poll every 2 s): one line per key per minute, the next one
+    carrying how many it swallowed."""
+    if store is None:
+        return
+    now = time.monotonic()
+    with CACHE_LOCK:
+        at, swallowed = INCIDENTS.get(key, (None, 0))
+        if at is not None and now - at < 60:
+            INCIDENTS[key] = (at, swallowed + 1)
+            return
+        INCIDENTS[key] = (now, 0)
+    store.event("app", **dict(fields, repeats=swallowed) if swallowed else fields)
+
+
+def client_report(body):
+    """POST /api/client-log: the client's own trouble (a lost connection once it is back, a script error), at most
+    CLIENT_CAP lines a minute."""
+    if store is None or not isinstance(body, dict):
+        return
+    now = time.monotonic()
+    with CACHE_LOCK:
+        CLIENT_REPORTS[:] = [t for t in CLIENT_REPORTS if now - t < 60]
+        if len(CLIENT_REPORTS) >= CLIENT_CAP:
+            return
+        CLIENT_REPORTS.append(now)
+    fields = {k: (v if isinstance(v, (int, float, bool)) else str(v)[:300]) for k, v in body.items()
+              if k in ("kind", "msg", "path", "ms", "count", "hidden", "sid", "ua")}
+    store.event("app", op="client", **fields)
 
 
 def find_live(sid):
@@ -395,6 +531,27 @@ def parse_entry(entry):
     kind, msg = entry.get("type"), entry.get("message") or {}
     at = entry.get("timestamp") or ""
     if entry.get("isSidechain") or msg.get("model") == "<synthetic>":
+        return []
+    if kind == "queue-operation":
+        # What he sent while the chat was busy: queued, then absorbed mid-turn (the attachment below carries it
+        # into the conversation), dequeued as the next turn, or pulled back into the Mac's input (popAll). Claude
+        # Code's queue is one FIFO with its own notifications in it and a `dequeue` names no text (it takes the
+        # head), so every entry is passed on and the client mirrors the queue; `hide` marks the ones not his.
+        op, text = entry.get("operation"), entry.get("content")
+        text = text if isinstance(text, str) else ""
+        hide = not text.strip() or text.lstrip().startswith("<")
+        if op == "enqueue":
+            return [{"k": "queued", "t": "" if hide else clip(text, TEXT_CAP), "hide": hide, "at": at}]
+        if op in ("remove", "dequeue", "popAll"):
+            return [{"k": "unqueued", "t": "" if hide else clip(text, TEXT_CAP), "hide": hide, "op": op, "at": at}]
+        return []
+    if kind == "attachment":
+        att = entry.get("attachment") if isinstance(entry.get("attachment"), dict) else {}
+        origin = att.get("origin") if isinstance(att.get("origin"), dict) else {}
+        if (att.get("type") == "queued_command" and att.get("commandMode") == "prompt" and not att.get("isMeta")
+                and origin.get("kind", "human") == "human" and isinstance(att.get("prompt"), str)):
+            item = user_text(att["prompt"])
+            return [dict(item, at=att.get("timestamp") or at, mid=True)] if item else []
         return []
     if kind == "system":
         if entry.get("subtype") == "away_summary" and entry.get("content"):
@@ -854,7 +1011,12 @@ def get(handler, path, query):
         if not tty:
             handler.send_json(404, {"err": "not a live terminal chat"})
             return True
-        handler.send_json(200, screen(tty))
+        started = time.monotonic()
+        doc = screen(tty)
+        if not doc.get("ok") or doc.get("res") == "no-tab":
+            incident(("screen", sid), op="screen", sid=sid, error=str(doc.get("err") or doc.get("res"))[:300],
+                     ms=int((time.monotonic() - started) * 1000))
+        handler.send_json(200, doc)
         return True
     return False
 
@@ -862,6 +1024,10 @@ def get(handler, path, query):
 def post(handler, path, body):
     """POST /api/chat/<sid>/(send|key) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
     chunk's raw PCM bytes)."""
+    if path == "/api/client-log":
+        client_report(body)
+        handler.send_json(200, {"ok": True})
+        return True
     if path.startswith("/api/mic/"):
         answer = mic_post(path, body)
         if answer is None:

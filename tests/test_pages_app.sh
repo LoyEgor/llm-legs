@@ -59,7 +59,7 @@ printf '{"title": "Chats/other  1.0/2.0 cores", "rows": [{"text": "CPU   1.0 cha
 # file's text copied out before the server deletes it.
 cat >"$WORK/bin/hs" <<EOF
 #!/usr/bin/env python3
-import json, re, sys
+import json, os, re, sys
 lua = sys.argv[sys.argv.index("-c") + 1]
 with open("$WORK/hs.log", "a") as log:
     log.write(lua.replace("\\n", " ") + "\\n")
@@ -68,6 +68,8 @@ with open("$WORK/hs.log", "a") as log:
         log.write("TEXT=" + json.dumps(open(m.group(1), encoding="utf-8").read(), ensure_ascii=False) + "\\n")
 if "llm-limits" in lua:
     print(json.dumps({"items": [{"r": [{"t": "Routing: next fixacct"}], "sub": [{"r": [{"t": "row", "c": "e64033", "a": 1}]}]}, {"sep": True}]}))
+elif "return contents of tab" in lua and os.path.exists("$WORK/screen-fails"):
+    print(json.dumps({"ok": False, "err": "Terminal timed out"}))
 elif "return contents of tab" in lua:
     print(json.dumps({"ok": True, "res": "Pick a color\\n\\u276f 1. Red\\n  2. Green\\n  3. Blue\\nEnter to select"}))
 else:
@@ -137,9 +139,35 @@ STUB
 for _ in $(seq 100); do [ -s "$RT/udp-port" ] && break; sleep 0.1; done
 [ -s "$RT/udp-port" ] || fail "no stub daemon"
 stats() { "$PY" -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"stats\n"); print(s.recv(4096).decode())' "$RT/control.sock"; }
+
+# worker-run's run dirs: two live runs on the worker's pid stamped with its real start (one holding a slot, one
+# waiting for it), and four the list must skip: an exit code, a launch past the 2-day horizon, a reused pid
+# (stamped 1000 s off) and the pre-launch pid 0.
+now=$(date +%s)
+began=$("$PY" -c 'import re, subprocess, sys, time
+p = [int(x) for x in re.split("[-:]", subprocess.check_output(["ps", "-o", "etime=", "-p", sys.argv[1]]).decode().strip())]
+print(int(time.time() - sum(v * m for v, m in zip(reversed(p), (1, 60, 3600, 86400)))))' "$workerpid")
+wsid2=77777777-2222-3333-4444-555555555555
+echo '{"type":"user","message":{"role":"user","content":"worker brief"}}' >"$WORK/proj/$wsid2.jsonl"
+mkrun() { # name pid stamp slot-json -> run dir
+  mkdir -p "$WORK/runs/$1"
+  printf '{"vendor": "%s", "pid": %s, "pid_started_at": %s%s}' "${1%%-*}" "$2" "$3" "$4" >"$WORK/runs/$1/meta.json"
+  echo "$WORK/runs/$1"
+}
+d=$(mkrun "claudeb-$((now - 100))-1-aa01" "$workerpid" "$began" ', "slot_at": 1, "cli_pid": 2')
+printf '{"phase": "run", "session": "%s", "account": "acc1", "model": "claude-opus-5-5", "effort": "xhigh", "started_epoch": %s}' \
+  "$sid" "$((now - 90))" >"$d/state.json"
+echo "Fixture review" >"$d/title"; echo 1200 >"$d/tokens"; echo "$wsid2" >"$d/worker-session"
+echo "$WORK/proj/$wsid2.jsonl" >"$d/session-file"
+d=$(mkrun "codex-$((now - 50))-1-aa02" "$workerpid" "$began" ', "slot_at": 1')
+printf '{"phase": "wait", "session": "%s", "account": "acc2", "started_epoch": %s}' "$sid" "$((now - 40))" >"$d/state.json"
+d=$(mkrun "gemini-$((now - 60))-1-aa03" "$workerpid" "$began" ''); echo 0 >"$d/exit_code"
+mkrun "grok-$((now - 3 * 86400))-1-aa04" "$workerpid" "$began" '' >/dev/null
+mkrun "codex-$((now - 70))-1-aa05" "$workerpid" "$((began - 1000))" '' >/dev/null
+mkrun "codex-$((now - 80))-1-aa06" 0 "$began" '' >/dev/null
 export PAGES_DIR="$WORK/pages" APP_SESSIONS="$WORK/sessions" APP_HS="$WORK/bin/hs" APP_CHAT_FIND="$WORK/bin/chat-find" \
   APP_CHATS_JSON="$WORK/chats.json" STATUSLINE_CACHE_DIR="$WORK/tracks" TRANSCRIBER_RUNTIME_DIR="$RT" \
-  APP_MIC_PORT="$(cat "$RT/udp-port")"
+  APP_MIC_PORT="$(cat "$RT/udp-port")" WORKER_RUN_DIR="$WORK/runs"
 
 "$PAGE" serve --port 0 >"$WORK/serve.out" 2>&1 &
 "$ROOT/bin/wait-until" --max 10 log "$WORK/serve.out" 'page serve: http' >/dev/null || fail "serve: $(cat "$WORK/serve.out")"
@@ -174,6 +202,16 @@ assert test "$(jq -r '.chats[0].away' "$WORK/body")" = "Goal: fixtures. Next: as
 assert test "$(jq -r '.workers | map(.sid + "|" + .account) | join(",")' "$WORK/body")" = "$wsid|wacct"
 assert test "$(jq -r '.machine.lines[0]' "$WORK/body")" = "CPU   1.0 chats +  2.0 other =  3.0 of 10 cores"
 assert like "$(jq -r '.client' "$WORK/body")" "????????"  # the client files' fingerprint: a change reloads the app
+# Worker runs, newest first, by row `ar`'s liveness; a claude run's transcript is readable by its worker session.
+assert test "$(jq -r '[.runs[].id] | join(",")' "$WORK/body")" = "codex-$((now - 50))-1-aa02,claudeb-$((now - 100))-1-aa01"
+assert test "$(jq -r '.runs[1] | [.vendor, .account, .model, .effort, .title, .launcher, .queued, .sid, .tokens, .started] | join("|")' "$WORK/body")" \
+  = "claude|acc1|claude-opus-5-5|xhigh|Fixture review|$sid|false|$wsid2|1200|$((now - 90))"
+assert test "$(jq -r '.runs[0] | [.vendor, .queued, .sid] | join("|")' "$WORK/body")" = "codex|true|"
+assert test "$(get "$base/api/chat/$wsid2/log")" = 200
+assert test "$(jq -r '.items[0].t' "$WORK/body")" = "worker brief"
+# The list stays cheap: chats + workers + runs in well under a second on the fixture.
+assert "$PY" -c 'import sys, time, urllib.request
+t = time.time(); urllib.request.urlopen(sys.argv[1]).read(); sys.exit(time.time() - t > 1.0)' "$base/api/chats"
 
 # The transcript: speech, tool calls with their results, events, the recap; no meta, thinking or sidechain.
 assert test "$(get "$base/api/chat/$sid/log")" = 200
@@ -197,6 +235,21 @@ assert test "$(jq -r '.end' "$WORK/body")" = "$whole"
 assert test "$(get "$base/api/chat/$sid/log?before=$end")" = 200
 assert test "$(jq -r '.start' "$WORK/body")" = 0
 assert test "$(get "$base/api/chat/bad..id/log")" = 404
+# A message typed while the chat works: queued, then taken mid-turn (back as his own words at its own time) or
+# sent as the next turn (a dequeue names no text: it takes the head). A task notification's entry stays in the
+# mirrored queue with no text; its attachment is not his.
+printf '"}]}}\n' >>"$T"
+{
+  echo '{"type":"queue-operation","operation":"enqueue","content":"check the scroll","timestamp":"t5"}'
+  echo '{"type":"queue-operation","operation":"enqueue","content":"<task-notification>x</task-notification>"}'
+  echo '{"type":"queue-operation","operation":"remove","content":"check the scroll","timestamp":"t6"}'
+  echo '{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"check the scroll","origin":{"kind":"human"},"timestamp":"t5"},"timestamp":"t6"}'
+  echo '{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"done","origin":{"kind":"task-notification"}}}'
+  echo '{"type":"queue-operation","operation":"dequeue"}'
+} >>"$T"
+assert test "$(get "$base/api/chat/$sid/log?after=$whole")" = 200
+assert test "$(jq -c '[.items[] | [.k, .t, .op, .at, .mid, .hide]]' "$WORK/body")" \
+  = '[["asst","torn",null,"",null,null],["queued","check the scroll",null,"t5",null,false],["queued","",null,"",null,true],["unqueued","check the scroll","remove","t6",null,false],["user","check the scroll",null,"t5",true,null],["unqueued","","dequeue","",null,true]]'
 
 # Input: one bracketed paste of the exact text into the chat's own tty, through ChatGate.terminalScript.
 assert test "$(post "/api/chat/$sid/send" '{"text": "привет\nдве строки"}')" = 200
@@ -263,4 +316,26 @@ assert test "$(jq -r '.items[0].sub[0].r[0].c' "$WORK/body")" = e64033
 assert test "$(get "$base/api/pages")" = 200
 assert test "$(jq -r '.pages | length' "$WORK/body")" = 0
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages"
+# What failed is logged for `page report`, never a flood: a failing screen poll is one line per chat a minute,
+# the client's own reports 20 a minute.
+touch "$WORK/screen-fails"
+for _ in 1 2 3; do get "$base/api/chat/$sid/screen" >/dev/null; sleep 0.9; done
+rm "$WORK/screen-fails"
+assert test "$(jq -s '[.[] | select(.op == "screen")] | length' "$PAGES_DIR/.events.jsonl")" = 1
+assert test "$(jq -rs '[.[] | select(.op == "screen")][0] | [.sid, .error] | join("|")' "$PAGES_DIR/.events.jsonl")" \
+  = "$sid|Terminal timed out"
+for k in $(seq 25); do post /api/client-log "{\"kind\": \"offline\", \"ms\": $k, \"count\": 3, \"msg\": \"/api/chats: TypeError\", \"evil\": 1}" >/dev/null; done
+assert test "$(jq -s '[.[] | select(.op == "client")] | length' "$PAGES_DIR/.events.jsonl")" = 20
+assert test "$(jq -rs '[.[] | select(.op == "client")][0] | [.kind, .ms, .count, .msg, .evil] | join("|")' "$PAGES_DIR/.events.jsonl")" \
+  = "offline|1|3|/api/chats: TypeError|"
+
+# It costs Claude Code nothing: no model call, no settings or hooks touched; the only programs it runs are ps,
+# Hammerspoon and chat-find, and the client polls only while it is on screen, at most once a second.
+assert test -z "$(grep -nE 'anthropic|openai|claude -p|settings\.json|hooks' "$ROOT/share/pages/app.py")"
+assert test "$(grep -oE 'run\(\[[^],]+' "$ROOT/share/pages/app.py" | sort -u | tr '\n' ' ')" = 'run(["ps" run([HS run([sys.executable '
+assert test "$(grep -c 'setInterval(' "$ROOT/share/pages/app/app.js")" = 1
+assert "$PY" -c 'import sys
+sys.exit("if (document.visibilityState !== \x27visible\x27) return;\n  tick++;" not in open(sys.argv[1]).read())' "$ROOT/share/pages/app/app.js"
+assert test "$(grep -c '^}, 1000);$' "$ROOT/share/pages/app/app.js")" = 1
+
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"
