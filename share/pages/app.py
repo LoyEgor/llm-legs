@@ -1506,10 +1506,10 @@ MIC_IDLE_LIMIT = 45  # s without a chunk or beat: the client is gone and its tak
 # length: a 15-minute one threw away a quarter hour of his dictation). A page iPadOS suspends a while (another app in
 # front, MacMic opened) keeps its take: silence pads the gap (Egor 2026-11-08: 10 s dropped a take mid-dictation)
 MIC_WAIT = 120  # s from stop to the transcript
-# MacMic (transcriptions-gpt ipad-mic/, a native iPad app) streams the iPad microphone to the daemon. iPadOS refuses
-# the browser the microphone at times (Egor 2026-11-08: NotAllowedError, no prompt, through reloads and an app
-# relaunch) while it gives it to MacMic: each look of the app at the pill keeps MacMic streaming this long, and a take
-# records MacMic's stream instead of the browser's.
+# MacMic (transcriptions-gpt ipad-mic/, a native iPad app) streams the iPad microphone to the daemon: the fallback once
+# the browser was refused the microphone (WebKit bug 329593 in the Home Screen app: NotAllowedError, no prompt,
+# through reloads). A take via MacMic keeps it streaming this long; a look at the pill does not (Egor 2026-11-09: the
+# browser first, he leaves MacMic).
 MACMIC_WANT = 2 * 3600
 MACMIC_WAKE_WAIT = 12  # s for MacMic's stream after the daemon launched it in the background (6 s on 2026-11-08)
 MICS = {}
@@ -1745,7 +1745,6 @@ def mic_bubble():
         doc = None
     if not isinstance(doc, dict):
         return 200, {"ok": False, "err": "transcriptions-gpt has no bubble" if answer else "transcriptions-gpt is not running"}
-    daemon("ipad-want %d" % MACMIC_WANT)  # the app looks every 10 s while on screen
     return 200, dict(doc, ok=True, macmic=macmic_state())
 
 

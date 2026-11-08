@@ -1307,7 +1307,7 @@ function send() {
 // step's name (reported to the Mac) and the next tap starts clean; a capture that goes silent is reopened once, then
 // ends the take with what was said; the worklet has the old ScriptProcessor behind it.
 const MIC = {state: '', id: null, take: null, frames: [], pump: null, held: null, levels: [], peak: 0, began: 0,
-  waitFrom: 0, heard: 0, step: '', tap: 0, raf: 0, takes: 0, refused: '', wakeFailed: -1e9};
+  waitFrom: 0, heard: 0, step: '', tap: 0, raf: 0, takes: 0, refused: '', gumRefused: false, wakeFailed: -1e9};
 const MIC_STEP = {microphone: 20, audio: 5, capture: 6, mac: 12, wake: 25, upload: 10, transcript: 130};  // s
 
 function within(step, p) {
@@ -1418,7 +1418,9 @@ const microphone = () => navigator.mediaDevices.getUserMedia({audio: {channelCou
 
 async function micStart() {
   if (BUB.busy) return;
-  if (macmicUsable()) return micMacMic();
+  // The browser's own microphone first (Egor 2026-11-09: he leaves MacMic); once this page was refused it, MacMic
+  // while it streams or wakes: a refusal here outlives the page's tries (WebKit bug 329593).
+  if (MIC.gumRefused && macmicUsable()) return micMacMic();
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     toast('⚠ the microphone needs the https link (page lan --app)');
     return;
@@ -1442,7 +1444,7 @@ async function micStart() {
       return;
     }
     if (!d.ok) throw new Error(d.err || 'the Mac did not start');
-    Object.assign(MIC, {state: 'live', id: d.id, began: now(), heard: now(), refused: ''});
+    Object.assign(MIC, {state: 'live', id: d.id, began: now(), heard: now(), refused: '', gumRefused: false});
     MIC.takes++;
     micButton();
     MIC.pump = micPump(d.id, take);
@@ -1453,11 +1455,10 @@ async function micStart() {
   }
 }
 
-// A take on MacMic's stream (transcriptions-gpt ipad-mic/, the native iPad app): iPadOS refuses the browser the
-// microphone at times (Egor 2026-11-08: through reloads and an app relaunch, no prompt) while MacMic has it. The
-// pill's every look keeps MacMic streaming in the background (ipad-want), so while it streams a take uses it: no
-// microphone of the page's, which would interrupt MacMic, nothing to upload; /alive beats tell the Mac the page is
-// still there, as chunks do for a browser take.
+// A take on MacMic's stream (transcriptions-gpt ipad-mic/, the native iPad app), the fallback once the browser was
+// refused the microphone (in the Home Screen app WebKit bug 329593, through reloads, no prompt): the Mac keeps it
+// streaming (ipad-want) from its first such take; no microphone of the page's, nothing to upload; /alive beats tell
+// the Mac the page is still there, as chunks do for a browser take.
 // MacMic streaming, or asleep and not failing to wake in the last 2 minutes (the iPad away from the Mac's network):
 // the daemon launches it in the background on the iPad and the take waits for its stream.
 const macmicUsable = () => !!BUB.doc && (BUB.doc.macmic === 'streaming'
@@ -1553,6 +1554,7 @@ async function micRefused(e) {
     `standalone ${matchMedia('(display-mode: standalone)').matches}`, `loaded ${Math.round(performance.now() / 1000)} s ago`,
     `takes ${MIC.takes}`, e.diag || ''].filter(Boolean).join(' · ').slice(0, 300)});
   MIC.refused = perm === 'denied' ? 'denied' : 'refused';
+  MIC.gumRefused = true;
   renderMicbar();
   // The tap meant a take: MacMic streaming takes it at once; else the row offers to open MacMic.
   const asked = now();  // a fresh look, not one already on its way

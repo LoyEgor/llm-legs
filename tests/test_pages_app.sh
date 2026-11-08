@@ -445,13 +445,13 @@ assert test "$(chunk "$mic")" = 404
 sleep 0.3
 assert test "$(grep -c '^cancel$' "$WORK/daemon.log")" = "$cancels"
 assert test -z "$(ls -A "$(python3 -c 'import tempfile; print(tempfile.gettempdir())')/pages-app" 2>/dev/null)"
-# MacMic (Egor 2026-11-08: iPadOS refused the browser the microphone, no prompt, through reloads and a relaunch,
-# while it gave it to MacMic): each look at the pill keeps MacMic streaming 2 h (ipad-want), a take via MacMic wakes
-# it when asleep (ipad-wake: a launch in the background) and records its stream: no packet of ours reaches the
-# receiver, the client's /alive beats stand for its chunks.
+# MacMic, the fallback once the browser was refused (Egor 2026-11-09: the browser first, he leaves MacMic): a look at
+# the pill keeps it awake no more; a take via MacMic wakes it when asleep (ipad-want 2 h, ipad-wake: a launch in the
+# background) and records its stream: no packet of ours reaches the receiver, the client's /alive beats stand for its
+# chunks.
 assert test "$(get "$base/api/mic/bubble")" = 200
 assert test "$(jq -r .macmic "$WORK/body")" = asleep
-assert grep -q '^ipad-want 7200$' "$WORK/daemon.log"
+assert test -z "$(grep '^ipad-want' "$WORK/daemon.log")"
 # The Home Screen app's refusal outlives a reload (WebKit bug 329593): its row has the Mac end SafariViewService.
 assert test "$(post /api/mic/webreset '{}')" = 200
 assert grep -q '^ipad-webreset$' "$WORK/daemon.log"
@@ -779,12 +779,17 @@ assert "$PY" -c 'import re, sys
 css = open(sys.argv[1]).read()
 z = lambda sel: int(re.search(re.escape(sel) + r" \{[^}]*z-index: (\d+)", css).group(1))
 sys.exit(not z("#takepill") > max(z("#overlay"), z("#close")))' "$ROOT/share/pages/app/app.css"
-# MacMic: while it streams a tap records it and never asks the page's microphone (which would interrupt it); a
-# refusal links to it.
+# The browser's microphone first; MacMic only once the page was refused it (then a tap records MacMic at once, the
+# browser's refusal outlives its tries), and a refusal links to it.
 assert "$PY" -c 'import sys
 js = open(sys.argv[1]).read()
 start = js[js.index("async function micStart() {"):]
-sys.exit(not (start.index("micMacMic()") < start.index("getUserMedia") and "href=\"macmic://open\"" in js))' "$ROOT/share/pages/app/app.js"
+start = start[:start.index("\n}\n")]
+refused = js[js.index("async function micRefused("):]
+refused = refused[:refused.index("\n}\n")]
+sys.exit(not ("if (MIC.gumRefused && macmicUsable()) return micMacMic();" in start and "macmicUsable()) return" not in start.replace("MIC.gumRefused && macmicUsable()) return", "")
+  and "microphoneOrPlain(take)" in start and "MIC.gumRefused = true;" in refused and "micMacMic()" in refused
+  and "href=\"macmic://open\"" in js))' "$ROOT/share/pages/app/app.js"
 # No window of its own in the Home Screen app (WebKit bug 329593: one costs the microphone until SafariViewService
 # ends): its links go to Safari (x-safari-), a tab keeps target=_blank, and a refusal there offers the restart.
 assert "$PY" -c 'import sys
@@ -793,4 +798,4 @@ link = js[js.index("const outLink"):js.index("function inline(")]
 sys.exit(not (js.count("_blank") == 1 and "_blank" in link and "STANDALONE ? `<a href=\"x-safari-${url}\">" in link
   and "window.open" not in js and "STANDALONE && MIC.refused === \x27refused\x27" in js and "data-webreset" in js))' "$ROOT/share/pages/app/app.js"
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: kept streaming, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, MacMic first, a refusal linking to it, what a chat runs (its tree, ports, a stop of its own only, a forced end), a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash, a new chat in a folder picked off the ones chats ran in"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: a look keeps it asleep, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, the browser first, MacMic after a refusal, a refusal linking to it, what a chat runs (its tree, ports, a stop of its own only, a forced end), a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash, a new chat in a folder picked off the ones chats ran in"
