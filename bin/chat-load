@@ -65,6 +65,11 @@ APP_QUIT_S = 10
 WORKTREES = "/.claude/worktrees/"
 TOKEN = re.compile(r"[A-Za-z0-9._-]+")
 OTHER_KINDS = (("screen", {"WindowServer"}), ("kernel", {"kernel_task"}), ("signing", {"syspolicyd", "trustd"}))
+# The row after the chats: everything no chat launched (the Mem line's "other"), its `sub` the heaviest of it by app.
+OTHER_ROW = "macOS & apps"
+OTHER_HIST = "macos"
+SUB_ROWS = 10
+BUNDLE = re.compile(r"([^/]+)\.app/")
 
 HOME = os.path.expanduser("~")
 LOG_DIR = os.environ.get("MEMLOGD_DIR") or os.path.join(HOME, "Library/Logs/memlogd")
@@ -756,8 +761,46 @@ def labelled(table, records, cache, now, kind="launchd", listing=launchd_list):
 def app_name(label, path):
     """What an app is called: its bundle's name off the executable's path (Blender.app), else its bundle id's
     last part."""
-    bundle = re.search(r"([^/]+)\.app/", path or "")
+    bundle = BUNDLE.search(path or "")
     return bundle.group(1) if bundle else APP_LABEL.fullmatch(label).group(1).rsplit(".", 1)[-1]
+
+
+def app_group(row):
+    """What a process outside the chats is counted under: its outermost .app bundle (a browser's helpers are the
+    browser), else its command name, a `postgres: walwriter` worker its `postgres`."""
+    bundle = BUNDLE.search(row["path"])
+    return bundle.group(1) if bundle else (row["comm"].split(":", 1)[0].strip() or row["comm"])
+
+
+def chat_workers(table, tops, roots):
+    """{session: {run: [pid, ...]}} of every chat a registered worker run or review cell is billed to: each of the
+    chat's processes under the outermost run it sits in, "" for the chat's own tree."""
+    rooted = {pid: entry[0] for pid, entry in roots.items() if tops.get(pid)}
+    owners, found = {tops[pid] for pid in rooted}, {}
+    for pid, sid in tops.items():
+        if sid not in owners:
+            continue
+        run = ""
+        for member in [pid] + lineage(pid, table):
+            if rooted.get(member) and tops.get(member) == sid:
+                run = rooted[member]
+        found.setdefault(sid, {}).setdefault(run, []).append(pid)
+    return found
+
+
+def run_title(name, directory):
+    """A worker run as the statusline names it, read once per run: its title (the brief's first line), else its
+    vendor and account; a review cell by its artifact."""
+    try:
+        with open(os.path.join(directory, "title")) as handle:
+            line = " ".join(handle.readline().split())
+    except OSError:
+        line = ""
+    if line:
+        return line
+    meta = read_json(os.path.join(directory, "meta.json"), {})
+    meta = meta if isinstance(meta, dict) else {}
+    return " · ".join(str(meta[key]) for key in ("vendor", "account") if meta.get(key)) or name.rsplit("/", 1)[-1]
 
 
 def orphans(table, tops, protected, weigh):
@@ -1072,7 +1115,7 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds, protecte
     before = prev.get("procs", {})
     procs, spent, chat_cpu, chat_kb, chat_count, machine = {}, {}, {}, {}, {}, 0.0
     other = dict.fromkeys([k for k, _ in OTHER_KINDS], 0.0)
-    other_kb = 0
+    other_kb, other_cpu, groups = 0, 0.0, {}
     for pid, row in table.items():
         if row["cpu"] < 0 or row["age"] < 0:
             continue
@@ -1094,16 +1137,41 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds, protecte
                 chat_kb[top] = chat_kb.get(top, 0) + row["kb"]
                 chat_count[top] = chat_count.get(top, 0) + 1
         else:
+            group = groups.setdefault(app_group(row), [0.0, 0])
+            group[0] += used
+            other_cpu += used
             if not row["zombie"]:
                 other_kb += row["kb"]
+                group[1] += row["kb"]
             for kind, names in OTHER_KINDS:
                 if row["comm"] in names:
                     other[kind] += used
     state["procs"], state["at"] = procs, now
     minute = now // 60
     history = state.setdefault("hist", {})
+    # Inside a row: a chat's worker runs and its own tree, the heaviest apps outside the chats. Their sparks keep
+    # history like a chat's, keyed `run:`/`own:`/`app:`; an app's only while it is shown or spends CPU.
+    rate = (lambda seconds: seconds / dt) if rated else (lambda seconds: None)
+    workers = chat_workers(table, tops, (view or {}).get("roots", {}))
+    runs, titled = {}, prev.get("runs", {})
+    for sid, members in workers.items():
+        for run, pids in members.items():
+            live_pids = [pid for pid in pids if not table[pid]["zombie"]]
+            key = f"run:{run}" if run else f"own:{sid}"
+            runs.setdefault(sid, []).append((key, run, sum(spent.get(pid, 0.0) for pid in pids),
+                                             sum(table[pid]["kb"] for pid in live_pids)))
+    root_dirs = {entry[0]: entry[1] for entry in (view or {}).get("roots", {}).values()}
+    state["runs"] = {run: titled.get(run) or run_title(run, root_dirs.get(run, ""))
+                     for entries in runs.values() for _, run, _, _ in entries if run}
+    # Sub rows rank by the cores they show (0.1 apart), then by memory: CPU noise never outranks gigabytes.
+    rank = lambda used, kb, name: (-round(used / dt if rated else 0.0, 1), -kb, name)
+    shown_apps = sorted(groups.items(), key=lambda item: rank(item[1][0], item[1][1], item[0]))[:SUB_ROWS]
     if rated:
-        for sid, used in chat_cpu.items():
+        spends = [(OTHER_HIST, other_cpu)] + list(chat_cpu.items())
+        spends += [(key, used) for entries in runs.values() for key, _, used, _ in entries]
+        spends += [(f"app:{name}", used) for name, (used, _) in groups.items() if used > 0]
+        spends += [(f"app:{name}", 0.0) for name, _ in shown_apps]
+        for sid, used in spends:
             buckets = history.setdefault(sid, {})
             buckets[str(minute)] = buckets.get(str(minute), 0.0) + used
     for sid in list(history):
@@ -1120,7 +1188,6 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds, protecte
     chats = sorted(set(chat_kb) | set(chat_cpu) | (set(held) - {""}))
     titles = name_chats(chats, now, state.setdefault("titles", {}))
     state["titles"] = {sid: titles[sid] for sid in titles if sid in chats or now - titles[sid]["at"] < GUARD_SHOWN_S}
-    rate = (lambda seconds: seconds / dt) if rated else (lambda seconds: None)
     chats_cores, machine_cores = rate(sum(chat_cpu.values())), rate(machine)
     used_mb = total_mb - avail if avail >= 0 and total_mb else None
     # Footprints count compressed and swapped pages at their uncompressed size, so they sum past RAM used
@@ -1134,6 +1201,15 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds, protecte
 
     def gb(mb, width, digits=1):
         return f"{mb / 1024:{width}.{digits}f}" if mb is not None else "–".rjust(width)
+
+    def sub_row(name, used, kb, key):
+        now_cores = rate(used)
+        return {"text": f"{short(name):<{TITLE_WIDTH}}  {cores(now_cores, 4)} cores  {gb(kb / 1024, 4)} GB  "
+                        f"{spark(history.get(key, {}), minute, top_cores)}", "dim": (now_cores or 0.0) < 0.05}
+
+    def chat_sub(sid):
+        entries = sorted(runs.get(sid, []), key=lambda entry: rank(entry[2], entry[3], entry[0]))
+        return [sub_row(state["runs"][run] if run else "this chat", used, kb, key) for key, run, used, kb in entries]
 
     other_cores = machine_cores - chats_cores if rated else None
     title = f"Chats/other  {cores(chats_cores, 0)}/{cores(other_cores, 0)} cores · {gb(chats_mb, 0, 0)}/{gb(other_mb, 0, 0)} GB"
@@ -1193,7 +1269,9 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds, protecte
             # A closed chat's row ends what it counts: `chat-load stop chat:<session>` from its submenu.
             **({} if live else {"stop": f"chat:{sid}", "gb": round((chat_kb.get(sid, 0) - app_kb) / 1048576, 1)}),
             **({"apps": [{"name": app["name"], "gb": round(kb / 1048576, 1), "quit": f"app:{label}:{int(app['start'])}"}
-                         for label, app, kb in apps]} if apps else {})}))
+                         for label, app, kb in apps]} if apps else {}),
+            # Its worker runs and its own tree, each as a row of the row's submenu.
+            **({"sub": chat_sub(sid)} if sid in runs else {})}))
     rows += [row for _, _, row in sorted(listed, key=lambda item: (-item[0], -item[1]))]
     if leftovers:
         members = [pid for pid, top in tops.items() if top in leftovers and not table[pid]["zombie"]]
@@ -1201,6 +1279,10 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds, protecte
         rows.append({"text": f"{'leftovers':<10}  {short(f'{len(members)} processes · {len(leftovers)} chats'):<{TITLE_WIDTH}}  "
                              f"{cores(now_cores, 4)} cores  {gb(kb / 1024, 4)} GB",
                      "stop": "leftovers:" + ",".join(leftovers), "gb": round(kb / 1048576, 1)})
+    # Everything else, the Mem line's "other" (orphans and simulators below included), with its heaviest apps inside.
+    rows.append({"text": f"{'':<10}  {OTHER_ROW:<{TITLE_WIDTH}}  {cores(other_cores, 4)} cores  {gb(other_mb, 4)} GB  "
+                         f"{spark(history.get(OTHER_HIST, {}), minute, top_cores)}", "dim": False,
+                 "sub": [sub_row(name, used, kb, f"app:{name}") for name, (used, kb) in shown_apps]})
     sims, ambiguous = view.get("sims", {}), view.get("ambiguous", {})
     # A booted simulator no chat's ledger names, or two chats' do, is a row of its own; its Stop shuts it down.
     for pid, sim in sorted(sims.items(), key=lambda item: item[1]["udid"]):
@@ -1524,6 +1606,8 @@ def show():
     print(snapshot.get("title", ""))
     for row in snapshot.get("rows", []):
         print(row if row == "-" else row.get("text", ""))
+        for sub in row.get("sub", []) if isinstance(row, dict) else []:
+            print("    " + sub.get("text", ""))
     return 0
 
 

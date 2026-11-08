@@ -3967,6 +3967,48 @@ do
   chatsFake.snapshot = nil
 end
 
+-- A row's `sub` rows (a chat's worker runs and own tree, the heaviest apps outside the chats) are drawn as rows of
+-- its submenu after every item it had: a live chat's tab click moves in as Show chat, a closed chat keeps Stop,
+-- reopen and Quit first, and the macOS & apps row, which has no action, opens on its rows alone.
+do
+  local tasks = {}
+  local workers = { { text = "Lane jpeg-own (Q-1707…   1.8 cores   1.4 GB  ▅", dim = false },
+                    { text = "this chat                 0.1 cores   0.6 GB   ", dim = true } }
+  chatsFake.snapshot = { as_of = os.time(), title = "Chats", rows = {
+    { text = "full speed  Render chat", session = "live-4", pid = 78, sub = workers },
+    { text = "closed      Old chat", session = "old-4", stop = "chat:old-4", gb = 0.3, sub = { workers[1] },
+      apps = { { name = "TextEdit", gb = 0.1, quit = "app:application.com.apple.TextEdit.7.8:1793000300" } } },
+    { text = "            macOS & apps              1.8 cores   4.3 GB  █", dim = false,
+      sub = { { text = "Google Chrome             1.5 cores   3.0 GB  ▃", dim = false } } },
+    { text = "            macOS & apps              0.0 cores   0.0 GB   ", dim = false, sub = {} },
+  } }
+  local mod = loadModule({ schema = 1, vendors = {} }, driveTasks(tasks))
+  mod.chatsCmd, mod.chatLoadCmd = "/fixture/bin/chats", "/fixture/bin/chat-load"
+  mod.chatGate = { selectTabByTty = function() return true end }
+  local chats
+  for _, item in ipairs(mod.menuItems()) do
+    if titleText(item):match("^Chats") then chats = item end
+  end
+  local live, closed, other, empty = chats.menu[1], chats.menu[2], chats.menu[3], chats.menu[4]
+  assert(live.menu and #live.menu == 4 and titleText(live.menu[1]) == "Show chat" and live.menu[2].title == "-"
+    and titleText(live.menu[3]) == workers[1].text and titleText(live.menu[4]) == workers[2].text and not live.fn,
+    "a live chat's worker rows were not drawn behind its tab click")
+  assert(live.menu[3].disabled and live.menu[4].disabled and not live.menu[3].menu,
+    "a worker row with no action of its own was not an info row")
+  live.menu[1].fn()
+  assert(tasks[1] and tasks[1].path == "/bin/ps" and table.concat(tasks[1].args, " ") == "-o tty= -p 78",
+    "Show chat lost the live chat's tab click")
+  assert(closed.menu and #closed.menu == 5 and titleText(closed.menu[1]) == "Stop · 0.3 GB"
+    and titleText(closed.menu[2]) == "Copy reopen command" and titleText(closed.menu[3]) == "Quit TextEdit · 0.1 GB"
+    and closed.menu[4].title == "-" and titleText(closed.menu[5]) == workers[1].text,
+    "a closed chat's worker rows displaced its Stop, reopen or Quit")
+  assert(other.menu and #other.menu == 1 and not other.disabled
+    and titleText(other.menu[1]) == "Google Chrome             1.5 cores   3.0 GB  ▃",
+    "the macOS & apps row did not open on its apps")
+  assert(empty.disabled and not empty.menu, "a row with an empty sub list opened an empty submenu")
+  chatsFake.snapshot = nil
+end
+
 -- Light is one switch over both of its roles, written by the same locked writer as a vendor's Pause.
 do
   for _, case in ipairs({ { model = nil, checked = true, state = "on" },
