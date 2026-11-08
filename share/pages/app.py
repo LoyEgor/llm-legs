@@ -125,6 +125,7 @@ def processes(pids):
 
 ACCOUNTS = {}
 FORKS = {}  # pid -> the session a `--resume <sid> --fork-session` process branched from (read with its account)
+CUTS = {}  # pid -> (parent transcript, byte offset): how far the parent went when the branch began
 
 
 def accounts(started):
@@ -134,6 +135,7 @@ def accounts(started):
     for pid in [p for p, held in ACCOUNTS.items() if started.get(p, held[0]) != held[0]]:
         del ACCOUNTS[pid]
         FORKS.pop(pid, None)
+        CUTS.pop(pid, None)
     missing = [p for p in started if p not in ACCOUNTS]
     if missing:
         out = run(["ps", "-E", "-o", "pid=,command=", "-p", ",".join(str(p) for p in missing)]) or ""
@@ -218,10 +220,10 @@ def load():
     return machine, per
 
 
-def tail_lines(path, size):
+def tail_lines(path, size, cut=None):
     try:
         with open(path, "rb") as handle:
-            end = handle.seek(0, 2)
+            end = handle.seek(0, 2) if cut is None else cut
             start = max(0, end - size)
             handle.seek(start)
             data = handle.read(end - start)
@@ -232,10 +234,11 @@ def tail_lines(path, size):
     return data.splitlines()
 
 
-def headline(path):
-    """The chat's latest recap (Claude's away_summary) and its last spoken line, from the transcript's tail."""
+def headline(path, cut=None):
+    """The chat's latest recap (Claude's away_summary) and its last spoken line, from the transcript's tail (the
+    bytes before `cut`)."""
     away, last = None, None
-    for raw in reversed(tail_lines(path, 256 << 10)):
+    for raw in reversed(tail_lines(path, 256 << 10, cut)):
         try:
             entry = json.loads(raw)
         except ValueError:
@@ -250,6 +253,50 @@ def headline(path):
         if away is not None and last is not None:
             break
     return away, last
+
+
+def cut_at(path, ms):
+    """The end of the last line of `path` stamped no later than epoch `ms` (milliseconds): the transcript as it stood
+    then, it only grows. Read back from the end, a MB at a time."""
+    since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ms // 1000)) + ".%03dZ" % (ms % 1000)
+    with open(path, "rb") as handle:
+        pos, carry = handle.seek(0, 2), b""
+        while pos > 0:
+            step = min(pos, 1 << 20)
+            pos -= step
+            handle.seek(pos)
+            data = handle.read(step) + carry
+            first = data.find(b"\n") + 1 if pos else 0
+            if pos and not first:
+                carry = data
+                continue
+            stop = pos + len(data)
+            for line in reversed(data[first:].splitlines(True)):
+                try:
+                    stamp = json.loads(line).get("timestamp")
+                except (ValueError, AttributeError):
+                    stamp = None
+                if isinstance(stamp, str) and stamp <= since:
+                    return stop
+                stop -= len(line)
+            carry = data[:first]
+    return 0
+
+
+def branch_source(rec):
+    """A live branch with no transcript of its own yet: (the parent's transcript, where it stood when the branch
+    began) or (None, None)."""
+    parent = FORKS.get(rec["pid"])
+    path = parent and transcript(parent)
+    if not path:
+        return None, None
+    held = CUTS.get(rec["pid"])
+    if not held or held[0] != path:
+        try:
+            held = CUTS[rec["pid"]] = (path, cut_at(path, int(rec.get("startedAt") or 0)))
+        except OSError:
+            return None, None
+    return held
 
 
 def transcript(sid, row=None):
@@ -284,6 +331,7 @@ def scan():
 
 HEADLINES = {}
 PATHS = {}
+CUT_AT = {}  # sid -> the byte its transcript is read up to (a branch reading its parent)
 
 
 def chats():
@@ -301,13 +349,19 @@ def chats():
         warm_in = warm(row)
         # A branch writes its transcript with its first message (Egor 2026-11-08: a branch opened empty); until then
         # it reads as the chat it branched from, which it is.
-        path = transcript(sid, row) or (FORKS.get(rec["pid"]) and transcript(FORKS[rec["pid"]]))
+        path, cut = transcript(sid, row), None
+        if not path:
+            path, cut = branch_source(rec)
         if path:
             PATHS[sid] = path
-        size = os.path.getsize(path) if path and os.path.exists(path) else 0
+        if cut is None:
+            CUT_AT.pop(sid, None)
+        else:
+            CUT_AT[sid] = cut
+        size = cut if cut is not None else os.path.getsize(path) if path and os.path.exists(path) else 0
         held = HEADLINES.get(sid)
         if not held or held[0] != size:
-            held = (size,) + headline(path) if path else (0, None, None)
+            held = (size,) + headline(path, cut) if path else (0, None, None)
             HEADLINES[sid] = held
         doc = {"sid": sid, "pid": rec["pid"], "tty": tty, "name": row.get("name") or rec.get("name") or sid[:8],
                "cwd": rec.get("cwd") or row.get("cwd") or "", "branch": row.get("branch") or "",
@@ -634,19 +688,20 @@ def log(sid, after=None, before=None):
     path = PATHS.get(sid) or transcript(sid, cached("recent", 30, recent).get(sid))
     if not path:
         return None
-    doc = window(path, after, before)
+    cut = CUT_AT.get(sid)
+    doc = window(path, after, before, cut)
     hops = 1
     thin = lambda items: len(items) < OLDER_ITEMS or not any(it.get("k") in SPEECH for it in items)
     while after is None and doc["start"] > 0 and thin(doc["items"]) and hops < OLDER_HOPS:
-        more = window(path, None, doc["start"])
+        more = window(path, None, doc["start"], cut)
         doc = dict(doc, items=more["items"] + doc["items"], start=more["start"])
         hops += 1
     return doc
 
 
-def window(path, after, before):
+def window(path, after, before, cut=None):
     with open(path, "rb") as handle:
-        size = handle.seek(0, 2)
+        size = handle.seek(0, 2) if cut is None else cut
         if after is not None:
             start, end = min(after, size), size
         elif before is not None:

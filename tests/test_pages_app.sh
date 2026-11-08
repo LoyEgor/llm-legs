@@ -558,16 +558,19 @@ assert test "$(tr '\n' '|' <"$WORK/trash.log")" = "mark $past|sweep $WORK/root|"
 assert test "$(post "/api/chat/$past/untrash" '{}')" = 200
 assert test "$(tail -1 "$WORK/trash.log")" = "restore $past"
 # A branch (Egor 2026-11-08: it opened empty) has no transcript until its first message: it reads as the chat it
-# branched from, then as its own file, which the client sees change.
+# branched from as that chat stood when the branch began (Egor: it showed what the parent said afterwards), then as
+# its own file, which the client sees change.
 fsid=ffffffff-2222-3333-4444-555555555555
+printf '\n{"type":"user","message":{"role":"user","content":"before the branch"},"timestamp":"2026-01-01T00:00:00.000Z"}\n' >>"$PT"
 "$PY" -c 'import time; time.sleep(300)' --resume "$past" --permission-mode x --fork-session --name 'a b' </dev/null &
 forkpid=$!
-printf '{"pid": %s, "sessionId": "%s", "cwd": "/x/old", "procStart": "%s", "entrypoint": "cli", "status": "idle"}' \
-  "$forkpid" "$fsid" "$(lstart "$forkpid")" >"$WORK/sessions/$forkpid.json"
+printf '{"pid": %s, "sessionId": "%s", "cwd": "/x/old", "procStart": "%s", "entrypoint": "cli", "status": "idle", "startedAt": %s000}' \
+  "$forkpid" "$fsid" "$(lstart "$forkpid")" "$(date +%s)" >"$WORK/sessions/$forkpid.json"
+printf '{"type":"user","message":{"role":"user","content":"after the branch"},"timestamp":"2099-01-01T00:00:00.000Z"}\n' >>"$PT"
 sleep 1.6
 assert test "$(get "$base/api/chats")" = 200
 assert test "$(get "$base/api/chat/$fsid/log")" = 200
-assert test "$(jq -r '.file + "|" + ([.items[].t] | join(","))' "$WORK/body")" = "$past.jsonl|old words"
+assert test "$(jq -r '.file + "|" + ([.items[] | select(.k == "user") | .t] | join(","))' "$WORK/body")" = "$past.jsonl|old words,before the branch"
 printf '{"type":"user","message":{"role":"user","content":"branch words"}}\n' >"$WORK/root/projects/-x-old/$fsid.jsonl"
 sleep 2.6; get "$base/api/chats" >/dev/null
 assert test "$(get "$base/api/chat/$fsid/log")" = 200
@@ -672,4 +675,4 @@ js = open(sys.argv[1]).read()
 start = js[js.index("async function micStart() {"):]
 sys.exit(not (start.index("micMacMic()") < start.index("getUserMedia") and "href=\"macmic://open\"" in js))' "$ROOT/share/pages/app/app.js"
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: kept streaming, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, MacMic first, a refusal linking to it, a chat's menu (rename live/closed, branch (its parent's history until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: kept streaming, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, MacMic first, a refusal linking to it, a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash"
