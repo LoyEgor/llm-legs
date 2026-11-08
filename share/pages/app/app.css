@@ -169,10 +169,10 @@ table.md th { font-weight: 600; }
 #opts .num { color: var(--fg3); font-variant-numeric: tabular-nums; min-width: 1ch; }
 #opts .q { padding: 6px 12px 4px; font-size: 13.5px; color: var(--fg2); white-space: pre-wrap; }
 #suggest:not(:empty) { margin-bottom: 8px; display: flex; }
-/* The Mac's voice pill, mirrored: a cut take to restore, the polish seconds, the other result. */
-#micbar:not(:empty) { margin-bottom: 8px; }
+/* The Mac's voice pill, mirrored inside the composer: in the take's row (a restore armed at its start, Paste now
+   through the polish, the other result), or in the box's place while idle (a cut take: restore it or hide it). */
 .mb { display: flex; gap: 8px; align-items: center; }
-.mb .pill { padding: 7px 14px; gap: 8px; }
+.mb .pill { padding: 5px 12px; gap: 8px; white-space: nowrap; }
 .mb .pill small { color: var(--fg3); font-size: 12px; font-variant-numeric: tabular-nums; }
 .mb .mt { color: var(--fg2); font-size: 13px; font-variant-numeric: tabular-nums; }
 .mb .ib { color: var(--fg3); }
@@ -194,7 +194,16 @@ table.md th { font-weight: 600; }
 #wavec { flex: 1; min-width: 0; height: 28px; }
 #wavet { font: 12px var(--mono); color: var(--fg3); min-width: 4ch; text-align: right; }
 #composer.rec #mic { position: absolute; left: 6px; bottom: 6px; color: var(--fg); background: var(--hover); }
-#composer.rec #input { visibility: hidden; }
+#composer.rec #input, #composer.lost #input { visibility: hidden; }
+#waveb:empty { display: none; }
+#lost { position: absolute; left: 16px; right: 84px; top: 6px; bottom: 6px; overflow: hidden; }
+#lost .mt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A take runs while the page overlay or a covering sheet hides the composer: it stays in sight above everything. */
+#takepill { position: fixed; z-index: 45; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px; padding: 4px 4px 4px 14px; border-radius: 22px; background: var(--comp);
+  box-shadow: var(--shadow-comp), 0 4px 16px #0000001f; font: 13px var(--mono); color: var(--fg); }
+#takepill .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); animation: take-dot 1.4s ease-in-out infinite; }
+@keyframes take-dot { 50% { opacity: 0.35; } }
 
 /* ---------------------------------------------------------------- side sheet: Terminal, Pages, Menu */
 #scrim { position: fixed; inset: 0; z-index: 20; background: #0000001a; }
@@ -277,6 +286,7 @@ body.docked #scrim { display: none; }
   #composer { min-height: 56px; border-radius: 28px; padding-left: 20px; }
   #input { padding: 12px 0; }
   #wave { left: 62px; right: 62px; }
+  #lost { left: 20px; right: 118px; }
 }
 @media (max-width: 760px) {
   #side { width: 100%; border-right: 0; }

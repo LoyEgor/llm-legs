@@ -551,7 +551,8 @@ def parse_entry(entry):
         # Code's queue is one FIFO with its own notifications in it and a `dequeue` names no text (it takes the
         # head), so every entry is passed on and the client mirrors the queue; `hide` marks the ones not his.
         op, text = entry.get("operation"), entry.get("content")
-        text = text if isinstance(text, str) else ""
+        # What the app sends is a bracketed paste, which Claude Code wraps: his, not a notification.
+        text = PASTED_RE.sub(lambda m: m.group(1), text).strip() if isinstance(text, str) else ""
         hide = not text.strip() or text.lstrip().startswith("<")
         if op == "enqueue":
             return [{"k": "queued", "t": "" if hide else clip(text, TEXT_CAP), "hide": hide, "at": at}]
@@ -609,14 +610,16 @@ def parse_entry(entry):
     return []
 
 
-OLDER_ITEMS = 12  # an Earlier block reaches back until it holds this many items ...
+OLDER_ITEMS = 12  # the tail and an Earlier block reach back until they hold this many items and some speech ...
 OLDER_HOPS = 8  # ... or this many windows
+SPEECH = ("user", "asst", "away")
 
 
 def log(sid, after=None, before=None):
     """Items of the transcript: the tail (LOG_WINDOW) with no offsets, what came after byte `after`, or the window
-    that ends at byte `before` (reaching further back while it holds next to nothing: tool noise, sidechains).
-    -> {items, start, end}: offsets of whole lines, for the next call."""
+    that ends at byte `before`. The tail and a `before` window reach further back while they hold next to nothing
+    or no speech (tool noise, sidechains, screenshots: Egor 2026-11-08, a chat opened on two tool calls and its
+    spinner, nothing said). -> {items, start, end}: offsets of whole lines, for the next call."""
     if not SID_RE.match(sid):
         return None
     path = PATHS.get(sid) or transcript(sid, cached("recent", 30, recent).get(sid))
@@ -624,7 +627,8 @@ def log(sid, after=None, before=None):
         return None
     doc = window(path, after, before)
     hops = 1
-    while before is not None and doc["start"] > 0 and len(doc["items"]) < OLDER_ITEMS and hops < OLDER_HOPS:
+    thin = lambda items: len(items) < OLDER_ITEMS or not any(it.get("k") in SPEECH for it in items)
+    while after is None and doc["start"] > 0 and thin(doc["items"]) and hops < OLDER_HOPS:
         more = window(path, None, doc["start"])
         doc = dict(doc, items=more["items"] + doc["items"], start=more["start"])
         hops += 1

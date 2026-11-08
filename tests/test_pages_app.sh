@@ -296,10 +296,12 @@ printf '"}]}}\n' >>"$T"
   echo '{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"check the scroll","origin":{"kind":"human"},"timestamp":"t5"},"timestamp":"t6"}'
   echo '{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"done","origin":{"kind":"task-notification"}}}'
   echo '{"type":"queue-operation","operation":"dequeue"}'
+  # What the app sends is a bracketed paste, which Claude Code wraps: still his (it was hidden as a notification).
+  printf '%s\n' '{"type":"queue-operation","operation":"enqueue","content":"<pasted_content id=\"ab12\">\nfrom the iPad\n</pasted_content id=\"ab12\">","timestamp":"t7"}'
 } >>"$T"
 assert test "$(get "$base/api/chat/$sid/log?after=$whole")" = 200
 assert test "$(jq -c '[.items[] | [.k, .t, .op, .at, .mid, .hide]]' "$WORK/body")" \
-  = '[["asst","torn",null,"",null,null],["queued","check the scroll",null,"t5",null,false],["queued","",null,"",null,true],["unqueued","check the scroll","remove","t6",null,false],["user","check the scroll",null,"t5",true,null],["unqueued","","dequeue","",null,true]]'
+  = '[["asst","torn",null,"",null,null],["queued","check the scroll",null,"t5",null,false],["queued","",null,"",null,true],["unqueued","check the scroll","remove","t6",null,false],["user","check the scroll",null,"t5",true,null],["unqueued","","dequeue","",null,true],["queued","from the iPad",null,"t7",null,false]]'
 
 # Input: one bracketed paste of the exact text into the chat's own tty, through ChatGate.terminalScript.
 assert test "$(post "/api/chat/$sid/send" '{"text": "привет\nдве строки"}')" = 200
@@ -505,8 +507,8 @@ assert test "$(jq -r '.chats | length' "$WORK/body")" = 0
 line = lambda t: json.dumps({"type": "user", "message": {"role": "user", "content": t}}) + "\n"
 open(sys.argv[1], "a").write(line("x" * 900000) + line("after the big one"))' "$T"
 assert test "$(get "$base/api/chat/$sid/log")" = 200
-assert test "$(jq -r '[.items[].t] | join(",")' "$WORK/body")" = "after the big one"
-s1=$(jq -r .start "$WORK/body")
+assert test "$(jq -r '.items[-1].t' "$WORK/body")" = "after the big one"
+s1=$("$PY" -c 'import sys; d = open(sys.argv[1], "rb").read(); print(d.rindex(b"\n", 0, len(d) - 1) + 1)' "$T")
 assert test "$(get "$base/api/chat/$sid/log?before=$s1")" = 200
 assert test "$(jq -r '[.end == '"$s1"', .start < '"$s1"' - 900000, .items[-1].k == "user"] | all' "$WORK/body")" = true
 # An Earlier block is a block: windows of a few big lines each are joined until it holds 12 items, so one scroll
@@ -518,6 +520,14 @@ assert test "$(get "$base/api/chat/$sid/log")" = 200
 s2=$(jq -r .start "$WORK/body")
 assert test "$(get "$base/api/chat/$sid/log?before=$s2")" = 200
 assert test "$(jq -r '[(.items | length >= 12), .end == '"$s2"', (.items[-1].t | startswith("b"))] | all' "$WORK/body")" = true
+# The tail reaches back the same way, and on until something was said: a chat whose last 768 KB are two tool calls
+# and their screenshots opened on them alone (Egor 2026-11-08: nothing of what was said, only its spinner).
+"$PY" -c 'import json, sys
+res = lambda: json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "u1", "content": "z" * 400000}]}}) + "\n"
+said = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "before the tools"}]}}) + "\n"
+open(sys.argv[1], "a").write(said + "".join(res() for _ in range(3)))' "$T"
+assert test "$(get "$base/api/chat/$sid/log")" = 200
+assert test "$(jq -r '[(.items | length >= 12), ([.items[].t] | index("before the tools") != null)] | all' "$WORK/body")" = true
 
 # It costs Claude Code nothing: no model call, no settings or hooks touched; the only programs it runs are ps,
 # Hammerspoon, chat-find and chats (to open a past chat), and the client polls only while it is on screen, at most once a second.
@@ -547,5 +557,17 @@ for path in sys.argv[1:]:
         else: buf += ch
 sys.exit("hover outside @media (hover: hover): %s" % bad if bad else 0)' "$ROOT/share/pages/app/app.css" "$ROOT/share/pages/kit/ui.css"
 assert grep -q 'touch-action: manipulation' "$ROOT/share/pages/app/app.css"
+# Egor 2026-11-08: a message on its way vanished when an update reloaded the app (the outbox is kept); the voice
+# pill's buttons live inside the composer, no bar of their own; a take stays in sight above a page or a sheet.
+assert grep -qF "keep('outbox'" "$ROOT/share/pages/app/app.js"
+assert test -z "$(grep -n 'micbar' "$ROOT/share/pages/app/index.html" "$ROOT/share/pages/app/app.js")"
+assert "$PY" -c 'import re, sys
+html = open(sys.argv[1]).read()
+form = html[html.index("<form id=\"composer\">"):html.index("</form>")]
+sys.exit(not ("id=\"waveb\"" in form and "id=\"lost\"" in form and "id=\"takepill\"" in html))' "$ROOT/share/pages/app/index.html"
+assert "$PY" -c 'import re, sys
+css = open(sys.argv[1]).read()
+z = lambda sel: int(re.search(re.escape(sel) + r" \{[^}]*z-index: (\d+)", css).group(1))
+sys.exit(not z("#takepill") > max(z("#overlay"), z("#close")))' "$ROOT/share/pages/app/app.css"
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost)"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page"

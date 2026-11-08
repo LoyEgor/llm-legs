@@ -710,8 +710,13 @@ function later() {
 
 // A message belongs to the chat it was written in from the tap on: the composer empties at once, the request runs
 // whatever he opens next, and its bubble stays in that chat until the transcript shows it (as said or queued).
-const OUT = [];
+// Kept across a reload (an update reloads the app by itself): a sent one stays until the transcript shows it (an
+// hour at most), a failed one until he deletes it, and one a reload cut mid-request is offered as not sent.
 let outSeq = 0;
+const OUT = (kept('outbox').list || []).filter((o) => o && o.sid && o.text && (o.state !== 'sent' || now() - o.at < 3600))
+  .map((o) => Object.assign(o, {id: ++outSeq}, o.state === 'sending'
+    ? {state: 'failed', unsure: true, err: 'the app reloaded while sending: check the chat before Retry'} : {}));
+const saveOut = () => keep('outbox', {list: OUT.map(({sid, text, state, err, at, unsure}) => ({sid, text, state, err, at, unsure}))});
 
 function outbox(sid, text) {
   const o = {id: ++outSeq, sid, text, state: 'sending', err: ''};
@@ -722,6 +727,7 @@ function outbox(sid, text) {
 
 async function deliver(o) {
   o.state = 'sending';
+  o.unsure = false;
   o.at = now();
   outRender();
   const d = await api(`/api/chat/${encodeURIComponent(o.sid)}/send`, {text: o.text}).catch(() => ({ok: false, err: 'no connection'}));
@@ -738,13 +744,14 @@ async function deliver(o) {
 function settle(text, at) {
   const t = Date.parse(at) / 1000;
   if (!t) return;
-  const mine = OUT.filter((o) => o.sid === S.sid && o.state !== 'failed');
+  const mine = OUT.filter((o) => o.sid === S.sid && (o.state !== 'failed' || o.unsure));
   const o = mine.find((x) => norm(x.text) === norm(text) && t >= x.at - 30)
     || (OUT.some((x) => norm(x.text) === norm(text)) ? null : mine.find((x) => t >= x.at - 2));
   if (o) { OUT.splice(OUT.indexOf(o), 1); outRender(); }
 }
 
 function outRender() {
+  saveOut();
   const col = $('#col');
   col.querySelectorAll('.out-n').forEach((n) => n.remove());
   const mine = OUT.filter((o) => o.sid === S.sid);
@@ -1020,6 +1027,7 @@ function renderDock() {
   if (opts.dataset.h !== optHtml) { opts.innerHTML = optHtml; opts.dataset.h = optHtml; }
   const typed = $('#input').value.trim();
   const sug = !optHtml && live(c) && !busy(c) && MIC.state === '' && !typed && !OUT.some((x) => x.sid === S.sid)
+    && !$('#composer').classList.contains('lost')
     && o.prompt && !/^Try "/.test(o.prompt)
     && !/^\[Pasted text/.test(o.prompt) && !/^[!#/]/.test(o.prompt) ? o.prompt : '';
   const box = $('#suggest');
@@ -1102,6 +1110,7 @@ async function micCall(path, body, step) {
 function micButton() {
   const rec = MIC.state !== '';
   $('#composer').classList.toggle('rec', rec);
+  if (!rec) takePill('');
   $('#wave').hidden = !rec;
   if ($('#mic').dataset.rec !== String(rec)) { $('#mic').dataset.rec = rec; $('#mic').innerHTML = rec ? ICON.x : ICON.mic; }
   $('#mic').title = rec ? 'Stop and put the text in the box' : 'Dictate';
@@ -1145,9 +1154,27 @@ function drawWave(t) {
     g.globalAlpha = MIC.state === 'live' ? 0.85 : 0.35;
     g.fillRect(x, (h - bh) / 2, 2, bh);
   }
-  $('#wavet').innerHTML = MIC.state === 'wait' ? '<span class="shimmer">Transcribing…</span>'
-    : MIC.state === 'starting' ? '<span class="shimmer">Starting…</span>' : dur(now() - MIC.began).replace(/^(\d+)s$/, '0:$1').replace(/^0:(\d)$/, '0:0$1');
+  const b = BUB.doc, polish = MIC.state === 'wait' && b && b.remote && b.pill === 'polish' && b.polish_since;
+  const clock = (t) => { const k = Math.max(0, Math.floor(now() - t)); return Math.floor(k / 60) + ':' + String(k % 60).padStart(2, '0'); };
+  const text = polish ? 'Polishing ' + clock(polish) : MIC.state === 'wait' ? 'Transcribing…'
+    : MIC.state === 'starting' ? 'Starting…' : clock(MIC.began);
+  const html = MIC.state === 'live' ? text : `<span class="shimmer">${text}</span>`;
+  if ($('#wavet').dataset.h !== html) { $('#wavet').dataset.h = html; $('#wavet').innerHTML = html; }
+  takePill(text);
   MIC.raf = requestAnimationFrame(drawWave);
+}
+
+// A take runs on whatever he opens in the app; where the composer is out of sight (a page, a covering sheet, no
+// chat open) this pill says it still runs: a tap on it brings the composer back, × ends the take into the box.
+function takePill(text) {
+  const hidden = !MIC.state || (S.sid && $('#overlay').hidden && !$('#chat').hidden
+    && ($('#sheet').hidden || document.body.classList.contains('docked')));
+  const pill = $('#takepill');
+  if (pill.hidden !== hidden) pill.hidden = hidden;
+  if (hidden) return;
+  if ($('#takept').textContent !== text) $('#takept').textContent = text;
+  const x = MIC.state !== 'live' && MIC.state !== 'starting';
+  if ($('#takex').hidden !== x) $('#takex').hidden = x;
 }
 
 function release(take) {
@@ -1316,27 +1343,39 @@ async function pullBubble() {
 }
 
 const hhmm = (t) => new Date(t * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+// One composer for all of it (Egor 2026-11-08: no bar of their own above it). A take's row holds what its moment
+// offers: a restore armed at its start, Paste now through the polish, the other result. Idle, a cut take takes the
+// box's place until it is restored into the box or hidden: typing and a lost take do not share it.
 function renderMicbar() {
   const b = BUB.doc, r = b && b.restore;
-  let html = '';
-  if (BUB.busy) html = '<div class="mb"><span class="shimmer">Restoring the cut dictation…</span></div>';
-  else if (r && r.name && !BUB.gone[r.name] && (MIC.state === '' || (MIC.state === 'live' && r.armed))) {
-    html = `<div class="mb"><button type="button" class="pill" data-restore="${esc(r.name)}">↺ Restore the cut dictation` +
-      `<small>${hhmm(r.at)}${r.chars ? ' · ' + kTok(r.chars) + ' chars' : ''}</small></button>` +
-      (MIC.state ? '' : `<button type="button" class="ib" data-forget="${esc(r.name)}" aria-label="Hide">${ICON.x}</button>`) + '</div>';
+  const offer = r && r.name && !BUB.gone[r.name] ? r : null;
+  const when = offer ? `<small>${hhmm(offer.at)}${offer.chars ? ' · ' + kTok(offer.chars) + ' chars' : ''}</small>` : '';
+  let inTake = '', lost = '';
+  if (MIC.state === 'live' && offer && offer.armed) {
+    inTake = `<button type="button" class="pill" data-restore="${esc(offer.name)}">↺ Restore the cut one${when}</button>`;
   } else if (b && MIC.state === 'wait' && b.remote) {
     const polish = b.pill === 'polish' && b.polish_since;
     if (polish || b.alt === 'ready') {
-      html = '<div class="mb">' + (polish ? `<span class="mt">Polishing <span data-since="${b.polish_since}"></span></span>` : '') +
-        `<button type="button" class="pill" data-usealt>${polish && b.alt !== 'ready' ? 'Paste now' : 'Use the other result'}</button></div>`;
-    } else if (b.alt === 'failed') html = '<div class="mb"><span class="mt c-red">● ● the other result failed</span></div>';
+      inTake = `<button type="button" class="pill" data-usealt>${polish && b.alt !== 'ready' ? 'Paste now' : 'Use the other result'}</button>`;
+    } else if (b.alt === 'failed') inTake = '<span class="mt c-red">● ● the other result failed</span>';
+  }
+  if (BUB.busy) lost = '<span class="mt shimmer">Restoring the cut dictation…</span>';
+  else if (MIC.state === '' && offer) {
+    lost = `<span class="mt">↺ Cut dictation ${when}</span>` +
+      `<button type="button" class="pill" data-restore="${esc(offer.name)}">Restore</button>` +
+      `<button type="button" class="ib" data-forget="${esc(offer.name)}" aria-label="Hide">${ICON.x}</button>`;
   }
   $('#composer').classList.toggle('degraded', !!(b && b.degraded && MIC.state));
-  const box = $('#micbar');
-  if (box.dataset.h === html) return;
-  box.dataset.h = html;
-  box.innerHTML = html;
-  clocks(box);
+  if ($('#composer').classList.contains('lost') !== !!lost) {
+    $('#composer').classList.toggle('lost', !!lost);
+    renderDock();
+  }
+  for (const [box, html] of [[$('#waveb'), inTake], [$('#lost'), lost]]) {
+    box.hidden = box.id === 'lost' && !html;
+    if (box.dataset.h === html) continue;
+    box.dataset.h = html;
+    box.innerHTML = html;
+  }
 }
 
 async function micRestore(name) {
@@ -1776,7 +1815,7 @@ $('#sheetf').addEventListener('click', (e) => {
   else if (e.target.closest('[data-allpages]')) { S.pagesAll = !S.pagesAll; renderSheet(); }
 });
 $('#update').addEventListener('click', reload);
-$('#micbar').addEventListener('click', (e) => {
+$('#composer').addEventListener('click', (e) => {
   const r = e.target.closest('[data-restore]'), f = e.target.closest('[data-forget]');
   if (r) micRestore(r.dataset.restore);
   else if (f) { BUB.gone[f.dataset.forget] = now(); keep('restored', BUB.gone); renderMicbar(); }
@@ -1814,6 +1853,12 @@ $('#list').addEventListener('click', (e) => {
 });
 $('#openbtn').addEventListener('click', openPast);
 $('#close').addEventListener('click', () => { $('#overlay').hidden = true; $('#frame').src = 'about:blank'; });
+$('#takepill').addEventListener('click', (e) => {
+  if (e.target.closest('#takex')) { if (MIC.state === 'live') micStop(); else if (MIC.state === 'starting') micDrop(); return; }
+  if (!$('#overlay').hidden) $('#close').click();
+  if (S.sheet && !document.body.classList.contains('docked')) closeSheet(true);
+  if (!S.sid || $('#chat').hidden) { const c = S.chats.find((x) => live(x)); if (c) location.hash = '#chat/' + c.sid; }
+});
 window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;

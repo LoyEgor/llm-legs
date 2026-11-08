@@ -48,10 +48,10 @@
           <button type="button" class="btn primary" id="openbtn">Open in Terminal</button></div>
         <div id="opts"></div>
         <div id="suggest"></div>
-        <div id="micbar"></div>
         <form id="composer">
           <textarea id="input" rows="1" enterkeyhint="enter" autocomplete="off" placeholder="Message"></textarea>
-          <div id="wave" hidden><canvas id="wavec"></canvas><span id="wavet"></span></div>
+          <div id="wave" hidden><canvas id="wavec"></canvas><span id="wavet"></span><span id="waveb" class="mb"></span></div>
+          <div id="lost" class="mb" hidden></div>
           <div class="cbtn">
             <button type="button" id="mic" class="round" data-icon="mic" title="Dictate"></button>
             <button type="submit" id="send" class="round primary" data-icon="up" title="Send"></button>
@@ -70,6 +70,7 @@
   <div class="grip" id="sheetgrip" aria-hidden="true"></div>
 </aside>
 <div id="offline" hidden>No connection to the Mac</div>
+<div id="takepill" hidden><i class="dot"></i><span id="takept"></span><button type="button" id="takex" class="ib" data-icon="x" aria-label="Stop and put the text in the box"></button></div>
 <div id="overlay" hidden><button id="close" type="button" data-icon="x" aria-label="Close"></button><iframe id="frame" title="page"></iframe></div>
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="/app/app.js"></script>
