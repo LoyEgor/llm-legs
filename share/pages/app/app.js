@@ -564,13 +564,20 @@ async function refreshChats() {
 
 // ------------------------------------------------------------------ markdown, the small part Claude writes
 
+// A Home Screen web app that opens a new window loses the microphone until the iPad's SafariViewService ends (WebKit
+// bug 329593; Egor 2026-11-08: refused in 5 ms with no prompt, a swipe-away of the app did not help): there its links
+// go to Safari itself, no window of the app's own.
+const STANDALONE = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const outLink = (url, label) => STANDALONE ? `<a href="x-safari-${url}">${label}</a>`
+  : `<a href="${url}" target="_blank" rel="noopener">${label}</a>`;
+
 function inline(s) {
   return s.split(/(`[^`\n]+`)/).map((p) => {
     if (p.length > 1 && p[0] === '`' && p[p.length - 1] === '`') return '<code>' + esc(p.slice(1, -1)) + '</code>';
     return esc(p)
       .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
-      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, text, url) => outLink(url, text))
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (_, lead, url) => lead + outLink(url, url));
   }).join('');
 }
 
@@ -1553,6 +1560,14 @@ async function micRefused(e) {
   if (MIC.state === '' && MIC.refused && macmicUsable()) micMacMic();
 }
 
+// The Mac ends the iPad's SafariViewService (transcriptions-gpt ipad-webreset): this app closes within seconds, and
+// reopened it asks for the microphone anew.
+async function micWebReset() {
+  let d = {};
+  try { d = await api('/api/mic/webreset', {}); } catch (e) { d = {err: e.message}; }
+  toast(d.ok ? 'The web view restarts: open Chats again and allow the microphone' : 'Not restarted: ' + (d.err || 'no answer'));
+}
+
 // The worklet, or the ScriptProcessor iOS still has when the worklet will not load; both give 20 ms frames.
 async function micCapture(take) {
   const got = (buf) => {
@@ -1699,7 +1714,10 @@ function renderMicbar() {
     lost = `<span class="mt c-red">⚠ ${MIC.refused === 'asleep' ? 'MacMic did not wake'
       : 'The iPad refused the microphone' + (MIC.refused === 'denied' ? ' (blocked in Settings)' : '')}</span>` +
       '<a class="pill" href="macmic://open">Open MacMic</a>' +
-      (MIC.refused === 'asleep' ? '' : '<button type="button" class="pill" data-reload>Reload</button>') +
+      // A refusal in the Home Screen app outlives a reload (WebKit bug 329593): only SafariViewService ending clears it.
+      (MIC.refused === 'asleep' ? '' : STANDALONE && MIC.refused === 'refused'
+        ? '<button type="button" class="pill" data-webreset>Restart the web view</button>'
+        : '<button type="button" class="pill" data-reload>Reload</button>') +
       `<button type="button" class="ib" data-unrefuse aria-label="Hide">${ICON.x}</button>`;
   }
   else if (MIC.state === '' && offer) {
@@ -2159,6 +2177,7 @@ $('#composer').addEventListener('click', (e) => {
   if (r) micRestore(r.dataset.restore);
   else if (f) { BUB.gone[f.dataset.forget] = now(); keep('restored', BUB.gone); renderMicbar(); }
   else if (e.target.closest('[data-reload]')) reload();
+  else if (e.target.closest('[data-webreset]')) micWebReset();
   else if (e.target.closest('[data-unrefuse]')) { MIC.refused = ''; renderMicbar(); }
   else if (e.target.closest('[data-usealt]')) api('/api/mic/usealt', {}, 5000).then((d) => { if (!d.ok) toast('⚠ ' + (d.err || 'nothing to use')); pullBubble(); }).catch(() => {});
 });

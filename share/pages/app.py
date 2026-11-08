@@ -1714,6 +1714,15 @@ def mic_usealt():
     return 200, {"ok": answer == "ok", "err": "" if answer == "ok" else answer or "transcriptions-gpt is not running"}
 
 
+def mic_webreset():
+    """The iPad's web view restarted (transcriptions-gpt's ipad-webreset ends SafariViewService): WebKit refuses a Home
+    Screen web app the microphone, no prompt, for that process's life once the app opened a new window (WebKit bug
+    329593); a swipe-away does not end it. The app closes; reopened, it asks for the microphone anew."""
+    answer = daemon("ipad-webreset") if daemon else None
+    ok = bool(answer) and answer.startswith("ok")
+    return (200 if ok else 503), {"ok": ok, "err": "" if ok else answer or "transcriptions-gpt is not running"}
+
+
 def mic_restore(body):
     """A cut take back as text for the draft: transcriptions-gpt restores the named, else the offered, else the newest
     cancelled take into a file instead of pasting on the Mac; a take of ours still recording is discarded by it."""
@@ -1761,14 +1770,16 @@ def mic_restore(body):
 
 
 def mic_post(path, body):
-    """POST /api/mic/(start|usealt|restore) | /api/mic/<id>/(chunk|alive|stop|cancel) -> (code, doc), or None when not a mic
-    route."""
+    """POST /api/mic/(start|usealt|restore|webreset) | /api/mic/<id>/(chunk|alive|stop|cancel) -> (code, doc), or None when
+    not a mic route."""
     if path == "/api/mic/start":
         return mic_start(body)
     if path == "/api/mic/usealt":
         return mic_usealt()
     if path == "/api/mic/restore":
         return mic_restore(body)
+    if path == "/api/mic/webreset":
+        return mic_webreset()
     m = re.fullmatch(r"/api/mic/([0-9a-f]{16})/(chunk|alive|stop|cancel)", path)
     if not m:
         return None
