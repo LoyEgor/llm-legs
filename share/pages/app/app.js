@@ -315,34 +315,33 @@ async function searchSaid() {
 
 const pastRow = (sid) => S.hist.find((r) => r.sid === sid) || (S.found && (S.found.rows || []).find((r) => r.sid === sid));
 
-// Open in Terminal picks the account (Egor 2026-11-09; a message opens the chat on its default one): the Anthropic
-// accounts in worker-pick's order with how much of each is used, a dot on the one still holding the chat's cache,
-// the default lit. A gateway chat has none to pick and opens at once.
-async function pickAccount() {
-  const sid = S.sid, box = $('#accts');
-  if (!box.hidden) { box.hidden = true; return; }
-  $('#openbtn').disabled = true;
-  const d = await api(`/api/chat/${encodeURIComponent(sid)}/accounts`, null, 30000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
-  $('#openbtn').disabled = false;
-  if (sid !== S.sid) return;
-  if (!d.ok) { $('#pastnote').textContent = '⚠ ' + (d.err || 'no accounts'); return; }
-  if (!d.accounts.length) { openPast(); return; }
-  box.innerHTML = d.accounts.map((a) => `<button type="button" class="acct${a.default ? ' def' : ''}" data-acct="${esc(a.name)}">` +
+// Open in Terminal on the account he picks (Egor 2026-11-09: the choice sits by the button; a message opens the chat on
+// the default one): the Anthropic accounts in worker-pick's order with how much of each is used, a dot on the one
+// still holding the chat's cache, the default picked. A gateway chat has none and opens on its own.
+async function loadAccounts(sid) {
+  const box = $('#accts');
+  Object.assign(box.dataset, {sid, pick: '', def: ''});
+  box.hidden = true;
+  box.innerHTML = '';
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/accounts`, null, 30000).catch(() => ({ok: false}));
+  if (sid !== S.sid || box.dataset.sid !== sid || !d.ok || !d.accounts.length) return;
+  const def = (d.accounts.find((a) => a.default) || d.accounts[0]).name;
+  box.dataset.def = box.dataset.pick = def;
+  box.innerHTML = d.accounts.map((a) => `<button type="button" class="acct${a.name === def ? ' on' : ''}" data-acct="${esc(a.name)}">` +
     `${a.warm ? '<i class="dot"></i>' : ''}<span>${esc(a.name)}</span><small>${esc(a.used)}</small></button>`).join('');
-  box.dataset.sid = sid;
-  box.hidden = false;
+  box.hidden = !!(S.opening && S.opening.sid === sid);
 }
 
 // Open in Terminal: the server runs `chats --open-command` and types it into a new Terminal window; the chat then
 // shows up live (the same id, or a new one in the same folder) and the view follows it.
 async function openPast(account) {
   const sid = S.sid, p = pastRow(sid) || {};
-  $('#accts').hidden = true;
   $('#openbtn').disabled = true;
   $('#pastnote').innerHTML = '<span class="shimmer">Opening in Terminal on the Mac…</span>';
   const d = await api(`/api/chat/${encodeURIComponent(sid)}/open`, account ? {account} : {}, 45000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
   $('#openbtn').disabled = false;
   if (!d.ok) { $('#pastnote').textContent = '⚠ ' + (d.err || 'did not open'); return; }
+  $('#accts').hidden = true;
   if (d.live) { refreshChats(); return; }
   S.opening = {sid, at: now(), cwd: p.cwd || '', known: new Set(S.chats.map((c) => c.sid))};
   $('#pastnote').innerHTML = `<span class="shimmer">Opened${d.account ? ' as ' + esc(d.account) : ''} · waiting for it…</span>`;
@@ -1135,7 +1134,7 @@ function renderHead() {
     const p = pastRow(S.sid);
     title(`<b>${esc(p && p.name || S.sid)}</b><small>${esc([p && base(p.cwd), p && ago(p.spoke), 'not open'].filter(Boolean).join(' · '))}</small>`);
     if (!S.opening || S.opening.sid !== S.sid) { $('#openbtn').disabled = false; $('#pastnote').textContent = 'Not open on the Mac'; }
-    if ($('#accts').dataset.sid !== S.sid) $('#accts').hidden = true;
+    if ($('#accts').dataset.sid !== S.sid) loadAccounts(S.sid);
     return;
   }
   // The chat's own statusline in full words and its colours, else what the screen shows under the prompt.
@@ -2306,8 +2305,16 @@ $('#list').addEventListener('click', (e) => {
   else if (e.target.closest('[data-more]')) { S.histN += 50; renderList(); }
   else if (e.target.closest('[data-said]')) searchSaid();
 });
-$('#openbtn').addEventListener('click', pickAccount);
-$('#accts').addEventListener('click', (e) => { const b = e.target.closest('[data-acct]'); if (b) openPast(b.dataset.acct); });
+$('#openbtn').addEventListener('click', () => {
+  const box = $('#accts');
+  openPast(box.dataset.sid === S.sid && box.dataset.pick !== box.dataset.def ? box.dataset.pick : undefined);
+});
+$('#accts').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-acct]');
+  if (!b) return;
+  $('#accts').dataset.pick = b.dataset.acct;
+  $('#accts').querySelectorAll('.acct').forEach((x) => x.classList.toggle('on', x === b));
+});
 $('#list').addEventListener('touchstart', (e) => {
   clearTimeout(CTX.timer);
   const row = e.target.closest('a.row'), p = e.touches[0];
