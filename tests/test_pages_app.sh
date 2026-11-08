@@ -527,5 +527,25 @@ assert test "$(grep -c 'setInterval(' "$ROOT/share/pages/app/app.js")" = 1
 assert "$PY" -c 'import sys
 sys.exit("if (document.visibilityState !== \x27visible\x27) return;\n  tick++;" not in open(sys.argv[1]).read())' "$ROOT/share/pages/app/app.js"
 assert test "$(grep -c '^}, 1000);$' "$ROOT/share/pages/app/app.js")" = 1
+# Egor 2026-11-08, a first tap on the iPad lost: iOS drops a tap whose node a redraw replaces, so the polls' list,
+# meters, title and mic redraw only on a change; no hover style on a touch screen (it ate the first tap); a lost tap
+# is reported (tap-lost), its touchend caught on the touched node too, since a removed node's never reaches document.
+for g in 'if (listHtml !== html) {' 'if (box.dataset.h !== html) { box.dataset.h = html; box.innerHTML = html; }' \
+  'if (t.dataset.h !== html) { t.dataset.h = html; t.innerHTML = html; }' "if (\$('#mic').dataset.rec !== String(rec))" \
+  "el.addEventListener('touchend', tapEnd, {once: true, passive: true});" "report({kind: 'tap-lost'"; do
+  assert grep -qF "$g" "$ROOT/share/pages/app/app.js"
+done
+assert "$PY" -c 'import re, sys
+bad = []
+for path in sys.argv[1:]:
+    stack, buf = [], ""
+    for ch in re.sub(r"/\*.*?\*/", "", open(path).read(), flags=re.S):
+        if ch == "{":
+            sel = buf.strip(); stack.append(sel); buf = ""
+            if ":hover" in sel and not sel.startswith("@") and "@media (hover: hover)" not in stack[:-1]: bad.append(sel)
+        elif ch in "};": buf = ""; ch == "}" and stack and stack.pop()
+        else: buf += ch
+sys.exit("hover outside @media (hover: hover): %s" % bad if bad else 0)' "$ROOT/share/pages/app/app.css" "$ROOT/share/pages/kit/ui.css"
+assert grep -q 'touch-action: manipulation' "$ROOT/share/pages/app/app.css"
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost)"

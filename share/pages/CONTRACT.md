@@ -75,7 +75,7 @@ then delivers its transcript there, wherever he goes next). Its look is the UI k
 | `GET /api/load` | `{title, rows, as_of}`: bin/chat-load's `chats.json` rows as they are (the menubar's Chats/other, a row's `sub` included) |
 | `GET /api/menu` | `{items}`: the menubar as `{r: [{t, c, a, b}], ck, dis, sub}`, cached 4 s |
 | `GET /api/pages` | every page's `{pid, title, chat, owner, module, updated}`, newest first |
-| `POST /api/client-log` | `{kind, msg, path, ms, count, hidden, sid, ua}` → `.events.jsonl` (`op: client`), 20 a minute: what failed on the iPad (a lost connection once it is back, a script error) |
+| `POST /api/client-log` | `{kind, msg, path, ms, count, hidden, sid, ua}` → `.events.jsonl` (`op: client`), 20 a minute: what failed on the iPad (a lost connection once it is back, a script error, a `tap-lost`: a tap on something that acts with no click in 0.7 s, `path` the target, `msg` its node replaced / mutations / scroll / focus / sheet / mic) |
 
 ## Served spec
 This is `spec.json` with three changes:

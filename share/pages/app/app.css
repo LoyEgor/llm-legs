@@ -5,6 +5,9 @@
 html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: var(--bg); color: var(--fg);
   font: 400 14px/1.45 var(--sans); -webkit-text-size-adjust: 100%; -webkit-font-smoothing: antialiased; }
 body { position: fixed; inset: 0; }
+/* A tap is a tap at once: no wait to tell it from a double-tap zoom (pinch still zooms), so the node under the
+   finger has less time to be redrawn away. */
+html { touch-action: manipulation; }
 a { color: inherit; text-decoration: none; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 [hidden] { display: none !important; }
@@ -23,7 +26,8 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .bar .a { background: var(--fg2); }
 .bar .b { background: var(--fg3); opacity: .45; }
 #machine { cursor: pointer; border-radius: var(--r-s); padding: 2px 4px; margin: -2px -4px; }
-#machine:hover, #machine.on { background: var(--hover); }
+#machine.on { background: var(--hover); }
+@media (hover: hover) { #machine:hover { background: var(--hover); } }
 #machine.alarm { color: var(--red); }
 #machine .warn { grid-column: 1 / -1; color: var(--red); font-family: var(--sans); font-size: 12px; }
 .tools { display: flex; gap: 2px; }
@@ -35,7 +39,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 @media (pointer: coarse) { #find { font-size: var(--fs-l); padding: 9px 12px; } }
 #find::-webkit-search-cancel-button { filter: grayscale(1); opacity: .5; }
 .more { display: block; width: 100%; text-align: left; padding: 8px; border-radius: var(--r-m); color: var(--fg2); font-size: var(--fs-m); }
-.more:hover { background: var(--hover); color: var(--fg); }
+@media (hover: hover) { .more:hover { background: var(--hover); color: var(--fg); } }
 .row.past .lead { color: var(--fg3); }
 .sec .shimmer { font-weight: 400; }
 #pastbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 8px;
@@ -160,7 +164,7 @@ table.md th { font-weight: 600; }
 #opts:not(:empty) { margin-bottom: 8px; padding: 6px; border-radius: 20px; background: var(--pop); box-shadow: var(--shadow-pop);
   display: flex; flex-direction: column; gap: 2px; }
 #opts button { display: flex; gap: 10px; text-align: left; padding: 9px 12px; border-radius: 15px; font-size: 14.5px; }
-#opts button:hover { background: var(--hover); }
+@media (hover: hover) { #opts button:hover { background: var(--hover); } }
 #opts button.cur { background: var(--sel); }
 #opts .num { color: var(--fg3); font-variant-numeric: tabular-nums; min-width: 1ch; }
 #opts .q { padding: 6px 12px 4px; font-size: 13.5px; color: var(--fg2); white-space: pre-wrap; }
@@ -213,7 +217,8 @@ table.md th { font-weight: 600; }
 .grip { position: absolute; top: 0; bottom: 0; width: 14px; z-index: 2; cursor: col-resize; touch-action: none; }
 .grip::after { content: ""; position: absolute; top: 50%; width: 4px; height: 36px; margin-top: -18px; border-radius: 2px;
   background: var(--line2); opacity: 0; transition: opacity .15s; }
-.grip:hover::after, .grip.drag::after { opacity: 1; }
+.grip.drag::after { opacity: 1; }
+@media (hover: hover) { .grip:hover::after { opacity: 1; } }
 #sidegrip { right: -7px; } #sidegrip::after { left: 5px; }
 #sheetgrip { left: -7px; } #sheetgrip::after { left: 5px; }
 @media (pointer: coarse) { .grip::after { opacity: .7; } }
@@ -225,16 +230,16 @@ pre.term { margin: 0; padding: 4px 8px 8px; font: 12px/1.35 var(--mono); white-s
 .mi.dim { color: var(--fg3); }
 .mi.alarm { color: var(--red); }
 .mi[data-sid] { cursor: pointer; }
-.mi[data-sid]:hover { background: var(--hover); }
+@media (hover: hover) { .mi[data-sid]:hover { background: var(--hover); } }
 .mi.has { cursor: pointer; }
-.mi.has:hover { background: var(--hover); }
+@media (hover: hover) { .mi.has:hover { background: var(--hover); } }
 .mi.has::after { content: "  ›"; color: var(--fg3); }
 .mi.has.open::after { content: "  ⌄"; }
 .mi .ck { display: inline-block; width: 2ch; color: var(--accent); }
 .msub { margin-left: 2ch; padding-left: 8px; border-left: .5px solid var(--line2); }
 .msep { height: .5px; background: var(--line2); margin: 6px 8px; }
 .prow { display: flex; gap: 10px; align-items: baseline; padding: 7px 8px; border-radius: 12.5px; cursor: pointer; }
-.prow:hover { background: var(--hover); }
+@media (hover: hover) { .prow:hover { background: var(--hover); } }
 .prow .t { flex: 1; min-width: 0; }
 .prow .t b { display: flex; gap: 6px; align-items: center; font-weight: 400; white-space: nowrap; overflow: hidden; }
 .prow .t b span { overflow: hidden; text-overflow: ellipsis; }

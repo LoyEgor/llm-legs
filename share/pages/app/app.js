@@ -145,6 +145,7 @@ function renderMachine() {
   const box = $('#machine');
   if (!S.auth) {
     box.innerHTML = '<div class="warn">403: open the <b>page lan --app</b> link once</div>';
+    box.dataset.h = '';
     return;
   }
   const m = S.machine || {lines: []};
@@ -156,7 +157,7 @@ function renderMachine() {
     const used = +mem[4], max = +mem[5], share = (+mem[1]) / Math.max(0.1, +mem[3]);
     html += meter('RAM', used * share, used * (1 - share), max, `${used.toFixed(1)}/${max}` + (mem[6] ? ` ⇄${(+mem[6]).toFixed(0)}` : ''));
   }
-  box.innerHTML = html;
+  if (box.dataset.h !== html) { box.dataset.h = html; box.innerHTML = html; }
   box.classList.toggle('alarm', !!m.alarm);
 }
 
@@ -307,6 +308,7 @@ async function closeLive() {
   renderHead();
 }
 
+let listHtml = '';
 function renderList() {
   const box = $('#list');
   const top = box.scrollTop;
@@ -325,8 +327,12 @@ function renderList() {
       runs.map(runRow).join('') + more.map(runRow).join('');
   }
   html += historyHtml(q, hit);
-  box.innerHTML = html;
-  box.scrollTop = top;
+  // Redrawn only when it changed: a row replaced under his finger loses the tap (iOS cancels a tap whose node is gone).
+  if (listHtml !== html) {
+    listHtml = html;
+    box.innerHTML = html;
+    box.scrollTop = top;
+  }
   clocks(box);
 }
 
@@ -891,7 +897,7 @@ function renderHead() {
   $('#pastbar').hidden = !!(c || r);
   if (!c && !r) {
     const p = pastRow(S.sid);
-    $('#title').innerHTML = `<b>${esc(p && p.name || S.sid)}</b><small>${esc([p && base(p.cwd), p && ago(p.spoke), 'not open'].filter(Boolean).join(' · '))}</small>`;
+    title(`<b>${esc(p && p.name || S.sid)}</b><small>${esc([p && base(p.cwd), p && ago(p.spoke), 'not open'].filter(Boolean).join(' · '))}</small>`);
     if (!S.opening || S.opening.sid !== S.sid) { $('#openbtn').disabled = false; $('#pastnote').textContent = 'Not open on the Mac'; }
     return;
   }
@@ -907,8 +913,12 @@ function renderHead() {
       base(c.cwd) + (c.branch && !['main', 'HEAD'].includes(c.branch) ? ':' + c.branch : '')].filter(Boolean).join(' · '));
   }
   const up = r && S.chats.find((x) => x.sid === r.launcher);
-  $('#title').innerHTML = `<b>${esc(r ? r.title : c.name)}</b><small>${sub}` +
-    `${up ? ` · <a href="#chat/${esc(up.sid)}">↖ ${esc(up.name)}</a>` : ''}</small>`;
+  title(`<b>${esc(r ? r.title : c.name)}</b><small>${sub}` +
+    `${up ? ` · <a href="#chat/${esc(up.sid)}">↖ ${esc(up.name)}</a>` : ''}</small>`);
+}
+function title(html) {
+  const t = $('#title');
+  if (t.dataset.h !== html) { t.dataset.h = html; t.innerHTML = html; }
 }
 
 // ------------------------------------------------------------------ the info panel: statusline and changed files
@@ -1093,7 +1103,7 @@ function micButton() {
   const rec = MIC.state !== '';
   $('#composer').classList.toggle('rec', rec);
   $('#wave').hidden = !rec;
-  $('#mic').innerHTML = rec ? ICON.x : ICON.mic;
+  if ($('#mic').dataset.rec !== String(rec)) { $('#mic').dataset.rec = rec; $('#mic').innerHTML = rec ? ICON.x : ICON.mic; }
   $('#mic').title = rec ? 'Stop and put the text in the box' : 'Dictate';
   $('#mic').disabled = MIC.state === 'wait' || BUB.busy;
   renderSend();
@@ -1717,7 +1727,7 @@ function route() {
   }
   if (S.sheet === 'term' || S.sheet === 'info') closeSheet(true);
   show(false);
-  $('#title').innerHTML = '';
+  title('');
   $('#termbtn').hidden = true;
 }
 
@@ -1833,6 +1843,59 @@ if (VV) {
   VV.addEventListener('resize', fit);
   VV.addEventListener('scroll', fit);
 }
+
+// ------------------------------------------------------------------ taps that did nothing
+// Egor 2026-11-08: on the iPad a first tap often does nothing and the second works. A tap (one finger, no slide)
+// on something that acts but followed by no click within 0.7 s goes to `page report` (op client, kind tap-lost) with
+// what happened under the finger: the touched node gone (a redraw), how much of the page changed meanwhile, a scroll
+// still gliding, the keyboard up, how long the finger stayed.
+const ACTS = 'a[href],button,summary,input,textarea,select,label,[data-sheet],[data-pid],[data-sid],.mi.has';
+const TAPS = {cur: null, ended: null, scroll: 0, sent: 0};
+const describe = (el) => !el ? '' : el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') +
+  (el.classList.length ? '.' + [...el.classList].join('.') : '') +
+  Object.keys(el.dataset).filter((k) => k !== 'h').map((k) => `[${k}]`).join('') +
+  ` “${norm(el.textContent).slice(0, 24)}”`;
+document.addEventListener('scroll', () => { TAPS.scroll = performance.now(); }, {capture: true, passive: true});
+document.addEventListener('touchstart', (e) => {
+  if (TAPS.cur && TAPS.cur.obs) TAPS.cur.obs.disconnect();
+  const p = e.touches[0], el = e.target, act = el.closest && el.closest(ACTS);
+  if (e.touches.length !== 1 || !act) { TAPS.cur = null; return; }
+  const tap = {t: performance.now(), x: p.clientX, y: p.clientY, el, act, moved: false, muts: 0, clicked: false,
+    glide: Math.round(performance.now() - TAPS.scroll), obs: new MutationObserver((m) => { tap.muts += m.length; })};
+  tap.obs.observe(document.body, {childList: true, subtree: true, characterData: true});
+  TAPS.cur = tap;
+  // A redraw that removes the touched node leaves its touchend to the detached node, out of the document's reach.
+  el.addEventListener('touchend', tapEnd, {once: true, passive: true});
+  el.addEventListener('touchcancel', tapCancel, {once: true, passive: true});
+}, {capture: true, passive: true});
+document.addEventListener('touchmove', (e) => {
+  const tap = TAPS.cur, p = e.touches[0];
+  if (tap && p && Math.hypot(p.clientX - tap.x, p.clientY - tap.y) > 10) tap.moved = true;
+}, {capture: true, passive: true});
+function tapEnd() {
+  const tap = TAPS.cur;
+  TAPS.cur = null;
+  if (!tap) return;
+  tap.held = Math.round(performance.now() - tap.t);
+  if (tap.moved) { tap.obs.disconnect(); return; }
+  TAPS.ended = tap;
+  setTimeout(() => {
+    tap.obs.disconnect();
+    if (tap.clicked || TAPS.sent >= 30) return;
+    TAPS.sent++;
+    const gone = !tap.el.isConnected ? 'node' : !tap.act.isConnected ? 'target' : '';
+    report({kind: 'tap-lost', path: describe(tap.act).slice(0, 120), ms: tap.held,
+      msg: [`replaced ${gone || 'no'}`, `mutations ${tap.muts}`, `scrolled ${tap.glide} ms before`,
+        `focus ${(document.activeElement || {}).id || (document.activeElement || {}).tagName || ''}`,
+        `sheet ${S.sheet || '-'}`, `mic ${MIC.state || '-'}`].join(' · ')});
+  }, 700);
+}
+function tapCancel() { if (TAPS.cur) TAPS.cur.obs.disconnect(); TAPS.cur = null; }
+document.addEventListener('touchend', tapEnd, {capture: true, passive: true});
+document.addEventListener('touchcancel', tapCancel, {capture: true, passive: true});
+document.addEventListener('click', () => { if (TAPS.ended) TAPS.ended.clicked = true; }, true);
+// The composer's Send is a submit: a tap that reaches it submits, which is its click.
+document.addEventListener('submit', () => { if (TAPS.ended) TAPS.ended.clicked = true; }, true);
 
 // The polls, only while visible: chats every 3 s, the open transcript every 1 s (new bytes only), its screen every
 // 2 s while it works or asks, 4 s idle, 1 s with the Terminal sheet open; its statusline and changed files every 3 s;
