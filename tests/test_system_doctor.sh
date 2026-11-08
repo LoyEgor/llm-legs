@@ -839,16 +839,18 @@ json.dump({"recent": [dict(r, t=r["t"] + 3600) for r in storm]}, open(state_path
 check(m.launch_due(now + 3600, started.append) == ["census", "dumpstate"], "an hour on: the census and the hourly snapshot")
 open(state_path, "w").write(saved_state)
 
-frames = [[1, 100, 300, 400], [1, 100, 300, 400, 201, 202, 203, 204, 205]]
+frames = [[1, 100, 300, 400], [1, 100, 300, 400, 201, 202, 203, 204, 205, 206]]
 json.dump({"frames": frames, "procs": {
     "1": [0, 0, 0, "/sbin/launchd"], "100": [1, uid, 1000, "/bin/bash %s/bin/statusline.sh --token" % own],
     "300": [1, uid, 1000, "/Applications/Hammerspoon.app/Contents/MacOS/Hammerspoon"], "400": [1, 0, 0, "/usr/libexec/xpcproxy"],
     "201": [100, uid, 2000, "/opt/homebrew/bin/jq .secret"], "202": [201, uid, 2000, "/usr/bin/git status"],
-    "203": [300, uid, 2000, "/bin/sh -c true"], "204": [400, 0, 0, "/usr/libexec/helper"]}}, open(os.path.join(fix, "procs.json"), "w"))
+    "203": [300, uid, 2000, "/bin/sh -c true"], "204": [400, 0, 0, "/usr/libexec/helper"],
+    "206": [100, uid, 2000, "/bin/sh -c true"]}}, open(os.path.join(fix, "procs.json"), "w"))
 row = m.census(now, seconds=0.05, poll=0.01)
-check(row["births_top"] == [["statusline.sh", 2, "own"], ["Hammerspoon", 1, "own"], ["xpcproxy", 1, "apple"]]
-      and row["births_seen"] == 4 and row["unreadable"] == 1 and row["polls"] >= 1,
-      "the census charges each newborn it catches to the nearest own script or app above it: %s" % row)
+check(row["births_top"] == [["statusline.sh", 3, "own"], ["Hammerspoon", 1, "own"], ["xpcproxy", 1, "apple"]]
+      and row["births_seen"] == 5 and row["unreadable"] == 1 and row["polls"] >= 1,
+      "the census charges each newborn it catches to the nearest own script or app above it, inline code under a "
+      "script included: %s" % row)
 text = open(os.path.join(work, "state", "census", m.local_day(now) + ".jsonl")).read()
 check(own not in text and "--token" not in text and ".secret" not in text and "git status" not in text,
       "the census persists basenames and counts only")

@@ -132,14 +132,15 @@ EVIDENCE_MAX = 3
 EXCERPT_MAX = 300
 PID_WRAP = 99899
 INTERPRETERS = {"bash", "zsh", "sh", "dash", "Python", "python", "python3", "node", "perl", "ruby", "env", "osascript",
-                "uv", "bun", "deno"}
+                "uv", "bun", "deno", "xargs"}
 SHELLS = {"bash", "zsh", "sh", "dash"}
 RUNNERS = {"uv", "bun", "deno"}
 INLINE_OPTS = {"node": {"-e", "--eval", "-p", "--print"}, "perl": {"-e", "-E"}, "ruby": {"-e"}, "osascript": {"-e"},
                "bun": {"-e", "--eval"}, "deno": {"eval"}}
 INLINE_BUNDLED = {"perl": r"^-[0-9alnpsw]*[eE]$", "ruby": r"^-[alnpsw]*e$", "node": r"^-(pe|ep)$"}
 VALUE_OPTS = {"python": {"-X", "-W"}, "shell": {"-o", "-O", "+O"}, "node": {"-r", "--require", "--import", "--loader"},
-              "uv": {"--with", "--python", "-p", "--project", "--directory"}, "osascript": {"-l"}}
+              "uv": {"--with", "--python", "-p", "--project", "--directory"}, "osascript": {"-l"},
+              "xargs": {"-P", "-L", "-n", "-I", "-J", "-E", "-R", "-S", "-s"}}
 ARGV_WORDS = 8
 OWN_APPS = {"Hammerspoon", "hs"}
 # The LLM CLIs by the tag the ticks see (codex and grok native, agy): what runs below one is its work, never the launcher's
@@ -1352,7 +1353,7 @@ def census(now=None, seconds=None, poll=None):
         if key not in procs:
             exe, rest = exe_and_rest(args)
             tag, owner, kind = describe(exe, rest, roots, functools.partial(machine_probe.proc_cwd, pid))
-            procs[key] = [int(ppid), 0.0, tag, owner, pid, uid, kind]
+            procs[key] = [int(ppid), 0.0, tag, owner, pid, uid, kind, 0, None]  # the tick's row shape: inherit() sets [8]
             if kind == "inline" and ppid > 1 and depth < 6 and (ppid in by_pid or look(ppid, depth + 1)):
                 inherit(procs, [key], by_pid)
         by_pid[pid] = key
