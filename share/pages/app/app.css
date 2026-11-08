@@ -175,6 +175,7 @@ table.md th { font-weight: 600; }
 .mb .pill { padding: 5px 12px; gap: 8px; white-space: nowrap; }
 .mb .pill small { color: var(--fg3); font-size: 12px; font-variant-numeric: tabular-nums; }
 .mb .mt { color: var(--fg2); font-size: 13px; font-variant-numeric: tabular-nums; }
+.mb .mt.c-red { color: var(--red); }
 .mb .ib { color: var(--fg3); }
 /* The Mac records through its fallback (the pill's red breathing border). */
 #composer.degraded { box-shadow: var(--shadow-comp), 0 0 0 1.5px var(--red); }

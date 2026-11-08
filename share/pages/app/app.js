@@ -1077,7 +1077,7 @@ function send() {
 // step's name (reported to the Mac) and the next tap starts clean; a capture that goes silent is reopened once, then
 // ends the take with what was said; the worklet has the old ScriptProcessor behind it.
 const MIC = {state: '', id: null, take: null, frames: [], pump: null, held: null, levels: [], peak: 0, began: 0,
-  waitFrom: 0, heard: 0, step: '', tap: 0, raf: 0};
+  waitFrom: 0, heard: 0, step: '', tap: 0, raf: 0, takes: 0, refused: ''};
 const MIC_STEP = {microphone: 20, audio: 5, capture: 6, mac: 12, upload: 10, transcript: 130};  // s
 
 function within(step, p) {
@@ -1211,13 +1211,35 @@ async function micStart() {
       return;
     }
     if (!d.ok) throw new Error(d.err || 'the Mac did not start');
-    Object.assign(MIC, {state: 'live', id: d.id, began: now(), heard: now()});
+    Object.assign(MIC, {state: 'live', id: d.id, began: now(), heard: now(), refused: ''});
+    MIC.takes++;
     micButton();
     MIC.pump = micPump(d.id, take);
   } catch (e) {
     if (MIC.take !== take) release(take);
+    else if (e && e.name === 'NotAllowedError') micRefused(e);
     else micFail(String(e.message || e));
   }
+}
+
+// The iPad refusing the microphone at once, no prompt shown (Egor 2026-11-08: three in a row, ~185 ms each, on a
+// day it had recorded): what the browser says about it goes to page report, and the composer says so with a Reload,
+// the one thing a page can do (a fresh page asks for the microphone anew).
+async function micRefused(e) {
+  const step = MIC.step;
+  micDrop();
+  let perm = '?';
+  try {
+    perm = (await Promise.race([navigator.permissions.query({name: 'microphone'}),
+      new Promise((_, no) => setTimeout(no, 1000))])).state;
+  } catch {}
+  const ua = navigator.userActivation;
+  report({kind: 'mic', msg: [`refused at ${step}: ${e.name} ${String(e.message).slice(0, 60)}`, `permission ${perm}`, `focus ${document.hasFocus()}`,
+    `visible ${document.visibilityState}`, `activation ${ua ? ua.isActive + '/' + ua.hasBeenActive : '?'}`,
+    `standalone ${matchMedia('(display-mode: standalone)').matches}`, `loaded ${Math.round(performance.now() / 1000)} s ago`,
+    `takes ${MIC.takes}`].join(' · ').slice(0, 300)});
+  MIC.refused = perm === 'denied' ? 'denied' : 'refused';
+  renderMicbar();
 }
 
 // The worklet, or the ScriptProcessor iOS still has when the worklet will not load; both give 20 ms frames.
@@ -1360,6 +1382,11 @@ function renderMicbar() {
     } else if (b.alt === 'failed') inTake = '<span class="mt c-red">● ● the other result failed</span>';
   }
   if (BUB.busy) lost = '<span class="mt shimmer">Restoring the cut dictation…</span>';
+  else if (MIC.state === '' && MIC.refused && !offer) {
+    lost = `<span class="mt c-red">⚠ The iPad refused the microphone${MIC.refused === 'denied' ? ' (blocked in Settings)' : ''}</span>` +
+      '<button type="button" class="pill" data-reload>Reload</button>' +
+      `<button type="button" class="ib" data-unrefuse aria-label="Hide">${ICON.x}</button>`;
+  }
   else if (MIC.state === '' && offer) {
     lost = `<span class="mt">↺ Cut dictation ${when}</span>` +
       `<button type="button" class="pill" data-restore="${esc(offer.name)}">Restore</button>` +
@@ -1819,6 +1846,8 @@ $('#composer').addEventListener('click', (e) => {
   const r = e.target.closest('[data-restore]'), f = e.target.closest('[data-forget]');
   if (r) micRestore(r.dataset.restore);
   else if (f) { BUB.gone[f.dataset.forget] = now(); keep('restored', BUB.gone); renderMicbar(); }
+  else if (e.target.closest('[data-reload]')) reload();
+  else if (e.target.closest('[data-unrefuse]')) { MIC.refused = ''; renderMicbar(); }
   else if (e.target.closest('[data-usealt]')) api('/api/mic/usealt', {}, 5000).then((d) => { if (!d.ok) toast('⚠ ' + (d.err || 'nothing to use')); pullBubble(); }).catch(() => {});
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.sheet) closeSheet(); });
