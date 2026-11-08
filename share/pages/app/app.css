@@ -201,7 +201,10 @@ table.md th { font-weight: 600; }
 #sheetb { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 0 8px 12px; }
 #sheet.pages { width: 400px; }
 #sheet.info { width: 340px; }
-#sheet.load { width: 560px; }
+#sheet.load { width: 660px; }
+/* A fixed width, not the widest line's: the scrollback coming in must not flip the sheet from docked to covering. */
+#sheet.term { width: 480px; }
+#sheet.menu { width: 440px; }
 /* What stays put under a sheet's list: End chat, All pages. */
 #sheetf { padding: 8px; border-top: .5px solid var(--line); }
 #sheetf .btn { width: 100%; justify-content: center; }
@@ -279,7 +282,7 @@ body.docked #scrim { display: none; }
   #head { padding-left: 8px; }
   #log { padding-left: 12px; padding-right: 12px; }
   #dock { padding-left: 10px; padding-right: 10px; }
-  #sheet, #sheet.pages, #sheet.info, #sheet.load { left: 8px; width: auto !important; min-width: 0; }
+  #sheet, #sheet.pages, #sheet.info, #sheet.load, #sheet.term, #sheet.menu { left: 8px; width: auto !important; min-width: 0; }
   .grip { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .shimmer, .spin, .came, .older.busy { animation: none; } .seam { display: none; } }
