@@ -20,6 +20,7 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
     tg-read photo "Гапоненко" --last 2 --dest-dir /tmp/photos
     tg-read transcribe /tmp/voice/voice-20261022-1200-123.ogg [--dest /tmp/t.txt] [--language ru] [--engine auto|elevenlabs|groq]
     tg-read send me --text "test"            # or --file /abs/message.txt
+    tg-read wait "Гапоненко" --after 223868  # [--hours 6] [--every 15] [--settle 20]
 
 - `chats`, `read`, `voice` and `photo` are read-only: they never send, mark read or delete.
 - `send` posts exactly the given text as Egor, once, plain text (no Markdown), and prints
@@ -31,6 +32,9 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
   person's name used as an address (`Славо, …` / `…, Слава!`) always; `dropped: …` says what went, a
   text that was only a greeting is refused (exit 2). `--as-written` keeps both, only when his own words
   for that message carry them.
+- `wait` runs as a background Bash right after `send` (which prints its line), so the answer wakes the
+  chat: exit 0 with the answer printed (a person: any message; a group: a reply to that message or a
+  mention of Egor), exit 1 after --hours.
 - `voice` takes voice messages (`.ogg`) and video notes (round videos, `.mp4`) alike; `--transcribe` writes
   `<file>.txt` next to each download and appends its path to the line.
 - `transcribe` prints `transcript=<dest> engine=<elevenlabs|groq> chars=<n>`; default dest `<audio>.txt`.
