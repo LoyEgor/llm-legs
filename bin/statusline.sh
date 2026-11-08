@@ -2212,6 +2212,7 @@ else
   fit_cols=""
 fi
 fit_compose
+full_line1=$line1
 if [ -n "$fit_cols" ]; then
   for fit_step in 1 2 3 4 5 6 7 8 9 10 11; do
     fit_width "$line1"
@@ -2257,6 +2258,7 @@ if [ -n "$cost_raw" ]; then
   cost_part="${DIM}\$${cost_fmt}${RESET}"
 fi
 fit_compose2
+full_line2=$line2
 if [ -n "$fit_cols" ]; then
   for fit_step in 1 2 3 4 5; do
     fit_width "$line2"
@@ -2472,6 +2474,12 @@ if [ -n "$session_id" ]; then
     statusline_same=0
     printf '%s' "$statusline_out" 2>/dev/null > "$statusline_cache_dir/render-$session_id"
   fi
+  # The same two lines before any fit step, for the Chats app (share/pages), whatever the tab's width.
+  printf -v statusline_full '%s\n%s' "$full_line1" "$full_line2"
+  statusline_prev=''
+  { IFS= read -r -d '' statusline_prev < "$statusline_cache_dir/render-full-$session_id"; } 2>/dev/null
+  [ "$statusline_prev" = "$statusline_full" ] ||
+    printf '%s' "$statusline_full" 2>/dev/null > "$statusline_cache_dir/render-full-$session_id"
 fi
 
 statusline_timing_row "$session_id" "$statusline_same"

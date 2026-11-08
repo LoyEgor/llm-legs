@@ -4,7 +4,7 @@
   --bg: #ffffff; --side: #f6f6f6; --fg: #1a1c1f; --fg2: #1a1c1fa6; --fg3: #1a1c1f7e; --line: #1a1c1f14;
   --line2: #1a1c1f1e; --hover: #1a1c1f0e; --sel: #1a1c1f12; --pop: #ffffff; --comp: #ffffff; --code: #1a1c1f0b;
   --bubble: #ece4fb; --bubble-fg: #1a1c1f; --accent: #7c4ddb; --link: #2c67c5; --green: #00a240; --amber: #e25507;
-  --red: #e02e2a; --send: #0d0d0d; --send-fg: #ffffff;
+  --red: #e02e2a; --send: #0d0d0d; --send-fg: #ffffff; --blue: #3a83f7; --purple: #924ff7; --yellow: #ffc300;
   --shadow-pop: 0 0 0 .5px var(--line2), 0 8px 16px -4px #0000001f;
   --shadow-comp: 0 0 0 1px #0000000a, 0 2px 8px 0 #0000000a, 0 4px 40px 8px #00000006;
   --shimmer-base: #1a1c1f8c; --shimmer-hi: #1a1c1f;
@@ -17,21 +17,24 @@
     --bg: #111111; --side: #1a1a1a; --fg: #fcfcfc; --fg2: #fcfcfca6; --fg3: #fcfcfc80; --line: #ffffff15;
     --line2: #ffffff28; --hover: #ffffff0f; --sel: #ffffff14; --pop: #262626; --comp: #2f2f2f; --code: #ffffff0d;
     --bubble: #4e2f88; --bubble-fg: #f8f5fd; --accent: #9b6dff; --link: #66b5ff; --green: #40c977; --amber: #ff8549;
-    --red: #ff6764; --send: #fcfcfc; --send-fg: #111111;
+    --red: #ff6764; --send: #fcfcfc; --send-fg: #111111; --blue: #339cff; --purple: #ad7bf9; --yellow: #ffd240;
     --shadow-pop: 0 0 0 .5px var(--line2), 0 8px 16px -4px #0000004d;
     --shadow-comp: inset 0 0 1px 0 #fff3;
     --shimmer-base: #fcfcfc73; --shimmer-hi: #fcfcfc;
   }
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 400 14px/1.45 var(--sans);
-  -webkit-text-size-adjust: 100%; -webkit-font-smoothing: antialiased; }
+/* One fixed page: the document never scrolls or bounces (iPadOS blurs the status bar over a page that moved), only
+   the chat list, the thread and a sheet scroll, each inside itself. */
+html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: var(--bg); color: var(--fg);
+  font: 400 14px/1.45 var(--sans); -webkit-text-size-adjust: 100%; -webkit-font-smoothing: antialiased; }
+body { position: fixed; inset: 0; }
 a { color: inherit; text-decoration: none; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 [hidden] { display: none !important; }
 .ic { width: 18px; height: 18px; display: block; flex: none; }
 .ic.v { width: 16px; height: 16px; }
-#root { display: flex; height: 100dvh; padding-top: env(safe-area-inset-top); }
+#root { display: flex; height: var(--vvh, 100%); transform: translateY(var(--vvt, 0px)); padding-top: env(safe-area-inset-top); }
 
 /* ---------------------------------------------------------------- sidebar */
 #side { width: 288px; flex: none; display: flex; flex-direction: column; background: var(--side);
@@ -50,7 +53,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .ib:hover, .ib.on { background: var(--hover); color: var(--fg); }
 .ib.warn::after { content: ""; position: absolute; top: 7px; right: 7px; width: 6px; height: 6px; border-radius: 3px;
   background: var(--amber); }
-#list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 8px calc(12px + env(safe-area-inset-bottom)); }
+#list { flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 0 8px calc(12px + env(safe-area-inset-bottom)); }
 .sec { padding: 14px 8px 4px; font-size: 13px; font-weight: 500; color: var(--fg3); display: flex; gap: 6px; }
 .row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: 12.5px; margin: 1px 0; }
 a.row:hover { background: var(--hover); }
@@ -84,10 +87,18 @@ section { flex: 1; min-height: 0; }
 
 /* ---------------------------------------------------------------- the thread */
 #chat { display: flex; flex-direction: column; position: relative; }
-#log { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overflow-anchor: none; padding: 8px 16px 20px; }
+#log { flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; overflow-anchor: none; padding: 8px 16px 20px; }
 #col, #activity { max-width: var(--col); margin: 0 auto; }
 .older { display: block; margin: 4px auto 14px; padding: 5px 14px; border-radius: 999px; color: var(--fg2);
   background: var(--hover); font-size: 12.5px; }
+.older.busy { animation: pulse 1s ease-in-out infinite alternate; }
+@keyframes pulse { to { opacity: .4; } }
+.came { animation: came .6s ease-out both; }
+@keyframes came { from { opacity: 0; transform: translateY(-8px); } }
+.seam { position: relative; height: 0; margin: 0 -8px; animation: seam 3s ease-in both; }
+.seam::before { content: ""; position: absolute; left: 0; right: 0; top: -1px; height: 2px; border-radius: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent) 20%, var(--accent) 80%, transparent); }
+@keyframes seam { from { opacity: 1; } 60% { opacity: .8; } to { opacity: 0; } }
 .msg { margin: 14px 0; overflow-wrap: anywhere; }
 .msg.user { width: fit-content; max-width: min(85%, 560px); margin-left: auto; padding: 10px 16px; border-radius: 22px;
   background: var(--bubble); color: var(--bubble-fg); white-space: pre-wrap; line-height: 1.5; font-size: 15px; }
@@ -185,11 +196,11 @@ table.md th { font-weight: 600; }
   color: var(--send-fg); }
 #send:disabled { opacity: .25; cursor: default; }
 #send.stop { background: var(--accent); color: #fff; }
-#wave { position: absolute; left: 16px; right: 80px; top: 6px; bottom: 6px; display: flex; align-items: center; gap: 10px;
+#wave { position: absolute; left: 56px; right: 92px; top: 6px; bottom: 6px; display: flex; align-items: center; gap: 10px;
   background: var(--comp); }
 #wavec { flex: 1; min-width: 0; height: 28px; }
 #wavet { font: 12px var(--mono); color: var(--fg3); min-width: 4ch; text-align: right; }
-#composer.rec #mic { color: var(--fg); background: var(--hover); }
+#composer.rec #mic { position: absolute; left: 6px; bottom: 6px; color: var(--fg); background: var(--hover); }
 #composer.rec #input { visibility: hidden; }
 
 /* ---------------------------------------------------------------- side sheet: Terminal, Pages, Menu */
@@ -202,8 +213,9 @@ table.md th { font-weight: 600; }
 #sheet header b { font-weight: 600; }
 #sheet header small { flex: 1; color: var(--fg3); font: 11px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #sheet header .ib { align-self: center; }
-#sheetb { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; padding: 0 8px 12px; }
+#sheetb { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 0 8px 12px; }
 #sheet.pages { width: 400px; }
+#sheet.info { width: 340px; }
 pre.term { margin: 0; padding: 4px 8px 8px; font: 12px/1.35 var(--mono); white-space: pre; color: var(--fg); }
 .term-err { padding: 8px; color: var(--amber); font-size: 13px; }
 .mi { font: 12.5px/1.55 var(--mono); white-space: pre; padding: 1px 8px; border-radius: 8px; }
@@ -241,7 +253,16 @@ pre.term { margin: 0; padding: 4px 8px 8px; font: 12px/1.35 var(--mono); white-s
   body.docked #main { margin-right: calc(var(--sheetw, 320px) + 8px); }
   body.docked #scrim { display: none; }
 }
-@media (pointer: coarse) { .ib { width: 40px; height: 40px; } }
+/* A finger on the iPad: 44 pt targets (Apple's minimum) with room between the two composer buttons. */
+@media (pointer: coarse) {
+  .ib { width: 40px; height: 40px; }
+  #mic, #send { width: 44px; height: 44px; border-radius: 22px; }
+  #mic .ic, #send .ic { width: 22px; height: 22px; }
+  .cbtn { gap: 14px; }
+  #composer { min-height: 56px; }
+  #input { padding: 12px 0; }
+  #wave { left: 60px; right: 112px; }
+}
 @media (max-width: 760px) {
   #side { width: 100%; border-right: 0; }
   #main { display: none; }
@@ -251,6 +272,30 @@ pre.term { margin: 0; padding: 4px 8px 8px; font: 12px/1.35 var(--mono); white-s
   #head { padding-left: 8px; }
   #log { padding-left: 12px; padding-right: 12px; }
   #dock { padding-left: 10px; padding-right: 10px; }
-  #sheet { left: 8px; width: auto; min-width: 0; }
+  #sheet, #sheet.pages, #sheet.info { left: 8px; width: auto; min-width: 0; }
 }
-@media (prefers-reduced-motion: reduce) { .shimmer, .spin { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .shimmer, .spin, .came, .older.busy { animation: none; } .seam { display: none; } }
+
+/* ---------------------------------------------------------------- the info panel: statusline and changed files */
+.c-cyan { color: var(--fg); font-weight: 600; } .c-magenta { color: var(--purple); } .c-blue { color: var(--blue); }
+.c-green { color: var(--green); } .c-red { color: var(--red); } .c-yellow { color: var(--amber); } .c-dim { color: var(--fg3); }
+.b-green { background: var(--green); } .b-red { background: var(--red); } .b-yellow { background: var(--yellow); }
+.b-dim, .b-cyan, .b-blue, .b-magenta { background: var(--fg3); }
+.sgs { padding: 2px 8px 12px; border-bottom: .5px solid var(--line); margin-bottom: 8px; display: grid; gap: 6px; }
+.sg { font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
+.sg.pct { display: grid; grid-template-columns: 3ch 1fr 3.4em 5.6em; gap: 10px; align-items: center; font-size: 13px; }
+.sg .bl { color: var(--fg3); font-family: var(--mono); font-size: 12px; }
+.sg .bt { height: 6px; border-radius: 3px; background: var(--line2); overflow: hidden; }
+.sg .bt i { display: block; height: 100%; border-radius: 3px; }
+.sg .bp { text-align: right; font-variant-numeric: tabular-nums; }
+.sg .br { color: var(--fg3); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }
+.ch { display: grid; grid-template-columns: max-content 1fr 3.4em 3.4em; gap: 8px; align-items: baseline; padding: 4px 8px 6px;
+  font-variant-numeric: tabular-nums; }
+.ch b { font-weight: 600; }
+.ch .n { color: var(--fg3); }
+.fr { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr) 3.4em 3.4em; gap: 8px; align-items: baseline; padding: 5px 8px;
+  border-radius: 10px; font-variant-numeric: tabular-nums; }
+.fr .fn { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr .fd { min-width: 0; color: var(--fg3); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr .c-green, .fr .c-red, .ch .c-green, .ch .c-red { font-size: 12.5px; text-align: right; }
+.none { padding: 4px 8px; color: var(--fg3); font-size: 13px; }

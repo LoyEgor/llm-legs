@@ -632,6 +632,98 @@ def log(sid, after=None, before=None):
     return {"items": items, "start": start, "end": end, "size": size}
 
 
+# ---------------------------------------------------------------- the info panel: statusline and changed files
+
+STATUSLINE_DIR = os.environ.get("STATUSLINE_CACHE_DIR") or os.path.expanduser("~/.cache/claude-statusline")
+SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
+SGR = {"31": "red", "32": "green", "33": "yellow", "34": "blue", "35": "magenta", "36": "cyan", "2": "dim", "90": "dim"}
+CHANGES = {}  # sid -> {path, off, used, files: {file: [added, deleted, at]}}
+CHANGES_LOCK = threading.Lock()
+CHANGES_STEP = 32 << 20  # transcript bytes one call reads; a longer backlog goes on at the next
+CHANGES_KEEP = 200  # chats remembered; the least recently asked goes first
+
+
+def status_lines(sid):
+    """The chat's statusline lines 1-2 in full words (render-full-<sid>, else its fitted render-<sid>; both from
+    bin/statusline.sh) -> [[[text, colour], ...], ...], colour a SGR name ('' plain)."""
+    text = None
+    for name in ("render-full-", "render-"):
+        try:
+            with open(os.path.join(STATUSLINE_DIR, name + sid), encoding="utf-8", errors="replace") as handle:
+                text = handle.read(8192)
+            break
+        except OSError:
+            continue
+    out = []
+    for line in (text or "").splitlines()[:2]:
+        runs, colour, at = [], "", 0
+        for m in SGR_RE.finditer(line + "\x1b[0m"):
+            if m.start() > at:
+                runs.append([line[at:m.start()], colour])
+            codes = m.group(1).split(";")
+            colour = "" if codes in (["0"], [""]) else next((SGR[c] for c in reversed(codes) if c in SGR), colour)
+            at = m.end()
+        out.append(runs)
+    return out
+
+
+def changes(sid, path):
+    """Files this chat changed by its own Edit/Write/NotebookEdit calls that went through (their results carry
+    `toolUseResult.structuredPatch`), newest first -> [{p, add, del, at}]. The transcript is read once, then only
+    what it grew by."""
+    with CHANGES_LOCK:
+        size = os.path.getsize(path)
+        st = CHANGES.get(sid)
+        if st is None or st["path"] != path or size < st["off"]:
+            st = CHANGES[sid] = {"path": path, "off": 0, "files": {}}
+        st["used"] = time.monotonic()
+        if size > st["off"]:
+            with open(path, "rb") as handle:
+                handle.seek(st["off"])
+                data = handle.read(min(size - st["off"], CHANGES_STEP))
+            cut = data.rfind(b"\n") + 1
+            st["off"] += cut
+            for raw in data[:cut].splitlines():
+                if b'"structuredPatch"' not in raw:
+                    continue
+                try:
+                    entry = json.loads(raw)
+                    result = entry["toolUseResult"]
+                    file, hunks = result["filePath"], result["structuredPatch"] or []
+                except (ValueError, KeyError, TypeError):
+                    continue
+                if not isinstance(file, str) or not isinstance(hunks, list):
+                    continue
+                lines = [line for hunk in hunks if isinstance(hunk, dict) for line in hunk.get("lines") or []
+                         if isinstance(line, str)]
+                added = sum(line.startswith("+") for line in lines)
+                deleted = sum(line.startswith("-") for line in lines)
+                if result.get("type") == "create" and not hunks:
+                    added = len(str(result.get("content") or "").splitlines())
+                row = st["files"].setdefault(file, [0, 0, ""])
+                row[0] += added
+                row[1] += deleted
+                row[2] = entry.get("timestamp") or row[2]
+        if len(CHANGES) > CHANGES_KEEP:
+            for old in sorted(CHANGES, key=lambda k: CHANGES[k]["used"])[:len(CHANGES) - CHANGES_KEEP]:
+                del CHANGES[old]
+        rows = sorted(st["files"].items(), key=lambda kv: kv[1][2], reverse=True)
+    return [{"p": file, "add": a, "del": d, "at": at} for file, (a, d, at) in rows]
+
+
+def info(sid):
+    """GET /api/chat/<sid>/info -> {status, files, root}, or None without a transcript."""
+    if not SID_RE.match(sid):
+        return None
+    row = cached("recent", 30, recent).get(sid)
+    path = PATHS.get(sid) or transcript(sid, row)
+    if not path:
+        return None
+    rec, _ = find_live(sid)
+    return {"status": status_lines(sid), "files": changes(sid, path)[:80],
+            "root": (rec or {}).get("cwd") or (row or {}).get("cwd") or ""}
+
+
 # ---------------------------------------------------------------- Terminal, through Hammerspoon
 
 def hs(lua, timeout=6):
@@ -1084,9 +1176,13 @@ def get(handler, path, query):
     if path == "/api/pages":
         handler.send_json(200, {"pages": pages()})
         return True
-    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(log|screen)", path)
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(log|screen|info)", path)
     if m:
         sid, sub = m.groups()
+        if sub == "info":
+            doc = info(sid)
+            handler.send_json(200 if doc else 404, doc or {"err": "no transcript"})
+            return True
         if sub == "log":
             number = lambda k: int(query[k][0]) if query.get(k, [""])[0].isdigit() else None
             doc = log(sid, number("after"), number("before"))

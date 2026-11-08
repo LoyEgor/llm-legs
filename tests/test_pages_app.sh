@@ -341,6 +341,29 @@ assert test "$(jq -s '[.[] | select(.op == "client")] | length' "$PAGES_DIR/.eve
 assert test "$(jq -rs '[.[] | select(.op == "client")][0] | [.kind, .ms, .count, .msg, .evil] | join("|")' "$PAGES_DIR/.events.jsonl")" \
   = "offline|1|3|/api/chats: TypeError|"
 
+# The info panel: the chat's statusline in full words with its colours (the fitted render only without a full one),
+# and the files its edits that went through changed, summed per file, newest first; the transcript is read again
+# only for what it grew by.
+printf '\033[36mOpus 5.5 xhigh\033[0m \033[35mfixacct\033[0m \033[2m│\033[0m \033[34mproj\033[0m\nctx \033[32m8%%\033[0m \033[2m→11:56\033[0m' \
+  >"$WORK/tracks/render-full-$sid"
+printf '\033[36mOP5.5\033[0m\nctx' >"$WORK/tracks/render-$sid"
+{
+  echo '{"type":"user","timestamp":"2026-11-08T10:00:00Z","toolUseResult":{"filePath":"/x/proj/share/a.py","structuredPatch":[{"lines":[" keep","-old","+new","+more"]}]},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"e1","content":"ok"}]}}'
+  echo '{"type":"user","timestamp":"2026-11-08T10:01:00Z","toolUseResult":{"type":"create","filePath":"/x/proj/b.md","content":"one\ntwo\nthree","structuredPatch":[]},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"e2","content":"ok"}]}}'
+  echo '{"type":"user","timestamp":"2026-11-08T10:02:00Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"e3","content":"String not found","is_error":true}]}}'
+} >>"$T"
+assert test "$(get "$base/api/chat/$sid/info")" = 200
+assert test "$(jq -c .status "$WORK/body")" \
+  = '[[["Opus 5.5 xhigh","cyan"],[" ",""],["fixacct","magenta"],[" ",""],["│","dim"],[" ",""],["proj","blue"]],[["ctx ",""],["8%","green"],[" ",""],["→11:56","dim"]]]'
+assert test "$(jq -r .root "$WORK/body")" = /x/proj
+assert test "$(jq -c '[.files[] | [.p, .add, .del]]' "$WORK/body")" = '[["/x/proj/b.md",3,0],["/x/proj/share/a.py",2,1]]'
+echo '{"type":"user","timestamp":"2026-11-08T10:03:00Z","toolUseResult":{"filePath":"/x/proj/share/a.py","structuredPatch":[{"lines":["-x","-y","+z"]}]}}' >>"$T"
+rm "$WORK/tracks/render-full-$sid"
+assert test "$(get "$base/api/chat/$sid/info")" = 200
+assert test "$(jq -c '[.files[] | [.p, .add, .del]]' "$WORK/body")" = '[["/x/proj/share/a.py",3,3],["/x/proj/b.md",3,0]]'
+assert test "$(jq -c .status "$WORK/body")" = '[[["OP5.5","cyan"]],[["ctx",""]]]'
+assert test "$(get "$base/api/chat/0000-nope-0000/info")" = 404
+
 # A queued message taken back: Up pulls Claude Code's queue into the empty input, the clears and a backslash leave
 # nothing to submit, and every other message is pasted back in order (the first after clearing the backslash's
 # line). Only an empty input over a queue is touched; a text already read comes back as an error, nothing lost.
@@ -374,4 +397,4 @@ assert "$PY" -c 'import sys
 sys.exit("if (document.visibilityState !== \x27visible\x27) return;\n  tick++;" not in open(sys.argv[1]).read())' "$ROOT/share/pages/app/app.js"
 assert test "$(grep -c '^}, 1000);$' "$ROOT/share/pages/app/app.js")" = 1
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"

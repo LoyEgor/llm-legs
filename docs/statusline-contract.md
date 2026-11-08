@@ -383,6 +383,12 @@ payload-derived cache only moves with the transcript. A full render while away r
 when unchanged. presence.lua drops the mark within 2 s of his return, so the freeze ends at the next refresh;
 a moved transcript, a stale mark or a payload without `transcript_path` renders in full.
 
+## Full render (background, not a rendered segment)
+
+Every full render also keeps lines 1 and 2 as composed before the first fit step in `render-full-<sid>`,
+written only when they changed: the Chats app (`share/pages`) shows them in full words whatever the tab's
+width. Same freshness as `render-<sid>` (an away replay keeps both), same `render-*` prune.
+
 ## Probe snapshots (background, not a rendered segment)
 
 Every chat's probes read one machine-wide copy of what the whole machine looks like, in

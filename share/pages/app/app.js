@@ -424,6 +424,7 @@ function unqueue(L, match) {
 }
 
 function resetLog() {
+  OLDER.disconnect();
   S.log = {start: null, end: null, tools: {}, groups: {}, queue: [], group: null};
   $('#col').innerHTML = '';
   S.activity = '';
@@ -431,11 +432,18 @@ function resetLog() {
   STICK.on = true;
 }
 
+// Earlier history loads itself as he scrolls near the top (the button stays for a tap); the block that came in fades
+// up and a line glows for a moment where it meets what was already there.
+const OLDER = new IntersectionObserver((seen) => {
+  if (seen.some((e) => e.isIntersecting) && S.log && S.log.first === false) loadOlder();
+}, {root: $('#log'), rootMargin: '600px 0px 0px 0px'});
+
 function olderButton() {
   const b = document.createElement('button');
   b.className = 'older';
   b.textContent = 'Earlier';
   b.onclick = loadOlder;
+  OLDER.observe(b);
   return b;
 }
 
@@ -469,14 +477,23 @@ async function loadOlder() {
   const sid = S.sid, L = S.log;
   if (!L || !L.start) return;
   await once('older', async () => {
-    const d = await api(`/api/chat/${encodeURIComponent(sid)}/log?before=${L.start}`);
+    const was = $('#col .older');
+    if (was) was.classList.add('busy');
+    let d;
+    try { d = await api(`/api/chat/${encodeURIComponent(sid)}/log?before=${L.start}`); }
+    finally { if (was) was.classList.remove('busy'); }
     if (sid !== S.sid || L !== S.log) return;
     const box = $('#log');
     const h0 = box.scrollHeight;
-    $('#col .older')?.remove();
+    if (was) { OLDER.unobserve(was); was.remove(); }
     const frag = document.createDocumentFragment();
     if (d.start > 0) frag.appendChild(olderButton());
     addItems(d.items || [], L, {group: null, older: true}, frag);
+    for (const n of frag.children) if (!n.classList.contains('older')) n.classList.add('came');
+    const seam = document.createElement('div');
+    seam.className = 'seam';
+    seam.addEventListener('animationend', () => seam.remove());
+    frag.appendChild(seam);
     L.start = d.start;
     $('#col').prepend(frag);
     box.scrollTop += box.scrollHeight - h0;
@@ -695,23 +712,87 @@ function renderHead() {
   const c = chat(S.sid), r = runOf(S.sid);
   $('#termbtn').hidden = !live(c);
   $('#termbtn').classList.toggle('warn', S.screenFails >= 3);
+  $('#infobtn').hidden = !S.sid;
   if (!c && !r) {
     $('#title').innerHTML = `<b>${esc(S.sid)}</b><small>closed</small>`;
     $('#dock').hidden = true;
     return;
   }
+  // The chat's own statusline in full words and its colours, else what the screen shows under the prompt.
+  const status = S.info && S.info.sid === S.sid ? S.info.status || [] : [];
   let sub;
-  if (r) sub = ['worker', runMeta(r)].filter(Boolean).join(' · ');
-  else if (S.scr.status.length) sub = S.scr.status.join('  │  ');
+  if (r) sub = esc(['worker', runMeta(r)].filter(Boolean).join(' · '));
+  else if (status.length) sub = status.map((line) => groups(line).map(runsHtml).join(SEP)).join(SEP);
+  else if (S.scr.status.length) sub = esc(S.scr.status.join('  │  '));
   else {
     const warm = left(c.until);
-    sub = [c.account || '?', shortModel(c.model), kTok(c.ctx), warm ? '◔' + warm : '',
-      base(c.cwd) + (c.branch && !['main', 'HEAD'].includes(c.branch) ? ':' + c.branch : '')].filter(Boolean).join(' · ');
+    sub = esc([c.account || '?', shortModel(c.model), kTok(c.ctx), warm ? '◔' + warm : '',
+      base(c.cwd) + (c.branch && !['main', 'HEAD'].includes(c.branch) ? ':' + c.branch : '')].filter(Boolean).join(' · '));
   }
   const up = r && S.chats.find((x) => x.sid === r.launcher);
-  $('#title').innerHTML = `<b>${esc(r ? r.title : c.name)}</b><small>${esc(sub)}` +
+  $('#title').innerHTML = `<b>${esc(r ? r.title : c.name)}</b><small>${sub}` +
     `${up ? ` · <a href="#chat/${esc(up.sid)}">↖ ${esc(up.name)}</a>` : ''}</small>`;
   $('#dock').hidden = !live(c);
+}
+
+// ------------------------------------------------------------------ the info panel: statusline and changed files
+
+const SEP = '<span class="c-dim"> · </span>';
+const runsHtml = (runs) => runs.map(([t, c]) => c ? `<span class="c-${esc(c)}">${esc(t)}</span>` : esc(t)).join('');
+
+// One statusline line's coloured runs -> its segments, split where the line prints │, edges trimmed.
+function groups(line) {
+  const out = [[]];
+  for (const [t, c] of line) {
+    String(t).split('│').forEach((part, k) => { if (k) out.push([]); if (part) out[out.length - 1].push([part, c]); });
+  }
+  return out.map((g) => {
+    if (g.length) { g[0] = [g[0][0].trimStart(), g[0][1]]; g[g.length - 1] = [g[g.length - 1][0].trimEnd(), g[g.length - 1][1]]; }
+    return g.filter(([t]) => t);
+  }).filter((g) => g.length && !/^\$[\d.]+$/.test(g.map(([t]) => t).join('')));  // no money on his screen
+}
+
+// A `label N%` segment (ctx, wk, fb, ...) as a bar in its own colour; anything else in the line's colours.
+function segHtml(g) {
+  const plain = g.map(([t]) => t).join('');
+  const m = plain.match(/^(\S+)\s+(\d{1,3})%\s*(.*)$/);
+  if (!m) return `<div class="sg">${runsHtml(g)}</div>`;
+  const run = g.find(([t]) => t.includes(m[2] + '%'));
+  const tone = (run && run[1]) || 'dim';
+  return `<div class="sg pct"><span class="bl">${esc(m[1])}</span>` +
+    `<span class="bt"><i class="b-${esc(tone)}" style="width:${Math.min(100, +m[2])}%"></i></span>` +
+    `<span class="bp c-${esc(tone)}">${m[2]}%</span><span class="br">${esc(m[3])}</span></div>`;
+}
+
+function infoHtml(d) {
+  const root = (d.root || '').replace(/\/$/, '') + '/';
+  const status = (d.status || []).map((line) => groups(line).map(segHtml).join('')).join('');
+  const files = d.files || [];
+  const sum = (k) => files.reduce((n, f) => n + (f[k] || 0), 0);
+  const rows = files.map((f) => {
+    const rel = f.p.startsWith(root) ? f.p.slice(root.length) : f.p.replace(/^\/Users\/[^/]+/, '~');
+    const cut = rel.lastIndexOf('/');
+    return `<div class="fr"><span class="fn">${esc(rel.slice(cut + 1))}</span><span class="fd">${esc(cut > 0 ? rel.slice(0, cut) : '')}</span>` +
+      `<span class="c-green">${f.add ? '+' + f.add : ''}</span><span class="c-red">${f.del ? '−' + f.del : ''}</span></div>`;
+  }).join('');
+  return (status ? `<div class="sgs">${status}</div>` : '') +
+    `<div class="ch"><b>Changes</b><span class="n">${files.length || ''}</span>` +
+    `<span class="c-green">${files.length ? '+' + sum('add') : ''}</span><span class="c-red">${files.length ? '−' + sum('del') : ''}</span></div>` +
+    (rows || '<div class="none">No files changed in this chat</div>');
+}
+
+async function pullInfo() {
+  const sid = S.sid;
+  if (!sid) return;
+  await once('info', async () => {
+    const d = await api(`/api/chat/${encodeURIComponent(sid)}/info`);
+    if (sid !== S.sid) return;
+    const h = JSON.stringify(d);
+    if (S.info && S.info.sid === sid && S.info.h === h) return;
+    S.info = Object.assign(d, {sid, h});
+    renderHead();
+    if (S.sheet === 'info') renderSheet();
+  });
 }
 
 function subRow(r) {
@@ -999,8 +1080,11 @@ async function refreshPages() {
   });
 }
 
+// The info panel stays where he left it, open or shut, across chats and reloads (Codex's right panel).
+const ui = kept('ui');
 function openSheet(kind) {
   if (S.sheet === kind) { closeSheet(); return; }
+  if (kind === 'info') { ui.info = true; keep('ui', ui); }
   S.sheet = kind;
   $('#sheet').className = kind;
   $('#sheet').hidden = $('#scrim').hidden = false;
@@ -1011,14 +1095,21 @@ function openSheet(kind) {
   if (kind === 'menu') refreshMenu();
   if (kind === 'pages') refreshPages();
   if (kind === 'term') pullScreen();
+  if (kind === 'info') pullInfo();
 }
 
-function closeSheet() {
+// quiet: the app closed it (no chat left to show), not his choice; else closing another sheet brings info back.
+function closeSheet(quiet) {
+  const was = S.sheet;
+  if (was === 'info' && quiet !== true) { ui.info = false; keep('ui', ui); }
   S.sheet = '';
   $('#sheet').hidden = $('#scrim').hidden = true;
   document.body.classList.remove('docked');
   document.querySelectorAll('[data-sheet]').forEach((b) => b.classList.remove('on'));
+  if (quiet !== true && was !== 'info') infoBack();
 }
+const wide = () => matchMedia('(min-width: 1000px)').matches;
+function infoBack() { if (ui.info && S.sid && !S.sheet && wide()) openSheet('info'); }
 
 function renderSheet() {
   requestAnimationFrame(() => document.body.style.setProperty('--sheetw', $('#sheet').offsetWidth + 'px'));
@@ -1035,6 +1126,12 @@ function renderSheet() {
     $('#sheett').textContent = 'Menu';
     $('#sheets').textContent = '';
     body.innerHTML = menuErr ? `<div class="term-err">⚠ ${esc(menuErr)}</div>` : lastMenu ? menuHtml(lastMenu, '') : '';
+    body.scrollTop = top;
+  } else if (S.sheet === 'info') {
+    const d = S.info && S.info.sid === S.sid ? S.info : null;
+    $('#sheett').textContent = d && d.root ? base(d.root) : 'Info';
+    $('#sheets').textContent = '';
+    body.innerHTML = d ? infoHtml(d) : '';
     body.scrollTop = top;
   } else if (S.sheet === 'pages') {
     $('#sheett').textContent = 'Pages';
@@ -1073,6 +1170,7 @@ function openChat(sid) {
     $('#opts').dataset.h = $('#suggest').dataset.h = '';
     $('#input').value = drafts[sid] || '';
     grow();
+    S.info = null;
     const c = chat(sid);
     if (c && c.spoke) { seen[sid] = c.spoke; keep('seen', seen); }
   }
@@ -1082,6 +1180,8 @@ function openChat(sid) {
   renderDock();
   pullLog();
   pullScreen();
+  pullInfo();
+  if (S.sheet === 'info') renderSheet(); else infoBack();
 }
 
 function route() {
@@ -1099,7 +1199,7 @@ function route() {
     S.log = null;
     renderList();
   }
-  if (S.sheet === 'term') closeSheet();
+  if (S.sheet === 'term' || S.sheet === 'info') closeSheet(true);
   show(false);
   $('#title').innerHTML = '';
   $('#termbtn').hidden = true;
@@ -1165,8 +1265,24 @@ document.addEventListener('visibilitychange', () => {
   if (S.sid) { pullLog(); pullScreen(); }
 });
 
+// The on-screen keyboard: iOS pans the whole page to the input rather than resizing it, which moved the header out
+// of view. The app is sized to the visible part instead (not while pinch-zoomed), so only the thread moves.
+const VV = window.visualViewport;
+if (VV) {
+  const fit = () => {
+    if (Math.abs(VV.scale - 1) > 0.01) return;
+    const st = document.documentElement.style;
+    st.setProperty('--vvh', VV.height + 'px');
+    st.setProperty('--vvt', VV.offsetTop + 'px');
+    if (STICK.on) toBottom();
+  };
+  VV.addEventListener('resize', fit);
+  VV.addEventListener('scroll', fit);
+}
+
 // The polls, only while visible: chats every 3 s, the open transcript every 1 s (new bytes only), its screen every
-// 2 s while it works or asks, 4 s idle, 1 s with the Terminal sheet open; menu 5 s and pages 20 s while shown.
+// 2 s while it works or asks, 4 s idle, 1 s with the Terminal sheet open; its statusline and changed files every 3 s;
+// menu 5 s and pages 20 s while shown.
 let tick = 0;
 setInterval(() => {
   if (document.visibilityState !== 'visible') return;
@@ -1178,6 +1294,7 @@ setInterval(() => {
     const every = S.sheet === 'term' ? 1 : busy(c) || S.scr.opts.length ? 2 : 4;
     if (live(c) && tick % every === 0) pullScreen();
   }
+  if (S.sid && tick % 3 === 1) pullInfo();
   if (S.sheet === 'menu' && tick % 5 === 0) refreshMenu();
   if (S.sheet === 'pages' && tick % 20 === 0) refreshPages();
   clocks();

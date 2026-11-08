@@ -1889,6 +1889,11 @@ fit_step11=$(fit_render fit-step11 28)
 assert grep -Fq 'FB5 xhi fit │ WUT-421' <<< "$fit_step11"
 fit_floor=$(fit_render fit-floor 15)
 assert grep -Fq 'FB5 xhi fit │ WUT-421' <<< "$fit_floor"
+# The Chats app's copy keeps both lines as they were before the first fit step, however narrow the tab.
+fit_full=$(fit_visible "$(cat "$STATE_DIR/render-full-fit-floor")")
+assert grep -Fq 'Fable 5 xhigh fitaccount │ fit-bench-project ' <<< "$fit_full"
+assert grep -Fq 'WUT-421' <<< "$fit_full"
+assert test "$(grep -c '' <<< "$fit_full")" = 2
 
 # Steps 9 and 10 on the `»` pair: both sides share the cut, then wear initials with the arrow's
 # spaces gone, then the active side alone, then no directory at all.
