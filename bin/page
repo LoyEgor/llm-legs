@@ -13,6 +13,7 @@ import gzip
 import hmac
 import html
 import http.cookies
+import ipaddress
 import json
 import mimetypes
 import os
@@ -21,8 +22,10 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -48,6 +51,11 @@ UPLOAD_TYPES = ("image/", "application/octet-stream")
 # costs nothing; PAGES_LAN=0 keeps it to loopback.
 LAN = os.environ.get("PAGES_LAN", "1") != "0"
 COOKIE = "pages_k"
+# The same server over https on a second port, for the home network with no VPN: Safari gives a page the microphone
+# only in a secure context. The cert comes from mkcert's root CA, which Egor's iPad trusts since 2026-08-20.
+TLS_PORT = int(os.environ.get("PAGES_TLS_PORT") or PORT + 1)
+TLS_DIR = os.environ.get("PAGES_TLS_DIR") or os.path.expanduser("~/.local/share/ipad-dev-certs")
+TLS_CERT, TLS_KEY, TLS_NAMES = (os.path.join(TLS_DIR, n) for n in ("lan.pem", "lan-key.pem", "lan.names"))
 # Python guesses audio/mp4a-latm for .m4a, which iOS Safari will not play.
 mimetypes.add_type("audio/mp4", ".m4a")
 BUILTIN_MODULES = {"compare": "N variants of an item side by side: synced loupes, blind vote, pairwise, view grid",
@@ -339,6 +347,31 @@ class Server(ThreadingHTTPServer):
             super().handle_error(request, client_address)
 
 
+class TlsServer(Server):
+    """The https listener. The handshake runs in the request's own thread (a slow client holds no accept), and the
+    cert is read again whenever its file changes, so `page lan` can issue one for a new address with no restart."""
+    ctx, stamp = None, None
+
+    def context(self):
+        try:
+            st = os.stat(TLS_CERT)
+        except FileNotFoundError:
+            return None
+        if self.stamp != (st.st_mtime_ns, st.st_size):
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(TLS_CERT, TLS_KEY)
+            self.ctx, self.stamp = ctx, (st.st_mtime_ns, st.st_size)
+        return self.ctx
+
+    def finish_request(self, request, client_address):
+        ctx = self.context()
+        if ctx is None:
+            return  # no cert yet: the connection closes until `page lan` issues one
+        request.settimeout(10)
+        with ctx.wrap_socket(request, server_side=True) as tls:
+            super().finish_request(tls, client_address)
+
+
 def local_time(at):
     """The store's UTC stamp as Egor's local "Nov 8 14:05" (the raw stamp when it does not parse)."""
     try:
@@ -430,6 +463,44 @@ def lan_host():
     return (found.stdout.strip() + ".local") if found.returncode == 0 and found.stdout.strip() else None
 
 
+def lan_ip():
+    """This Mac's home-network address: the first private IPv4 on a built-in port (Ethernet, then Wi-Fi), never a
+    VPN's utun."""
+    for nic in ("en0", "en1", "en2", "en3"):
+        got = subprocess.run(["ipconfig", "getifaddr", nic], capture_output=True, text=True).stdout.strip()
+        try:
+            if got and ipaddress.ip_address(got).is_private:
+                return got
+        except ValueError:
+            pass
+    return None
+
+
+def lan_cert(names):
+    """The https cert covers `names`: issued by mkcert (the root CA Egor's devices trust) when the address or the
+    name changed -> True, False with no mkcert."""
+    want = "\n".join(names) + "\n"
+    try:
+        with open(TLS_NAMES) as handle:
+            if handle.read() == want and os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY):
+                return True
+    except FileNotFoundError:
+        pass
+    mkcert = shutil.which("mkcert")
+    if not mkcert:
+        return False
+    os.makedirs(TLS_DIR, mode=0o700, exist_ok=True)
+    done = subprocess.run([mkcert, "-cert-file", TLS_CERT + ".tmp", "-key-file", TLS_KEY + ".tmp"] + names,
+                          capture_output=True, text=True, timeout=30)
+    if done.returncode != 0:
+        raise store.Refused("mkcert: %s" % (done.stderr.strip().splitlines() or ["failed"])[-1])
+    os.replace(TLS_KEY + ".tmp", TLS_KEY)
+    os.replace(TLS_CERT + ".tmp", TLS_CERT)
+    with open(TLS_NAMES, "w") as handle:
+        handle.write(want)
+    return True
+
+
 def ours(port):
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -439,7 +510,26 @@ def ours(port):
         return False
 
 
-def serve(port):
+def serve_tls(port, token):
+    said, delay = False, 1
+    while True:
+        try:
+            server = TlsServer(("0.0.0.0", port), Handler)
+            break
+        except OSError as error:
+            if error.errno != errno.EADDRINUSE:
+                raise
+        if not said:
+            print("page serve: https port %d held by another process, retrying the bind" % port, file=sys.stderr)
+            said = True
+        time.sleep(delay)
+        delay = min(delay * 2, 60)
+    server.lan_token = token
+    print("page serve: https://127.0.0.1:%d %s" % (server.server_address[1], TLS_CERT), flush=True)
+    server.serve_forever()
+
+
+def serve(port, tls_port=None):
     store.root()
     said, delay = False, 1
     while True:
@@ -460,6 +550,10 @@ def serve(port):
     server.timeout = None
     server.lan_token = lan_token() if LAN else None
     print("page serve: http://127.0.0.1:%d %s" % (server.server_address[1], store.root()), flush=True)
+    if LAN:
+        # A server on another port (a test's --port 0) takes any free one for https too.
+        tls_port = (TLS_PORT if port == PORT else 0) if tls_port is None else tls_port
+        threading.Thread(target=serve_tls, args=(tls_port, server.lan_token), daemon=True).start()
     while True:
         server.handle_request()
 
@@ -670,27 +764,48 @@ def cmd_tailscale(args):
             print("then run `page tailscale` again")
             return 1
     print("https://%s/ -> 127.0.0.1:%d" % (ts_host(), PORT))
+    # Away from home the same LAN links work: the tailnet routes this Mac's home address to it (one approval).
+    ip = lan_ip()
+    if ip:
+        route = "%s/32" % ip
+        done = tailscale("set", "--advertise-routes=" + route)
+        if done is None or done.returncode != 0:
+            print("tailscale set --advertise-routes: %s" % ((done.stderr or done.stdout).strip() if done else "no answer"))
+            return 1
+        me = ts_status().get("Self") or {}
+        if route not in (me.get("PrimaryRoutes") or []):
+            print("approve the route %s once: https://login.tailscale.com/admin/machines -> %s -> Edit route settings"
+                  % (route, (me.get("DNSName") or "this Mac").split(".")[0]))
+            return 1
+        print("route %s: home links work away from home too" % route)
     return 0
 
 
 def cmd_lan(args):
-    """A link to a page (or the index) for another device; on the clipboard too. https on the tailnet when
-    `page tailscale` set it up (the microphone needs it), else http on the home network."""
+    """A link to a page (or the index) for another device; on the clipboard too. https on this Mac's home address
+    (no VPN, no DNS; the microphone needs https), reached away from home through the tailnet's route to it; the
+    tailnet name when there is no mkcert, plain http as the last resort."""
     if not LAN:
         raise store.Refused("PAGES_LAN=0: the server answers loopback only")
     path = "/app/" if args.app else "/p/%s/" % lookup(args)[0] if args.ref else "/"
-    secure = ts_host()
-    host = lan_host()
-    if not secure and not host:
-        raise store.Refused("no LocalHostName (scutil --get LocalHostName)")
-    base = "https://%s" % secure if secure else "http://%s:%d" % (host, PORT)
+    ip, host = lan_ip(), lan_host()
+    if ip and lan_cert([ip] + [n for n in (host,) if n] + ["localhost"]):
+        base = "https://%s:%d" % (ip, TLS_PORT)
+        routed = "%s/32" % ip in ((ts_status().get("Self") or {}).get("PrimaryRoutes") or [])
+        where = "this network, and away from home over Tailscale" if routed else \
+            "this network (away from home once `page tailscale` routes %s)" % ip
+    elif ts_host():
+        base, where = "https://%s" % ts_host(), "any device on the tailnet"
+    elif ip or host:
+        base, where = "http://%s:%d" % (ip or host, PORT), "this network, no microphone (http)"
+    else:
+        raise store.Refused("no home-network address (ipconfig getifaddr en0/en1)")
     link = "%s%s?k=%s" % (base, path, lan_token())
     print(link)
     subprocess.run(["pbcopy"], input=link, text=True, check=False)
     if shutil.which("qrencode") and not args.no_qr:
         subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "1", link], check=False)
-    print("on the clipboard; %s. A link without ?k= is refused." % (
-        "any device on the tailnet" if secure else "the device needs the same network"))
+    print("on the clipboard; %s. A link without ?k= is refused." % where)
 
 
 def cmd_help(args):
@@ -721,6 +836,19 @@ def cmd_doctor(args):
     listen = subprocess.run(["lsof", "-nP", "-iTCP:%d" % PORT, "-sTCP:LISTEN", "-Fpc"], capture_output=True, text=True)
     held = dict((l[0], l[1:]) for l in listen.stdout.splitlines() if l[:1] in "pc")
     print("port owner: %s" % ("%s (pid %s)" % (held.get("c"), held.get("p")) if held else "nobody"))
+    try:
+        quiet = ssl.create_default_context()
+        quiet.check_hostname, quiet.verify_mode = False, ssl.CERT_NONE
+        with socket.create_connection(("127.0.0.1", TLS_PORT), timeout=2) as raw, quiet.wrap_socket(raw):
+            tls = "up"
+    except (OSError, ssl.SSLError) as error:
+        tls = "DOWN (%s)" % (type(error).__name__)
+    try:
+        with open(TLS_NAMES) as handle:
+            names = " ".join(handle.read().split())
+    except FileNotFoundError:
+        names = "none yet (`page lan` issues it)"
+    print("https: %s https://127.0.0.1:%d, cert for %s" % (tls, TLS_PORT, names))
     sources = {"pagesd": os.path.realpath(__file__), "store.py": os.path.realpath(store.__file__),
                "app.py": os.path.realpath(app.__file__)}
     drift = []
@@ -829,13 +957,16 @@ def main(argv):
     p.add_argument("--app", action="store_true", help="the chats app (/app/) instead of a page or the index")
     sub.add_parser("doctor")
     sub.add_parser("report").add_argument("--days", type=int, default=7)
-    sub.add_parser("serve").add_argument("--port", type=int, default=PORT)
+    p = sub.add_parser("serve")
+    p.add_argument("--port", type=int, default=PORT)
+    p.add_argument("--tls-port", type=int, help="the https port (default %d; any free one beside another --port)"
+                   % TLS_PORT)
     sub.add_parser("install-agent")
     sub.add_parser("tailscale")
     args = parser.parse_args(argv)
     try:
         if args.command == "serve":
-            return serve(args.port)
+            return serve(args.port, args.tls_port)
         return globals()["cmd_" + args.command.replace("-", "_")](args) or 0
     except (store.Refused, ValueError, OSError) as error:
         print("page: %s" % error, file=sys.stderr)

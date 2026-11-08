@@ -290,7 +290,8 @@ mkrun "codex-$((now - 80))-1-aa06" 0 "$began" '' >/dev/null
 export PAGES_DIR="$WORK/pages" APP_SESSIONS="$WORK/sessions" APP_HS="$WORK/bin/hs" APP_CHAT_FIND="$WORK/bin/chat-find" \
   APP_CHATS_JSON="$WORK/chats.json" STATUSLINE_CACHE_DIR="$WORK/tracks" TRANSCRIBER_RUNTIME_DIR="$RT" \
   APP_MIC_PORT="$(cat "$RT/udp-port")" WORKER_RUN_DIR="$WORK/runs" APP_CHATS="$WORK/bin/chats" APP_CLOSE_WAIT=1 \
-  APP_TRASH="$WORK/bin/trash" CHAT_PINS_FILE="$WORK/pins.json" CHAT_NAME_ROOTS="$WORK/root/projects"
+  APP_TRASH="$WORK/bin/trash" CHAT_PINS_FILE="$WORK/pins.json" CHAT_NAME_ROOTS="$WORK/root/projects" \
+  PAGES_TLS_DIR="$WORK/tls"
 
 "$PAGE" serve --port 0 >"$WORK/serve.out" 2>&1 &
 "$ROOT/bin/wait-until" --max 10 log "$WORK/serve.out" 'page serve: http' >/dev/null || fail "serve: $(cat "$WORK/serve.out")"

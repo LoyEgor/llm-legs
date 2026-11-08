@@ -17,7 +17,8 @@ printf '# compare: variants side by side\n' >"$WORK/kit/compare.md"
 printf '# cards: numbered cards\n' >"$WORK/kit/cards.md"
 echo secret >"$WORK/secret.txt"
 printf '{"media": [{"path": "%s/secret.txt"}]}' "$WORK" >"$WORK/meta.json"
-export PATH="$WORK/bin:$PATH" PAGES_DIR="$WORK/pages" PAGES_KIT_DIR="$WORK/kit" CLAUDE_CODE_SESSION_ID=chat-own
+export PATH="$WORK/bin:$PATH" PAGES_DIR="$WORK/pages" PAGES_KIT_DIR="$WORK/kit" CLAUDE_CODE_SESSION_ID=chat-own \
+  PAGES_TLS_DIR="$WORK/tls"
 unset CLAUDE_LAUNCHER_SESSION
 head -c 9500000 /dev/urandom >"$WORK/big.png"
 head -c 1000 /dev/urandom >"$WORK/a.png"
@@ -118,6 +119,18 @@ if [ -n "$lan_ip" ]; then
   assert test "$(get -H "Host: 127.0.0.1:$port" "http://$lan_ip:$port/p/$pid/state")" = 403
   assert test "$(get -H "Cookie: pages_k=$token" "http://$lan_ip:$port/p/$pid/state")" = 200
 fi
+# https on a second port: no cert yet closes the connection; a cert written later is served with no restart, behind
+# the same gate.
+"$ROOT/bin/wait-until" --max 10 log "$WORK/serve.out" 'page serve: https' >/dev/null || fail "https: $(cat "$WORK/serve.out")"
+tls=$(sed -n 's|^page serve: https://127.0.0.1:\([0-9]*\) .*|\1|p' "$WORK/serve.out")
+assert test "$(get -k "https://127.0.0.1:$tls/healthz")" = 000
+mkdir -p "$WORK/tls"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=localhost \
+  -addext subjectAltName=IP:127.0.0.1 -keyout "$WORK/tls/lan-key.pem" -out "$WORK/tls/lan.pem" 2>/dev/null
+assert test "$(get --cacert "$WORK/tls/lan.pem" "https://127.0.0.1:$tls/healthz"; jq .pages "$WORK/body")" = 2001
+assert test "$(get -k -H "Host: 192.168.1.9:$tls" "https://127.0.0.1:$tls/p/$pid/state")" = 403
+assert test "$(get -k -H "Host: 192.168.1.9:$tls" -H "Cookie: pages_k=$token" "https://127.0.0.1:$tls/p/$pid/state")" = 200
+assert test "$(get -k -H "Host: 192.168.1.9:$tls" "https://127.0.0.1:$tls/p/$pid/?k=$token")" = 303
 assert test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: text/plain' -d '{}' "$base/p/$pid/patch")" = 403
 assert test "$(post '{"op": "x1", "item": "p01", "fields": {"note": "n"}}' -H 'Origin: http://evil.example')" = 403
 assert test "$(post '{"op": "x2", "item": "p01", "fields": {"note": "n"}}' -H "Origin: http://127.0.0.1:$port")" = 200
@@ -226,4 +239,4 @@ assert_fails "$PAGE" badges "$bpid" Z9 2>/dev/null
 assert like "$("$PAGE" state "$bpid")" "k2 note=* B8=$WORK/b.png Г=$WORK/c.png by=chat*"
 assert_fails sh -c "printf '{\"items\": [{\"id\": \"a\", \"media\": [{\"kind\": \"image\", \"src\": \"$WORK/a.png\", \"badge\": \"A2\"}]}, {\"id\": \"b\", \"media\": [{\"kind\": \"image\", \"src\": \"$WORK/a.png\"}]}]}' | '$PAGE' new cards --slug dup --no-open 2>/dev/null"
 
-echo "PASS: $asserts asserts; test_pages.sh: test guard, owner resolution, validation, served spec without key fields and with stable blind slots, per-field merge, op dedup, torn line, Host/Origin/Content-Type, home-network token, path confinement, media Range/cap/ETag, state cursor and unblinding, update allowlist and --replace gate, cards badges"
+echo "PASS: $asserts asserts; test_pages.sh: test guard, owner resolution, validation, served spec without key fields and with stable blind slots, per-field merge, op dedup, torn line, Host/Origin/Content-Type, home-network token, https port with a cert read on change, path confinement, media Range/cap/ETag, state cursor and unblinding, update allowlist and --replace gate, cards badges"

@@ -11,15 +11,22 @@ on an incompatible change.
 - **Host check:** a loopback client whose `Host` is `127.0.0.1:<port>` or `localhost:<port>` passes;
   any other request needs the cookie `pages_k` equal to `<store root>/.lan-token` (made once, mode
   600), else 403. A GET with `?k=<token>` sets that cookie and 303s to the same path without the
-  query; `page lan [ref]` prints that link (`http://<LocalHostName>.local:<port>/…`), copies it and
-  draws a QR code.
+  query; `page lan [ref]` prints that link, copies it and draws a QR code.
 - **POST** also requires `Content-Type: application/json` (the upload route also takes `image/*` and
   `application/octet-stream`, a mic chunk only the latter) and, when an `Origin` header is present, an
   origin equal to the page's own, `http://` or `https://` + `Host`; else 403.
-- **HTTPS:** `page tailscale` runs tailscaled in userspace mode (LaunchAgent `com.llm-legs.tailscaled`,
-  socket `~/.local/state/tailscale/tailscaled.sock`) and `tailscale serve` 443 → `127.0.0.1:<port>`;
-  the proxied request keeps the tailnet `Host`, so it still needs the cookie. Safari gives a page the
-  microphone only over https.
+- **HTTPS** (Safari gives a page the microphone only over https): the same server also listens with
+  TLS on `${PAGES_TLS_PORT:-<port>+1}` (4792; beside another `--port`, any free one), every
+  interface, same gate. Cert `${PAGES_TLS_DIR:-~/.local/share/ipad-dev-certs}/lan.pem` + `lan-key.pem`,
+  re-read when the file changes; none yet → the connection closes. `page lan` (re)issues it with
+  mkcert (the root CA Egor's iPad trusts) whenever the names in `lan.names` (home IP, LocalHostName
+  `.local`, localhost) changed, and links `https://<home IP>:4792/…`: no VPN, no DNS at home.
+- **Tailscale** (away from home): `page tailscale` runs tailscaled in userspace mode (LaunchAgent
+  `com.llm-legs.tailscaled`, socket `~/.local/state/tailscale/tailscaled.sock`), `tailscale serve`
+  443 → `127.0.0.1:<port>` (the proxied request keeps the tailnet `Host`, so it still needs the
+  cookie), and advertises the route `<home IP>/32`: once approved in the admin console, the home links
+  work from anywhere on the tailnet. `page lan` falls back to the tailnet name when there is no mkcert,
+  to http on the home network when there is neither.
 
 ## Routes
 | Route | Answer |
@@ -154,8 +161,8 @@ extending one: `EXTEND.md`. The server knows only:
 | `page set <slug\|pid> <item> field=value…` | writes a field as `by: chat` |
 | `page list [--all]` | this chat's pages, or every page |
 | `page open <slug\|pid>` | opens the page in Dia |
-| `page lan [ref] [--app]` | the link to a page, the index, or the chats app; https on the tailnet when `page tailscale` set it up, else the home network; clipboard + QR |
-| `page tailscale` | HTTPS on Egor's tailnet: the tailscaled agent, the login URL until he logs in, then `tailscale serve` |
+| `page lan [ref] [--app]` | the link to a page, the index, or the chats app: `https://<home IP>:4792` (issues the cert when the address changed), says whether the tailnet routes it; clipboard + QR |
+| `page tailscale` | the tailscaled agent, the login URL until he logs in, `tailscale serve`, the `<home IP>/32` route (prints where to approve it until approved) |
 | `page doctor` | server up? port owner, deployed copy current, PAGES_DIR |
 | `page report [--days N]` | pages made per chat and module, the `.events.jsonl` problems and hints, kit commits |
 | `page serve` | the daemon (launchd runs `~/.local/libexec/pagesd`) |
