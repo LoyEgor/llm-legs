@@ -13,7 +13,7 @@ types a code, ever.
     tg-read photo <chat> [--last N] --dest-dir <abs>                   download photos as .jpg
     tg-read transcribe <abs audio> [--dest <abs .txt>] [--language ru] [--engine auto|elevenlabs|groq]
     tg-read send <chat> (--text <text> | --file <abs>) [--as-written]   post ONE plain-text message as Egor
-    tg-read wait <chat> --after <msg id> [--hours 6]   block until the answer comes, print it (a background Bash)
+    tg-read wait <chat> --after <msg id> [--hours 1 | --until HH:MM]   print answers as they come (a background Bash)
 
 <chat> is a dialog name (substring, case-insensitive), a @username, a numeric id or `me` (Saved
 Messages). Output is plain text, one message per line; a voice or media message prints a tag instead
@@ -29,8 +29,9 @@ out of usage/credits. Groq keys: transcriptions-gpt/settings/groq_keys.txt, neve
 `wait` is how an answer reaches a chat without Egor asking: run in the background right after `send`,
 it exits when the other side writes after that message (a person: any message; a group: a reply to it
 or a mention of Egor), printing what came, and the exit wakes the chat. It holds one connection on an
-in-memory copy of the session (no lock on the session file), polls every 15 s and lets a burst of
-messages settle 20 s before it prints.
+in-memory copy of the session (no lock on the session file), polls every 15 s and prints once the chat
+has been quiet 20 s. It ends at its deadline (1 h, or --hours/--until when Egor named a span; a re-arm
+keeps it) or with the chat that started it: claude-setup hooks/lib/chat_watch.py.
 """
 
 from __future__ import annotations
@@ -57,7 +58,6 @@ LOGIN_NEEDED = CONFIG_DIR / "login-needed"  # the menubar's Telegram "login need
 GROQ_KEYS = Path("/Volumes/Work/Projects/transcriptions-gpt/settings/groq_keys.txt")
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 MAX_SEND = 4000
-FOLLOW_HOURS = 1 / 3  # a live exchange that falls silent this long is over
 FALL_BACK = re.compile(r"USAGE_LIMIT|credits|quota|\b402\b|\b429\b", re.IGNORECASE)
 
 
@@ -415,6 +415,14 @@ async def cmd_transcribe(args) -> int:
     return code
 
 
+def watch():
+    """The shared chat_watch module (claude-setup hooks/lib): when an answer watch ends."""
+    sys.path.insert(0, os.path.expanduser("~/.claude/hooks/lib"))
+    import chat_watch
+
+    return chat_watch
+
+
 def owner():
     """The shared owner_text module (claude-setup hooks/lib): how a text sent as Egor must look."""
     sys.path.insert(0, os.path.expanduser("~/.claude/hooks/lib"))
@@ -473,8 +481,7 @@ async def cmd_send(args) -> int:
     if not getattr(entity, "is_self", False):
         from telethon.utils import get_peer_id  # marked id (-100… for a group), so `wait` resolves it as one
 
-        print(f"answer watch: run `tg-read wait {get_peer_id(entity)} --after {message.id}` as a background Bash now; "
-              "its exit brings the answer to this chat")
+        print(f"answer watch: run `tg-read wait {get_peer_id(entity)} --after {message.id}` {watch().SEND_HINT}")
     await tg.disconnect()
     return 0
 
@@ -516,6 +523,13 @@ async def poll_after(tg, peer, after: int) -> list:
 
 
 async def cmd_wait(args) -> int:
+    rules = watch()
+    try:
+        end = rules.deadline(args.until, args.hours)
+    except ValueError:
+        print(f"tg-read wait: --until takes HH:MM or YYYY-MM-DDTHH:MM, got {args.until!r}", file=sys.stderr)
+        return 2
+    chat_pid = rules.owning_chat()
     from telethon.tl.types import User
 
     disk = client()
@@ -530,16 +544,13 @@ async def cmd_wait(args) -> int:
     person, name, peer_id = isinstance(entity, User), chat_name(entity), get_peer_id(entity)
     tg = client(memory_session(), receive_updates=False)
     await ensure_authorized(tg)
-    # After an answer the watch follows the live exchange only: FOLLOW of silence ends it for good.
-    hours = args.hours if args.hours is not None else FOLLOW_HOURS if args.follow else 6.0
-    deadline = time.monotonic() + hours * 3600
     failures = 0
     try:
-        while True:
+        while rules.alive(chat_pid):
             try:
                 rows = await poll_after(tg, peer, args.after)
                 failures = 0
-            except Exception as error:  # a network blip or a flood wait must not end a six-hour watch
+            except Exception as error:  # a network blip or a flood wait must not end the watch
                 failures += 1
                 if failures >= 10:
                     print(f"tg-read wait: gave up after {failures} failed polls: {error}", file=sys.stderr)
@@ -563,17 +574,14 @@ async def cmd_wait(args) -> int:
                     body = " ".join(part for part in (media_tag(message) if message.media else "",
                                                       (message.text or "").replace("\n", " ⏎ ")) if part)
                     print(f"{local_time(message.date)}  {sender_name(message)}:  {body}  #{message.id}")
-                print(f"watch continues: run `tg-read wait {peer_id} --after {shown[-1].id} --follow` as a background "
-                      "Bash now, so the rest of this exchange reaches this chat too")
+                print(rules.rearm_line(f"tg-read wait {peer_id} --after {shown[-1].id}", end) if time.time() < end
+                      else rules.ended_line(name, end))
                 return 0
-            if time.monotonic() >= deadline:
-                if args.follow:
-                    print(f"watch ended: {name} quiet for {hours * 60:g} min after #{args.after}; the exchange is "
-                          "over, do not re-arm and tell Egor nothing about it")
-                else:
-                    print(f"tg-read wait: no answer in {name} after #{args.after} within {hours:g} h")
-                return 0 if args.follow else 1
+            if time.time() >= end:
+                print(rules.ended_line(name, end))
+                return 0
             await asyncio.sleep(args.every)
+        return 0  # the chat that started the watch is closed: nobody to tell
     finally:
         await tg.disconnect()
 
@@ -620,9 +628,8 @@ def main(argv=None) -> int:
     wait = sub.add_parser("wait", help="block until the chat answers Egor's message; run as a background Bash")
     wait.add_argument("chat")
     wait.add_argument("--after", type=int, required=True, help="id of Egor's message (`send` prints it)")
-    wait.add_argument("--hours", type=float, help="how long to wait for an answer (default 6, with --follow 20 min)")
-    wait.add_argument("--follow", action="store_true",
-                      help="a re-arm after an answer: the exchange is over after 20 min of silence")
+    wait.add_argument("--hours", type=float, help="follow answers this long (default 1)")
+    wait.add_argument("--until", help="follow answers until HH:MM or YYYY-MM-DDTHH:MM (a re-arm carries it)")
     wait.add_argument("--every", type=float, default=15.0, help="seconds between polls")
     wait.add_argument("--settle", type=float, default=20.0, help="seconds of quiet after an answer before printing")
     args = parser.parse_args(argv)
