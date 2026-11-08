@@ -56,7 +56,9 @@ printf '{"title": "Chats/other  1.0/2.0 cores", "rows": [{"text": "CPU   1.0 cha
   "$sid" "$chatpid" >"$WORK/chats.json"
 
 # The stub hs: the menubar, a screen with a menu on it (❯ on option 1), and every `do script` with the pasted
-# file's text copied out before the server deletes it.
+# file's text copied out before the server deletes it. With $WORK/queue holding a JSON list, the screen is Claude
+# Code's empty input over that queue, and Up (`"[A" & c`) writes their popAll lines to the transcript as the CLI
+# does and empties the queue.
 cat >"$WORK/bin/hs" <<EOF
 #!/usr/bin/env python3
 import json, os, re, sys
@@ -66,10 +68,20 @@ with open("$WORK/hs.log", "a") as log:
     m = re.search(r'read POSIX file "([^"]+)"', lua)
     if m:
         log.write("TEXT=" + json.dumps(open(m.group(1), encoding="utf-8").read(), ensure_ascii=False) + "\\n")
+queue = json.load(open("$WORK/queue")) if os.path.exists("$WORK/queue") else None
+box = lambda line: "\\u23fa working\\n" + "\\u2500" * 20 + "\\n\\u276f " + line + "\\n" + "\\u2500" * 20 + "\\n  status"
 if "llm-limits" in lua:
     print(json.dumps({"items": [{"r": [{"t": "Routing: next fixacct"}], "sub": [{"r": [{"t": "row", "c": "e64033", "a": 1}]}]}, {"sep": True}]}))
 elif "return contents of tab" in lua and os.path.exists("$WORK/screen-fails"):
     print(json.dumps({"ok": False, "err": "Terminal timed out"}))
+elif "return contents of tab" in lua and queue is not None:
+    print(json.dumps({"ok": True, "res": box("Press up to edit queued messages" if queue else "")}))
+elif '"[A" & c' in lua and queue is not None:
+    with open("$T", "a") as transcript:
+        for text in queue:
+            transcript.write(json.dumps({"type": "queue-operation", "operation": "popAll", "content": text}) + "\\n")
+    json.dump([], open("$WORK/queue", "w"))
+    print(json.dumps({"ok": True, "res": "sent"}))
 elif "return contents of tab" in lua:
     print(json.dumps({"ok": True, "res": "Pick a color\\n\\u276f 1. Red\\n  2. Green\\n  3. Blue\\nEnter to select"}))
 else:
@@ -329,6 +341,30 @@ assert test "$(jq -s '[.[] | select(.op == "client")] | length' "$PAGES_DIR/.eve
 assert test "$(jq -rs '[.[] | select(.op == "client")][0] | [.kind, .ms, .count, .msg, .evil] | join("|")' "$PAGES_DIR/.events.jsonl")" \
   = "offline|1|3|/api/chats: TypeError|"
 
+# A queued message taken back: Up pulls Claude Code's queue into the empty input, the clears and a backslash leave
+# nothing to submit, and every other message is pasted back in order (the first after clearing the backslash's
+# line). Only an empty input over a queue is touched; a text already read comes back as an error, nothing lost.
+assert test "$(post "/api/chat/$sid/unqueue" '{"text": " "}')" = 400
+assert test "$(post "/api/chat/$sid/unqueue" '{"text": "drop B"}')" = 502
+assert test "$(jq -r .err "$WORK/body")" = "no prompt on the Mac's screen"
+echo '[]' >"$WORK/queue"
+assert test "$(post "/api/chat/$sid/unqueue" '{"text": "drop B"}')" = 502
+assert test "$(jq -r .err "$WORK/body")" = "nothing queued on the Mac"
+echo '["keep A", "drop  B", "keep C", "<task-notification>x</task-notification>"]' >"$WORK/queue"
+: >"$WORK/hs.log"
+assert test "$(post "/api/chat/$sid/unqueue" '{"text": "drop B"}')" = 200
+assert test "$(grep -c 'do script (e & "\[A" & c & "\\\\")' "$WORK/hs.log")" = 1
+assert grep -q 'repeat 40 times' "$WORK/hs.log"
+assert test "$(grep '^TEXT=' "$WORK/hs.log" | tr '\n' '|')" = 'TEXT="keep A"|TEXT="keep C"|'
+assert test "$(grep -c 'do script (c & e & "\[200~"' "$WORK/hs.log")" = 1
+assert grep -q 'repeat 4 times' "$WORK/hs.log"
+echo '["keep A"]' >"$WORK/queue"
+: >"$WORK/hs.log"
+assert test "$(post "/api/chat/$sid/unqueue" '{"text": "gone"}')" = 502
+assert test "$(jq -r .err "$WORK/body")" = "it had already gone to the chat"
+assert test "$(grep '^TEXT=' "$WORK/hs.log" | tr '\n' '|')" = 'TEXT="keep A"|'
+rm "$WORK/queue"
+
 # It costs Claude Code nothing: no model call, no settings or hooks touched; the only programs it runs are ps,
 # Hammerspoon and chat-find, and the client polls only while it is on screen, at most once a second.
 assert test -z "$(grep -nE 'anthropic|openai|claude -p|settings\.json|hooks' "$ROOT/share/pages/app.py")"
@@ -338,4 +374,4 @@ assert "$PY" -c 'import sys
 sys.exit("if (document.visibilityState !== \x27visible\x27) return;\n  tick++;" not in open(sys.argv[1]).read())' "$ROOT/share/pages/app/app.js"
 assert test "$(grep -c '^}, 1000);$' "$ROOT/share/pages/app/app.js")" = 1
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"

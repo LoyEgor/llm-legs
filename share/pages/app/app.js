@@ -397,12 +397,15 @@ function addItems(items, L, ctx, frag) {
   }
 }
 
-// One queue entry: {t, nodes}; nodes is null for Claude Code's own notifications, kept only to stay in step.
+// One queue entry: {id, t, raw, nodes}; nodes is null for Claude Code's own notifications, kept only to stay in
+// step. His can be taken back until the chat reads it (Delete: POST unqueue).
+let qSeq = 0;
 function queueItem(it, L, frag) {
   if (it.k === 'queued') {
-    const q = {t: norm(it.t), nodes: null};
+    const q = {id: ++qSeq, t: norm(it.t), raw: it.t, nodes: null};
     if (!it.hide) {
-      q.nodes = [userNode(it.t, ' queued'), node('state q', 'Queued · goes in at the next step')];
+      q.nodes = [userNode(it.t, ' queued'),
+        node('state q', `<span>Queued · goes in at the next step</span><button data-unq="${q.id}">Delete</button>`)];
       q.nodes.forEach((x) => frag.appendChild(x));
       settle(it.t, it.at);
     }
@@ -559,7 +562,29 @@ function outRender() {
   if (mine.length) grew();
 }
 
+async function takeBack(q) {
+  const sid = S.sid, label = q.nodes[1].firstChild;
+  q.nodes[1].querySelector('button').hidden = true;
+  label.textContent = 'Taking it back…';
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/unqueue`, {text: q.raw}).catch(() => ({ok: false, err: 'no connection'}));
+  if (!d.ok) {
+    toast('⚠ ' + (d.err || 'failed'));
+    label.textContent = 'Queued · goes in at the next step';
+    q.nodes[1].querySelector('button').hidden = false;
+  }
+  // What the Mac's input lost on the way comes back as unsent messages of that chat, one tap from going again.
+  for (const t of d.back || []) OUT.push({id: ++outSeq, sid, text: t, state: 'failed', err: 'it came out of the queue', at: now()});
+  if ((d.back || []).length) outRender();
+  setTimeout(pullLog, 300);
+}
+
 $('#col').addEventListener('click', (e) => {
+  const u = e.target.closest('[data-unq]');
+  if (u) {
+    const q = S.log && S.log.queue.find((x) => x.id === +u.dataset.unq);
+    if (q && q.nodes) takeBack(q);
+    return;
+  }
   const r = e.target.closest('[data-retry]'), x = e.target.closest('[data-drop]');
   const o = OUT.find((m) => m.id === +(r || x || {dataset: {}}).dataset[r ? 'retry' : 'drop']);
   if (!o) return;

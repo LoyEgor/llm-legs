@@ -668,17 +668,106 @@ def screen(tty):
     return cached(("screen", tty), 0.8, lambda: terminal(in_tab(tty, "return contents of TAB")))
 
 
-def send_text(tty, text):
-    """The text into the tab as one bracketed paste; `do script` appends the Return that submits it."""
+def clears(lines):
+    """AppleScript setting c to `lines` × (Ctrl+U, Backspace), which empties that many input lines. Neither key
+    interrupts a working chat; Ctrl+C does even with text in the input, and so does Esc."""
+    return 'set c to ""\nrepeat %d times\nset c to c & (ASCII character 21) & (ASCII character 127)\nend repeat\n' % lines
+
+
+def send_text(tty, text, clear=0):
+    """The text into the tab as one bracketed paste (after `clear` input lines are emptied); `do script` appends the
+    Return that submits it."""
     fd, path = tempfile.mkstemp(dir=scratch(), suffix=".txt")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
-        body = ('set txt to read POSIX file "%s" as «class utf8»\nset e to ASCII character 27\n'
-                'do script (e & "[200~" & txt & e & "[201~") in TAB\nreturn "sent"' % path)
+        body = ('set txt to read POSIX file "%s" as «class utf8»\nset e to ASCII character 27\n%s'
+                'do script (%se & "[200~" & txt & e & "[201~") in TAB\nreturn "sent"'
+                % (path, clears(clear) if clear else "", "c & " if clear else ""))
         return terminal(in_tab(tty, body))
     finally:
         os.unlink(path)
+
+
+TYPING = threading.Lock()  # one edit of a chat's input at a time: an unqueue's steps never interleave with a send
+QUEUE_HINT = "Press up to edit queued"  # the empty input's placeholder while Claude Code holds queued messages
+UNQUEUE_CLEAR = 40  # input lines one clearing step empties; a longer leftover takes another step
+
+
+def input_box(text):
+    """The prompt box's text joined by spaces ('' when empty), or None when the screen shows no prompt box."""
+    lines = (text or "").splitlines()
+    rules = [k for k, line in enumerate(lines) if re.match(r"^\s*─{8,}\s*$", line)]
+    for low, high in zip(reversed(rules[:-1]), reversed(rules[1:])):
+        if high - low < 40 and re.match(r"^\s*❯", lines[low + 1]):
+            return re.sub(r"^❯\s*", "", " ".join(line.strip() for line in lines[low + 1:high])).strip()
+    return None
+
+
+def popped(path, offset):
+    """His messages Claude Code's popAll put into the input after byte `offset` of the transcript, in order."""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(offset)
+            data = handle.read(1 << 20)
+    except OSError:
+        return []
+    out = []
+    for line in data.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        text = entry.get("content") if isinstance(entry, dict) else None
+        if (entry.get("type") == "queue-operation" and entry.get("operation") == "popAll" and isinstance(text, str)
+                and text.strip() and not text.lstrip().startswith("<")):
+            out.append(text)
+    return out
+
+
+def unqueue(tty, path, text):
+    """One of his queued messages taken back before the chat reads it -> {ok} or {ok: False, err, back: [texts the
+    Mac's input lost]}. `do script` ends every write with a Return, so first Up pulls Claude Code's whole queue into
+    the empty input, Ctrl+U/Backspace empty it and a closing backslash turns that Return into a new line: nothing is
+    ever submitted. The transcript's popAll lines then say what came out (Up with the queue already taken recalls
+    history: no popAll, and that is only cleared), and every message but this one goes back, in order, each queued
+    again by its own paste + Return."""
+    look = lambda: input_box((terminal(in_tab(tty, "return contents of TAB")) or {}).get("res"))
+    box = look()
+    if box is None or not box.startswith(QUEUE_HINT):
+        return {"ok": False, "err": "no prompt on the Mac's screen" if box is None
+                else "the Mac's input is not empty" if box else "nothing queued on the Mac"}
+    offset = os.path.getsize(path)
+    step = terminal(in_tab(tty, clears(UNQUEUE_CLEAR) + 'set e to ASCII character 27\n'
+                           'do script (e & "[A" & c & "\\\\") in TAB\nreturn "sent"'))
+    if not step.get("ok"):
+        return step
+    for _ in range(4):
+        time.sleep(0.3)
+        box = look()
+        if box is not None and not box.replace("\\", "").strip():
+            break
+        terminal(in_tab(tty, clears(UNQUEUE_CLEAR) + 'do script (c & "\\\\") in TAB\nreturn "sent"'))
+    else:
+        return {"ok": False, "err": "the Mac's input did not clear", "back": popped(path, offset)}
+    out = popped(path, offset)
+    for _ in range(5):
+        if out:
+            break
+        time.sleep(0.2)
+        out = popped(path, offset)
+    want = " ".join(text.split())
+    kept = list(out)
+    hit = next((k for k, item in enumerate(kept) if " ".join(item.split()) == want), None)
+    if hit is not None:
+        del kept[hit]
+    for k, item in enumerate(kept):
+        sent = send_text(tty, item, clear=4 if k == 0 else 0)
+        if not sent.get("ok"):
+            return {"ok": False, "err": sent.get("err") or "Terminal did not take it back", "back": kept[k:]}
+    if not kept:
+        terminal(in_tab(tty, clears(4) + 'do script c in TAB\nreturn "sent"'))  # the line the backslash left
+    return {"ok": True} if hit is not None else {"ok": False, "err": "it had already gone to the chat"}
 
 
 def menu_cursor(text):
@@ -1022,7 +1111,7 @@ def get(handler, path, query):
 
 
 def post(handler, path, body):
-    """POST /api/chat/<sid>/(send|key) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
+    """POST /api/chat/<sid>/(send|key|unqueue) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
     chunk's raw PCM bytes)."""
     if path == "/api/client-log":
         client_report(body)
@@ -1036,7 +1125,7 @@ def post(handler, path, body):
             store.event("app", op="mic", path=path[9:20], error=str(answer[1].get("err"))[:300])
         handler.send_json(*answer)
         return True
-    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key)", path)
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue)", path)
     if not m:
         return False
     sid, sub = m.groups()
@@ -1044,19 +1133,25 @@ def post(handler, path, body):
     if not tty or rec.get("entrypoint", "cli") != "cli":
         handler.send_json(404, {"ok": False, "err": "not a live terminal chat"})
         return True
-    if sub == "send":
+    if sub in ("send", "unqueue"):
         text = body.get("text") if isinstance(body, dict) else None
         if not isinstance(text, str) or not text.strip() or len(text.encode()) > SEND_CAP:
             handler.send_json(400, {"ok": False, "err": "empty or too long"})
             return True
-        answer = send_text(tty, text)
+        path = sub == "unqueue" and (PATHS.get(sid) or transcript(sid, cached("recent", 30, recent).get(sid)))
+        if sub == "unqueue" and not path:
+            handler.send_json(404, {"ok": False, "err": "no transcript"})
+            return True
+        with TYPING:
+            answer = send_text(tty, text) if sub == "send" else unqueue(tty, path, text)
     else:
         key = body.get("key") if isinstance(body, dict) else None
         choose = body.get("choose") if isinstance(body, dict) else None
         if choose is not None and not (isinstance(choose, int) and 0 < choose < 30):
             handler.send_json(400, {"ok": False, "err": "bad choice"})
             return True
-        answer = send_key(tty, key, choose)
+        with TYPING:
+            answer = send_key(tty, key, choose)
     if answer.get("res") == "no-tab":
         answer = {"ok": False, "err": "no Terminal tab on %s" % tty}
     with CACHE_LOCK:
