@@ -600,7 +600,7 @@ async function loadOlder() {
     const h0 = box.scrollHeight;
     if (was) { OLDER.unobserve(was); was.remove(); }
     const frag = document.createDocumentFragment();
-    if (d.start > 0) frag.appendChild(olderButton());
+    if (d.start > 0 && d.start < L.start) frag.appendChild(olderButton());  // a window that did not move ends Earlier
     addItems(d.items || [], L, {group: null, older: true}, frag);
     for (const n of frag.children) if (!n.classList.contains('older')) n.classList.add('came');
     const seam = document.createElement('div');

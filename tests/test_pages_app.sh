@@ -461,6 +461,18 @@ assert grep -qF 'if (count tabs of window j) is 1 then close window j' "$WORK/hs
 assert test "$(get "$base/api/chats")" = 200
 assert test "$(jq -r '.chats | length' "$WORK/body")" = 0
 
+# A line longer than the read window (a pasted image, a huge result) never stalls Earlier: the window reaches back
+# to the line's start, so every call moves on (it once answered its own offset with nothing, and the app asked again
+# forever).
+"$PY" -c 'import json, sys
+line = lambda t: json.dumps({"type": "user", "message": {"role": "user", "content": t}}) + "\n"
+open(sys.argv[1], "a").write(line("x" * 900000) + line("after the big one"))' "$T"
+assert test "$(get "$base/api/chat/$sid/log")" = 200
+assert test "$(jq -r '[.items[].t] | join(",")' "$WORK/body")" = "after the big one"
+s1=$(jq -r .start "$WORK/body")
+assert test "$(get "$base/api/chat/$sid/log?before=$s1")" = 200
+assert test "$(jq -r '[.end == '"$s1"', .start < '"$s1"' - 900000, .items[-1].k == "user"] | all' "$WORK/body")" = true
+
 # It costs Claude Code nothing: no model call, no settings or hooks touched; the only programs it runs are ps,
 # Hammerspoon, chat-find and chats (to open a past chat), and the client polls only while it is on screen, at most once a second.
 assert test -z "$(grep -nE 'anthropic|openai|claude -p|settings\.json|hooks' "$ROOT/share/pages/app.py")"
@@ -470,4 +482,4 @@ assert "$PY" -c 'import sys
 sys.exit("if (document.visibilityState !== \x27visible\x27) return;\n  tick++;" not in open(sys.argv[1]).read())' "$ROOT/share/pages/app/app.js"
 assert test "$(grep -c '^}, 1000);$' "$ROOT/share/pages/app/app.js")" = 1
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"

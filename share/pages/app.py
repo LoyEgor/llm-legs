@@ -619,9 +619,17 @@ def log(sid, after=None, before=None):
             end, start = size, max(0, size - LOG_WINDOW)
         handle.seek(start)
         data = handle.read(end - start)
-    if start and after is None:
-        cut = data.find(b"\n") + 1
-        start, data = start + cut, data[cut:]
+        if start and after is None:
+            cut = data.find(b"\n") + 1
+            # The line before `end` is longer than the window (a pasted image, a huge result): reach back to its
+            # start, or the window holds no whole line and Earlier asks for the same bytes forever.
+            while start and cut >= len(data):
+                step = min(start, LOG_WINDOW)
+                handle.seek(start - step)
+                data = handle.read(step) + data
+                start -= step
+                cut = data.find(b"\n") + 1 if start else 0
+            start, data = start + cut, data[cut:]
     if not data.endswith(b"\n"):
         cut = data.rfind(b"\n") + 1
         end, data = start + cut, data[:cut]
