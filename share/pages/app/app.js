@@ -386,11 +386,21 @@ function ctxShow(row, html) {
   box.innerHTML = html;
   box.hidden = false;
   $('#ctxscrim').hidden = false;
-  const r = row.getBoundingClientRect(), h = box.offsetHeight, room = window.innerHeight - 12;
-  box.style.left = Math.min(r.left + 12, window.innerWidth - box.offsetWidth - 8) + 'px';
-  box.style.top = (r.bottom + 4 + h <= room ? r.bottom + 4 : Math.max(12, r.top - 4 - h)) + 'px';
   CTX.row = row;
+  ctxPlace();
 }
+// The sidebar's width, under the row, else above it; within what the keyboard leaves of the screen.
+function ctxPlace() {
+  const box = $('#ctx'), row = CTX.row;
+  if (box.hidden || !row) return;
+  const side = $('#side').getBoundingClientRect(), r = row.getBoundingClientRect();
+  const vv = window.visualViewport, top0 = vv ? vv.offsetTop : 0, room = (vv ? vv.height : window.innerHeight) + top0 - 8;
+  box.style.left = (side.left + 8) + 'px';
+  box.style.width = (side.width - 16) + 'px';
+  const h = box.offsetHeight;
+  box.style.top = (r.bottom + 4 + h <= room ? r.bottom + 4 : Math.max(top0 + 8, Math.min(r.top - 4, room) - h)) + 'px';
+}
+if (window.visualViewport) window.visualViewport.addEventListener('resize', ctxPlace);
 function ctxClose() {
   $('#ctx').hidden = true;
   $('#ctxscrim').hidden = true;
@@ -739,7 +749,9 @@ async function pullLog() {
     const L = S.log;
     const d = await api(`/api/chat/${encodeURIComponent(sid)}/log` + (L.end == null ? '' : `?after=${L.end}`));
     if (sid !== S.sid || L !== S.log) return;
-    if (L.end != null && d.size < L.end) { resetLog(); return; }
+    // A shorter file, or another one (a branch's own once it writes it), starts the view over.
+    if (L.end != null && (d.size < L.end || (L.file && d.file !== L.file))) { resetLog(); return; }
+    L.file = d.file;
     const col = $('#col');
     if (L.start == null) {
       L.start = d.start;
@@ -2129,6 +2141,8 @@ $('#list').addEventListener('touchstart', (e) => {
   Object.assign(CTX, {x: p.clientX, y: p.clientY});
   CTX.timer = setTimeout(() => {
     CTX.fired = now();
+    const sel = window.getSelection && window.getSelection();
+    if (sel) sel.removeAllRanges();
     row.classList.add('held');
     chatMenu(row);
   }, 480);
@@ -2138,6 +2152,8 @@ $('#list').addEventListener('touchmove', (e) => {
   if (p && Math.hypot(p.clientX - CTX.x, p.clientY - CTX.y) > 10) clearTimeout(CTX.timer);
 }, {passive: true});
 for (const ev of ['touchend', 'touchcancel', 'scroll']) $('#list').addEventListener(ev, () => clearTimeout(CTX.timer), {passive: true});
+// A press in the list never starts a selection or a drag (the CSS says so too; old WebKit honours only these).
+for (const ev of ['selectstart', 'dragstart']) $('#list').addEventListener(ev, (e) => e.preventDefault());
 $('#list').addEventListener('contextmenu', (e) => {
   const row = e.target.closest('a.row');
   if (!rowSid(row)) return;

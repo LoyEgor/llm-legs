@@ -35,6 +35,7 @@ SEND_CAP = 200 << 10
 TTY_RE = re.compile(r"^/dev/ttys[0-9]{1,4}$")
 SID_RE = re.compile(r"^[A-Za-z0-9-]{8,80}$")
 ENV_RE = re.compile(r"(?:^|\s)(CLAUDE_LIMITS_ACCOUNT|CLAUDE_CONFIG_DIR|CLAUDEGPT_ACCOUNT)=(\S*)")
+FORK_RE = re.compile(r"\s--resume[= ]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b.*\s--fork-session\b")
 LOAD_RE = re.compile(r"^(.{11})(.*?)\s+([0-9.]+) cores\s+([0-9.]+) GB\s*(.*)$")
 PASTED_RE = re.compile(r"<pasted_content id=[^>]*>(.*?)</pasted_content id=[^>]*>", re.S)
 TAG_RE = re.compile(r"<(command-name|command-args|local-command-stdout|local-command-stderr|bash-input|bash-stdout|"
@@ -123,6 +124,7 @@ def processes(pids):
 
 
 ACCOUNTS = {}
+FORKS = {}  # pid -> the session a `--resume <sid> --fork-session` process branched from (read with its account)
 
 
 def accounts(started):
@@ -131,6 +133,7 @@ def accounts(started):
     (pid + start time: a reused pid is another process)."""
     for pid in [p for p, held in ACCOUNTS.items() if started.get(p, held[0]) != held[0]]:
         del ACCOUNTS[pid]
+        FORKS.pop(pid, None)
     missing = [p for p in started if p not in ACCOUNTS]
     if missing:
         out = run(["ps", "-E", "-o", "pid=,command=", "-p", ",".join(str(p) for p in missing)]) or ""
@@ -141,6 +144,9 @@ def accounts(started):
             env, pid = dict(ENV_RE.findall(rest)), int(head)
             if pid not in started:
                 continue
+            fork = FORK_RE.search(" " + rest)
+            if fork:
+                FORKS[pid] = fork.group(1)
             gateway, named, config = (env.get("CLAUDEGPT_ACCOUNT"), env.get("CLAUDE_LIMITS_ACCOUNT"),
                                       env.get("CLAUDE_CONFIG_DIR"))
             if gateway and gateway != "-":
@@ -293,7 +299,9 @@ def chats():
         sid = rec["sessionId"]
         row = dict(found.get(sid) or {"session": sid})
         warm_in = warm(row)
-        path = transcript(sid, row)
+        # A branch writes its transcript with its first message (Egor 2026-11-08: a branch opened empty); until then
+        # it reads as the chat it branched from, which it is.
+        path = transcript(sid, row) or (FORKS.get(rec["pid"]) and transcript(FORKS[rec["pid"]]))
         if path:
             PATHS[sid] = path
         size = os.path.getsize(path) if path and os.path.exists(path) else 0
@@ -670,7 +678,7 @@ def window(path, after, before):
             continue
         if isinstance(entry, dict):
             items += parse_entry(entry)
-    return {"items": items, "start": start, "end": end, "size": size}
+    return {"items": items, "start": start, "end": end, "size": size, "file": os.path.basename(path)}
 
 
 # ---------------------------------------------------------------- the info panel: statusline and changed files

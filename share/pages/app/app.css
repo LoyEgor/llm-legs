@@ -42,11 +42,12 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 @media (hover: hover) { .more:hover { background: var(--hover); color: var(--fg); } }
 .row.past .lead { color: var(--fg3); }
 /* A chat's own menu (Egor 2026-11-08: its actions in the list, not in the info panel): a long press on its row, or a
-   secondary click. No callout or selection on a held row; the row darkens while it is held. */
-#list .row { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+   secondary click. Nothing in the list selects, calls out or lifts for a drag (Egor 2026-11-08: a long press painted
+   it blue); the row darkens while it is held. The menu and its name form span the sidebar, whatever its width. */
+#list, #list * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-user-drag: none; }
 #list .row.held { background: var(--sel); }
 #ctxscrim { position: fixed; inset: 0; z-index: 34; }
-.ctx { position: fixed; z-index: 35; width: 264px; padding: 6px; border-radius: var(--r-l); background: var(--pop);
+.ctx { position: fixed; z-index: 35; box-sizing: border-box; padding: 6px; border-radius: var(--r-l); background: var(--pop);
   box-shadow: var(--shadow-pop); }
 .ctx .ct { padding: 6px 10px 8px; font-size: var(--fs-s); color: var(--fg3); white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
