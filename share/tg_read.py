@@ -13,6 +13,7 @@ types a code, ever.
     tg-read photo <chat> [--last N] --dest-dir <abs>                   download photos as .jpg
     tg-read transcribe <abs audio> [--dest <abs .txt>] [--language ru] [--engine auto|elevenlabs|groq]
     tg-read send <chat> (--text <text> | --file <abs>) [--as-written]   post ONE plain-text message as Egor
+    tg-read wait <chat> --after <msg id> [--hours 6]   block until the answer comes, print it (a background Bash)
 
 <chat> is a dialog name (substring, case-insensitive), a @username, a numeric id or `me` (Saved
 Messages). Output is plain text, one message per line; a voice or media message prints a tag instead
@@ -24,17 +25,25 @@ printing what went; --as-written keeps both, only when his own words for the mes
 
 Transcription (auto): ElevenLabs through `media-run transcribe`, then Groq Whisper when ElevenLabs is
 out of usage/credits. Groq keys: transcriptions-gpt/settings/groq_keys.txt, never printed.
+
+`wait` is how an answer reaches a chat without Egor asking: run in the background right after `send`,
+it exits when the other side writes after that message (a person: any message; a group: a reply to it
+or a mention of Egor), printing what came, and the exit wakes the chat. It holds one connection on an
+in-memory copy of the session (no lock on the session file), polls every 15 s and lets a burst of
+messages settle 20 s before it prints.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -61,7 +70,7 @@ def credentials() -> tuple[int, str]:
     return int(lines[0]), lines[1]
 
 
-def client():
+def client(session=None, **options):
     from telethon import TelegramClient
 
     api_id, api_hash = credentials()
@@ -70,8 +79,8 @@ def client():
     # A stable, honest device identity: Telegram keeps sessions of a named app on the owner's own
     # api keys; borrowed Telegram Desktop keys got the session revoked within half an hour (2026-10-22).
     return TelegramClient(
-        str(SESSION), api_id, api_hash,
-        device_model="tg-read on Egor's Mac", system_version="macOS", app_version="1.0",
+        session or str(SESSION), api_id, api_hash,
+        device_model="tg-read on Egor's Mac", system_version="macOS", app_version="1.0", **options,
     )
 
 
@@ -458,11 +467,96 @@ async def cmd_send(args) -> int:
         if dropped:
             print(f"dropped: {', '.join(dropped)}")
     message = await tg.send_message(entity, text, parse_mode=None, link_preview=False)
-    name = "Saved Messages" if args.chat == "me" else (getattr(entity, "title", None) or " ".join(
-        p for p in (getattr(entity, "first_name", None), getattr(entity, "last_name", None)) if p) or str(entity.id))
+    name = "Saved Messages" if args.chat == "me" else chat_name(entity)
     print(f"sent #{message.id} to {name} at {local_time(message.date)}")
+    if not getattr(entity, "is_self", False):
+        from telethon.utils import get_peer_id  # marked id (-100… for a group), so `wait` resolves it as one
+
+        print(f"answer watch: run `tg-read wait {get_peer_id(entity)} --after {message.id}` as a background Bash now; "
+              "its exit brings the answer to this chat")
     await tg.disconnect()
     return 0
+
+
+def answers(message, after: int, person: bool) -> bool:
+    """An incoming message that answers Egor's #after: from a person anything, in a group a reply or a mention."""
+    if message.out:
+        return False
+    if person:
+        return True
+    reply_to = getattr(message.reply_to, "reply_to_msg_id", None)
+    return reply_to == after or bool(message.mentioned)
+
+
+def memory_session():
+    """An in-memory copy of the login: a long `wait` holds no lock on the sqlite session other commands use."""
+    from telethon.sessions import SQLiteSession, StringSession
+
+    disk = SQLiteSession(str(SESSION))
+    try:
+        return StringSession(StringSession.save(disk))
+    finally:
+        disk.close()
+
+
+def chat_name(entity) -> str:
+    return getattr(entity, "title", None) or " ".join(
+        p for p in (getattr(entity, "first_name", None), getattr(entity, "last_name", None)) if p) or str(entity.id)
+
+
+async def poll_answers(tg, peer, after: int, person: bool) -> list:
+    """Messages after #after that answer it, oldest first; reconnects a dropped connection."""
+    if not tg.is_connected():
+        await tg.connect()
+    found = [m async for m in tg.iter_messages(peer, min_id=after, reverse=True) if answers(m, after, person)]
+    for message in found:
+        await message.get_sender()
+    return found
+
+
+async def cmd_wait(args) -> int:
+    from telethon.tl.types import User
+
+    disk = client()
+    await ensure_authorized(disk)
+    try:
+        entity = await resolve(disk, args.chat)
+        peer = await disk.get_input_entity(entity)  # carries the access hash the memory session lacks
+    finally:
+        await disk.disconnect()
+    person, name = isinstance(entity, User), chat_name(entity)
+    tg = client(memory_session(), receive_updates=False)
+    await ensure_authorized(tg)
+    deadline = time.monotonic() + args.hours * 3600
+    failures = 0
+    try:
+        while True:
+            try:
+                found = await poll_answers(tg, peer, args.after, person)
+                failures = 0
+            except Exception as error:  # a network blip or a flood wait must not end a six-hour watch
+                failures += 1
+                if failures >= 10:
+                    print(f"tg-read wait: gave up after {failures} failed polls: {error}", file=sys.stderr)
+                    return 1
+                found = []
+            if found:
+                # A person often answers in several short messages: let the burst land before printing.
+                await asyncio.sleep(args.settle)
+                with contextlib.suppress(Exception):
+                    found = await poll_answers(tg, peer, args.after, person)
+                print(f"answer in {name} after #{args.after}:")
+                for message in found:
+                    body = " ".join(part for part in (media_tag(message) if message.media else "",
+                                                      (message.text or "").replace("\n", " ⏎ ")) if part)
+                    print(f"{local_time(message.date)}  {sender_name(message)}:  {body}  #{message.id}")
+                return 0
+            if time.monotonic() >= deadline:
+                print(f"tg-read wait: no answer in {name} after #{args.after} within {args.hours:g} h")
+                return 1
+            await asyncio.sleep(args.every)
+    finally:
+        await tg.disconnect()
 
 
 def main(argv=None) -> int:
@@ -504,11 +598,17 @@ def main(argv=None) -> int:
     body.add_argument("--file", help="absolute path of a text file to post")
     send.add_argument("--as-written", action="store_true",
                       help="keep an opening greeting and the addressee's name: only when Egor's own words carry them")
+    wait = sub.add_parser("wait", help="block until the chat answers Egor's message; run as a background Bash")
+    wait.add_argument("chat")
+    wait.add_argument("--after", type=int, required=True, help="id of Egor's message (`send` prints it)")
+    wait.add_argument("--hours", type=float, default=6.0)
+    wait.add_argument("--every", type=float, default=15.0, help="seconds between polls")
+    wait.add_argument("--settle", type=float, default=20.0, help="seconds to let a burst of messages land")
     args = parser.parse_args(argv)
     if args.command == "send":
         send_text(args)  # refuse an empty or oversized text before connecting
     handler = {"login": cmd_login, "chats": cmd_chats, "read": cmd_read, "voice": cmd_voice, "photo": cmd_photo,
-               "transcribe": cmd_transcribe, "send": cmd_send}[args.command]
+               "transcribe": cmd_transcribe, "send": cmd_send, "wait": cmd_wait}[args.command]
     code = asyncio.run(handler(args))
     if args.command == "login" and code == 0:
         LOGIN_NEEDED.unlink(missing_ok=True)
