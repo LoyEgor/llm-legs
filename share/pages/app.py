@@ -1129,6 +1129,7 @@ MIC_WAIT = 120  # s from stop to the transcript
 # relaunch) while it gives it to MacMic: each look of the app at the pill keeps MacMic streaming this long, and a take
 # records MacMic's stream instead of the browser's.
 MACMIC_WANT = 2 * 3600
+MACMIC_WAKE_WAIT = 12  # s for MacMic's stream after the daemon launched it in the background (6 s on 2026-11-08)
 MICS = {}
 MIC_LOCK = threading.Lock()
 
@@ -1231,14 +1232,33 @@ def macmic_state(fields=None):
     return "streaming" if fields.get("present") == "True" and not local else "asleep"
 
 
+def macmic_wake():
+    """MacMic streaming, woken first (the daemon's `ipad-wake`: a launch in the background on the iPad) when asleep,
+    suspended or not running -> True once it streams."""
+    if macmic_state() == "streaming":
+        return True
+    daemon("ipad-want %d" % MACMIC_WANT)
+    if not (daemon("ipad-wake") or "").startswith("ok"):
+        return False
+    deadline = time.monotonic() + MACMIC_WAKE_WAIT
+    while time.monotonic() < deadline:
+        time.sleep(0.3)
+        fields = macmic_fields()
+        if macmic_state(fields) == "streaming":
+            return True
+        if fields.get("wake") == "failed":
+            return False
+    return False
+
+
 def mic_start(body=None):
     """A take on the Mac's transcriptions-gpt fed from this browser, or with {"via": "macmic"} recording MacMic's
     stream -> {ok, id, via} once it records."""
     if daemon is None or daemon_state() is None:
         return 503, {"ok": False, "err": "transcriptions-gpt is not running"}
     relay = not (isinstance(body, dict) and body.get("via") == "macmic")
-    if not relay and macmic_state() != "streaming":
-        return 409, {"ok": False, "err": "MacMic is not streaming: open it on the iPad"}
+    if not relay and not macmic_wake():
+        return 409, {"ok": False, "err": "MacMic did not wake: open it on the iPad"}
     # A new start is his only take: one still open lost its page (a reload, a cancel that never arrived) and would
     # refuse him for MIC_IDLE_LIMIT seconds. One being transcribed is kept, its text is on the way.
     with MIC_LOCK:

@@ -1077,8 +1077,8 @@ function send() {
 // step's name (reported to the Mac) and the next tap starts clean; a capture that goes silent is reopened once, then
 // ends the take with what was said; the worklet has the old ScriptProcessor behind it.
 const MIC = {state: '', id: null, take: null, frames: [], pump: null, held: null, levels: [], peak: 0, began: 0,
-  waitFrom: 0, heard: 0, step: '', tap: 0, raf: 0, takes: 0, refused: ''};
-const MIC_STEP = {microphone: 20, audio: 5, capture: 6, mac: 12, upload: 10, transcript: 130};  // s
+  waitFrom: 0, heard: 0, step: '', tap: 0, raf: 0, takes: 0, refused: '', wakeFailed: -1e9};
+const MIC_STEP = {microphone: 20, audio: 5, capture: 6, mac: 12, wake: 25, upload: 10, transcript: 130};  // s
 
 function within(step, p) {
   MIC.step = step;
@@ -1157,7 +1157,7 @@ function drawWave(t) {
   const b = BUB.doc, polish = MIC.state === 'wait' && b && b.remote && b.pill === 'polish' && b.polish_since;
   const clock = (t) => { const k = Math.max(0, Math.floor(now() - t)); return Math.floor(k / 60) + ':' + String(k % 60).padStart(2, '0'); };
   const text = polish ? 'Polishing ' + clock(polish) : MIC.state === 'wait' ? 'Transcribing…'
-    : MIC.state === 'starting' ? 'Starting…' : clock(MIC.began) + (MIC.take && MIC.take.macmic ? ' · MacMic' : '');
+    : MIC.state === 'starting' ? (MIC.step === 'wake' ? 'Waking MacMic…' : 'Starting…') : clock(MIC.began) + (MIC.take && MIC.take.macmic ? ' · MacMic' : '');
   const html = MIC.state === 'live' ? text : `<span class="shimmer">${text}</span>`;
   if ($('#wavet').dataset.h !== html) { $('#wavet').dataset.h = html; $('#wavet').innerHTML = html; }
   takePill(text);
@@ -1188,7 +1188,7 @@ const microphone = () => navigator.mediaDevices.getUserMedia({audio: {channelCou
 
 async function micStart() {
   if (BUB.busy) return;
-  if (BUB.doc && BUB.doc.macmic === 'streaming') return micMacMic();
+  if (macmicUsable()) return micMacMic();
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     toast('⚠ the microphone needs the https link (page lan --app)');
     return;
@@ -1228,12 +1228,17 @@ async function micStart() {
 // pill's every look keeps MacMic streaming in the background (ipad-want), so while it streams a take uses it: no
 // microphone of the page's, which would interrupt MacMic, nothing to upload; /alive beats tell the Mac the page is
 // still there, as chunks do for a browser take.
+// MacMic streaming, or asleep and not failing to wake in the last 2 minutes (the iPad away from the Mac's network):
+// the daemon launches it in the background on the iPad and the take waits for its stream.
+const macmicUsable = () => !!BUB.doc && (BUB.doc.macmic === 'streaming'
+  || (BUB.doc.macmic === 'asleep' && now() - MIC.wakeFailed > 120));
+
 async function micMacMic() {
   const take = {ctx: null, stream: null, macmic: true};
   Object.assign(MIC, {state: 'starting', id: null, take, frames: [], held: null, levels: [], peak: 0, began: now(),
     heard: 0});
   micButton();
-  const d = await micCall('/api/mic/start', '{"via": "macmic"}', 'mac');
+  const d = await micCall('/api/mic/start', '{"via": "macmic"}', BUB.doc.macmic === 'streaming' ? 'mac' : 'wake');
   if (MIC.take !== take) {
     if (d.ok) micCall(`/api/mic/${d.id}/cancel`, '{}', 'upload');
     return;
@@ -1241,6 +1246,7 @@ async function micMacMic() {
   if (!d.ok) {
     if (d.status === 409 && /MacMic/.test(d.err || '')) {
       if (BUB.doc) BUB.doc.macmic = 'asleep';
+      MIC.wakeFailed = now();  // the next tap asks the page's microphone
       micDrop();
       MIC.refused = MIC.refused || 'asleep';
       renderMicbar();
@@ -1321,7 +1327,7 @@ async function micRefused(e) {
   // The tap meant a take: MacMic streaming takes it at once; else the row offers to open MacMic.
   const asked = now();  // a fresh look, not one already on its way
   for (let i = 0; i < 16 && BUB.at <= asked; i++) { pullBubble(); await new Promise((r) => setTimeout(r, 250)); }
-  if (MIC.state === '' && MIC.refused && BUB.doc && BUB.doc.macmic === 'streaming') micMacMic();
+  if (MIC.state === '' && MIC.refused && macmicUsable()) micMacMic();
 }
 
 // The worklet, or the ScriptProcessor iOS still has when the worklet will not load; both give 20 ms frames.
@@ -1467,7 +1473,7 @@ function renderMicbar() {
   if (BUB.busy) lost = '<span class="mt shimmer">Restoring the cut dictation…</span>';
   else if (MIC.state === '' && MIC.refused && !offer && !(b && b.macmic === 'streaming')) {
     // macmic:// opens MacMic, which streams once in front; back here the next tap records it.
-    lost = `<span class="mt c-red">⚠ ${MIC.refused === 'asleep' ? 'MacMic is asleep'
+    lost = `<span class="mt c-red">⚠ ${MIC.refused === 'asleep' ? 'MacMic did not wake'
       : 'The iPad refused the microphone' + (MIC.refused === 'denied' ? ' (blocked in Settings)' : '')}</span>` +
       '<a class="pill" href="macmic://open">Open MacMic</a>' +
       (MIC.refused === 'asleep' ? '' : '<button type="button" class="pill" data-reload>Reload</button>') +
