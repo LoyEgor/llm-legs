@@ -1,29 +1,5 @@
-/* The chats app, after the Codex desktop app's own tokens (its webview CSS, dark values as measured live). */
-:root {
-  color-scheme: light dark;
-  --bg: #ffffff; --side: #f6f6f6; --fg: #1a1c1f; --fg2: #1a1c1fa6; --fg3: #1a1c1f7e; --line: #1a1c1f14;
-  --line2: #1a1c1f1e; --hover: #1a1c1f0e; --sel: #1a1c1f12; --pop: #ffffff; --comp: #ffffff; --code: #1a1c1f0b;
-  --bubble: #ece4fb; --bubble-fg: #1a1c1f; --accent: #7c4ddb; --link: #2c67c5; --green: #00a240; --amber: #e25507;
-  --red: #e02e2a; --send: #0d0d0d; --send-fg: #ffffff; --blue: #3a83f7; --purple: #924ff7; --yellow: #ffc300;
-  --shadow-pop: 0 0 0 .5px var(--line2), 0 8px 16px -4px #0000001f;
-  --shadow-comp: 0 0 0 1px #0000000a, 0 2px 8px 0 #0000000a, 0 4px 40px 8px #00000006;
-  --shimmer-base: #1a1c1f8c; --shimmer-hi: #1a1c1f;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
-  --col: 768px;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111111; --side: #1a1a1a; --fg: #fcfcfc; --fg2: #fcfcfca6; --fg3: #fcfcfc80; --line: #ffffff15;
-    --line2: #ffffff28; --hover: #ffffff0f; --sel: #ffffff14; --pop: #262626; --comp: #2f2f2f; --code: #ffffff0d;
-    --bubble: #4e2f88; --bubble-fg: #f8f5fd; --accent: #9b6dff; --link: #66b5ff; --green: #40c977; --amber: #ff8549;
-    --red: #ff6764; --send: #fcfcfc; --send-fg: #111111; --blue: #339cff; --purple: #ad7bf9; --yellow: #ffd240;
-    --shadow-pop: 0 0 0 .5px var(--line2), 0 8px 16px -4px #0000004d;
-    --shadow-comp: inset 0 0 1px 0 #fff3;
-    --shimmer-base: #fcfcfc73; --shimmer-hi: #fcfcfc;
-  }
-}
-* { box-sizing: border-box; }
+/* The chats app. Tokens, buttons (.ib .round .btn), .pill, .sheet, .toast and .row come from the shared UI kit
+   (/kit/ui.css, linked first); this file holds only the app's layout and its own pieces. */
 /* One fixed page: the document never scrolls or bounces (iPadOS blurs the status bar over a page that moved), only
    the chat list, the thread and a sheet scroll, each inside itself. */
 html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: var(--bg); color: var(--fg);
@@ -49,15 +25,22 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 #machine.alarm { color: var(--red); }
 #machine .warn { grid-column: 1 / -1; color: var(--red); font-family: var(--sans); font-size: 12px; }
 .tools { display: flex; gap: 2px; }
-.ib { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: var(--fg2); position: relative; }
-.ib:hover, .ib.on { background: var(--hover); color: var(--fg); }
 .ib.warn::after { content: ""; position: absolute; top: 7px; right: 7px; width: 6px; height: 6px; border-radius: 3px;
   background: var(--amber); }
+#findbox { padding: 2px 10px 6px; }
+#find { padding: 7px 12px; border-radius: var(--r-m); background: var(--hover); border-color: transparent; font-size: var(--fs); }
+@media (pointer: coarse) { #find { font-size: var(--fs-l); padding: 9px 12px; } }
+#find::-webkit-search-cancel-button { filter: grayscale(1); opacity: .5; }
+.more { display: block; width: 100%; text-align: left; padding: 8px; border-radius: var(--r-m); color: var(--fg2); font-size: var(--fs-m); }
+.more:hover { background: var(--hover); color: var(--fg); }
+.row.past .lead { color: var(--fg3); }
+.sec .shimmer { font-weight: 400; }
+#pastbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 8px;
+  padding: 8px 8px 8px 16px; border-radius: var(--r-xl); background: var(--pop); box-shadow: var(--shadow-pop); }
+#pastnote { color: var(--fg2); font-size: var(--fs-m); min-width: 0; }
+.endbtn { margin: 18px 8px 4px; }
 #list { flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 0 8px calc(12px + env(safe-area-inset-bottom)); }
 .sec { padding: 14px 8px 4px; font-size: 13px; font-weight: 500; color: var(--fg3); display: flex; gap: 6px; }
-.row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: 12.5px; margin: 1px 0; }
-a.row:hover { background: var(--hover); }
-.row.sel { background: var(--sel); }
 .row .lead { flex: none; width: 16px; height: 20px; display: grid; place-items: center; color: var(--fg3); }
 .row .body { flex: 1; min-width: 0; }
 .l1 { display: flex; gap: 8px; align-items: baseline; }
@@ -180,8 +163,7 @@ table.md th { font-weight: 600; }
 #opts .num { color: var(--fg3); font-variant-numeric: tabular-nums; min-width: 1ch; }
 #opts .q { padding: 6px 12px 4px; font-size: 13.5px; color: var(--fg2); white-space: pre-wrap; }
 #suggest:not(:empty) { margin-bottom: 8px; display: flex; }
-.sug { display: flex; gap: 8px; align-items: center; max-width: 100%; padding: 7px 14px 7px 10px; border-radius: 999px;
-  background: var(--pop); box-shadow: var(--shadow-pop); font-size: 14px; color: var(--fg); }
+.sug { padding: 7px 14px 7px 10px; }
 .sug .ic { color: var(--fg3); width: 16px; height: 16px; }
 .sug span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #composer { position: relative; display: flex; align-items: flex-end; gap: 6px; padding: 6px 6px 6px 16px; border-radius: 22px;
@@ -190,13 +172,9 @@ table.md th { font-weight: 600; }
   padding: 6px 0; font: 16px/20px var(--sans); }
 #input::placeholder { color: var(--fg3); }
 .cbtn { display: flex; gap: 4px; align-items: center; flex: none; }
-#mic { width: 32px; height: 32px; border-radius: 16px; display: grid; place-items: center; color: var(--fg2); }
-#mic:hover { background: var(--hover); }
-#send { width: 32px; height: 32px; border-radius: 16px; display: grid; place-items: center; background: var(--send);
-  color: var(--send-fg); }
-#send:disabled { opacity: .25; cursor: default; }
 #send.stop { background: var(--accent); color: #fff; }
-#wave { position: absolute; left: 56px; right: 92px; top: 6px; bottom: 6px; display: flex; align-items: center; gap: 10px;
+/* Dictating: Cancel at the far left, Send at the right, the level bars across everything between. */
+#wave { position: absolute; left: 48px; right: 48px; top: 6px; bottom: 6px; display: flex; align-items: center; gap: 10px;
   background: var(--comp); }
 #wavec { flex: 1; min-width: 0; height: 28px; }
 #wavet { font: 12px var(--mono); color: var(--fg3); min-width: 4ch; text-align: right; }
@@ -205,10 +183,6 @@ table.md th { font-weight: 600; }
 
 /* ---------------------------------------------------------------- side sheet: Terminal, Pages, Menu */
 #scrim { position: fixed; inset: 0; z-index: 20; background: #0000001a; }
-#sheet { position: fixed; z-index: 21; top: calc(8px + env(safe-area-inset-top)); right: 8px; bottom: 8px;
-  width: fit-content; min-width: 300px; max-width: calc(100vw - 16px); display: flex; flex-direction: column;
-  background: var(--pop); border-radius: 20px; box-shadow: var(--shadow-pop); animation: slide .16s ease-out; }
-@keyframes slide { from { transform: translateX(16px); opacity: 0; } }
 #sheet header { display: flex; align-items: baseline; gap: 8px; padding: 10px 8px 6px 16px; }
 #sheet header b { font-weight: 600; }
 #sheet header small { flex: 1; color: var(--fg3); font: 11px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -243,9 +217,7 @@ pre.term { margin: 0; padding: 4px 8px 8px; font: 12px/1.35 var(--mono); white-s
 #overlay iframe { width: 100%; height: 100%; border: 0; background: #fff; }
 #close { position: fixed; top: calc(8px + env(safe-area-inset-top)); right: 10px; z-index: 41; width: 36px; height: 36px;
   border-radius: 18px; display: grid; place-items: center; background: #000000a0; color: #fff; }
-#toast { position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 50;
-  padding: 8px 16px; border-radius: 15px; background: var(--pop); box-shadow: var(--shadow-pop); color: var(--red);
-  font-size: 14px; max-width: 80vw; }
+#toast { bottom: calc(96px + env(safe-area-inset-bottom)); color: var(--red); }
 
 @media (min-width: 761px) { #sidetop .tools.solo { display: none; } }
 /* Wide: the sheet docks beside the thread (Codex's side panel) instead of covering it. */
@@ -253,15 +225,14 @@ pre.term { margin: 0; padding: 4px 8px 8px; font: 12px/1.35 var(--mono); white-s
   body.docked #main { margin-right: calc(var(--sheetw, 320px) + 8px); }
   body.docked #scrim { display: none; }
 }
-/* A finger on the iPad: 44 pt targets (Apple's minimum) with room between the two composer buttons. */
+/* A finger on the iPad: 44 pt targets (Apple's minimum) with room between the two composer buttons; the corner
+   stays concentric with theirs (22 + the 6 px inset). */
 @media (pointer: coarse) {
-  .ib { width: 40px; height: 40px; }
-  #mic, #send { width: 44px; height: 44px; border-radius: 22px; }
   #mic .ic, #send .ic { width: 22px; height: 22px; }
   .cbtn { gap: 14px; }
-  #composer { min-height: 56px; }
+  #composer { min-height: 56px; border-radius: 28px; padding-left: 20px; }
   #input { padding: 12px 0; }
-  #wave { left: 60px; right: 112px; }
+  #wave { left: 62px; right: 62px; }
 }
 @media (max-width: 760px) {
   #side { width: 100%; border-right: 0; }

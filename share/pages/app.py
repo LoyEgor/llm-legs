@@ -323,13 +323,17 @@ def chats():
 
 
 def client_version():
-    """The client files' fingerprint: a running client that sees it change reloads itself, since nobody reloads a
-    home-screen app by hand."""
+    """The client files' fingerprint (the UI kit's stylesheet with them): a running client that sees it change reloads
+    itself, since nobody reloads a home-screen app by hand."""
     folder = static_dir()
     try:
         stamp = sorted((name, os.stat(os.path.join(folder, name)).st_mtime_ns) for name in os.listdir(folder))
     except OSError:
         return ""
+    try:
+        stamp.append(("kit/ui.css", os.stat(os.path.join(KIT, "ui.css")).st_mtime_ns))
+    except OSError:
+        pass
     return "%08x" % zlib.crc32(repr(stamp).encode())
 
 
@@ -889,6 +893,92 @@ def send_key(tty, key, choose=None):
 
 # ---------------------------------------------------------------- the menubar mirror
 
+# ---------------------------------------------------------------- past chats: the list, a search, open, close
+
+def history():
+    """chat-find --recent, newest real message first: every chat he can go back to (live ones too; the client marks
+    them), with what it last said."""
+    rows = []
+    for r in cached("recent", 30, recent).values():
+        rows.append({"sid": r["session"], "name": r.get("name") or "", "cwd": r.get("cwd") or "",
+                     "branch": r.get("branch") or "", "model": r.get("model") or "",
+                     "spoke": r.get("spoke") or r.get("at"), "role": r.get("role") or "",
+                     "text": (r.get("text") or "")[:240]})
+    return sorted(rows, key=lambda r: -(r["spoke"] or 0))
+
+
+def search(q):
+    """chat-find <words> --json: the chats where he said it, newest first (it reads every transcript: seconds)."""
+    terms = q.split()[:8]
+    if not terms:
+        return []
+    finder = os.environ.get("APP_CHAT_FIND") or os.path.join(repo(), "bin", "chat-find")
+    out = run([sys.executable, finder, "--json", "--limit", "40", "--"] + terms, timeout=90)
+    try:
+        rows = json.loads(out) if out else None
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list):
+        return None
+    return [{"sid": r.get("session"), "name": r.get("name") or "", "cwd": r.get("cwd") or "", "spoke": r.get("at"),
+             "title": (r.get("title") or "")[:240], "text": (r.get("snippet") or "")[:240]}
+            for r in rows if isinstance(r, dict) and r.get("session")]
+
+
+def open_chat(sid):
+    """A past chat into a new Terminal window, as `chats` opens it (its account: the live cache, else the best one).
+    A chat already open is not opened twice (a second resume forks it): the app just shows it."""
+    rec, _ = find_live(sid)
+    if rec:
+        return 200, {"ok": True, "live": True}
+    picker = os.environ.get("APP_CHATS") or os.path.join(repo(), "bin", "chats")
+    out = run([sys.executable, picker, "--open-command", sid, "--timeout", "8"], timeout=40)
+    lines = (out or "").splitlines()
+    if not lines or not lines[0].strip():
+        why = (FAILED.get(sys.executable) if out is None else None) or "chats printed nothing"
+        return 502, {"ok": False, "err": re.sub(r"^exit \d+: ", "", why)}
+    meta = dict(word.split("=", 1) for word in (lines[1] if len(lines) > 1 else "").split() if "=" in word)
+    literal = lines[0].strip().replace("\\", "\\\\").replace('"', '\\"')
+    doc = terminal('tell application id "com.apple.Terminal"\ndo script "%s"\nend tell\nreturn "opened"' % literal)
+    if not doc.get("ok"):
+        return 502, {"ok": False, "err": doc.get("err") or "Terminal did not open it"}
+    return 200, {"ok": True, "account": meta.get("account", ""), "source": meta.get("source", "")}
+
+
+CLOSE_WAIT = float(os.environ.get("APP_CLOSE_WAIT") or 8)  # s for an /exit to end the chat; then the window stays
+
+
+def close_chat(sid):
+    """An idle live chat ends (/exit, as typed) and its Terminal window closes; a window with other tabs stays."""
+    rec, tty = find_live(sid)
+    if not tty or rec.get("entrypoint", "cli") != "cli":
+        return 404, {"ok": False, "err": "not a live terminal chat"}
+    if rec.get("status") in ("busy", "shell"):
+        return 409, {"ok": False, "err": "it is working: stop it first"}
+    with TYPING:
+        sent = send_text(tty, "/exit", clear=2)
+    if not sent.get("ok") or sent.get("res") == "no-tab":
+        return 502, {"ok": False, "err": sent.get("err") or "no Terminal tab on %s" % tty}
+    deadline = time.monotonic() + CLOSE_WAIT
+    while time.monotonic() < deadline:
+        try:
+            os.kill(rec["pid"], 0)
+        except ProcessLookupError:
+            break
+        except OSError:
+            pass
+        time.sleep(0.2)
+    else:
+        return 504, {"ok": False, "err": "the chat did not exit (a question on its screen?)"}
+    with CACHE_LOCK:
+        CACHE.pop("live", None)
+        CACHE.pop("chats", None)
+    doc = terminal(in_tab(tty, 'if (count tabs of window j) is 1 then\nclose window j\nreturn "closed"\n'
+                                'end if\nreturn "tabs"'))
+    res = doc.get("res")
+    return 200, {"ok": True, "window": res if doc.get("ok") and res in ("closed", "tabs") else "left"}
+
+
 MENU_LUA = r"""
 local m = package.loaded['llm-limits']
 if not m or not m.menuItems then return hs.json.encode({err='llm-limits not loaded'}) end
@@ -1068,9 +1158,17 @@ def mic_start():
     """A take on the Mac's transcriptions-gpt fed from this browser -> {ok, id} once it records."""
     if daemon is None or daemon_state() is None:
         return 503, {"ok": False, "err": "transcriptions-gpt is not running"}
+    # A new start is his only take: one still open lost its page (a reload, a cancel that never arrived) and would
+    # refuse him for MIC_IDLE_LIMIT seconds. One being transcribed is kept, its text is on the way.
+    with MIC_LOCK:
+        stale = [m for m in MICS.values() if not m.stopping]
+    for old in stale:
+        old.stopping = True
+        cancel_take()
+        old.close()
     with MIC_LOCK:
         if MICS:
-            return 409, {"ok": False, "err": "another dictation is running"}
+            return 409, {"ok": False, "err": "the last dictation is still being transcribed"}
         mic = Mic()
         MICS[mic.id] = mic
     with mic.lock:
@@ -1176,6 +1274,19 @@ def get(handler, path, query):
     if path == "/api/pages":
         handler.send_json(200, {"pages": pages()})
         return True
+    if path == "/api/history":
+        handler.send_json(200, {"chats": history()})
+        return True
+    if path == "/api/search":
+        q = " ".join((query.get("q") or [""])[0].split())[:200]
+        found = cached(("search", q), 120, lambda: search(q))
+        if found is None:
+            with CACHE_LOCK:
+                CACHE.pop(("search", q), None)
+            handler.send_json(502, {"err": "chat-find failed: %s" % FAILED.get(sys.executable, "?")})
+        else:
+            handler.send_json(200, {"chats": found})
+        return True
     m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(log|screen|info)", path)
     if m:
         sid, sub = m.groups()
@@ -1207,7 +1318,7 @@ def get(handler, path, query):
 
 
 def post(handler, path, body):
-    """POST /api/chat/<sid>/(send|key|unqueue) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
+    """POST /api/chat/<sid>/(send|key|unqueue|open|close) and /api/mic/...; True when handled. body is the parsed JSON object (a mic
     chunk's raw PCM bytes)."""
     if path == "/api/client-log":
         client_report(body)
@@ -1221,10 +1332,19 @@ def post(handler, path, body):
             store.event("app", op="mic", path=path[9:20], error=str(answer[1].get("err"))[:300])
         handler.send_json(*answer)
         return True
-    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue)", path)
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue|open|close)", path)
     if not m:
         return False
     sid, sub = m.groups()
+    if sub in ("open", "close"):
+        if not SID_RE.match(sid):
+            handler.send_json(400, {"ok": False, "err": "bad session id"})
+            return True
+        code, doc = open_chat(sid) if sub == "open" else close_chat(sid)
+        if store is not None and not doc.get("ok"):
+            store.event("app", op=sub, sid=sid, error=str(doc.get("err"))[:300])
+        handler.send_json(code, doc)
+        return True
     rec, tty = find_live(sid)
     if not tty or rec.get("entrypoint", "cli") != "cli":
         handler.send_json(404, {"ok": False, "err": "not a live terminal chat"})

@@ -10,6 +10,7 @@
 <meta name="theme-color" content="#111111" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="/app/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/app/icon.png">
+<link rel="stylesheet" href="/kit/ui.css">
 <link rel="stylesheet" href="/app/app.css">
 <title>Chats</title>
 <body>
@@ -22,6 +23,8 @@
         <button type="button" class="ib" data-sheet="menu" data-icon="menu" title="Menu"></button>
       </div>
     </header>
+    <div id="findbox"><input id="find" class="field" type="search" placeholder="Search chats" enterkeyhint="search"
+      autocomplete="off" autocorrect="off" spellcheck="false"></div>
     <div id="list"></div>
   </aside>
   <main id="main">
@@ -39,14 +42,16 @@
       <div id="log"><div id="col"></div><div id="activity"></div></div>
       <button type="button" id="jump" data-icon="down" aria-label="To the end" hidden></button>
       <div id="dock">
+        <div id="pastbar" hidden><span id="pastnote">Not open on the Mac</span>
+          <button type="button" class="btn primary" id="openbtn">Open in Terminal</button></div>
         <div id="opts"></div>
         <div id="suggest"></div>
         <form id="composer">
           <textarea id="input" rows="1" enterkeyhint="enter" autocomplete="off" placeholder="Message"></textarea>
           <div id="wave" hidden><canvas id="wavec"></canvas><span id="wavet"></span></div>
           <div class="cbtn">
-            <button type="button" id="mic" data-icon="mic" title="Dictate"></button>
-            <button type="submit" id="send" data-icon="up" title="Send"></button>
+            <button type="button" id="mic" class="round" data-icon="mic" title="Dictate"></button>
+            <button type="submit" id="send" class="round primary" data-icon="up" title="Send"></button>
           </div>
         </form>
       </div>
@@ -55,11 +60,11 @@
   </main>
 </div>
 <div id="scrim" hidden></div>
-<aside id="sheet" hidden>
+<aside id="sheet" class="sheet" hidden>
   <header><b id="sheett"></b><small id="sheets"></small><button type="button" id="sheetx" class="ib" data-icon="x" aria-label="Close"></button></header>
   <div id="sheetb"></div>
 </aside>
 <div id="offline" hidden>No connection to the Mac</div>
 <div id="overlay" hidden><button id="close" type="button" data-icon="x" aria-label="Close"></button><iframe id="frame" title="page"></iframe></div>
-<div id="toast" hidden></div>
+<div id="toast" class="toast" hidden></div>
 <script type="module" src="/app/app.js"></script>

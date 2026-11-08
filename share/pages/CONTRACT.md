@@ -41,14 +41,18 @@ on an incompatible change.
 `pid` matches `^[a-z0-9][a-z0-9-]{0,63}$`; anything else is 404 before any path join.
 
 ## App (`share/pages/app.py`, client `share/pages/app/`)
-Egor's live Mac chats on the iPad, every account in one list. A chat is never resumed: text goes into the
-Terminal tab the chat already runs in (same process, same account, warm cache). Same host check and POST
-rules as above; `page lan --app` prints the link. Terminal is touched only through Hammerspoon's
+Egor's live Mac chats on the iPad, every account in one list, and his past ones to read and reopen. A live
+chat is never resumed: text goes into the Terminal tab the chat already runs in (same process, same account,
+warm cache); a past one opens as `chats` opens it, in a new Terminal window. Same host check and POST rules as
+above; `page lan --app` prints the link. Terminal is touched only through Hammerspoon's
 `ChatGate.terminalScript` (`hs -c`), the menubar only through llm-limits' read-only `menuItems()`.
+The client keeps one draft for every chat; Send goes to the chat on screen at the tap (a dictation running
+then delivers its transcript there, wherever he goes next). Its look is the UI kit `kit/ui.css`, linked before
+`app.css` and shared with the pages.
 
 | Route | Answer |
 |---|---|
-| `GET /app/` | the client (`index.html`, `app.js`, `app.css`, `icon.png`); `manifest.webmanifest` starts at `/app/?k=<token>`, so a home-screen app gets its own cookie |
+| `GET /app/` | the client (`index.html`, `app.js`, `app.css`, `icon.png`; `/kit/ui.css` counts in its fingerprint); `manifest.webmanifest` starts at `/app/?k=<token>`, so a home-screen app gets its own cookie |
 | `GET /api/chats` | `{machine, chats, workers, runs, client}` (`client`: the client files' fingerprint; a running client that sees it change reloads itself, draft and open chat kept): live registry records (`~/.claude*/sessions`, pid + `procStart` checked) with tty, account (the process env, `chat-account.sh` order), chat-find's name/ctx/model, warm cache `until`, memlogd load, last line, latest recap, page count. Workers = no tty or `entrypoint` ≠ `cli`, read-only, minus those `runs` names |
 | ↳ `runs` | worker-run's live runs of every vendor, newest first: `{id, vendor, account, model, effort, title, started, launcher, phase, round, queued, sid, tokens, status}` from run dirs launched within 2 days with no `exit_code`, alive by shared-invariants row `ar` (one `ps` for all); `sid` only for a claude run whose transcript exists (then `/api/chat/<sid>/log` reads it) |
 | `GET /api/chat/<sid>/log[?after=N\|?before=N]` | `{items, start, end, size, pages}`: transcript items (`user`, `asst`, `tool`, `result`, `event`, `away`, `queued`, `unqueued`) of the tail, after byte N, or the window ending at N. A message typed while the chat works is `queued` (its `enqueue`), then `unqueued` (`op`: `remove`, `dequeue`, `popAll`; a `dequeue` names no text: it takes the queue's head). `hide: true` (with `t: ""`) is a queued notification, not his message; one absorbed mid-turn comes back as `user` with `mid: true` and its own time |
@@ -57,7 +61,11 @@ rules as above; `page lan --app` prints the link. Terminal is touched only throu
 | `POST /api/chat/<sid>/send` | `{text}` → one bracketed paste + Return in the tab → `{ok, err}` |
 | `POST /api/chat/<sid>/unqueue` | `{text}` → a queued message taken back before the chat reads it, only from an empty input showing Claude Code's queue hint: Up pulls the queue into the input, Ctrl+U/Backspace and a backslash leave nothing to submit, the others are pasted back in order → `{ok}` or `{ok: false, err, back}` (`back`: the texts the input lost) |
 | `POST /api/chat/<sid>/key` | `{key: esc\|enter\|up\|down}` or `{choose: N}` (arrows from the `❯` option, then Return) |
-| `POST /api/mic/start` | `{}` → a remote take on transcriptions-gpt (its ipad-mic/PROTOCOL.md "Remote take") → `{ok, id}` once it records; 409 while another runs, 503 with no daemon |
+| `GET /api/history` | `{chats}`: chat-find `--recent --json` (cached 30 s) as `{sid, name, cwd, branch, model, spoke, role, text}`, newest first; live chats are in it too (the client marks them open) |
+| `GET /api/search?q=` | `{chats}`: `chat-find --json --limit 40 -- <words>` (≤ 8; seconds: it reads every transcript) as `{sid, name, cwd, spoke, title, text}`, cached 120 s per query; a failure is a 502 `{err}`, not cached |
+| `POST /api/chat/<sid>/open` | `{}` → a live chat only `{ok, live: true}` (a second resume would fork it); else `chats --open-command <sid>`'s line in a new Terminal window (`do script`) → `{ok, account, source}`; 502 with `chats`' or Terminal's error, 400 on a bad id |
+| `POST /api/chat/<sid>/close` | `{}` → an idle live terminal chat gets `/exit` typed; once its pid is gone (8 s) its window closes if the chat was its only tab → `{ok, window: closed\|tabs\|left}`; 404 not a live terminal chat, 409 while it works (`busy`/`shell`), 504 when it did not exit (the window stays) |
+| `POST /api/mic/start` | `{}` → a remote take on transcriptions-gpt (its ipad-mic/PROTOCOL.md "Remote take") → `{ok, id}` once it records; a start ends a stale take still recording (its chunks then get 404), 409 only while the last one is being transcribed, 503 with no daemon |
 | `POST /api/mic/<id>/chunk` | `application/octet-stream`, ≤ 256 KB of 16 kHz mono int16, in order: relayed as 20 ms receiver packets to `127.0.0.1:47654`, silence between bursts; 10 s with no chunk cancels the take |
 | `POST /api/mic/<id>/stop` | one `stop` to the daemon, then its transcript from the deliver file → `{ok, text}` (never pasted on the Mac) |
 | `POST /api/mic/<id>/cancel` | the daemon's `cancel`, sent only while it records or transcribes |

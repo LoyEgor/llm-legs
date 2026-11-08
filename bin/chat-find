@@ -667,7 +667,7 @@ def main():
                                                  "newest last message first, more terms matched breaking ties")
     parser.add_argument("--recent", action="store_true",
                         help="list every chat instead of searching, newest real message first")
-    parser.add_argument("--json", action="store_true", help="machine-readable output (--recent only)")
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--agents", action="store_true",
                         help="also match and list headless runs — workers, benches, subagents")
     parser.add_argument("--days", type=float, help="only chats whose last message is within N days")
@@ -725,6 +725,9 @@ def main():
     # the date is what he recognises a chat by, so the list reads as a timeline.
     rows.sort(key=lambda r: (r[0], len(r[2]["terms"]), r[2]["hits"]), reverse=True)
 
+    if not rows and args.json:
+        print("[]")
+        return
     if not rows:
         scope = "" if args.all else " (visible conversation only; --all widens to tool output)"
         print("no chat matched %s%s%s" % (", ".join(args.terms), scope, hidden_note(headless)))
@@ -732,6 +735,17 @@ def main():
 
     profile = args.account or account()
     shown = rows[: args.limit]
+    if args.json:
+        # The chats app's search: the same hits, newest first, what it needs to list and open them.
+        out = []
+        for when, path, state in shown:
+            cwd, title = head_facts(path)
+            out.append({"session": os.path.basename(path)[: -len(".jsonl")], "name": names.get(path),
+                        "at": when.timestamp(), "cwd": cwd, "title": title, "snippet": state["snippet"],
+                        "hits": state["hits"], "terms": sorted(state["terms"]), "path": path})
+        json.dump(out, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
     for when, path, state in shown:
         cwd, title = head_facts(path)
         session = os.path.basename(path)[: -len(".jsonl")]

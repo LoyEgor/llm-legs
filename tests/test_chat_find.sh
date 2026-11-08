@@ -163,6 +163,18 @@ assert has "resume:      cd '/tmp/proj' && claudeb profile acct --resume 1111111
 assert has 'почему оверлей моргает'
 assert has 'opened with: почему оверлей моргает'
 
+# --- the same search as JSON (the chats app's history search): same order, name and date ----
+run оверлей --json
+assert test "$RC" -eq 0
+assert test "$(jq -r '.[0] | [.session, .cwd, (.at | todate)] | join(" ")' <<<"$OUT")" = \
+  "11111111-1111-1111-1111-111111111111 /tmp/proj 2026-01-20T09:02:00Z"
+assert test "$(jq -r 'map(.session) | join(" ")' <<<"$OUT")" = \
+  "$(grep -o 'resume [0-9a-f-]*' <<<"$OVERLAY_OUT" | cut -d' ' -f2 | paste -sd' ' -)"
+assert test "$(jq -r '.[] | select(.session == "77777777-7777-7777-7777-777777777777") | .name' <<<"$OUT")" = "Оверлей: финальное имя"
+run nothingmatcheshere --json
+assert test "$OUT" = "[]"
+OUT=$OVERLAY_OUT
+
 # --- a false visit must not pass for a fresh conversation -------------------
 assert lacks "LAST $(date +%Y-%m-%d)"
 

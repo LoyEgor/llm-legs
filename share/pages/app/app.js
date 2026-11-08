@@ -9,10 +9,18 @@ const now = () => Date.now() / 1000;
 const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim();
 
 const seen = kept('seen');
-const drafts = kept('drafts');
+// One draft for every chat: he can switch chats while he types or dictates; Send takes it to the chat open then.
+const draft = kept('draft');
+if (draft.text == null) {
+  // The per-chat drafts before it: the open chat's carries over.
+  const old = kept('drafts'), m = location.hash.match(/^#chat\/(.+)$/);
+  draft.text = (m && old[decodeURIComponent(m[1])]) || '';
+  localStorage.removeItem('drafts');
+}
+const saveDraft = () => { draft.text = $('#input').value; keep('draft', draft); };
 const S = {chats: [], workers: [], runs: [], machine: null, sid: null, log: null, running: {}, menuOpen: new Set(),
   pages: null, screen: '', screenAt: 0, screenFails: 0, screenErr: '', scr: parseScreen(''), auth: true, sheet: '',
-  activity: ''};
+  activity: '', hist: [], histN: 25, q: '', found: null, opening: null};
 
 document.body.insertAdjacentHTML('afterbegin', DEFS);
 for (const el of document.querySelectorAll('[data-icon]')) el.innerHTML = ICON[el.dataset.icon] || '';
@@ -58,10 +66,10 @@ function reached() {
   $('#offline').hidden = true;
 }
 
-async function api(path, body) {
+async function api(path, body, ms) {
   const init = body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}
     : {cache: 'no-store'};
-  if (!body && AbortSignal.timeout) init.signal = AbortSignal.timeout(20000);
+  if ((!body || ms) && AbortSignal.timeout) init.signal = AbortSignal.timeout(ms || 20000);
   let r;
   try {
     r = await fetch(path, init);
@@ -185,6 +193,102 @@ function runRow(r) {
     `<span class="tm" data-since="${r.started}"></span></div><div class="l2">${esc(sub)}</div></div></${tag}>`;
 }
 
+// ------------------------------------------------------------------ past chats: the list, a search, open, close
+
+// Every chat he can go back to (chat-find --recent), newest first; the open ones are already above. The search field
+// filters names and last lines at once; Enter (or the row under them) asks chat-find for everything said, which
+// reads every transcript and takes a while.
+function histRow(r) {
+  const sub = [base(r.cwd), r.text || r.title].filter(Boolean).join(' · ');
+  return `<a class="row past${S.sid === r.sid ? ' sel' : ''}" href="#chat/${esc(r.sid)}"><span class="lead"></span>` +
+    `<div class="body"><div class="l1"><span class="name">${esc(r.name || r.sid.slice(0, 8))}</span>` +
+    `<span class="tm">${ago(r.spoke)}</span></div><div class="l2">${esc(sub)}</div></div></a>`;
+}
+
+function historyHtml(q, hit) {
+  const open = new Set(S.chats.concat(S.workers, S.runs).map((c) => c.sid).filter(Boolean));
+  const past = S.hist.filter((r) => !open.has(r.sid));
+  let html = '';
+  if (!q) {
+    if (!past.length) return '';
+    html = '<div class="sec">Earlier</div>' + past.slice(0, S.histN).map(histRow).join('');
+    if (past.length > S.histN) html += `<button type="button" class="more" data-more>Show more · ${past.length - S.histN}</button>`;
+    return html;
+  }
+  const near = past.filter((r) => hit(r.name, r.cwd, r.text)).slice(0, 50);
+  if (near.length) html += '<div class="sec">Earlier</div>' + near.map(histRow).join('');
+  const f = S.found && S.found.q === q ? S.found : null;
+  if (!f) return html + `<button type="button" class="more" data-said>Search everything said · “${esc(q)}”</button>`;
+  html += `<div class="sec">Said “${esc(q)}”${f.busy ? ' <span class="shimmer">searching every chat…</span>' : ''}</div>`;
+  if (f.err) html += `<div class="more">${esc(f.err)}</div>`;
+  else if (f.rows && !f.rows.length) html += '<div class="more">Nothing said matches</div>';
+  return html + (f.rows || []).map((r) => histRow(open.has(r.sid) ? Object.assign({}, r, {text: ['open', r.text].filter(Boolean).join(' · ')}) : r)).join('');
+}
+
+async function refreshHistory() {
+  await once('history', async () => {
+    const d = await api('/api/history');
+    S.hist = d.chats || [];
+    renderList();
+    if (S.sid && !chat(S.sid)) renderHead();
+  });
+}
+
+async function searchSaid() {
+  const q = S.q.trim().toLowerCase();
+  if (!q || (S.found && S.found.q === q && (S.found.busy || S.found.rows))) return;
+  const f = S.found = {q, rows: null, busy: true, err: ''};
+  renderList();
+  try {
+    const d = await api('/api/search?q=' + encodeURIComponent(q), null, 100000);
+    f.rows = d.chats || [];
+  } catch (e) {
+    f.err = 'search failed: ' + (e.message || e);
+  }
+  f.busy = false;
+  if (S.found === f) renderList();
+}
+
+const pastRow = (sid) => S.hist.find((r) => r.sid === sid) || (S.found && (S.found.rows || []).find((r) => r.sid === sid));
+
+// Open in Terminal: the server runs `chats --open-command` and types it into a new Terminal window; the chat then
+// shows up live (the same id, or a new one in the same folder) and the view follows it.
+async function openPast() {
+  const sid = S.sid, p = pastRow(sid) || {};
+  $('#openbtn').disabled = true;
+  $('#pastnote').innerHTML = '<span class="shimmer">Opening in Terminal on the Mac…</span>';
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/open`, {}, 45000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
+  $('#openbtn').disabled = false;
+  if (!d.ok) { $('#pastnote').textContent = '⚠ ' + (d.err || 'did not open'); return; }
+  if (d.live) { refreshChats(); return; }
+  S.opening = {sid, at: now(), cwd: p.cwd || '', known: new Set(S.chats.map((c) => c.sid))};
+  $('#pastnote').innerHTML = `<span class="shimmer">Opened${d.account ? ' as ' + esc(d.account) : ''} · waiting for it…</span>`;
+  refreshChats();
+}
+
+function followOpening() {
+  const o = S.opening;
+  if (!o) return;
+  if (chat(o.sid)) { S.opening = null; if (S.sid === o.sid) openChat(o.sid); return; }
+  const fresh = S.chats.find((c) => !o.known.has(c.sid) && (!o.cwd || c.cwd === o.cwd));
+  if (fresh) { S.opening = null; if (S.sid === o.sid) location.hash = '#chat/' + encodeURIComponent(fresh.sid); return; }
+  if (now() - o.at > 60) { S.opening = null; if (S.sid === o.sid) $('#pastnote').textContent = 'Opened in Terminal; it has not shown up here yet'; }
+}
+
+// End an idle chat (/exit, as if typed) and close its Terminal window: from the info panel, after a confirm.
+async function closeLive() {
+  const sid = S.sid, c = chat(sid);
+  if (!live(c)) return;
+  if (busy(c)) { toast('⚠ it is working: stop it first'); return; }
+  if (!confirm(`End “${c.name}” and close its Terminal window?`)) return;
+  const d = await api(`/api/chat/${encodeURIComponent(sid)}/close`, {}, 30000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
+  if (!d.ok) { toast('⚠ ' + (d.err || 'did not close')); return; }
+  toast(d.window === 'closed' ? `Ended “${c.name}”, its window closed` : `Ended “${c.name}”; its window stays (${d.window === 'tabs' ? 'other tabs in it' : 'Terminal did not answer'})`);
+  await refreshChats();
+  refreshHistory();
+  renderHead();
+}
+
 function renderList() {
   const box = $('#list');
   const top = box.scrollTop;
@@ -192,12 +296,17 @@ function renderList() {
   const count = {};
   for (const c of S.chats) count[c.account] = (count[c.account] || 0) + 1;
   const usual = Object.keys(count).sort((a, b) => count[b] - count[a])[0];
-  let html = '<div class="sec">Chats</div>' + S.chats.map((c) => chatRow(c, usual)).join('');
+  const q = S.q.trim().toLowerCase();
+  const hit = (...xs) => !q || q.split(/\s+/).every((w) => xs.some((x) => String(x || '').toLowerCase().includes(w)));
+  const chats = S.chats.filter((c) => hit(c.name, c.cwd, snippet(c)));
+  let html = chats.length || !q ? '<div class="sec">Chats</div>' + chats.map((c) => chatRow(c, usual)).join('') : '';
   const others = S.workers.map((w) => Object.assign({}, w, {vendor: 'claude', title: w.name, started: w.started, sid: w.sid}));
-  if (S.runs.length || others.length) {
-    html += `<div class="sec">Workers <span>${S.runs.length + others.length}</span></div>` +
-      S.runs.map(runRow).join('') + others.map(runRow).join('');
+  const runs = S.runs.filter((r) => hit(r.title, r.account)), more = others.filter((r) => hit(r.title));
+  if (runs.length || more.length) {
+    html += `<div class="sec">Workers <span>${runs.length + more.length}</span></div>` +
+      runs.map(runRow).join('') + more.map(runRow).join('');
   }
+  html += historyHtml(q, hit);
   box.innerHTML = html;
   box.scrollTop = top;
   clocks(box);
@@ -211,7 +320,7 @@ async function refreshChats() {
     // a running dictation or a message on its way finishes first.
     if (d.client && !S.client) S.client = d.client;
     if (d.client && d.client !== S.client && MIC.state === '' && !OUT.some((o) => o.state === 'sending')) {
-      if (S.sid) { drafts[S.sid] = $('#input').value; keep('drafts', drafts); }
+      saveDraft();
       location.reload();
       return;
     }
@@ -229,6 +338,7 @@ async function refreshChats() {
     if (open && open.spoke) { seen[S.sid] = open.spoke; keep('seen', seen); }
     renderMachine();
     renderList();
+    followOpening();
     if (S.sid) { renderHead(); renderActivity(); renderDock(); }
   });
 }
@@ -429,7 +539,7 @@ function resetLog() {
   $('#col').innerHTML = '';
   S.activity = '';
   $('#activity').innerHTML = '';
-  STICK.on = true;
+  Object.assign(STICK, {on: true, owed: false});
 }
 
 // Earlier history loads itself as he scrolls near the top (the button stays for a tap); the block that came in fades
@@ -468,7 +578,7 @@ async function pullLog() {
       col.insertBefore(frag, col.querySelector('.out-first'));
       renderActivity();
     }
-    if (L.first !== false) { L.first = false; outRender(); toBottom(); }
+    if (L.first !== false) { L.first = false; outRender(); toBottom(true); }
     else if (items.length) grew();
   });
 }
@@ -480,8 +590,11 @@ async function loadOlder() {
     const was = $('#col .older');
     if (was) was.classList.add('busy');
     let d;
-    try { d = await api(`/api/chat/${encodeURIComponent(sid)}/log?before=${L.start}`); }
-    finally { if (was) was.classList.remove('busy'); }
+    try {
+      d = await api(`/api/chat/${encodeURIComponent(sid)}/log?before=${L.start}`);
+      // The block goes in once his fling has stopped: a scroll set mid-fling jerks the thread.
+      for (let k = 0; k < 100 && !settled(); k++) await new Promise((r) => setTimeout(r, 100));
+    } finally { if (was) was.classList.remove('busy'); }
     if (sid !== S.sid || L !== S.log) return;
     const box = $('#log');
     const h0 = box.scrollHeight;
@@ -496,35 +609,68 @@ async function loadOlder() {
     frag.appendChild(seam);
     L.start = d.start;
     $('#col').prepend(frag);
+    STICK.own = true;
     box.scrollTop += box.scrollHeight - h0;
   });
 }
 
 // Stick to the end only while he is there: new items, a growing dock or keyboard keep the last line in view, a
-// scroll up stays put (no poll moves it), and nothing scrolls under a finger.
-const STICK = {on: true, touch: false};
-function toBottom() {
+// scroll up stays put (no poll moves it). Only his own scroll unsticks it: a finger, its fling (a scroll every frame
+// after the finger lifts), a wheel, a key, a dragged scrollbar; a scroll the layout made (the dock grew, content
+// came) never does. Nothing moves the thread while his scroll, its fling or the edge bounce is still going (iOS
+// jerks a scroll that is set mid-fling): a move asked meanwhile waits until it has settled.
+const STICK = {on: true, touch: false, input: 0, moved: 0, own: false, owed: false};
+const settled = () => !STICK.touch && performance.now() - STICK.moved > 700;
+function toBottom(force) {
+  if (force !== true && !settled()) { STICK.owed = true; return; }
+  STICK.owed = false;
   const box = $('#log');
+  STICK.own = box.scrollTop !== box.scrollHeight - box.clientHeight;
   box.scrollTop = box.scrollHeight;
   STICK.on = true;
   $('#jump').hidden = true;
 }
 function grew() {
-  if (STICK.on && !STICK.touch) toBottom();
+  if (STICK.on) toBottom();
   else $('#jump').hidden = false;
 }
 $('#log').addEventListener('scroll', () => {
-  const b = $('#log');
-  STICK.on = b.scrollHeight - b.scrollTop - b.clientHeight < 40;
+  const b = $('#log'), t = performance.now();
+  const his = STICK.touch || t - STICK.input < 300 || t - STICK.moved < 150;
+  const own = STICK.own;
+  STICK.own = false;
+  const end = b.scrollHeight - b.scrollTop - b.clientHeight < 40;
+  if (his && !own) {
+    STICK.moved = t;
+    STICK.on = end;
+    later();
+  } else if (end) STICK.on = true;
+  else if (STICK.on) toBottom();
   $('#jump').hidden = STICK.on;
 }, {passive: true});
-$('#log').addEventListener('touchstart', () => { STICK.touch = true; }, {passive: true});
-$('#log').addEventListener('touchend', () => { setTimeout(() => { STICK.touch = false; }, 400); }, {passive: true});
-$('#jump').addEventListener('click', toBottom);
+const log = $('#log');
+const mark = () => { STICK.input = performance.now(); };
+log.addEventListener('touchstart', () => { STICK.touch = true; STICK.moved = performance.now(); }, {passive: true});
+log.addEventListener('touchend', () => { STICK.touch = false; STICK.moved = performance.now(); later(); }, {passive: true});
+log.addEventListener('touchcancel', () => { STICK.touch = false; }, {passive: true});
+log.addEventListener('wheel', mark, {passive: true});
+log.addEventListener('keydown', mark);
+log.addEventListener('mousedown', () => { STICK.touch = true; mark(); });
+window.addEventListener('mouseup', () => { if (STICK.touch) { STICK.touch = false; mark(); } });
+$('#jump').addEventListener('click', () => toBottom(true));
 new ResizeObserver(() => {
   $('#chat').style.setProperty('--dock', $('#dock').offsetHeight + 'px');
-  if (STICK.on && !STICK.touch) toBottom();
-}).observe($('#log'));
+  if (STICK.on) toBottom();
+}).observe(log);
+// What waited for the thread to settle goes once it has.
+function payOwed() {
+  if (STICK.owed && settled() && STICK.on) toBottom();
+}
+let settleTimer = 0;
+function later() {
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(payOwed, 750);
+}
 
 // ------------------------------------------------------------------ the outbox: what he sent, bound to its chat
 
@@ -713,9 +859,11 @@ function renderHead() {
   $('#termbtn').hidden = !live(c);
   $('#termbtn').classList.toggle('warn', S.screenFails >= 3);
   $('#infobtn').hidden = !S.sid;
+  $('#pastbar').hidden = !!(c || r);
   if (!c && !r) {
-    $('#title').innerHTML = `<b>${esc(S.sid)}</b><small>closed</small>`;
-    $('#dock').hidden = true;
+    const p = pastRow(S.sid);
+    $('#title').innerHTML = `<b>${esc(p && p.name || S.sid)}</b><small>${esc([p && base(p.cwd), p && ago(p.spoke), 'not open'].filter(Boolean).join(' · '))}</small>`;
+    if (!S.opening || S.opening.sid !== S.sid) { $('#openbtn').disabled = false; $('#pastnote').textContent = 'Not open on the Mac'; }
     return;
   }
   // The chat's own statusline in full words and its colours, else what the screen shows under the prompt.
@@ -732,7 +880,6 @@ function renderHead() {
   const up = r && S.chats.find((x) => x.sid === r.launcher);
   $('#title').innerHTML = `<b>${esc(r ? r.title : c.name)}</b><small>${sub}` +
     `${up ? ` · <a href="#chat/${esc(up.sid)}">↖ ${esc(up.name)}</a>` : ''}</small>`;
-  $('#dock').hidden = !live(c);
 }
 
 // ------------------------------------------------------------------ the info panel: statusline and changed files
@@ -778,7 +925,8 @@ function infoHtml(d) {
   return (status ? `<div class="sgs">${status}</div>` : '') +
     `<div class="ch"><b>Changes</b><span class="n">${files.length || ''}</span>` +
     `<span class="c-green">${files.length ? '+' + sum('add') : ''}</span><span class="c-red">${files.length ? '−' + sum('del') : ''}</span></div>` +
-    (rows || '<div class="none">No files changed in this chat</div>');
+    (rows || '<div class="none">No files changed in this chat</div>') +
+    (live(chat(S.sid)) ? '<button type="button" class="btn endbtn" data-end>End chat · close its window</button>' : '');
 }
 
 async function pullInfo() {
@@ -835,7 +983,7 @@ function renderDock() {
   const box = $('#suggest');
   if (box.dataset.h !== sug) {
     box.dataset.h = sug;
-    box.innerHTML = sug ? `<button type="button" class="sug" title="Put it in the message">${ICON.tab}<span>${esc(sug)}</span></button>` : '';
+    box.innerHTML = sug ? `<button type="button" class="pill sug" title="Put it in the message">${ICON.tab}<span>${esc(sug)}</span></button>` : '';
   }
   renderSend();
 }
@@ -845,7 +993,7 @@ function renderDock() {
 function renderSend() {
   const b = $('#send'), c = chat(S.sid);
   const text = $('#input').value.trim();
-  const mode = MIC.state ? (MIC.state === 'wait' ? 'wait' : 'dict') : text ? 'send' : busy(c) && live(c) ? 'stop' : 'idle';
+  const mode = MIC.state ? (MIC.state === 'wait' ? 'wait' : 'dict') : !live(c) ? 'idle' : text ? 'send' : busy(c) ? 'stop' : 'idle';
   if (b.dataset.mode === mode) return;
   b.dataset.mode = mode;
   b.disabled = mode === 'idle' || mode === 'wait';
@@ -856,25 +1004,58 @@ function renderSend() {
 
 function send() {
   const sid = S.sid;
+  if (!live(chat(sid))) return;
   const box = $('#input');
   const text = box.value;
   if (!text.trim()) return;
   box.value = '';
   grow();
-  delete drafts[sid];
-  keep('drafts', drafts);
+  saveDraft();
   outbox(sid, text);
-  toBottom();
+  toBottom(true);
   renderDock();
 }
 
 // ------------------------------------------------------------------ the microphone (transcriptions-gpt on the Mac)
 
 // '' -> starting (capture buffers while the Mac's take starts) -> live (250 ms uploads, in order) -> wait (the Mac
-// transcribes) -> ''; the text lands at the end of the draft of the chat the dictation began in, or, when Send ended
-// the dictation, goes out to that chat with the draft. The level bars are the browser's own capture.
-const MIC = {state: '', id: null, sid: null, ctx: null, stream: null, frames: [], pump: null, then: '', levels: [],
-  peak: 0, began: 0, raf: 0};
+// transcribes) -> ''. The text lands at the end of the one draft; when Send ended the dictation, it goes out with
+// what was typed to the chat open at that tap, whichever chat is open when the text comes. The level bars are the
+// browser's own capture.
+// Nothing iOS leaves hanging leaves the button dead: every step has a deadline (a microphone it never hands over,
+// an audio context it keeps suspended, a request it froze while the app was away), the take then fails with the
+// step's name (reported to the Mac) and the next tap starts clean; a capture that goes silent is reopened once, then
+// ends the take with what was said; the worklet has the old ScriptProcessor behind it.
+const MIC = {state: '', id: null, take: null, frames: [], pump: null, held: null, levels: [], peak: 0, began: 0,
+  waitFrom: 0, heard: 0, step: '', tap: 0, raf: 0};
+const MIC_STEP = {microphone: 20, audio: 5, capture: 6, mac: 12, upload: 10, transcript: 130};  // s
+
+function within(step, p) {
+  MIC.step = step;
+  let timer;
+  const late = new Promise((_, no) => {
+    timer = setTimeout(() => no(new Error(`${step}: no answer in ${MIC_STEP[step]} s`)), MIC_STEP[step] * 1000);
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
+// A mic request with its step's deadline -> the server's answer with its status (0: no connection or too late).
+async function micCall(path, body, step) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), MIC_STEP[step] * 1000);
+  MIC.step = step;
+  try {
+    const r = await fetch(path, {method: 'POST', body, signal: ctl.signal,
+      headers: {'Content-Type': typeof body === 'string' ? 'application/json' : 'application/octet-stream'}});
+    let d = {};
+    try { d = await r.json(); } catch {}
+    return Object.assign({status: r.status}, d);
+  } catch {
+    return {ok: false, status: 0, err: ctl.signal.aborted ? `${step}: no answer in ${MIC_STEP[step]} s` : `${step}: no connection`};
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function micButton() {
   const rec = MIC.state !== '';
@@ -926,112 +1107,224 @@ function drawWave(t) {
   MIC.raf = requestAnimationFrame(drawWave);
 }
 
+function release(take) {
+  if (take.stream) take.stream.getTracks().forEach((t) => t.stop());
+  const ctx = take.ctx;
+  if (ctx) setTimeout(() => ctx.close().catch(() => {}), 100);
+  take.stream = take.ctx = null;
+}
+
+const microphone = () => navigator.mediaDevices.getUserMedia({audio: {channelCount: 1}});
+
 async function micStart() {
-  if (!navigator.mediaDevices || !window.AudioWorkletNode) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     toast('⚠ the microphone needs the https link (page lan --app)');
     return;
   }
-  Object.assign(MIC, {state: 'starting', id: null, sid: S.sid, frames: [], then: '', levels: [], peak: 0, began: now()});
+  const take = {ctx: null, stream: null, src: null, node: null, reopened: false};
+  Object.assign(MIC, {state: 'starting', id: null, take, frames: [], held: null, levels: [], peak: 0, began: now(),
+    heard: 0});
   micButton();
   try {
-    MIC.ctx = new AudioContext();  // inside the tap: iOS starts audio only from a gesture
-    MIC.stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1}});
-    await MIC.ctx.audioWorklet.addModule('/app/mic-worklet.js');
-    const worklet = new AudioWorkletNode(MIC.ctx, 'mic16k');
-    worklet.port.onmessage = (e) => {
-      if (MIC.state !== 'starting' && MIC.state !== 'live') return;
-      MIC.frames.push(e.data);
-      MIC.peak = Math.max(MIC.peak, level(e.data));
-    };
-    MIC.ctx.createMediaStreamSource(MIC.stream).connect(worklet);
-    worklet.connect(MIC.ctx.destination);  // writes no output: silence, but the graph pulls it
-    await MIC.ctx.resume();
-    const d = await api('/api/mic/start', {});
-    if (!d.ok) throw new Error(d.err || 'the Mac did not start');
-    if (MIC.state !== 'starting') return;
-    Object.assign(MIC, {state: 'live', id: d.id, began: now()});
-    micButton();
-    MIC.pump = micPump(d.id);
-  } catch (e) {
-    micDrop();
-    toast('⚠ ' + (e.message || e));
-  }
-}
-
-async function micPump(id) {
-  while (MIC.id === id && MIC.state === 'live') {
-    await new Promise((r) => setTimeout(r, 250));
-    if (!(await micFlush(id))) return;
-  }
-}
-
-// Everything buffered, in pieces under the server's 256 KB cap -> false when the server dropped the dictation.
-async function micFlush(id) {
-  while (MIC.frames.length) {
-    const take = MIC.frames.splice(0, 200);
-    const body = new Int16Array(take.length * 320);
-    take.forEach((f, k) => body.set(new Int16Array(f), k * 320));
-    const r = await fetch(`/api/mic/${id}/chunk`, {method: 'POST', body: body.buffer,
-      headers: {'Content-Type': 'application/octet-stream'}}).catch(() => null);
-    if (r && r.status === 404) {
-      if (MIC.id === id) { micDrop(); toast('⚠ the dictation was dropped on the Mac'); }
-      return false;
+    // Inside the tap: iOS starts and resumes audio only from a gesture, so neither waits behind the microphone.
+    take.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const resumed = take.ctx.resume();
+    take.stream = await within('microphone', microphone());
+    if (MIC.take !== take) return release(take);
+    await within('audio', resumed);
+    await micCapture(take);
+    if (MIC.take !== take) return release(take);
+    const d = await micCall('/api/mic/start', '{}', 'mac');
+    if (MIC.take !== take) {
+      if (d.ok) micCall(`/api/mic/${d.id}/cancel`, '{}', 'upload');
+      return;
     }
+    if (!d.ok) throw new Error(d.err || 'the Mac did not start');
+    Object.assign(MIC, {state: 'live', id: d.id, began: now(), heard: now()});
+    micButton();
+    MIC.pump = micPump(d.id, take);
+  } catch (e) {
+    if (MIC.take !== take) release(take);
+    else micFail(String(e.message || e));
   }
-  return true;
 }
 
-function micRelease() {
-  if (MIC.stream) MIC.stream.getTracks().forEach((t) => t.stop());
-  const ctx = MIC.ctx;
-  if (ctx) setTimeout(() => ctx.close().catch(() => {}), 100);
-  MIC.stream = MIC.ctx = null;
+// The worklet, or the ScriptProcessor iOS still has when the worklet will not load; both give 20 ms frames.
+async function micCapture(take) {
+  const got = (buf) => {
+    if (MIC.take !== take || (MIC.state !== 'starting' && MIC.state !== 'live')) return;
+    MIC.frames.push(buf);
+    MIC.heard = now();
+    MIC.peak = Math.max(MIC.peak, level(buf));
+  };
+  const ctx = take.ctx;
+  try {
+    if (!window.AudioWorkletNode) throw new Error('no AudioWorklet');
+    await within('capture', ctx.audioWorklet.addModule('/app/mic-worklet.js'));
+    take.node = new AudioWorkletNode(ctx, 'mic16k');
+    take.node.port.onmessage = (e) => got(e.data);
+  } catch (e) {
+    if (MIC.take !== take) return;
+    report({kind: 'mic', msg: `worklet: ${e.message || e}; script processor instead`});
+    take.node = ctx.createScriptProcessor(4096, 1, 1);
+    const feed = frames16k(ctx.sampleRate, got);
+    take.node.onaudioprocess = (ev) => feed(ev.inputBuffer.getChannelData(0));
+  }
+  take.src = ctx.createMediaStreamSource(take.stream);
+  take.src.connect(take.node);
+  take.node.connect(ctx.destination);  // writes no output: silence, but the graph pulls it
+}
+
+// mic-worklet.js's resampling for the ScriptProcessor: each 16 kHz sample averages the input samples it covers.
+function frames16k(rate, out) {
+  const step = rate / 16000;
+  let pos = 0, sum = 0, n = 0, k = 0, frame = new Int16Array(320);
+  return (ch) => {
+    for (let i = 0; i < ch.length; i++) {
+      sum += ch[i];
+      n++;
+      if (++pos < step) continue;
+      pos -= step;
+      const v = Math.max(-1, Math.min(1, sum / n));
+      frame[k++] = v < 0 ? v * 32768 : v * 32767;
+      sum = n = 0;
+      if (k === 320) { out(frame.buffer); frame = new Int16Array(320); k = 0; }
+    }
+  };
+}
+
+// A capture that stopped giving frames (iOS hands the microphone to a call, Siri, another app) gets a new one once.
+async function micReopen(take) {
+  take.reopened = true;
+  report({kind: 'mic', msg: 'capture went silent; reopened', ms: Math.round((now() - MIC.began) * 1000)});
+  try {
+    if (take.stream) take.stream.getTracks().forEach((t) => t.stop());
+    if (take.src) take.src.disconnect();
+    take.stream = await within('microphone', microphone());
+    if (MIC.take !== take) return release(take);
+    if (take.ctx.state !== 'running') await within('audio', take.ctx.resume());
+    take.src = take.ctx.createMediaStreamSource(take.stream);
+    take.src.connect(take.node);
+    take.bad = 0;
+    MIC.heard = now();
+  } catch (e) {
+    if (MIC.take === take) micStop('', 'the microphone went silent: kept what was said');
+  }
+}
+
+async function micPump(id, take) {
+  while (MIC.take === take && MIC.state === 'live') {
+    await new Promise((r) => setTimeout(r, 250));
+    if (!(await micFlush(id, take))) return;
+  }
+}
+
+// Everything buffered, in pieces under the server's 256 KB cap -> false when the take is over. A lost piece is
+// silence to the receiver; three lost in a row end it.
+async function micFlush(id, take) {
+  let lost = 0;
+  while (MIC.frames.length && MIC.take === take) {
+    const batch = MIC.frames.splice(0, 200);
+    const body = new Int16Array(batch.length * 320);
+    batch.forEach((f, k) => body.set(new Int16Array(f), k * 320));
+    const d = await micCall(`/api/mic/${id}/chunk`, body.buffer, 'upload');
+    if (MIC.take !== take) return false;
+    if (d.status === 404) { micFail('the Mac dropped the take'); return false; }
+    if (d.ok) lost = 0;
+    else if (++lost >= 3) { micFail(d.err || 'uploads fail'); return false; }
+  }
+  return MIC.take === take;
 }
 
 function micDrop() {
-  const id = MIC.id;
-  micRelease();
-  Object.assign(MIC, {state: '', id: null, frames: [], then: ''});
+  const id = MIC.id, take = MIC.take, held = MIC.held;
+  if (take) release(take);
+  Object.assign(MIC, {state: '', id: null, take: null, frames: [], held: null});
+  if (held && held.head) putBack(held.head);
   micButton();
-  if (id) api(`/api/mic/${id}/cancel`, {}).catch(() => {});
+  if (id) micCall(`/api/mic/${id}/cancel`, '{}', 'upload');
 }
 
-async function micStop(then = '') {
+function micFail(msg) {
+  report({kind: 'mic', msg: `${MIC.state} ${MIC.step}: ${msg}`.slice(0, 300), ms: Math.round((now() - MIC.began) * 1000)});
+  micDrop();
+  toast('⚠ dictation: ' + msg);
+}
+
+// What was typed before a dictation that never came back goes back into the draft, ahead of anything typed since.
+function putBack(text) {
+  const box = $('#input');
+  box.value = box.value.trim() ? text.replace(/\s*$/, '\n') + box.value : text;
+  saveDraft();
+  grow();
+}
+
+// then 'send': the transcript goes out with what was typed, to the chat open now; the input is his again at once.
+async function micStop(then = '', why = '') {
   if (MIC.state === 'starting') { micDrop(); return; }
-  const {id, sid} = MIC;
-  MIC.then = then;
-  if (MIC.stream) MIC.stream.getTracks().forEach((t) => t.stop());
+  if (MIC.state !== 'live') return;
+  const {id, take} = MIC;
+  if (then === 'send' && S.sid) {
+    const box = $('#input');
+    MIC.held = {to: S.sid, head: box.value};
+    box.value = '';
+    saveDraft();
+    grow();
+  }
+  if (take.stream) take.stream.getTracks().forEach((t) => t.stop());
   await new Promise((r) => setTimeout(r, 80));  // the worklet's last frames
-  MIC.state = 'wait';
+  if (MIC.take !== take) return;
+  Object.assign(MIC, {state: 'wait', waitFrom: now()});
   micButton();
-  micRelease();
+  release(take);
   await MIC.pump;
-  if (!(await micFlush(id))) return;
-  const d = await api(`/api/mic/${id}/stop`, {}).catch(() => ({ok: false, err: 'no connection'}));
-  const sendAfter = MIC.then === 'send';
-  Object.assign(MIC, {state: '', id: null, then: ''});
+  if (MIC.take !== take || !(await micFlush(id, take))) return;
+  const d = await micCall(`/api/mic/${id}/stop`, '{}', 'transcript');
+  if (MIC.take !== take) return;
+  const held = MIC.held;
+  Object.assign(MIC, {state: '', id: null, take: null, held: null});
   micButton();
-  if (!d.ok) { toast('⚠ ' + (d.err || 'no transcript')); return; }
-  const text = (d.text || '').trim();
+  if (why) toast('⚠ ' + why);
+  const text = (d.ok && d.text || '').trim();
+  if (!d.ok) {
+    report({kind: 'mic', msg: `wait transcript: ${d.err || d.status}`, ms: Math.round((now() - MIC.waitFrom) * 1000)});
+    toast('⚠ ' + (d.err || 'no transcript'));
+  }
   const join = (v) => (text ? (v && !/\s$/.test(v) ? v + ' ' : v || '') + text : v || '');
-  const open = sid === S.sid;
-  const full = join(open ? $('#input').value : drafts[sid]);
-  if (sendAfter && full.trim()) {
-    if (open) { $('#input').value = ''; grow(); }
-    delete drafts[sid];
-    keep('drafts', drafts);
-    outbox(sid, full);
-    if (open) toBottom();
+  if (held) {
+    const full = join(held.head);
+    if (d.ok && full.trim()) {
+      outbox(held.to, full);
+      if (held.to === S.sid) toBottom(true);
+    } else if (held.head) putBack(held.head);
   } else {
-    if (open) { $('#input').value = full; grow(); }
-    drafts[sid] = full;
-    keep('drafts', drafts);
+    $('#input').value = join($('#input').value);
+    saveDraft();
+    grow();
   }
   renderDock();
 }
 
+// The 1 s tick's look at a take: a start or a transcript past every deadline, a capture gone silent.
+function micWatch() {
+  if (!MIC.take) return;
+  const t = now();
+  if (MIC.state === 'starting' && t - MIC.began > 45) micFail('the start hung at ' + MIC.step);
+  else if (MIC.state === 'wait' && t - MIC.waitFrom > MIC_STEP.transcript + 20) micFail('no transcript');
+  else if (MIC.state === 'live') {
+    // Dead: no frames (iOS suspended the audio), or a track the system ended or muted (a call, Siri, another app);
+    // a pause in his speech is neither.
+    const take = MIC.take, tr = take.stream && take.stream.getAudioTracks()[0];
+    take.bad = !tr || tr.readyState === 'ended' || tr.muted ? take.bad || t : 0;
+    if (t - MIC.heard < 2.5 && !(take.bad && t - take.bad >= 2)) return;
+    if (!take.reopened) micReopen(take);
+    else micStop('', 'the microphone went silent: kept what was said');
+  }
+}
+
 function grow() {
   const box = $('#input');
+  if (!box.offsetParent) return;  // not shown: a hidden textarea measures 0, it is sized when its chat opens
   box.style.height = 'auto';
   box.style.height = Math.min(box.scrollHeight, window.innerHeight * 0.4) + 'px';
 }
@@ -1086,7 +1379,7 @@ function openSheet(kind) {
   if (S.sheet === kind) { closeSheet(); return; }
   if (kind === 'info') { ui.info = true; keep('ui', ui); }
   S.sheet = kind;
-  $('#sheet').className = kind;
+  $('#sheet').className = 'sheet ' + kind;
   $('#sheet').hidden = $('#scrim').hidden = false;
   $('#sheetb').innerHTML = '';
   document.querySelectorAll('[data-sheet]').forEach((b) => b.classList.toggle('on', b.dataset.sheet === kind));
@@ -1158,23 +1451,18 @@ function show(inside) {
 }
 
 function openChat(sid) {
-  if (S.sid && S.sid !== sid) {
-    drafts[S.sid] = $('#input').value;
-    keep('drafts', drafts);
-  }
   if (S.sid !== sid || !S.log) {
     S.sid = sid;
     resetLog();
     Object.assign(S, {screen: '', screenAt: 0, screenFails: 0, screenErr: '', scr: parseScreen('')});
     $('#opts').innerHTML = $('#suggest').innerHTML = '';
     $('#opts').dataset.h = $('#suggest').dataset.h = '';
-    $('#input').value = drafts[sid] || '';
-    grow();
     S.info = null;
     const c = chat(sid);
     if (c && c.spoke) { seen[sid] = c.spoke; keep('seen', seen); }
   }
   show(true);
+  grow();
   renderHead();
   renderList();
   renderDock();
@@ -1193,8 +1481,7 @@ function route() {
   }
   if (view === 'chat' && arg) return openChat(decodeURIComponent(arg));
   if (S.sid) {
-    drafts[S.sid] = $('#input').value;
-    keep('drafts', drafts);
+    saveDraft();
     S.sid = null;
     S.log = null;
     renderList();
@@ -1210,15 +1497,18 @@ function route() {
 $('#composer').addEventListener('submit', (e) => {
   e.preventDefault();
   const mode = $('#send').dataset.mode;
-  if (mode === 'dict') micStop('send');
+  if (mode === 'dict') micStop(live(chat(S.sid)) ? 'send' : '');  // a chat not open takes nothing: the draft keeps it
   else if (mode === 'stop') key({key: 'esc'});
   else send();
 });
-$('#input').addEventListener('input', () => { grow(); if (S.sid) drafts[S.sid] = $('#input').value; renderDock(); });
+$('#input').addEventListener('input', () => { grow(); saveDraft(); renderDock(); });
 $('#input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
 });
 $('#mic').addEventListener('click', () => {
+  const t = performance.now();
+  if (t - MIC.tap < 500) return;  // a double tap would start the take and cancel it at once
+  MIC.tap = t;
   if (MIC.state === '') micStart();
   else if (MIC.state === 'live' || MIC.state === 'starting') micDrop();
 });
@@ -1232,8 +1522,7 @@ $('#suggest').addEventListener('click', (e) => {
   // Tab's meaning in the CLI: the suggestion becomes the draft, one tap on Send away (no keyboard pops up).
   $('#input').value = text;
   grow();
-  drafts[S.sid] = text;
-  keep('drafts', drafts);
+  saveDraft();
   renderDock();
 });
 document.querySelectorAll('[data-sheet]').forEach((b) => b.addEventListener('click', () => openSheet(b.dataset.sheet)));
@@ -1241,6 +1530,7 @@ $('#sheetx').addEventListener('click', closeSheet);
 $('#scrim').addEventListener('click', closeSheet);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.sheet) closeSheet(); });
 $('#sheetb').addEventListener('click', (e) => {
+  if (e.target.closest('[data-end]')) { closeLive(); return; }
   const row = e.target.closest('.mi.has');
   if (!row) return;
   const id = row.dataset.id;
@@ -1256,6 +1546,14 @@ document.addEventListener('click', (e) => {
     if (m) { e.preventDefault(); overlay(m[1]); }
   }
 });
+$('#find').addEventListener('input', () => { S.q = $('#find').value; renderList(); });
+$('#find').addEventListener('focus', () => { if (now() - (S.histAt || 0) > 20) { S.histAt = now(); refreshHistory(); } });
+$('#find').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchSaid(); } });
+$('#list').addEventListener('click', (e) => {
+  if (e.target.closest('[data-more]')) { S.histN += 50; renderList(); }
+  else if (e.target.closest('[data-said]')) searchSaid();
+});
+$('#openbtn').addEventListener('click', openPast);
 $('#close').addEventListener('click', () => { $('#overlay').hidden = true; $('#frame').src = 'about:blank'; });
 window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => {
@@ -1267,14 +1565,21 @@ document.addEventListener('visibilitychange', () => {
 
 // The on-screen keyboard: iOS pans the whole page to the input rather than resizing it, which moved the header out
 // of view. The app is sized to the visible part instead (not while pinch-zoomed), so only the thread moves.
+// Only a real change of the visible part (the keyboard coming or going) moves anything: the viewport's scroll events
+// of a bounce leave the layout and the thread alone.
 const VV = window.visualViewport;
 if (VV) {
+  let was = '';
   const fit = () => {
     if (Math.abs(VV.scale - 1) > 0.01) return;
+    const h = Math.round(VV.height), top = Math.max(0, Math.round(VV.offsetTop));
+    if (h + ',' + top === was) return;
+    const grown = was && +was.split(',')[0] !== h;
+    was = h + ',' + top;
     const st = document.documentElement.style;
-    st.setProperty('--vvh', VV.height + 'px');
-    st.setProperty('--vvt', VV.offsetTop + 'px');
-    if (STICK.on) toBottom();
+    st.setProperty('--vvh', h + 'px');
+    st.setProperty('--vvt', top + 'px');
+    if (grown && STICK.on) toBottom(true);
   };
   VV.addEventListener('resize', fit);
   VV.addEventListener('scroll', fit);
@@ -1288,6 +1593,7 @@ setInterval(() => {
   if (document.visibilityState !== 'visible') return;
   tick++;
   if (tick % 3 === 0) refreshChats();
+  if (tick % 60 === 30) refreshHistory();
   if (S.sid) {
     pullLog();
     const c = chat(S.sid);
@@ -1297,9 +1603,14 @@ setInterval(() => {
   if (S.sid && tick % 3 === 1) pullInfo();
   if (S.sheet === 'menu' && tick % 5 === 0) refreshMenu();
   if (S.sheet === 'pages' && tick % 20 === 0) refreshPages();
+  micWatch();
+  payOwed();
   clocks();
 }, 1000);
 
 NET.visibleAt = now();
+$('#input').value = draft.text;
+grow();
 renderMachine();
 refreshChats().then(route);
+refreshHistory();

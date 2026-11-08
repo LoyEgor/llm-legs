@@ -12,6 +12,7 @@ PAGE="$ROOT/bin/page"
 like() { [[ $1 == $2 ]]; }
 mkdir -p "$WORK/bin" "$WORK/sessions" "$WORK/tracks" "$WORK/proj"
 sid=11111111-2222-3333-4444-555555555555
+past=eeeeeeee-2222-3333-4444-555555555555
 wsid=99999999-2222-3333-4444-555555555555
 
 # A live "chat": a process on a pty (script(1) gives it a tty) with its account in its environment; a worker: the
@@ -48,9 +49,30 @@ T="$WORK/proj/$sid.jsonl"
   echo '{"type":"system","subtype":"away_summary","content":"Goal: fixtures. Next: assert."}'
   echo '{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Done **here**."}]}}'
 } >"$T"
-printf '[{"session": "%s", "name": "Fixture chat", "path": "%s", "ctx": 42000, "model": "claude-opus-5-5", "spoke": %s, "ttl": 3600, "cwd": "/x/proj"}]' \
-  "$sid" "$T" "$(date +%s)" >"$WORK/chat-find.json"
-printf 'print(open("%s").read())\n' "$WORK/chat-find.json" >"$WORK/bin/chat-find"  # run by the server's python
+# chat-find --recent: the live chat and a past one that spoke earlier (listed first: the history sorts); a search
+# prints $WORK/search.json (none: it fails) and leaves its arguments in $WORK/search-args. Both run by the
+# server's python, as `chats --open-command` is: a past chat's resume line on its account, or a dead one's error.
+printf '[{"session": "%s", "name": "Old chat", "cwd": "/x/old", "spoke": %s, "role": "user", "text": "old words"}, {"session": "%s", "name": "Fixture chat", "path": "%s", "ctx": 42000, "model": "claude-opus-5-5", "spoke": %s, "ttl": 3600, "cwd": "/x/proj"}]' \
+  "$past" "$(($(date +%s) - 5000))" "$sid" "$T" "$(date +%s)" >"$WORK/chat-find.json"
+cat >"$WORK/bin/chat-find" <<EOF
+import sys
+if "--recent" in sys.argv:
+    print(open("$WORK/chat-find.json").read())
+    sys.exit()
+open("$WORK/search-args", "w").write(" ".join(sys.argv[1:]))
+try:
+    print(open("$WORK/search.json").read())
+except OSError:
+    sys.exit("index gone")
+EOF
+cat >"$WORK/bin/chats" <<'EOF'
+import sys
+sid = sys.argv[sys.argv.index("--open-command") + 1]
+if sid.startswith("dead"):
+    sys.exit("no transcript for " + sid)
+print('cd "/x/old" && claude --resume ' + sid)
+print("account=acc3 source=cache")
+EOF
 printf 'v2 %s fixacct\n' "$(date +%s)" >"$WORK/tracks/cache-ttl-track-$sid"
 printf '{"title": "Chats/other  1.0/2.0 cores", "rows": [{"text": "CPU   1.0 chats +  2.0 other =  3.0 of 10 cores"}, "-", {"text": "full speed  Fixture chat           1.0 cores   2.5 GB  ▁▂▃", "session": "%s", "pid": %s}]}' \
   "$sid" "$chatpid" >"$WORK/chats.json"
@@ -68,6 +90,8 @@ with open("$WORK/hs.log", "a") as log:
     m = re.search(r'read POSIX file "([^"]+)"', lua)
     if m:
         log.write("TEXT=" + json.dumps(open(m.group(1), encoding="utf-8").read(), ensure_ascii=False) + "\\n")
+        if open(m.group(1)).read() == "/exit" and os.path.exists("$WORK/exit-ok"):
+            os.kill($chatpid, 15)  # the chat obeys its /exit
 queue = json.load(open("$WORK/queue")) if os.path.exists("$WORK/queue") else None
 box = lambda line: "\\u23fa working\\n" + "\\u2500" * 20 + "\\n\\u276f " + line + "\\n" + "\\u2500" * 20 + "\\n  status"
 if "llm-limits" in lua:
@@ -82,6 +106,8 @@ elif '"[A" & c' in lua and queue is not None:
             transcript.write(json.dumps({"type": "queue-operation", "operation": "popAll", "content": text}) + "\\n")
     json.dump([], open("$WORK/queue", "w"))
     print(json.dumps({"ok": True, "res": "sent"}))
+elif "close window j" in lua:
+    print(json.dumps({"ok": True, "res": "closed"}))
 elif "return contents of tab" in lua:
     print(json.dumps({"ok": True, "res": "Pick a color\\n\\u276f 1. Red\\n  2. Green\\n  3. Blue\\nEnter to select"}))
 else:
@@ -179,7 +205,7 @@ mkrun "codex-$((now - 70))-1-aa05" "$workerpid" "$((began - 1000))" '' >/dev/nul
 mkrun "codex-$((now - 80))-1-aa06" 0 "$began" '' >/dev/null
 export PAGES_DIR="$WORK/pages" APP_SESSIONS="$WORK/sessions" APP_HS="$WORK/bin/hs" APP_CHAT_FIND="$WORK/bin/chat-find" \
   APP_CHATS_JSON="$WORK/chats.json" STATUSLINE_CACHE_DIR="$WORK/tracks" TRANSCRIBER_RUNTIME_DIR="$RT" \
-  APP_MIC_PORT="$(cat "$RT/udp-port")" WORKER_RUN_DIR="$WORK/runs"
+  APP_MIC_PORT="$(cat "$RT/udp-port")" WORKER_RUN_DIR="$WORK/runs" APP_CHATS="$WORK/bin/chats" APP_CLOSE_WAIT=1
 
 "$PAGE" serve --port 0 >"$WORK/serve.out" 2>&1 &
 "$ROOT/bin/wait-until" --max 10 log "$WORK/serve.out" 'page serve: http' >/dev/null || fail "serve: $(cat "$WORK/serve.out")"
@@ -290,7 +316,6 @@ assert test "$(post /api/mic/start '{}')" = 200
 mic=$(jq -r .id "$WORK/body")
 assert like "$mic" "????????????????"
 assert grep -q "^remote-start {\"deliver\": \"/.*/pages-app/mic-$mic.txt\"}$" "$WORK/daemon.log"
-assert test "$(post /api/mic/start '{}')" = 409
 pcm() { "$PY" -c 'import sys; sys.stdout.buffer.write(b"\x01\x02" * int(sys.argv[1]))' "$1" >"$WORK/pcm"; }
 chunk() { curl -s -o "$WORK/body" -w '%{http_code}' -H "Content-Type: ${2:-application/octet-stream}" --data-binary @"$WORK/pcm" "$base/api/mic/$1/chunk"; }
 pcm 500
@@ -317,6 +342,15 @@ assert test "$(post "/api/mic/$mic/cancel" '{}')" = 200
 assert test "$(grep -c '^cancel$' "$WORK/daemon.log")" = 1
 pcm 320
 assert test "$(chunk "$mic")" = 404
+# A new start supersedes a take its page left open (a reload): it is cancelled, never a 409 for ten seconds.
+assert test "$(post /api/mic/start '{}')" = 200
+old=$(jq -r .id "$WORK/body")
+assert test "$(post /api/mic/start '{}')" = 200
+mic=$(jq -r .id "$WORK/body")
+assert test "$(chunk "$old")" = 404
+assert test "$(chunk "$mic")" = 200
+assert test "$(grep -c '^cancel$' "$WORK/daemon.log")" = 2
+assert test "$(post "/api/mic/$mic/cancel" '{}')" = 200
 # Behind `tailscale serve` the page's origin is https.
 assert test "$(post "/api/chat/$sid/key" '{"key": "esc"}' -H "Origin: https://127.0.0.1:$port")" = 200
 
@@ -388,8 +422,47 @@ assert test "$(jq -r .err "$WORK/body")" = "it had already gone to the chat"
 assert test "$(grep '^TEXT=' "$WORK/hs.log" | tr '\n' '|')" = 'TEXT="keep A"|'
 rm "$WORK/queue"
 
+# Past chats. The history is chat-find --recent, newest first, live ones in it too (the client marks them); a
+# search hands chat-find his words and maps its rows; a failed search is a 502 and is not cached.
+assert test "$(get "$base/api/history")" = 200
+assert test "$(jq -r '[.chats[] | .sid + "|" + .name + "|" + .text] | join(",")' "$WORK/body")" = "$sid|Fixture chat|,$past|Old chat|old words"
+assert test "$(get "$base/api/search?q=old%20%20words")" = 502
+assert like "$(jq -r .err "$WORK/body")" "chat-find failed: *index gone*"
+printf '[{"session": "%s", "name": "Old chat", "at": 1000, "cwd": "/x/old", "title": "t", "snippet": "…old words…"}]' "$past" >"$WORK/search.json"
+assert test "$(get "$base/api/search?q=old%20%20words")" = 200
+assert test "$(jq -r '.chats[0] | [.sid, .name, .cwd, .spoke, .title, .text] | join("|")' "$WORK/body")" = "$past|Old chat|/x/old|1000|t|…old words…"
+assert test "$(cat "$WORK/search-args")" = "--json --limit 40 -- old words"
+# Open: a live chat is only shown (a second resume would fork it); a past one runs `chats`' command in a new
+# Terminal window, its quotes escaped for AppleScript; a `chats` failure comes back in its own words.
+: >"$WORK/hs.log"
+assert test "$(post "/api/chat/$sid/open" '{}')" = 200
+assert test "$(jq -r .live "$WORK/body")" = true
+assert test ! -s "$WORK/hs.log"
+assert test "$(post "/api/chat/$past/open" '{}')" = 200
+assert test "$(jq -r '[.account, .source] | join("|")' "$WORK/body")" = "acc3|cache"
+assert grep -qF "do script \"cd \\\"/x/old\\\" && claude --resume $past\" end tell" "$WORK/hs.log"
+assert test "$(post "/api/chat/dead0000-2222-3333-4444-555555555555/open" '{}')" = 502
+assert test "$(jq -r .err "$WORK/body")" = "no transcript for dead0000-2222-3333-4444-555555555555"
+assert test "$(post "/api/chat/abc/open" '{}')" = 400
+# End: only a live terminal chat, never one at work; /exit typed into it, then its window closes once it is gone.
+# One that does not exit in time keeps its window.
+assert test "$(post "/api/chat/$wsid/close" '{}')" = 404
+sed -i '' 's/"status": "idle"/"status": "busy"/' "$WORK/sessions/$chatpid.json"; sleep 1.6
+assert test "$(post "/api/chat/$sid/close" '{}')" = 409
+sed -i '' 's/"status": "busy"/"status": "idle"/' "$WORK/sessions/$chatpid.json"; sleep 1.6
+: >"$WORK/hs.log"
+assert test "$(post "/api/chat/$sid/close" '{}')" = 504
+assert test "$(grep '^TEXT=' "$WORK/hs.log")" = 'TEXT="/exit"'
+assert test -z "$(grep 'close window' "$WORK/hs.log")"
+touch "$WORK/exit-ok"
+assert test "$(post "/api/chat/$sid/close" '{}')" = 200
+assert test "$(jq -r .window "$WORK/body")" = closed
+assert grep -qF 'if (count tabs of window j) is 1 then close window j' "$WORK/hs.log"
+assert test "$(get "$base/api/chats")" = 200
+assert test "$(jq -r '.chats | length' "$WORK/body")" = 0
+
 # It costs Claude Code nothing: no model call, no settings or hooks touched; the only programs it runs are ps,
-# Hammerspoon and chat-find, and the client polls only while it is on screen, at most once a second.
+# Hammerspoon, chat-find and chats (to open a past chat), and the client polls only while it is on screen, at most once a second.
 assert test -z "$(grep -nE 'anthropic|openai|claude -p|settings\.json|hooks' "$ROOT/share/pages/app.py")"
 assert test "$(grep -oE 'run\(\[[^],]+' "$ROOT/share/pages/app.py" | sort -u | tr '\n' ' ')" = 'run(["ps" run([HS run([sys.executable '
 assert test "$(grep -c 'setInterval(' "$ROOT/share/pages/app/app.js")" = 1
@@ -397,4 +470,4 @@ assert "$PY" -c 'import sys
 sys.exit("if (document.visibilityState !== \x27visible\x27) return;\n  tick++;" not in open(sys.argv[1]).read())' "$ROOT/share/pages/app/app.js"
 assert test "$(grep -c '^}, 1000);$' "$ROOT/share/pages/app/app.js")" = 1
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel), https origin, screen, menu mirror, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll"

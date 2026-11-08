@@ -7,6 +7,7 @@ store.py and app.py, the chats app's /app/ and /api/, beside it), because TCC re
 """
 
 import argparse
+import calendar
 import errno
 import gzip
 import hmac
@@ -338,6 +339,14 @@ class Server(ThreadingHTTPServer):
             super().handle_error(request, client_address)
 
 
+def local_time(at):
+    """The store's UTC stamp as Egor's local "Nov 8 14:05" (the raw stamp when it does not parse)."""
+    try:
+        return time.strftime("%b %-d %H:%M", time.localtime(calendar.timegm(time.strptime(at, "%Y-%m-%dT%H:%M:%SZ"))))
+    except ValueError:
+        return at
+
+
 def index_html():
     groups = {}
     for pid in store.all_pages():
@@ -357,7 +366,7 @@ def index_html():
     for chat, pages in sorted(groups.items(), key=lambda g: max(g[1])[0], reverse=True):
         out.append("<h2>%s<span class=count>%d</span></h2><div class=card>" % (html.escape(chat), len(pages)))
         out += ["<a class=row href='/p/%s/'><span class=t>%s</span><small>%s</small></a>"
-                % (pid, html.escape(title), html.escape(at)) for at, pid, title in sorted(pages, reverse=True)]
+                % (pid, html.escape(title), html.escape(local_time(at))) for at, pid, title in sorted(pages, reverse=True)]
         out.append("</div>")
     return "".join(out) + "</main>"
 
