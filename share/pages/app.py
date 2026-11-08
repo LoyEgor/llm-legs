@@ -1978,11 +1978,16 @@ def get(handler, path, query):
         full = os.path.join(static_dir(), name)
         try:
             with open(full, "rb") as fh:
-                body = fh.read()
+                filestat = os.fstat(fh.fileno())
+                tag = '"%x-%x"' % (filestat.st_mtime_ns, filestat.st_size)
+                # An unchanged file is revalidated, not sent again (166 KB per load on the iPad's Wi-Fi)
+                same = handler.headers.get("If-None-Match") == tag
+                body = b"" if same else fh.read()
         except OSError:
             handler.reply(404, b"not found\n")
             return True
-        handler.reply(200, body, TYPES[os.path.splitext(name)[1]], [("Cache-Control", "no-cache")])
+        headers = [("Cache-Control", "no-cache"), ("ETag", tag)]
+        handler.reply(304 if same else 200, body, TYPES[os.path.splitext(name)[1]], headers)
         return True
     if path == "/api/chats":
         handler.send_json(200, cached("chats", 2.5, chats))
