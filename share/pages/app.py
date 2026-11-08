@@ -1520,9 +1520,9 @@ class Mic:
     """One remote take: the browser's PCM relayed to the receiver as audio packets (its own streamID), padded with
     silence between HTTP bursts; the daemon writes the transcript to `path` instead of pasting it."""
 
-    def __init__(self, relay=True):
+    def __init__(self, relay=True, mic_id=None):
         self.relay = relay  # False: MacMic's stream is the take, nothing of ours goes to the receiver
-        self.id = os.urandom(8).hex()
+        self.id = mic_id or os.urandom(8).hex()
         self.stream = int.from_bytes(os.urandom(4), "big")
         self.seq = 0
         self.rest = b""
@@ -1700,6 +1700,22 @@ def mic_start(body=None):
     return 504, {"ok": False, "err": "transcriptions-gpt did not start recording"}
 
 
+def adopt(mic_id, verb):
+    """A take this server lost (a restart empties MICS) while the daemon still records it into scratch()/mic-<id>.txt,
+    no page holding one here: the page's next chunk, beat or stop takes it up again under its id, so what was said is
+    not lost (Egor 2026-11-09: 285 s into a take its chunks got 404 with the daemon still recording; only a restore
+    of the cancelled take brought the text back) -> the Mic, or None."""
+    if verb == "cancel" or not our_orphan():
+        return None
+    with MIC_LOCK:
+        if MICS:
+            return MICS.get(mic_id)
+        mic = MICS[mic_id] = Mic(relay=verb == "chunk", mic_id=mic_id)
+    if store is not None:
+        store.event("app", op="mic", path="adopt", error="a take this server had lost, taken up again at its %s" % verb)
+    return mic
+
+
 def our_orphan_after(mic):
     with MIC_LOCK:
         MICS.pop(mic.id, None)
@@ -1825,6 +1841,8 @@ def mic_post(path, body):
         return None
     with MIC_LOCK:
         mic = MICS.get(m.group(1))
+    if mic is None:
+        mic = adopt(m.group(1), m.group(2))
     if mic is None:
         return 404, {"ok": False, "err": "that dictation is over"}
     if m.group(2) == "chunk":

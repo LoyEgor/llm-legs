@@ -236,7 +236,7 @@ while True:
     elif verb == "macmic-wakeable":
         st["wakeable"], reply = True, "ok"
     elif verb == "orphan":
-        st["deliver"], st["state"], reply = "/gone/take.txt", "recording", "ok"
+        st["deliver"], st["state"], reply = arg or "/gone/take.txt", "recording", "ok"
     elif verb == "restore" and st["state"] in ("idle", "recording"):
         st["deliver"], st["state"], reply = json.loads(arg)["deliver"], "processing", "ok"
         threading.Thread(target=finish, args=("пятнадцать минут диктовки",), daemon=True).start()
@@ -479,6 +479,17 @@ assert test "$(post /api/mic/start '{}')" = 200
 assert test "$(grep -E '^(remote-start|cancel|bubble)' "$WORK/daemon.log" | cut -d' ' -f1 | tr '\n' ' ')" = "remote-start bubble cancel remote-start "
 mic=$(jq -r .id "$WORK/body")
 assert test "$(post "/api/mic/$mic/cancel" '{}')" = 200
+# A take this server lost (Egor 2026-11-09: 285 s in, its chunks got 404 with the daemon still recording it): the
+# page's next chunk takes it up again under its id, and its stop gets the text the daemon writes to its file. A cancel
+# for a lost id adopts nothing.
+lost=0123456789abcdef
+"$PY" -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(("orphan %s\n" % sys.argv[2]).encode()); s.recv(64)' "$RT/control.sock" "$("$PY" -c 'import tempfile; print(tempfile.gettempdir())')/pages-app/mic-$lost.txt"
+assert test "$(post "/api/mic/fedcba9876543210/cancel" '{}')" = 404
+pcm 500
+assert test "$(chunk "$lost")" = 200
+assert test "$(jq -s '[.[] | select(.path == "adopt")] | length' "$PAGES_DIR/.events.jsonl")" = 1
+assert test "$(post "/api/mic/$lost/stop" '{}')" = 200
+assert test "$(jq -r '[.ok, .text] | join("|")' "$WORK/body")" = "true|текст с iPad"
 # Behind `tailscale serve` the page's origin is https.
 assert test "$(post "/api/chat/$sid/key" '{"key": "esc"}' -H "Origin: https://127.0.0.1:$port")" = 200
 
