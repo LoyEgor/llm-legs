@@ -383,7 +383,7 @@ cat >"$TMUX_STUB" <<'EOF'
 #!/bin/bash
 case "$*" in
   *list-clients*) printf '/dev/ttys009\t%%3\t/dev/ttys044\n' ;;
-  *list-panes*) [ -z "${STUB_NO_PANE:-}" ] && printf '/dev/ttys009\t%%3\tc-11111111\t1\t110x60\t0\n' ;;
+  *list-panes*) [ ! -e "${0%/*}/no-pane" ] && printf '/dev/ttys009\t%%3\tc-11111111\t1\t110x60\t0\n' ;;
 esac
 exit 0
 EOF
@@ -398,7 +398,9 @@ assert grep -Fq '"/dev/ttys009", {mode="bare_shell"' <<<"$PAYLOAD"
 run_switch TERM_PROGRAM=tmux CHAT_TMUX_BIN="$TMUX_STUB" CHAT_TMUX_SOCKET="$WORK/tmux.sock" -- --self --cwd "$FOREIGN" olx "$FSID"
 assert test "$RC" -eq 0
 assert grep -q '"/dev/ttys009", {mode="has_chat"' <<<"$PAYLOAD"
-run_switch TERM_PROGRAM=tmux STUB_NO_PANE=1 CHAT_TMUX_BIN="$TMUX_STUB" CHAT_TMUX_SOCKET="$WORK/tmux.sock" -- --self --cwd "$FOREIGN" olx "$FSID"
+touch "$WORK/no-pane"  # a file, not a variable: chat_tmux hands tmux only what a login shell starts from
+run_switch TERM_PROGRAM=tmux CHAT_TMUX_BIN="$TMUX_STUB" CHAT_TMUX_SOCKET="$WORK/tmux.sock" -- --self --cwd "$FOREIGN" olx "$FSID"
+rm -f "$WORK/no-pane"
 assert test "$RC" -eq 1
 assert grep -Fq "a tmux other than the chats' own" <<<"$OUT"
 assert test -z "$PAYLOAD"
