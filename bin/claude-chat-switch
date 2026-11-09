@@ -5,6 +5,7 @@ set -u
 PROFILES_DIR="$HOME/.claude-profiles"
 CHAT_RESUME="$(dirname "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")")/share/chat_resume.py"
 GATEWAY_AUTH="$(dirname "$CHAT_RESUME")/gateway_auth.py"
+CHAT_TMUX="$(dirname "$CHAT_RESUME")/chat_tmux.py"
 
 mode=unknown
 die() { printf 'claude-chat-switch: mode=%s: %s\n' "$mode" "$*" >&2; exit 1; }
@@ -346,10 +347,11 @@ fi
 command -v jq >/dev/null 2>&1 || die "'jq' is required for the sessions registry lookup but is not on PATH."
 
 if [ "$self_mode" -eq 1 ]; then
-  # tty->tab targeting is Apple Terminal AppleScript; elsewhere the arm would succeed
-  # and only fail minutes later, after the caller already promised the switch.
+  # tty->tab targeting is Apple Terminal AppleScript, or the chats' own tmux through
+  # share/chat_tmux.py; elsewhere the arm would succeed and only fail minutes later,
+  # after the caller already promised the switch.
   case "${TERM_PROGRAM:-}" in
-    ''|Apple_Terminal) ;;
+    ''|Apple_Terminal|tmux) ;;
     *) die "this chat runs in ${TERM_PROGRAM}, not Apple Terminal; the switch can only be typed there." ;;
   esac
   claude_pid=$(find_claude_pid) || die "could not locate the claude process for this chat (no 'claude' ancestor)."
@@ -357,6 +359,9 @@ if [ "$self_mode" -eq 1 ]; then
   { [ -n "$tty_dev" ] && [ "$tty_dev" != "?" ] && [ "$tty_dev" != "??" ]; } \
     || die "this chat has no terminal (background/daemon session); nothing to type into."
   case "$tty_dev" in /dev/*) ;; *) tty_dev="/dev/$tty_dev" ;; esac
+  if [ "${TERM_PROGRAM:-}" = tmux ] && ! python3 -B "$CHAT_TMUX" pane "$tty_dev" >/dev/null 2>&1; then
+    die "this chat runs in a tmux other than the chats' own; the switch can only be typed there or in Apple Terminal."
+  fi
   # The chat may be running under a claudegpt wrapper that keeps the tty after the inner claude
   # exits; the resume has to wait for THAT pid, or it is typed into the wrapper's own prompt.
   classify_tab "$claude_pid" true || true
@@ -366,6 +371,10 @@ elif [ "$front_mode" -eq 1 ]; then
 
   tty_dev=$(osascript -e 'tell application "Terminal" to get tty of selected tab of front window' 2>/dev/null)
   [ -n "$tty_dev" ] || die "could not read the tty of the frontmost Terminal tab."
+  # A window looking at a chat in the chats' tmux: the chat is on the pane its client shows.
+  if shown=$(python3 -B "$CHAT_TMUX" client "$tty_dev" 2>/dev/null); then
+    tty_dev=${shown#* }
+  fi
 
   classify_tab
 fi

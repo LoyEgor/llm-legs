@@ -375,6 +375,34 @@ assert test "$RC" -eq 1
 assert grep -Fq 'mode=unsupported' <<<"$OUT"
 assert test -z "$PAYLOAD"
 
+# --- the chats' tmux (share/chat_tmux.py over a stub tmux) ------------------
+# The front tab (ttys009) is a window attached to a chat: the switch is typed on the pane its client shows (ttys044).
+# --self from inside a pane is accepted only on the chats' own server.
+TMUX_STUB="$WORK/tmux-stub"
+cat >"$TMUX_STUB" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *list-clients*) printf '/dev/ttys009\t%%3\t/dev/ttys044\n' ;;
+  *list-panes*) [ -z "${STUB_NO_PANE:-}" ] && printf '/dev/ttys009\t%%3\tc-11111111\t1\t110x60\t0\n' ;;
+esac
+exit 0
+EOF
+chmod +x "$TMUX_STUB"
+: >"$WORK/tmux.sock"
+run_switch CHAT_TMUX_BIN="$TMUX_STUB" CHAT_TMUX_SOCKET="$WORK/tmux.sock" STUB_PS_TABLE="$SHELL_TABLE" \
+  STUB_CWD="$FOREIGN_REAL" -- --front olx
+assert test "$RC" -eq 0
+assert grep -Fq '"/dev/ttys044", {mode="bare_shell"' <<<"$PAYLOAD"
+run_switch STUB_PS_TABLE="$SHELL_TABLE" STUB_CWD="$FOREIGN_REAL" -- --front olx
+assert grep -Fq '"/dev/ttys009", {mode="bare_shell"' <<<"$PAYLOAD"
+run_switch TERM_PROGRAM=tmux CHAT_TMUX_BIN="$TMUX_STUB" CHAT_TMUX_SOCKET="$WORK/tmux.sock" -- --self --cwd "$FOREIGN" olx "$FSID"
+assert test "$RC" -eq 0
+assert grep -q '"/dev/ttys009", {mode="has_chat"' <<<"$PAYLOAD"
+run_switch TERM_PROGRAM=tmux STUB_NO_PANE=1 CHAT_TMUX_BIN="$TMUX_STUB" CHAT_TMUX_SOCKET="$WORK/tmux.sock" -- --self --cwd "$FOREIGN" olx "$FSID"
+assert test "$RC" -eq 1
+assert grep -Fq "a tmux other than the chats' own" <<<"$OUT"
+assert test -z "$PAYLOAD"
+
 CHAT_TABLE='100 1 S /bin/zsh -zsh
 103 100 S+ /usr/local/bin/claude claude'
 GATEWAY_TABLE='100 1 S /bin/zsh -zsh

@@ -63,6 +63,16 @@ until_ok got_all || fail "pane bytes: $(bytes "$WORK/bytes")"
 asserts=$((asserts + 1))
 assert [ -z "$(t list-buffers)" ]   # every paste deletes its buffer
 
+# keys --literal types its text as is: "C-u" is three characters, not Ctrl+U.
+helper open --line "stty raw -echo; exec cat >$WORK/lit" --name lit >/dev/null
+until_ok [ -e "$WORK/lit" ] || fail "the literal stub did not start"
+perl -e 'select(undef,undef,undef,0.3)'
+helper keys lit --literal C-u
+got_lit() { [ "$(bytes "$WORK/lit")" = "C - u" ]; }
+until_ok got_lit || fail "literal bytes: $(bytes "$WORK/lit")"
+asserts=$((asserts + 1))
+helper end lit
+
 # The server's environment, from a launchd-like start: UTF-8, tmux's TERM, Homebrew on PATH.
 helper open --line "printf '%s|%s|%s|%s' \"\$TERM\" \"\$LANG\" \"\$TERM_PROGRAM\" \"\$COLORTERM\" >$WORK/env; command -v tmux >>$WORK/env" --name env >/dev/null
 until_ok has "$WORK/env" tmux || fail "env: $(cat "$WORK/env" 2>/dev/null)"
@@ -93,10 +103,27 @@ outer -f "$WORK/outer.conf" new-session -d -x 90 -y 40 \
 seen() { [ "$(t display -p -t =scr: '#{session_attached} #{window_width}x#{window_height}')" = "$1" ]; }
 until_ok seen "1 90x40" || fail "attached: $(t display -p -t =scr: '#{session_attached} #{window_width}x#{window_height}')"
 asserts=$((asserts + 1))
+# The viewer's tty (a Terminal tab's, at the Mac) leads to the pane it shows; view raises that tab (osascript stub:
+# "front" for the viewer's tty only) and opens nothing.
+viewer=$(outer display -p '#{pane_tty}')
+assert [ "$(helper client "$viewer")" = "$(t display -p -t =scr: '#{pane_id} #{pane_tty}')" ]
+refute helper client /dev/ttys999
+printf '#!/bin/sh\n[ "$3" = "%s" ] && echo front\nexit 0\n' "$viewer" >"$WORK/osascript"
+printf '#!/bin/sh\necho "$@" >>%s/opened\n' "$WORK" >"$WORK/open"
+chmod 755 "$WORK/osascript" "$WORK/open"
+export CHAT_TMUX_OSASCRIPT="$WORK/osascript" CHAT_TMUX_OPEN="$WORK/open"
+assert [ "$(helper view scr)" = front ]
+assert [ ! -e "$WORK/opened" ]
 outer kill-server
 until_ok seen "0 90x40" || fail "detached: $(t display -p -t =scr: '#{session_attached} #{window_width}x#{window_height}')"
 asserts=$((asserts + 1))
 assert [ "$(helper ls | grep -c '^scr ')" = 1 ]   # its viewer gone, the session stays
+# No viewer: a new Terminal window gets a .command that attaches (stubbed open records it).
+assert [ "$(helper view scr)" = opened ]
+assert grep -qxF -- "-a Terminal $WORK/s/view/scr.command" "$WORK/opened"
+assert grep -q " attach scr\$" "$WORK/s/view/scr.command"
+assert [ -x "$WORK/s/view/scr.command" ]
+unset CHAT_TMUX_OSASCRIPT CHAT_TMUX_OPEN
 
 # End: by tty, by name; the server stays for the next chat.
 helper end "$tty"
@@ -109,4 +136,4 @@ for s in $(t list-sessions -F '#{session_name}'); do helper end "$s"; done
 assert [ -z "$(helper ls)" ]   # a server with no session left lists nothing, no error
 assert [ "$(python3 -B -c "import sys; sys.path.insert(0, '$ROOT/share'); import chat_tmux as c; print(' '.join(c.attach_argv('x')[1:3] + c.attach_argv('x')[-2:]))")" = "-S $CHAT_TMUX_SOCKET -t =x" ]
 
-printf 'PASS: %s asserts; chat_tmux starts a chat line detached in a login shell on its own socket (UTF-8, tmux-256color, Homebrew PATH from a launchd-like start), finds its pane by tty, pastes bracketed with LF as CR and clears, sends a lone Escape, reads the screen and its scrollback, names sessions c-<sid8> (-2 on a clash), keeps a detached viewer'\''s size, and ends one session leaving the server\n' "$asserts"
+printf 'PASS: %s asserts; chat_tmux starts a chat line detached in a login shell on its own socket (UTF-8, tmux-256color, Homebrew PATH from a launchd-like start), finds its pane by tty, pastes bracketed with LF as CR and clears, sends a lone Escape, types literal text, maps a viewer'\''s tty to its pane and raises it or opens a new view, reads the screen and its scrollback, names sessions c-<sid8> (-2 on a clash), keeps a detached viewer'\''s size, and ends one session leaving the server\n' "$asserts"

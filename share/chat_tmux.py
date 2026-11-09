@@ -14,8 +14,12 @@ CLI (the first word picks; a target is a pane id %N, a tty /dev/ttysN or a sessi
   chat_tmux.py capture TARGET [--history LINES]                 -> the screen (with that much scrollback)
   chat_tmux.py paste TARGET [--no-enter] <TEXT on stdin>        -> a bracketed paste, then Enter
   chat_tmux.py keys TARGET KEY...                               -> tmux key names (Escape, Enter, Up, C-u, S-Enter)
+  chat_tmux.py keys TARGET --literal TEXT                       -> TEXT typed as is
   chat_tmux.py end TARGET                                       -> its session ends
   chat_tmux.py attach SESSION                                   -> exec's a client on it (a Terminal window's command)
+  chat_tmux.py client TTY                                       -> "<pane> <pane tty>" a client on TTY shows (exit 1: none)
+  chat_tmux.py view TARGET                                      -> its chat on the Mac: "front" (a viewer's tab raised)
+                                                                   or "opened" (a new Terminal window attached)
 """
 
 import os
@@ -182,6 +186,75 @@ def attach_argv(session):
     return argv("attach-session", "-t", "=" + session)
 
 
+def client(tty):
+    """A tmux client on `tty` (a Terminal tab looking at a chat) -> (the pane it shows, that pane's tty), or None:
+    Better Terminal reads the chat's foreground there, claude-chat-switch --front types there."""
+    if not running():
+        return None
+    try:
+        out = tmux("list-clients", "-F", "#{client_tty}\t#{pane_id}\t#{pane_tty}")
+    except TmuxError:
+        return None
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0] == tty:
+            return parts[1], parts[2]
+    return None
+
+
+# A tab is selected by its tty with Terminal's AppleScript (Automation, granted to Hammerspoon, pagesd and Terminal
+# itself); a new window is a .command opened by Launch Services, which needs no grant.
+FRONT_TAB = """on run argv
+tell application id "com.apple.Terminal"
+repeat with w in windows
+repeat with t in tabs of w
+if (tty of t as text) is (item 1 of argv) then
+try
+set miniaturized of w to false
+end try
+set selected of t to true
+set index of w to 1
+activate
+return "front"
+end if
+end repeat
+end repeat
+end tell
+return ""
+end run"""
+OSASCRIPT = os.environ.get("CHAT_TMUX_OSASCRIPT") or "/usr/bin/osascript"
+OPEN = os.environ.get("CHAT_TMUX_OPEN") or "/usr/bin/open"
+
+
+def view(word):
+    """Its chat on the Mac (Open on Mac, the menubar, the `chats` picker): the Terminal tab of a client already on
+    `word`'s session comes to the front, else a new Terminal window attaches to it -> "front" | "opened". Closing
+    that window only detaches: the chat runs on."""
+    session = tmux("display-message", "-p", "-t", target(word), "#{session_name}").strip()
+    for tty in tmux("list-clients", "-t", "=" + session, "-F", "#{client_tty}").split():
+        try:
+            done = subprocess.run([OSASCRIPT, "-e", FRONT_TAB, tty], capture_output=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if done.returncode == 0 and done.stdout.strip() == b"front":
+            return "front"
+    folder = os.path.join(os.path.dirname(SOCKET), "view")
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    path = os.path.join(folder, session + ".command")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("#!/bin/sh\nexec %s -B %s attach %s\n" % (
+            shlex.quote(sys.executable or "/usr/bin/python3"), shlex.quote(os.path.abspath(__file__)),
+            shlex.quote(session)))
+    os.chmod(path, 0o700)
+    try:
+        done = subprocess.run([OPEN, "-a", "Terminal", path], capture_output=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise TmuxError("open: %s" % str(error)[:200])
+    if done.returncode != 0:
+        raise TmuxError("open: %s" % (done.stderr.decode("utf-8", "replace").strip()[:200] or done.returncode))
+    return "opened"
+
+
 def main(args):
     if not args:
         print(__doc__.split("CLI")[1].strip(), file=sys.stderr)
@@ -214,11 +287,19 @@ def main(args):
         elif verb == "paste":
             paste(target(rest[0]), sys.stdin.read(), enter="--no-enter" not in rest)
         elif verb == "keys":
-            keys(target(rest[0]), *rest[1:])
+            literal = rest[1:2] == ["--literal"]
+            keys(target(rest[0]), *rest[2 if literal else 1:], literal=literal)
         elif verb == "end":
             end(rest[0])
         elif verb == "attach":
             os.execvpe(TMUX, attach_argv(rest[0]), env())
+        elif verb == "client":
+            shown = client(rest[0])
+            if not shown:
+                return 1
+            print(*shown)
+        elif verb == "view":
+            print(view(rest[0]))
         else:
             raise TmuxError("unknown verb %s" % verb)
     except (TmuxError, IndexError, ValueError) as error:
