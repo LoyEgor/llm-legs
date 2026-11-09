@@ -19,9 +19,11 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
-# A launchd start: no locale, a short PATH, no rc files of his (an empty ZDOTDIR).
+# A launchd start: no locale, a short PATH, no rc files of his (an empty ZDOTDIR); and a starter inside a chat,
+# whose Claude Code variables must reach no pane.
 { unset LANG LC_ALL LC_CTYPE TMUX; } 2>/dev/null
-export CHAT_TMUX_BIN="$TMUX_BIN" PATH=/usr/bin:/bin ZDOTDIR="$WORK/zdot"
+export CHAT_TMUX_BIN="$TMUX_BIN" PATH=/usr/bin:/bin ZDOTDIR="$WORK/zdot" CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=sdk-cli \
+  CLAUDE_CONFIG_DIR="$WORK/profile"
 mkdir -p "$ZDOTDIR"
 
 asserts=0
@@ -73,10 +75,10 @@ until_ok got_lit || fail "literal bytes: $(bytes "$WORK/lit")"
 asserts=$((asserts + 1))
 helper end lit
 
-# The server's environment, from a launchd-like start: UTF-8, tmux's TERM, Homebrew on PATH.
-helper open --line "printf '%s|%s|%s|%s' \"\$TERM\" \"\$LANG\" \"\$TERM_PROGRAM\" \"\$COLORTERM\" >$WORK/env; command -v tmux >>$WORK/env" --name env >/dev/null
+# The server's environment, from a launchd-like start: UTF-8, tmux's TERM, Homebrew on PATH, no Claude Code variable.
+helper open --line "printf '%s|%s|%s|%s|%s|' \"\$TERM\" \"\$LANG\" \"\$TERM_PROGRAM\" \"\$COLORTERM\" \"\$CLAUDECODE\$CLAUDE_CODE_ENTRYPOINT\$CLAUDE_CONFIG_DIR\" >$WORK/env; command -v tmux >>$WORK/env" --name env >/dev/null
 until_ok has "$WORK/env" tmux || fail "env: $(cat "$WORK/env" 2>/dev/null)"
-assert grep -q '^tmux-256color|en_US.UTF-8|tmux|truecolor/' "$WORK/env"
+assert grep -q '^tmux-256color|en_US.UTF-8|tmux|truecolor||/' "$WORK/env"
 assert [ "$(t show -gv prefix)" = C-] ]
 assert [ "$(t show -gv mouse)" = on ]
 

@@ -49,12 +49,19 @@ class TmuxError(Exception):
     pass
 
 
+# What a Terminal tab's login shell starts from (launchd's user session) is all a tmux client passes on: the client
+# that starts the server gives it its environment, every pane inherits that, and a caller's own would leak into each
+# chat (a server started from inside a chat registered the next one as sdk-cli, a worker; its CLAUDE_CONFIG_DIR
+# would pick another profile). The login shell builds the rest as in a tab. TERM: an attaching client draws with it
+# (a pane's own is default-terminal).
+KEPT_ENV = ("HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "SSH_AUTH_SOCK", "__CF_USER_TEXT_ENCODING", "ZDOTDIR",
+            "LANG", "LC_ALL", "LC_CTYPE", "TERM")
+
+
 def env():
-    """The tmux client's environment; the first client's becomes the server's, so a launchd starter's gaps are
-    filled here: UTF-8 and Homebrew on PATH."""
-    out = dict(os.environ)
-    out.pop("TMUX", None)  # a caller inside another tmux still reaches this server, never its own
-    out["PATH"] = BASE_PATH + (":" + out["PATH"] if out.get("PATH") else "")
+    """The tmux client's environment: KEPT_ENV only, Homebrew on PATH (a launchd starter has none), UTF-8."""
+    out = {key: os.environ[key] for key in KEPT_ENV if os.environ.get(key)}
+    out["PATH"] = BASE_PATH
     if "UTF-8" not in (out.get("LC_ALL") or out.get("LC_CTYPE") or out.get("LANG") or ""):
         out["LANG"] = "en_US.UTF-8"
     return out
