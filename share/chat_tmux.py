@@ -182,11 +182,68 @@ def capture(pane, history=0):
 
 def end(word):
     """The session `word` (a name, or a pane's / tty's session) ends. Only after its chat exited: a live claude
-    killed by SIGHUP never runs /exit."""
+    killed by SIGHUP never runs /exit. Its viewers' windows close rather than stay on "[exited]" (close_ended)."""
     if word.startswith(("%", "/dev/")):
         pane = target(word)
         word = tmux("display-message", "-p", "-t", pane, "#{session_name}").strip()
+    ttys = tmux("list-clients", "-t", "=" + word, "-F", "#{client_tty}").split()
+    windows = viewer_windows(ttys) if ttys else []
     tmux("kill-session", "-t", "=" + word)
+    if windows:
+        close_ended(windows)
+
+
+# A viewer (`view`'s window, one tab) of a session that ends (the app's close or move) would stay on "[exited]". Its
+# window is found while its tab still shows the client, and closed once that tab's shell has ended (the .command's
+# exit): a tab whose shell runs on (`chats` attached in a tab of his) is never closed.
+VIEWER_WINDOWS = """on run argv
+set found to ""
+tell application id "com.apple.Terminal"
+repeat with w in windows
+try
+if (count of tabs of w) is 1 and argv contains (tty of tab 1 of w as text) then set found to found & (id of w) & " "
+end try
+end repeat
+end tell
+return found
+end run"""
+CLOSE_ENDED = """on run argv
+tell application id "com.apple.Terminal"
+repeat 12 times
+set waiting to 0
+repeat with i in argv
+try
+set w to window id ((contents of i) as integer)
+if (count of (processes of tab 1 of w)) is 0 then
+close w
+else
+set waiting to waiting + 1
+end if
+end try
+end repeat
+if waiting is 0 then return
+delay 0.25
+end repeat
+end tell
+end run"""
+
+
+def viewer_windows(ttys):
+    """Terminal's one-tab windows on these client ttys -> their window ids."""
+    try:
+        done = subprocess.run([OSASCRIPT, "-e", VIEWER_WINDOWS, *ttys], capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [w for w in done.stdout.decode("utf-8", "replace").split() if w.isdigit()]
+
+
+def close_ended(windows):
+    """Those windows close once their shells have ended, within 3 s, without holding the caller up."""
+    try:
+        subprocess.Popen([OSASCRIPT, "-e", CLOSE_ENDED, *windows], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
 
 
 def attach_argv(session):

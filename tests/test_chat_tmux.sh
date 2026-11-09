@@ -128,7 +128,20 @@ assert [ -x "$WORK/s/view/scr.command" ]
 # open --view (the menubar's reopen, tmux phase 5): the chat starts detached and its view comes up at once.
 assert [ "$(helper open --line 'sleep 30' --name opv --view | cut -d' ' -f1,4)" = "opv opened" ]
 assert grep -qxF -- "-a Terminal $WORK/s/view/opv.command" "$WORK/opened"
+# Its end (the app's close or move) with a viewer on it: the viewer's window (osascript stub: id 42 for the client's
+# tty) is found before the session goes and handed to the closer, which closes it once its shell has ended.
+outer -f "$WORK/outer.conf" new-session -d -x 90 -y 40 "env -u TMUX python3 -B $HELPER attach opv"
+watched() { [ "$(t display -p -t =opv: '#{session_attached}')" = 1 ]; }
+until_ok watched || fail "opv not attached"
+viewer=$(outer display -p '#{pane_tty}')
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>%s/osa\ncase "$2" in *"set found"*) [ "$3" = "%s" ] && echo 42;; esac\nexit 0\n' \
+  "$WORK" "$viewer" >"$WORK/osascript"
 helper end opv
+refute grep -q '^opv ' <(helper ls)
+assert grep -qxF "end run $viewer" "$WORK/osa"
+closed() { grep -qxF "end run 42" "$WORK/osa"; }
+until_ok closed || fail "no close of window 42: $(tail -3 "$WORK/osa")"
+asserts=$((asserts + 1))
 unset CHAT_TMUX_OSASCRIPT CHAT_TMUX_OPEN
 
 # End: by tty, by name; the server stays for the next chat.
