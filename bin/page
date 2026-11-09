@@ -719,7 +719,9 @@ def ts_host():
     if status.get("BackendState") != "Running" or not name:
         return None
     served = tailscale("serve", "status", timeout=4)
-    return name if served and "127.0.0.1:%d" % PORT in served.stdout else None
+    # A rename (tailscale set --hostname) leaves serve on the old name: that is not served.
+    return name if served and "https://%s " % name in served.stdout and "127.0.0.1:%d" % PORT in served.stdout \
+        else None
 
 
 def cmd_tailscale(args):
