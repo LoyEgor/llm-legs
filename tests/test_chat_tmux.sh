@@ -125,6 +125,10 @@ assert [ "$(helper view scr)" = opened ]
 assert grep -qxF -- "-a Terminal $WORK/s/view/scr.command" "$WORK/opened"
 assert grep -q " attach scr\$" "$WORK/s/view/scr.command"
 assert [ -x "$WORK/s/view/scr.command" ]
+# open --view (the menubar's reopen, tmux phase 5): the chat starts detached and its view comes up at once.
+assert [ "$(helper open --line 'sleep 30' --name opv --view | cut -d' ' -f1,4)" = "opv opened" ]
+assert grep -qxF -- "-a Terminal $WORK/s/view/opv.command" "$WORK/opened"
+helper end opv
 unset CHAT_TMUX_OSASCRIPT CHAT_TMUX_OPEN
 
 # End: by tty, by name; the server stays for the next chat.

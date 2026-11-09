@@ -3024,6 +3024,31 @@ end
 assert(announcedRow, "an active experiment is not announced in the menu")
 assert(announcedRow.disabled == true, "the experiment announcement must not be clickable")
 
+-- An experiment's closed chat reopens in the chats' tmux with its view up (tmux phase 5):
+-- chat_tmux.py open --line <chats' command> --view, no AppleScript.
+do
+  local tasks, scripts = {}, {}
+  local mod = loadModule({ schema = 1, vendors = {}, experiments = {
+    { text = "EXPERIMENT chat-trial until 2026-12-01", chat = "0a0b0c0d-1111-4222-8333-444444444444" } } },
+    driveTasks(tasks), nil, nil, function(script) scripts[#scripts + 1] = script; return true, true, {} end)
+  mod.chatsCmd, mod.chatTmuxCmd = "/fixture/bin/chats", "/fixture/share/chat_tmux.py"
+  local row
+  for _, item in ipairs(mod.menuItems()) do
+    if titleText(item):match("EXPERIMENT chat%-trial") then row = item end
+  end
+  assert(row and row.fn, "an experiment with its chat is not clickable")
+  row.fn()
+  assert(tasks[1] and tasks[1].path == "/fixture/bin/chats"
+    and table.concat(tasks[1].args, " ") == "--open-command 0a0b0c0d-1111-4222-8333-444444444444",
+    "an experiment's click did not ask bin/chats for its reopen command")
+  tasks[1].callback(0, "cd /x && claude --resume 0a0b0c0d-1111-4222-8333-444444444444\n", "")
+  assert(tasks[2] and tasks[2].path == "/usr/bin/python3" and #tasks[2].args == 6
+    and table.concat(tasks[2].args, "|") == "-B|/fixture/share/chat_tmux.py|open|--line|"
+      .. "cd /x && claude --resume 0a0b0c0d-1111-4222-8333-444444444444|--view",
+    "a closed chat did not start in the chats' tmux with its view")
+  assert(#scripts == 0, "a closed chat in the chats' tmux was also typed into Terminal")
+end
+
 local quietFixture = {
   schema = 1,
   vendors = { claude = { available = false }, codex = { available = false }, gemini = { available = false } },

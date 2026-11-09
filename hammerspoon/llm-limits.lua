@@ -2896,7 +2896,9 @@ local function openLoginTerminal(command)
 end
 
 -- An experiment's verdict is decided in the chat that set it up: a chat still running gets its
--- tab focused (a second resume would fork the session), any other reopens in a new Terminal window.
+-- tab focused (a second resume would fork the session), any other reopens in the chats' tmux
+-- with a Terminal window attached to it (share/chat_tmux.py open --view, tmux phase 5; closing
+-- the window only detaches), or in a new Terminal window where that helper cannot run.
 local function openChatSession(session)
   local snapshot = readChats()
   for _, row in ipairs(type(snapshot) == "table" and type(snapshot.rows) == "table" and snapshot.rows or {}) do
@@ -2915,7 +2917,15 @@ local function openChatSession(session)
       hs.alert.show("no chat to open: " .. ((stderr or ""):match("[^\r\n]+") or "unknown error"), 3)
       return
     end
-    openLoginTerminal(command)
+    local helper = M.chatTmuxCmd or (repoRoot and repoRoot .. "/share/chat_tmux.py")
+    local start
+    start = helper and hs.task.new("/usr/bin/python3", function(startCode, _, startErr)
+      start = nil
+      if startCode ~= 0 then
+        hs.alert.show("chat did not start: " .. ((startErr or ""):match("[^\r\n]+") or "tmux"), 3)
+      end
+    end, { "-B", helper, "open", "--line", command, "--view" })
+    if not start or not start:start() then openLoginTerminal(command) end
   end, { "--open-command", session })
   if not task or not task:start() then
     task = nil

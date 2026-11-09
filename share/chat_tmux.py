@@ -9,6 +9,7 @@ running the chat's line that stays a shell after the chat ends, as a Terminal ta
 
 CLI (the first word picks; a target is a pane id %N, a tty /dev/ttysN or a session name):
   chat_tmux.py open FILE|--line LINE [--name NAME] [--cwd DIR]  -> "<session> <pane> <tty>"
+               ... --view                                       -> "<session> <pane> <tty> opened" (its view up too)
   chat_tmux.py ls                                               -> "<session> <pane> <tty> <pid> <WxH> <attached>"
   chat_tmux.py pane TTY                                         -> "<pane>" (exit 1: no pane on it)
   chat_tmux.py capture TARGET [--history LINES]                 -> the screen (with that much scrollback)
@@ -280,7 +281,15 @@ def main(args):
             else:
                 name = opt("--name")
             got = start(line, name, opt("--cwd"))
-            print(got["session"], got["pane"], got["tty"])
+            if "--view" not in rest:
+                print(got["session"], got["pane"], got["tty"])
+                return 0
+            try:
+                shown = view(got["pane"])
+            except TmuxError as error:  # the chat runs all the same; its view can be asked for again
+                print("chat_tmux: view: %s" % error, file=sys.stderr)
+                shown = "unshown"
+            print(got["session"], got["pane"], got["tty"], shown)
         elif verb == "ls":
             for tty, p in sorted(panes().items(), key=lambda kv: kv[1]["session"]):
                 print(p["session"], p["pane"], tty, p["pid"], p["size"], p["attached"])

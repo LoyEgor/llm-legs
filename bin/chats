@@ -60,7 +60,8 @@ USAGE = ("usage: chats --open-command SESSION [--account NAME] [--timeout SECOND
          "usage: chats [--days N | --all] [--print]\n"
          "usage: chats --pin SESSION | --unpin SESSION\n"
          "  ↑↓ chat · ←→ account (one ring over both lines) · shift+↑↓ line\n"
-         "  type to filter · enter opens it here (one open in the chats' tmux: attaches) · ^T pins/unpins it\n"
+         "  type to filter · enter opens it in the chats' tmux, this tab attached (one open: attaches)\n"
+         "  ^T pins/unpins it\n"
          "  a pinned chat that is not open sits at the very top, marked %s\n"
          "  the account follows the chat's live cache, else the optimal one\n"
          "  mouse: click row · click again opens\n"
@@ -1161,6 +1162,28 @@ def main():
     launch = "cd %s && %s" % (shlex.quote(cwd), shlex.join(command))
     if show:
         print(launch)
+        return
+    open_chat(command, cwd, launch)
+
+
+def open_chat(command, cwd, launch):
+    """The picked chat runs (its argv `command` in `cwd`; `launch` the same as one shell line). His chats run in the
+    chats' tmux (tmux phase 5, Egor approved 2026-11-09): typed in one of its panes, the chat runs right there, as it
+    did in a tab; elsewhere it starts in a session of its own and this tab attaches to it (closing the tab only
+    detaches), or from inside another tmux its Terminal view comes up."""
+    try:
+        here = chat_tmux.pane_of(os.ttyname(0))
+    except (OSError, chat_tmux.TmuxError):
+        here = None
+    if not here:
+        try:
+            got = chat_tmux.start(launch)
+            if os.environ.get("TMUX"):
+                print("chats: %s" % chat_tmux.view(got["pane"]))
+                return
+        except chat_tmux.TmuxError as error:
+            die("cannot open the chat (%s); it is: %s" % (error, launch))
+        os.execvpe(chat_tmux.TMUX, chat_tmux.attach_argv(got["session"]), chat_tmux.env())
         return
     try:
         os.chdir(cwd)

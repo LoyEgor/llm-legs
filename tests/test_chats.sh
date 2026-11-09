@@ -1259,6 +1259,38 @@ with patch.object(chats.chat_tmux, "panes", return_value={}), patch.object(chats
     assert chats.live_pane("alive-sid") is None and not run.called
 PYPANE
 assert [ "$?" -eq 0 ]
+# A closed chat picked (tmux phase 5): typed in a pane of the chats' tmux it runs right there; in a Terminal tab it
+# starts in a session of its own and the tab attaches to it; inside another tmux its view comes up.
+python3 - "$SCRIPT" <<'PYOPEN'
+import importlib.machinery, importlib.util, os, sys
+from unittest.mock import patch
+
+loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
+spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+t = chats.chat_tmux
+argv, launch = ["claude", "--resume", "s1"], "cd /tmp && claude --resume s1"
+got = {"session": "c-s1", "pane": "%7", "tty": "/dev/ttys050"}
+with patch.object(chats.os, "ttyname", return_value="/dev/ttys040"), patch.object(t, "pane_of", return_value="%3"), \
+        patch.object(t, "start") as start, patch.object(chats.os, "chdir") as chdir, \
+        patch.object(chats.os, "execvp") as execvp:
+    chats.open_chat(argv, "/tmp", launch)
+    assert not start.called and chdir.call_args.args == ("/tmp",) and execvp.call_args.args == ("claude", argv)
+with patch.object(chats.os, "ttyname", return_value="/dev/ttys040"), patch.object(t, "pane_of", return_value=None), \
+        patch.object(t, "start", return_value=got) as start, patch.dict(os.environ, {}, clear=False), \
+        patch.object(chats.os, "execvpe") as execvpe, patch.object(chats.os, "execvp") as execvp:
+    os.environ.pop("TMUX", None)
+    chats.open_chat(argv, "/tmp", launch)
+    assert start.call_args.args == (launch,) and not execvp.called
+    assert execvpe.call_args.args[1] == t.attach_argv("c-s1"), execvpe.call_args
+with patch.object(chats.os, "ttyname", return_value="/dev/ttys040"), patch.object(t, "pane_of", return_value=None), \
+        patch.object(t, "start", return_value=got), patch.object(t, "view", return_value="opened") as view, \
+        patch.dict(os.environ, {"TMUX": "/tmp/other,1,0"}), patch.object(chats.os, "execvpe") as execvpe:
+    chats.open_chat(argv, "/tmp", launch)
+    assert view.call_args.args == ("%7",) and not execvpe.called
+PYOPEN
+assert [ "$?" -eq 0 ]
 
 CHAT_PINS_FILE="$WORK/pins-run.json" python3 - "$SCRIPT" "$WORK" <<'PYPINS'
 import importlib.machinery, importlib.util, json, sys, time
