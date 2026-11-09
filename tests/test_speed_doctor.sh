@@ -676,6 +676,11 @@ check(module.judge_regressions(dict(slow, **{"2026-10-01": {"values": {picked: [
                                lambda c: 0.0)[0] == []
       and module.judge_regressions({d: {"values": {picked: [0.9, 2]}} for d in slow}, "2026-10-02", lambda c: 0.0)[0] == [],
       "one day under the ceiling, or fewer than three launches a day, leaves it quiet")
+opened = "background.chats_app_open_s|all|-"
+check([(r["key"], r["limit"]) for r in module.judge_regressions(
+           {d: {"values": {opened: [2.4, 6]}} for d in ("2026-09-30", "2026-10-01")}, "2026-10-02", lambda c: 0.0)[0]]
+      == [(opened, 2.0)],
+      "the Chats app's open over its 2 s ceiling on both judged days is a regression")
 
 harness = {"status": "problems", "as_of_s": HI, "problem_count": 3, "blind_spots": [], "periods": {}, "extras": [],
            "title": "Harness doctor: 3 problems", "footer": "as of 21:50",
@@ -915,6 +920,23 @@ check(picks == [(mid + 10, 0.2), (mid + 20, 0.4), (mid + 30, None)]
       == {"background.chats_rows_s|all|-": [0.3, 2]},
       "each `chats` launch inside the window waits from its start to its first rows, one he left early waits for "
       "none, and the day's value is their median: %s" % picks)
+os.makedirs(os.path.join(kick_dir, "chats-app"))
+with open(os.path.join(kick_dir, "chats-app", "2026-10-01.tsv"), "w") as handle:
+    handle.write("".join("%d\t%d\t%s\t%s\n" % ((mid + at) * 1e6, (mid + at + secs) * 1e6, key, client)
+                         for at, secs, key, client in ((-600, 0.5, "open", "web"), (10, 1.0, "post:chat/send", "web"),
+                                                       (10.2, 0.5, "post:chat/send", "server"), (20, 0.4, "open", "web"),
+                                                       (30, 0.6, "open", "swift"), (40, 0.2, "lag", "web")))
+                 + "bad\trow\n")
+app = module.chats_app_spans(mid)
+check([s[2:] for s in app] == [("post:chat/send", "web"), ("post:chat/send", "server"), ("open", "web"),
+                               ("open", "swift"), ("lag", "web")],
+      "the Chats app's waits inside the window, a malformed row skipped: %s" % app)
+check([[round(a - mid, 2), round(b - mid, 2)] for a, b in module.span_union(app)]
+      == [[10, 11], [20, 20.4], [30, 30.6], [40, 40.2]],
+      "the server's own POST inside its client's round trip counts once")
+check(module.day_values("2026-10-01", {}, {}, None, None, [], None, (), (), app)
+      == {"background.chats_app_open_s|all|-": [0.5, 2], "background.chats_app_post_s|all|-": [1.0, 1]},
+      "a day's open and action values are the medians of the clients' own, the server's never")
 os.makedirs(os.path.join(kick_dir, "statusline-probes"))
 with open(os.path.join(kick_dir, "statusline-probes", "2026-10-01.tsv"), "w") as handle:
     handle.write("".join("%d\t9\t%s\t%s\n" % (t * 1e6, cpu, kind) for t, cpu, kind in (

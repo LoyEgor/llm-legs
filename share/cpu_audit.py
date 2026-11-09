@@ -22,7 +22,9 @@ FLOOR_MIN_DAY = 1.0
 STATUSLINE = "llm-legs/bin/statusline.sh"
 PROBE_SOURCES = {"work": ("llm-legs/bin/statusline-work-probe.sh", "llm-legs/share/statusline-probe.sh"),
                  "ports": ("llm-legs/bin/statusline-ports-probe.sh", "llm-legs/share/statusline-probe.sh")}
-APP_SOURCES = {"Hammerspoon": ("hammerspoon/init.lua",), "hs": ("hammerspoon/init.lua",)}
+APP_SOURCES = {"Hammerspoon": ("hammerspoon/init.lua",), "hs": ("hammerspoon/init.lua",),
+               "Chats": ("chats-app/apple/Shared/Core/ChatStore.swift", "chats-app/apple/Mac/ChatsMacApp.swift"),
+               "pagesd": ("chats-app/share/pages/app.py", "chats-app/bin/page")}
 
 
 def system_dir():

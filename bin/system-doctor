@@ -142,7 +142,8 @@ VALUE_OPTS = {"python": {"-X", "-W"}, "shell": {"-o", "-O", "+O"}, "node": {"-r"
               "uv": {"--with", "--python", "-p", "--project", "--directory"}, "osascript": {"-l"},
               "xargs": {"-P", "-L", "-n", "-I", "-J", "-E", "-R", "-S", "-s"}}
 ARGV_WORDS = 8
-OWN_APPS = {"Hammerspoon", "hs"}
+# The Chats app's Swift twin (chats-app apple/) runs from a build folder outside the own roots.
+OWN_APPS = {"Hammerspoon", "hs", "Chats"}
 # The LLM CLIs by the tag the ticks see (codex and grok native, agy): what runs below one is its work, never the launcher's
 LLM_CLIS = {"claude", "codex", "grok", "agy"}
 CAUSER_APPS = {"Hammerspoon", "memlogd"} | LLM_CLIS
