@@ -3885,20 +3885,35 @@ do
     if titleText(item):match("^Chats") then chats = item end
   end
   assert(chats and #chats.menu == 2, "the Chats row is missing")
+  mod.chatTmuxCmd = "/fixture/share/chat_tmux.py"
   chats.menu[1].fn()
   assert(#tasks == 1 and tasks[1].path == "/bin/ps" and table.concat(tasks[1].args, " ") == "-o tty= -p 4242",
     "a live chat's click did not look up its tty")
   tasks[1].callback(0, "ttys007\n", "")
-  assert(selected[1] == "/dev/ttys007" and #tasks == 1, "a live chat's click did not raise its tab")
+  -- The chats' tmux is asked first: its view of the chat, which a Terminal tab's tty is not.
+  assert(tasks[2] and tasks[2].path == "/usr/bin/python3"
+    and table.concat(tasks[2].args, " ") == "-B /fixture/share/chat_tmux.py view /dev/ttys007",
+    "a live chat's click did not ask the chats' tmux for its view")
+  tasks[2].callback(1, "", "chat_tmux: no tmux pane on /dev/ttys007\n")
+  assert(selected[1] == "/dev/ttys007" and #tasks == 2, "a live chat's click did not raise its tab")
   chats.menu[1].fn()
-  tasks[2].callback(0, "ttys009\n", "")
-  assert(selected[2] == "/dev/ttys009" and tasks[3] and tasks[3].path == "/fixture/bin/chats"
-    and table.concat(tasks[3].args, " ") == "--open-command live-1",
+  tasks[3].callback(0, "ttys009\n", "")
+  tasks[4].callback(1, "", "")
+  assert(selected[2] == "/dev/ttys009" and tasks[5] and tasks[5].path == "/fixture/bin/chats"
+    and table.concat(tasks[5].args, " ") == "--open-command live-1",
     "a chat whose tab is gone did not fall back to copying its reopen command")
   chats.menu[2].fn()
-  assert(#selected == 2 and tasks[4] and tasks[4].path == "/fixture/bin/chats"
-    and table.concat(tasks[4].args, " ") == "--open-command old-1",
+  assert(#selected == 2 and tasks[6] and tasks[6].path == "/fixture/bin/chats"
+    and table.concat(tasks[6].args, " ") == "--open-command old-1",
     "a closed chat's click did not copy its reopen command")
+  -- A chat in the chats' tmux: its view comes up (a viewer's tab, or a new attached window),
+  -- no Terminal tab is searched and nothing is copied.
+  chats.menu[1].fn()
+  tasks[7].callback(0, "ttys021\n", "")
+  assert(tasks[8] and table.concat(tasks[8].args, " ") == "-B /fixture/share/chat_tmux.py view /dev/ttys021",
+    "a tmux chat's click did not ask for its view")
+  tasks[8].callback(0, "opened\n", "")
+  assert(#selected == 2 and #tasks == 8, "a tmux chat's view was followed by a tab search or a copy")
   chatsFake.snapshot = nil
 end
 

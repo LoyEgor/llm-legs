@@ -1236,6 +1236,29 @@ printf '{"pid":%s,"sessionId":"dead-sid"}' "$dead_pid" > "$LIVE_HOME/.claude/ses
 printf '{"sessionId":"no-pid"}' > "$LIVE_HOME/.claude/sessions/0.json"
 assert [ "$(HOME="$LIVE_HOME" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import chat_names
 print(" ".join(sorted(chat_names.live_sessions())))' "$ROOT/share")" = alive-sid ]
+# A live chat in the chats' tmux is found by its pid's tty among the panes: the picker attaches to it, never a
+# second resume; with no server nothing is asked.
+HOME="$LIVE_HOME" python3 - "$SCRIPT" <<'PYPANE'
+import importlib.machinery, importlib.util, subprocess, sys
+from unittest.mock import patch
+
+loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
+spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+pane = {"pane": "%4", "session": "c-alive", "pid": 1, "size": "110x60", "attached": 0}
+ps = subprocess.CompletedProcess([], 0, stdout="ttys042\n")
+with patch.object(chats.chat_tmux, "panes", return_value={"/dev/ttys042": pane}), \
+        patch.object(chats.subprocess, "run", return_value=ps) as run:
+    assert chats.live_pane("alive-sid") == pane
+    assert chats.live_pane("no-such-sid") is None
+with patch.object(chats.chat_tmux, "panes", return_value={"/dev/ttys043": pane}), \
+        patch.object(chats.subprocess, "run", return_value=ps):
+    assert chats.live_pane("alive-sid") is None  # its tty is a Terminal tab's
+with patch.object(chats.chat_tmux, "panes", return_value={}), patch.object(chats.subprocess, "run") as run:
+    assert chats.live_pane("alive-sid") is None and not run.called
+PYPANE
+assert [ "$?" -eq 0 ]
 
 CHAT_PINS_FILE="$WORK/pins-run.json" python3 - "$SCRIPT" "$WORK" <<'PYPINS'
 import importlib.machinery, importlib.util, json, sys, time

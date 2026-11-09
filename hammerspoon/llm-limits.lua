@@ -1477,8 +1477,26 @@ local function stopChatRow(key)
   end
 end
 
--- A live chat's Terminal tab comes to the front; a closed chat, or one with no terminal (a
--- headless worker), copies its reopen command instead.
+-- A chat in the chats' tmux (share/chat_tmux.py view): the Terminal tab already attached to it
+-- comes to the front, else a new window attaches; closing it only detaches. done(false) when
+-- the tty is no pane of that server (a Terminal tab's) or the helper could not run. A field,
+-- not a local: this chunk is at Lua's 200-locals limit.
+function M.viewChat(tty, done)
+  local helper = M.chatTmuxCmd or (repoRoot and repoRoot .. "/share/chat_tmux.py")
+  if not helper then return done(false) end
+  local task
+  task = hs.task.new("/usr/bin/python3", function(code)
+    task = nil
+    done(code == 0)
+  end, { "-B", helper, "view", tty })
+  if not task or not task:start() then
+    task = nil
+    done(false)
+  end
+end
+
+-- A live chat's Terminal tab, or its view in the chats' tmux, comes to the front; a closed
+-- chat, or one with no terminal (a headless worker), copies its reopen command instead.
 local function focusChat(row)
   local pid = math.tointeger(tonumber(row.pid))
   local gate = M.chatGate or package.loaded["chat_gate"]
@@ -1490,7 +1508,10 @@ local function focusChat(row)
   task = hs.task.new("/bin/ps", function(_, stdout)
     task = nil
     local tty = (stdout or ""):match("(ttys%d+)")
-    if not (tty and gate.selectTabByTty("/dev/" .. tty)) then copyChatCommand(row) end
+    if not tty then return copyChatCommand(row) end
+    M.viewChat("/dev/" .. tty, function(shown)
+      if not (shown or gate.selectTabByTty("/dev/" .. tty)) then copyChatCommand(row) end
+    end)
   end, { "-o", "tty=", "-p", tostring(pid) })
   if not task or not task:start() then
     task = nil

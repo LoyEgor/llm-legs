@@ -24,8 +24,10 @@ import unicodedata
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "share"))
-from chat_names import fold_session, live_sessions, project_label, resolve_session, transcript_path  # noqa: E402
+from chat_names import (fold_session, live_sessions, project_label, resolve_session,  # noqa: E402
+                        session_store_files, transcript_path)
 import chat_pins  # noqa: E402
+import chat_tmux  # noqa: E402
 import chat_resume  # noqa: E402
 import limit_hit  # noqa: E402
 
@@ -58,7 +60,7 @@ USAGE = ("usage: chats --open-command SESSION [--account NAME] [--timeout SECOND
          "usage: chats [--days N | --all] [--print]\n"
          "usage: chats --pin SESSION | --unpin SESSION\n"
          "  ↑↓ chat · ←→ account (one ring over both lines) · shift+↑↓ line\n"
-         "  type to filter · enter opens it here · ^T pins/unpins it\n"
+         "  type to filter · enter opens it here (one open in the chats' tmux: attaches) · ^T pins/unpins it\n"
          "  a pinned chat that is not open sits at the very top, marked %s\n"
          "  the account follows the chat's live cache, else the optimal one\n"
          "  mouse: click row · click again opens\n"
@@ -862,6 +864,26 @@ def run(screen, chats, names, used, profile, level, windows):
         # the top of the loop reads as "widen the window". It clamps there.
 
 
+def live_pane(session):
+    """The chats' tmux pane `session` runs in while it is live ({pane, session, ...} of chat_tmux.panes()), or None:
+    closed, in a Terminal tab, or no tmux server at all (then nothing is asked)."""
+    found = chat_tmux.panes()
+    if not found:
+        return None
+    for path in session_store_files():
+        try:
+            entry = json.loads(path.read_text())
+            pid = int(entry["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if entry.get("sessionId") != session or pid <= 0:
+            continue
+        tty = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        if tty and "/dev/" + tty in found:
+            return found["/dev/" + tty]
+    return None
+
+
 def reopen_argv(row, vendor, account):
     """The command reopening `row` under the picked account, and whether the chat's own launcher
     overrode it: a gateway chat picked onto a claudeb account keeps its gateway (resume_argv)."""
@@ -1115,6 +1137,20 @@ def main():
     if not chosen:
         return
     (vendor, account), row, cwd = chosen
+    pane = live_pane(row["session"])
+    if pane:
+        # A live chat in the chats' tmux is looked at, never resumed a second time (that forks it): this tab
+        # attaches to it (closing the tab only detaches), or from inside a tmux its Terminal view comes up.
+        if show:
+            print(shlex.join(chat_tmux.attach_argv(pane["session"])))
+        elif os.environ.get("TMUX"):
+            try:
+                print("chats: %s" % chat_tmux.view(pane["pane"]))
+            except chat_tmux.TmuxError as error:
+                die("cannot show the chat (%s)" % error)
+        else:
+            os.execvpe(chat_tmux.TMUX, chat_tmux.attach_argv(pane["session"]), chat_tmux.env())
+        return
     command, _ = reopen_argv(row, vendor, account)
     if chat_resume.argv_account(command) == chat_resume.UNKNOWN_ACCOUNT:
         die("gateway account unknown for this chat")
