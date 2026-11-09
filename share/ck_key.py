@@ -26,10 +26,12 @@ Stills: our MLX build (≈3 s a 1080p still, 15 s 4K, plus ≈4 s start), severa
             frame); an alternative when the frame's own reads poorly, e.g. on dark backdrops
 One line per image: ck=done screen=green|blue|red|none alpha=<path> fg=<path> rgba=<path> [shadow=<path>]
   graph=<HxW> s=<seconds> wait_s=<seconds> (screen=none: a neutral backdrop, CK still keyed it).
-Clips and frame folders run on the original CorridorKey 2.0 engine (corridorkey-desktop, Core ML), our MLX build is
-not yet measured on video: per frame <out>/rgba/N.png and <out>/shadow/N.png (grey multiply layer); a car from AI video
-on green: --edge hard --glass screen --despill all. ≈2.8 s a 1080p frame plus ≈37 s load.
-One CorridorKey run at a time on this Mac: a second call waits (wait_s). Exit 0 done, 1 failed, 2 usage.
+Clips and frame folders run on the original CorridorKey 2.0: on the Windows PC's RTX 3090 when it answers (`machines`
+wakes it; 143 frames 1080p: ≈3 min with the transfer against ≈14 on this Mac), else this Mac's corridorkey-desktop
+engine (Core ML, ≈2.8 s a 1080p frame plus ≈37 s load); CK_ENGINE=mac|pc forces one. Our MLX build is not yet measured
+on video. Per frame <out>/rgba/N.png and <out>/shadow/N.png (grey multiply layer), made on this Mac either way; a car
+from AI video on green: --edge hard --glass screen --despill all.
+One CorridorKey run at a time on each machine: a second call waits (wait_s). Exit 0 done, 1 failed, 2 usage.
 """
 from __future__ import annotations
 
