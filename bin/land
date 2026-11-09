@@ -76,7 +76,7 @@ sweep=${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}
 roots=()
 for dir in ${candidates[@]+"${candidates[@]}"}; do git_top "$dir" 2>/dev/null && roots+=("$root"); done
 
-repos=() trees=() locks=() marks=() tested=()
+repos=() trees=() locks=() marks=() prior=() tested=()
 trap 'for l in ${locks[@]+"${locks[@]}"}; do store_lock_release "$l"; done' EXIT
 # Sorted: two lands of one branch take its locks in one order, so one of them gets them all.
 while IFS= read -r root; do
@@ -115,7 +115,7 @@ while IFS= read -r root; do
     dirty=$(git -C "$wt" status --porcelain | head -5 | tr '\n' ' ')
     [ -z "$dirty" ] || stop 1 "uncommitted work in $wt (${dirty% }): back to the worker"
   fi
-  repos+=("$root") trees+=("$wt") marks+=("$mark") tested+=("$done")
+  repos+=("$root") trees+=("$wt") marks+=("$mark") prior+=("$mark") tested+=("$done")
 done < <(printf '%s\n' ${roots[@]+"${roots[@]}"} | sort -u)
 [ ${#repos[@]} -gt 0 ] || stop 1 "no repository holds the branch $branch"
 
@@ -169,11 +169,14 @@ in ${repos[$i]} under all 5 passes; nothing holds $branch: land it again now"
     # started from, its mark.
     heads=$(git -C "$wt" rev-parse refs/heads/main HEAD) || stop 1 "no base for $branch in $wt"
     onto=${heads%$'\n'*} head=${heads#*$'\n'} mark=${marks[$i]}
+    # The rebase itself always starts where the branch leaves main: from an older mark it would replay main's own
+    # commits, and conflict once main changed their lines again (a worker's own rebase after a conflict).
+    from=$(base_of "$wt" "$onto") || stop 1 "no base for $branch in $wt"
     if [ "$attempt" -eq 1 ] && [ -n "$mark" ] && git -C "$wt" merge-base --is-ancestor "$mark" HEAD; then base=$mark
-    else base=$(base_of "$wt" "$onto") || stop 1 "no base for $branch in $wt"; fi
+    else base=$from; fi
     [ "$attempt" -gt 1 ] || firsts[$i]=$onto
     [ "$head" = "$base" ] || [ "$base" = "$mark" ] || { git -C "$wt" update-ref "refs/land/$branch" "$base"; marks[$i]=$base; }
-    ontos[$i]=$onto bases[$i]=$base
+    ontos[$i]=$onto bases[$i]=$from
     if [ ! -x "$wt/tests/affected" ]; then suites=''
     # A night worker runs no suites (its branch leaves them to the landing): the first pass runs every covering one,
     # the slow layer too, which tests/affected drops for a worker run's own selection.
@@ -192,6 +195,9 @@ in ${repos[$i]} under all 5 passes; nothing holds $branch: land it again now"
       # The worktree was on its branch, so a rebase in progress is this one.
       conflicts=$(git -C "$wt" diff --name-only --diff-filter=U)
       git -C "$wt" rebase --abort 2>/dev/null
+      # The branch is back as it was, so is its mark: a rerun after the worker's rebase selects from its new base.
+      if [ -n "${prior[$i]}" ]; then git -C "$wt" update-ref "refs/land/$branch" "${prior[$i]}"
+      else git -C "$wt" update-ref -d "refs/land/$branch" 2>/dev/null; fi
       [ -n "$conflicts" ] && stop 1 "rebasing $branch onto main conflicts in $root: back to the worker"
       case $out in *index.lock*) stop 3 "rebasing $branch in $wt waits for $(index_lock "$wt")" ;; esac
       stop 1 "rebasing $branch in $wt fails: ${out%%$'\n'*}: back to the worker"

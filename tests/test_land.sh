@@ -352,4 +352,15 @@ assert test "$(grep '^kk --overlap' "$STUB/calls" | tail -1)" = "kk --overlap $b
 assert test -z "$(ps -o pid= -p "$(cat "$STUB/orphan")")"
 assert_fails git -C "$WORK/kk" show-ref -q --verify refs/land/feat/kk
 
+# A conflict goes back to the worker with no mark left; after its own rebase main moves on, and the rerun replays the
+# branch's commit alone, never main's (chats-app tmux-phase1, 2026-11-09: conflicted again until the ref was deleted).
+reset_stub; repo cf; change "$WORK/cf" other o1 'cf: other'; wt=$(tree cf feat/cf); change "$wt" file mine 'cf: mine'
+printf 'theirs\n' >"$WORK/cf/file"; git -C "$WORK/cf" add file; change "$WORK/cf" other o2 'cf: main theirs'
+land feat/cf --repo "$WORK/cf"; assert test $? = 1
+assert grep -q 'conflicts' "$WORK/out"
+assert_fails git -C "$WORK/cf" show-ref -q --verify refs/land/feat/cf
+git -C "$wt" reset -q --hard main; change "$wt" file mine 'cf: mine'; change "$WORK/cf" other o3 'cf: main o3'
+assert land feat/cf --repo "$WORK/cf"
+assert test "$(subjects cf | head -2 | tr '\n' ,)" = 'cf: mine,cf: main o3,'
+
 printf 'PASS: %s asserts; land selects, runs in the worktree, retries a moved main and keeps everything it cannot land\n' "$asserts"
