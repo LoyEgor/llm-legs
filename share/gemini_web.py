@@ -1640,19 +1640,17 @@ def take_failover(accounts: list[str], plan: dict, generate_on, set_wall, pinned
 
 
 def save_or_defer(page, account: str, project: str, upscale: dict, model: str) -> bool:
-    """False when Chrome died under the 1080p download: the clip is rendered and its upscale is free, so a fresh
-    Chrome takes it over (upscale_later)."""
+    """False when Chrome died under the 1080p download: the clip is rendered, so a fresh Chrome takes it over
+    (upscale_later)."""
     variant = upscale["variant"]
     try:
-        if "ref720" not in variant:
-            variant["ref720"] = save_ref720(page, account, project, upscale)
         variant["bytes"] = save_upscaled(page, project, upscale["scene"], upscale["path"])
     except Failure as failure:
         if failure.extra.get("crashed"):
             report(account, failure)
             return False
-        raise Failure(failure.code, f"{failure.reason}; recover: {upscale_hint(account, [upscale])}",
-                      media_id=variant["media_id"]) from failure
+        raise Failure(failure.code, f"{failure.reason}; recover: {upscale_hint([upscale])}",
+                      media_id=variant["media_id"], account=account) from failure
     ledger({"account": account, "media_id": variant["media_id"], "dest": str(upscale["path"]), "state": "saved",
             "model": model, "scene": upscale["scene"], "bytes": variant["bytes"]})
     return True
@@ -1741,12 +1739,11 @@ def fix_upscales(result: dict) -> dict:
     return result
 
 
-def upscale_hint(account: str, upscales: list) -> str:
-    return "; ".join(f"gemini-web fetch {account} {u['variant']['media_id']} --dest {u['path']} --resolution 1080p"
-                     for u in upscales)
+def upscale_hint(upscales: list) -> str:
+    return "; ".join(f"media-run video --vendor gemini -- --upscale {u['path']}" for u in upscales)
 
 
-def upscale_later(account: str, project: str, upscales: list, model: str, relaunches: int = 2) -> None:
+def upscale_later(account: str, project: str, upscales: list, model: str, relaunches: int = 3) -> None:
     for _ in range(relaunches):
         with browser(account) as context:
             page = context.pages[0] if context.pages else context.new_page()
@@ -1757,9 +1754,9 @@ def upscale_later(account: str, project: str, upscales: list, model: str, relaun
             upscales = left
         if not upscales:
             return
-    raise Failure(1, f"Chrome crashed on every 1080p upscaled download ({relaunches + 1} launches); the clip is "
-                     f"rendered, recover: {upscale_hint(account, upscales)}",
-                  media_id=upscales[0]["variant"]["media_id"])
+    raise Failure(1, f"Chrome crashed on every 1080p upscaled download ({relaunches} launches); the clip is "
+                     f"rendered, recover: {upscale_hint(upscales)}",
+                  media_id=upscales[0]["variant"]["media_id"], account=account)
 
 
 def job_rows() -> list:
@@ -2023,16 +2020,19 @@ def scene_media_url(page, project: str, scene: str, media_id: str, account: str 
     return watcher.media.get(media_id, {}).get("url")
 
 
-def extend_source(path: str) -> dict:
-    """The Flow clip gemini-video saved at `path`, read back from the job ledger. Which clips Flow extends is
-    its own call: a disabled Extend item in the editor refuses with Flow's tooltip (extend_composer)."""
+EXTEND_OWN = "Flow extends only its own clips, untouched; chain it from its last frame instead: video-chain last-frame"
+
+
+def saved_clip(path: str, use: str = EXTEND_OWN) -> dict:
+    """The Flow clip gemini-video saved at `path`, read back from the job ledger; `use` ends a refusal with what
+    needs Flow's own clip. Which clips Flow extends is its own call: a disabled Extend item in the editor refuses
+    with Flow's tooltip (extend_composer)."""
     target = str(Path(path).resolve())
     rows = job_rows()
     saved = [r for r in rows if isinstance(r, dict) and r.get("state") == "saved" and r.get("dest")
              and str(Path(r["dest"]).resolve()) == target]
     if not saved:
-        raise Failure(2, f"{path} is not a clip gemini-video saved from Flow, and Flow extends only its own "
-                         "clips; chain it from its last frame instead: video-chain last-frame")
+        raise Failure(2, f"{path} is not a clip gemini-video saved from Flow; {use}")
     source = {"path": target}
     for row in rows:
         if isinstance(row, dict) and row.get("media_id") == saved[-1].get("media_id"):
@@ -2041,8 +2041,7 @@ def extend_source(path: str) -> dict:
     if not source.get("project") or not source.get("account"):
         raise Failure(2, f"the job ledger has no Flow project for {path}")
     if source.get("bytes") and Path(path).stat().st_size != source["bytes"]:
-        raise Failure(2, f"{path} changed since gemini-video saved it, and Extend continues Flow's original "
-                         f"clip {source['media_id']}; pass the untouched clip")
+        raise Failure(2, f"{path} changed since gemini-video saved it as Flow's clip {source['media_id']}; {use}")
     return source
 
 
@@ -2171,7 +2170,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             await_clips(page, watcher, clips, deadline, args.timeout, account, dest)
             rendered = time.time()
             phase("media")
-            saved, refused, later = [], [], []
+            saved, refused = [], []
             for media_id in clips:
                 record = watcher.media[media_id]
                 if record.get("error"):
@@ -2180,13 +2179,6 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                 path = variant_path(dest, len(saved))
                 saved.append({"dest": str(path), "media_id": media_id, "bytes": None,
                               "duration": record.get("duration"), "model": record.get("model")})
-                if plan["upscale"]:
-                    if not record.get("scene"):
-                        raise drift(f"clip {media_id} came without a scene id for the 1080p download")
-                    upscale = {"variant": saved[-1], "scene": record["scene"], "path": path, "url": record.get("url")}
-                    if later or not save_or_defer(page, account, project, upscale, plan["model"]):
-                        later.append(upscale)
-                    continue
                 if not record.get("url") and plan["extend"] and record.get("scene"):
                     record["url"] = scene_media_url(page, project, record["scene"], media_id, account)
                     if not record["url"]:
@@ -2207,8 +2199,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                 raise Failure(1, error if error == GENERATION_FAILED else f"Flow refused the clip: {error}",
                               media_id=refused[0]["media_id"])
             finished = time.time()
-            if not later:
-                phase("saved")
+            phase("saved")
             charged = credits - watcher.reply_credits \
                 if credits is not None and watcher.reply_credits is not None else None
             after = watcher.credits if watcher.credits is not None else \
@@ -2218,7 +2209,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             result = {"ok": True, "account": account, "email": meta["email"], "dest": first["dest"],
                     "model": first["model"] or (watcher.submitted or [None])[-1],
                     "model_name": plan["model"], "mode": plan["mode"], "chip": chip,
-                    "upscaled": plan["upscale"], "duration": first["duration"],
+                    "duration": first["duration"],
                     "media_id": first["media_id"], "project": project, "variants": saved,
                     "refused": refused, "cost": cost, "charged": charged, "credits": after,
                     "bytes": first["bytes"], "build": state["build"], "caps": MENU_CAPS.get("video"),
@@ -2237,22 +2228,22 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             detail = (str(exc).strip().splitlines() or [""])[0][:200]
             raise Failure(1, f"Flow UI drift {where}: {exc.__class__.__name__}: {detail}",
                           media_id=clips[0] if clips else None)
-    if later:
-        upscale_later(account, project, later, plan["model"])
-        phase("saved")
-    result["bytes"] = result["variants"][0]["bytes"]
     return result
 
 
-def clip_resolution(path: str) -> str:
-    """The render an extension comes at: its source's, 360p or 720p (a 1080p clip is Flow's upscale of a 720p
-    render). Flow's Extend has no resolution choice: a 720p source asked at 360p came back 720p (2026-11-08)."""
+def clip_sides(path: str) -> list[int]:
     probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                             "stream=width,height", "-of", "csv=p=0", path], capture_output=True, text=True)
     sides = [int(n) for n in re.findall(r"\d+", probe.stdout)[:2]]
     if probe.returncode or len(sides) != 2:
         raise Failure(2, f"ffprobe cannot read a video in {path}")
-    return "360p" if min(sides) <= 360 else "720p"
+    return sides
+
+
+def clip_resolution(path: str) -> str:
+    """The render an extension comes at: its source's, 360p or 720p (a 1080p clip is Flow's upscale of a 720p
+    render). Flow's Extend has no resolution choice: a 720p source asked at 360p came back 720p (2026-11-08)."""
+    return "360p" if min(clip_sides(path)) <= 360 else "720p"
 
 
 def extend_plan(args, caps: dict) -> dict:
@@ -2268,9 +2259,9 @@ def extend_plan(args, caps: dict) -> dict:
     resolution = clip_resolution(args.extend)
     return {"model": "extend", "label": ext["label"], "cost": ext["cost_per_s"][resolution] * args.duration,
             "what": f"a {args.duration}s {ext['model']} extension of {Path(args.extend).name}", "mode": "Extend",
-            "aspect": None, "resolution": resolution, "upscale": None,
+            "aspect": None, "resolution": resolution,
             "duration": args.duration, "first_frame": None, "last_frame": None, "refs": [], "edit": None,
-            "count": 1, "extend": extend_source(args.extend)}
+            "count": 1, "extend": saved_clip(args.extend)}
 
 
 def make_plan(args) -> dict:
@@ -2295,7 +2286,10 @@ def make_plan(args) -> dict:
                          "or --ref/--edit, not both")
     if len(args.ref) > model["refs_max"]:
         raise Failure(2, f"{label} takes at most {model['refs_max']} --ref images")
-    resolution = caps.get("upscale", {}).get(args.resolution, args.resolution)
+    resolution = args.resolution
+    if resolution in caps.get("upscale", {}):
+        raise Failure(2, f"{resolution} is Flow's upscale of one kept take: render at {caps['resolution_default']}, "
+                         "pick a take by its glitch= line, then gemini-video --upscale <that take>")
     costs = model["costs"].get(resolution)
     if costs is None:
         raise Failure(2, f"{label} renders {', '.join(model['costs'])}, not {args.resolution}")
@@ -2314,7 +2308,7 @@ def make_plan(args) -> dict:
         what += f" x{args.count}"
     return {"model": args.model, "label": label, "cost": cost * args.count, "what": what,
             "mode": "Ingredients" if args.ref or args.edit else "Frames", "aspect": args.aspect,
-            "resolution": resolution, "upscale": args.resolution if resolution != args.resolution else None,
+            "resolution": resolution,
             "duration": duration, "first_frame": args.first_frame, "last_frame": args.last_frame,
             "refs": args.ref, "edit": args.edit, "count": args.count, "extend": None}
 
@@ -2370,7 +2364,7 @@ def cmd_generate(args) -> None:
         else:
             result = None
     if result is not None:
-        emit(fix_upscales(result))
+        emit(result)
         return
     raise Failure(min(failure.code for _, failure in skipped),
                   "no signed-in Flow account could take the job ("
@@ -2464,6 +2458,36 @@ def cmd_fetch(args) -> None:
                                                       {"path": dest, "scene": opened["scene"]})
     emit(fix_upscales({"ok": True, "account": args.account, **saved[0],
                           **({"project": project, "variants": saved} if prompt is not None else {})}))
+
+
+def cmd_upscale(args) -> None:
+    """Flow's 1080p of one take gemini-video saved at 720p, put in its place: the take moves to <stem>.720p.mp4, the
+    picture fix_upscales holds the upscale to. Takes are judged at 720p and only the kept one comes here, as the
+    upscale and its fix are minutes per clip (12 takes at once ran 12 minutes of fixes, Egor 2026-11-09)."""
+    take = Path(args.take).absolute()
+    source = saved_clip(str(take), "Flow upscales only its own clips, untouched")
+    account = source["account"]
+    if source.get("model") == "extend":
+        raise Failure(2, f"{take.name} is an extension, and Flow has no 1080p download of an extension")
+    sides = clip_sides(str(take))
+    if min(sides) != 720:
+        raise Failure(2, f"Flow's 1080p is an upscale of a 720p take; {take.name} is {sides[0]}x{sides[1]}")
+    if not source.get("scene"):
+        raise Failure(1, f"the job ledger has no Flow scene for {take.name}, so its 1080p download is out of reach")
+    ref = ref720_path(take)
+    variant = {"dest": str(take), "media_id": source["media_id"], "ref720": str(ref), "bytes": None}
+    with contextlib.closing(claimed([account], args.lock_wait)) as picks:
+        _, refusal = next(picks)
+        if refusal:
+            raise refusal
+        os.replace(take, ref)
+        try:
+            upscale_later(account, source["project"], [{"variant": variant, "scene": source["scene"], "path": take}],
+                          source.get("model") or "-")
+        except BaseException:
+            os.replace(ref, take)
+            raise
+    emit(fix_upscales({"ok": True, "account": account, "project": source["project"], **variant}))
 
 
 def music_ready(context, account: str) -> str | None:
@@ -2568,6 +2592,10 @@ def main() -> None:
                    help="1080p downloads Flow's own upscale from the clip's editor")
     lock_wait_arg(p)
     p.set_defaults(func=cmd_fetch)
+    p = sub.add_parser("upscale", help="Flow's 1080p of one kept 720p take, in its place (the 720p beside it)")
+    p.add_argument("take", help="the absolute path gemini-video saved the take at")
+    lock_wait_arg(p)
+    p.set_defaults(func=cmd_upscale)
     args = parser.parse_args()
     global TIMED
     TIMED = hasattr(args, "lock_wait")

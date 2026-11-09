@@ -29,25 +29,26 @@ manifest=$(image_caps_file "$root" gemini)
 caps() { jq -r "$1" "$manifest"; }
 
 video_caps=$(caps '.video | .container, (.durations | join("|")), .duration_default, (.aspects | join("|")),
-  .aspect_default, (.resolutions | join("|")), .resolution_default, .refs_max, .edit_source_max_s,
+  .aspect_default, (.resolutions - (.upscale | keys) | join("|")), (.upscale | keys | join("|")),
+  .resolution_default, .refs_max, .edit_source_max_s,
   (.counts | map(tostring) | join("|")), (.extend.seconds | map(tostring) | join("|")), .extend.seconds_default,
   .extend.model, "end"')
 {
   read -r container; read -r durations; read -r default_duration; read -r video_aspects; read -r default_aspect
-  read -r resolutions; read -r default_resolution; read -r refs_max; read -r edit_max; read -r counts; read -r extend_s
+  read -r resolutions; read -r upscales; read -r default_resolution; read -r refs_max; read -r edit_max; read -r counts; read -r extend_s
   read -r extend_default; read -r extend_model
 } <<<"$video_caps"
 
 usage() {
   image_leg_cause "$@"
-  printf 'usage: gemini-video --dest <absolute .%s path> --prompt <motion description> [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--ref <absolute image path>]... [--edit <absolute video path>] [--extend <absolute path of a Flow clip>] [--duration <%s>] [--resolution <%s>] [--aspect <%s>] [--model <%s>] [--count <%s>] [--account <geminib profile>] [--lock-wait <seconds>]\n' \
+  printf 'usage: gemini-video --dest <absolute .%s path> --prompt <motion description> [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--ref <absolute image path>]... [--edit <absolute video path>] [--extend <absolute path of a Flow clip>] [--duration <%s>] [--resolution <%s>] [--aspect <%s>] [--model <%s>] [--count <%s>] [--account <geminib profile>] [--lock-wait <seconds>]\n       gemini-video --upscale <absolute path of a 720p take> [--lock-wait <seconds>]\n' \
     "$container" "$durations" "$resolutions" "$video_aspects" "$(caps '.video.models | keys | join("|")')" "$counts" >&2
   printf '  Google Flow on the account'\''s subscription, through a hidden Chrome (gemini-web)\n' >&2
   printf '  frames (--first-frame/--last-frame; a lone --ref is the first frame) or ingredients (several --ref, --edit), never both\n' >&2
   printf '  --edit reworks a video of up to %ss (any source, a Grok clip too) on Omni; the clip keeps its length\n' "$edit_max" >&2
   printf '  --extend continues a Flow clip gemini-video saved, on its own account, on %s: one file of the clip and its continuation by --duration %s s (default %s), at the clip resolution (an extension of an extension too)\n' "$extend_model" "$extend_s" "$extend_default" >&2
   printf '  --count 2-4 renders variants in one send (dest, then <stem>-2, ...) at that multiple of the credits; default 1\n' >&2
-  printf '  --resolution 1080p renders 720p and downloads Flow'\''s own upscale (free up to 10 s, then 1 credit a second), steadied and cleaned of halos against its 720p (kept as <stem>.720p.mp4, the download as <stem>.raw.mp4)\n' >&2
+  printf '  --upscale puts Flow'\''s %s upscale of one picked take in its place (free up to 10 s, then 1 credit a second), steadied and cleaned of halos against its 720p (kept as <stem>.720p.mp4, the download as <stem>.raw.mp4); takes render at 720p, are judged by their glitch= line, and only the one kept is upscaled\n' "$upscales" >&2
   printf '  prompting guide (read before writing a prompt): %s/docs/video-prompting.md\n' "$root" >&2
   printf '  one-time per account: geminib web <account>; readiness: gemini-web status <account>\n' >&2
   exit 2
@@ -56,6 +57,63 @@ usage() {
 say() {
   image_leg_cause "$1"
   exit 2
+}
+
+# The engine's run, its exit code mapped to the wrapper's, and the clip's dest/size/format/duration/account/media lines.
+deliver() { # leg-size
+  local engine=${GEMINI_VIDEO_ENGINE:-$root/bin/gemini-web} result_file
+  tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-video.XXXXXX")
+  trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
+  result_file="$tmp_dir/result.json"
+  image_leg_mark "$1"
+  engine_rc=0
+  "$engine" "${engine_args[@]}" >"$result_file" || engine_rc=$?
+  result=$(tail -n 1 "$result_file" 2>/dev/null) || result=''
+  jq -e . >/dev/null 2>&1 <<<"$result" || result='{}'
+  image_leg_engine_phases "$result"
+  account=$(jq -r '.account // empty' <<<"$result")
+  reason=$(jq -r '.reason // empty' <<<"$result")
+
+  case "$engine_rc" in
+    0) ;;
+    2)
+      printf 'gemini-video: %s\n' "${reason:-the engine refused the request}" >&2
+      exit 2
+      ;;
+    3)
+      [ -z "$reason" ] || printf 'gemini-video: %s\n' "$reason" >&2
+      image_leg_limit GEMINI "$result"
+      ;;
+    4)
+      printf 'gemini-video: %s\n' "${reason:-account is not signed in to Flow}" >&2
+      exit 4
+      ;;
+    5)
+      [ -z "$reason" ] || printf 'gemini-video: %s\n' "$reason" >&2
+      image_leg_busy "${account:-unknown}"
+      ;;
+    *)
+      printf 'gemini-video: %s\n' "${reason:-engine failed with exit $engine_rc}" >&2
+      exit 1
+      ;;
+  esac
+
+  if [ ! -s "$dest" ]; then
+    printf 'gemini-video: engine reported success but %s is empty\n' "$dest" >&2
+    exit 1
+  fi
+  probe=$("$ffprobe_cmd" -v error -show_entries 'stream=width,height:format=duration' \
+    -select_streams v:0 -of json "$dest" 2>/dev/null) || probe=''
+  width=$(jq -r '.streams[0].width // empty' <<<"${probe:-{\}}")
+  height=$(jq -r '.streams[0].height // empty' <<<"${probe:-{\}}")
+  measured=$(jq -r '.format.duration // empty' <<<"${probe:-{\}}")
+  if [ -z "$width" ] || [ -z "$height" ]; then
+    printf 'gemini-video: saved %s but ffprobe cannot read a video stream in it\n' "$dest" >&2
+    exit 1
+  fi
+  measured=${measured%.*}
+  printf 'dest=%s\nsize=%sx%s\nformat=%s\nduration=%s\naccount=%s\nmedia=%s\n' \
+    "$dest" "$width" "$height" "$container" "${measured:-$duration}" "$account" "$(jq -r '.media_id // empty' <<<"$result")"
 }
 
 dest=''
@@ -69,6 +127,7 @@ first_frame=''
 last_frame=''
 edit=''
 extend=''
+upscale=''
 count=1
 refs=()
 
@@ -82,6 +141,7 @@ while [ "$#" -gt 0 ]; do
     --ref) [ "$#" -ge 2 ] || usage "$1 needs a value"; refs+=("$2"); shift 2 ;;
     --edit) [ "$#" -ge 2 ] || usage "$1 needs a value"; edit=$2; shift 2 ;;
     --extend) [ "$#" -ge 2 ] || usage "$1 needs a value"; extend=$2; shift 2 ;;
+    --upscale) [ "$#" -ge 2 ] || usage "$1 needs a value"; upscale=$2; shift 2 ;;
     --count) [ "$#" -ge 2 ] || usage "$1 needs a value"; count=$2; shift 2 ;;
     --duration) [ "$#" -ge 2 ] || usage "$1 needs a value"; duration=$2; shift 2 ;;
     --resolution) [ "$#" -ge 2 ] || usage "$1 needs a value"; resolution=$2; shift 2 ;;
@@ -93,6 +153,34 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+ffprobe_cmd="${GEMINI_VIDEO_FFPROBE:-ffprobe}"
+# Checked before the spend: a clip nobody can measure cannot be reported under the size=WxH contract.
+command -v "$ffprobe_cmd" >/dev/null 2>&1 || {
+  printf 'gemini-video: ffprobe is required to inspect the output\n' >&2
+  exit 1
+}
+
+# Takes render at 720p and are judged for glitches first; Flow's upscale and its fix are minutes per clip, so only
+# the one take kept is upscaled, in its place (docs/video-jitter.md).
+if [ -n "$upscale" ]; then
+  { [ -z "$dest$prompt$first_frame$last_frame$edit$extend$duration$resolution$aspect$model$account" ] \
+    && [ "${#refs[@]}" -eq 0 ] && [ "$count" = 1 ]; } \
+    || say "--upscale takes only the picked take (and --lock-wait): its account and clip come from the job ledger"
+  { [[ "$upscale" = /* ]] && [ -f "$upscale" ]; } || usage "--upscale $upscale is not an absolute path to a file"
+  dest=$upscale duration=''
+  engine_args=(upscale "$upscale")
+  [ -z "$IMAGE_LEG_LOCK_WAIT" ] || engine_args+=(--lock-wait "$IMAGE_LEG_LOCK_WAIT")
+  deliver ""
+  # Flow's 1080p upscale trembles on first/last-frame shots and rings every edge with a halo; gemini-web fixed each one
+  # against its 720p, the download kept as raw_file (docs/video-jitter.md). Numbers: global/local px of a 1920 frame.
+  jq -r 'def pair: map(tostring) | join("/"); .steady as $s
+    | if $s == null or ($s.error // null) != null then "jitter=unmeasured dest=\(.dest) ref720_file=\(.ref720) error=\($s.error)"
+      else "jitter=\($s.raw | pair) ref720=\($s.ref | pair) steadied=\($s.steadied)"
+        + (if $s.fixed then " fixed=\($s.fixed | pair)" else "" end) + " cleaned=\($s.cleaned // false)"
+        + (if $s.reason then " reason=\($s.reason)" else "" end) + " dest=\(.dest) ref720_file=\(.ref720)"
+        + (if $s.raw_file then " raw_file=\($s.raw_file)" else "" end) end' <<<"$result"
+  exit
+fi
 [ -n "$dest" ] || usage "missing --dest"
 [ -n "$prompt" ] || usage "missing --prompt"
 [[ "$dest" = /* ]] || usage "--dest must be an absolute path, not $dest"
@@ -123,13 +211,6 @@ for input in "$first_frame" "$last_frame" "$edit" ${refs[@]+"${refs[@]}"}; do
 done
 [ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage "--account $account is not a profile name"
 
-ffprobe_cmd="${GEMINI_VIDEO_FFPROBE:-ffprobe}"
-# Checked before the spend: a clip nobody can measure cannot be reported under the size=WxH contract.
-command -v "$ffprobe_cmd" >/dev/null 2>&1 || {
-  printf 'gemini-video: ffprobe is required to inspect the output\n' >&2
-  exit 1
-}
-
 if [ -n "$extend" ]; then
   duration=${duration:-$extend_default}
   case "|$extend_s|" in
@@ -151,11 +232,13 @@ else
   esac
 fi
 resolution=${resolution:-$default_resolution}
+case "|$upscales|" in
+  *"|$resolution|"*) say "$resolution is Flow's upscale of one kept take: render at $default_resolution, pick a take by its glitch= line, then gemini-video --upscale <that take>" ;;
+esac
 case "|$resolutions|" in
   *"|$resolution|"*) ;;
   *) say "Flow renders $resolutions, not $resolution" ;;
 esac
-render=$(caps ".video.upscale[\"$resolution\"] // \"$resolution\"")
 aspect=${aspect:-$default_aspect}
 case "|$video_aspects|" in
   *"|$aspect|"*) ;;
@@ -169,14 +252,14 @@ if [ -n "$extend" ]; then
   wire_section=video.extend.wire
 else
   if [ -z "$model" ]; then
-    model=$(jq -r --arg d "$duration" --arg r "$render" --argjson n "${#refs[@]}" --argjson e "$edit_mode" '
+    model=$(jq -r --arg d "$duration" --arg r "$resolution" --argjson n "${#refs[@]}" --argjson e "$edit_mode" '
       .video as $v | ([$v.model_default] + ($v.models | keys))
       | map(select(. as $m | $v.models[$m] as $x | $x != null and $x.refs_max >= $n
           and $x.costs[$r][$d] != null and ($x.edits == true or $e == false)))
       | first // empty' "$manifest")
-    [ -n "$model" ] || say "no Flow model takes this combination (duration $duration, $render, ${#refs[@]} refs)"
+    [ -n "$model" ] || say "no Flow model takes this combination (duration $duration, $resolution, ${#refs[@]} refs)"
   fi
-  model_caps=$(jq -r --arg m "$model" --arg r "$render" --arg d "$duration" '.video.models[$m] as $x
+  model_caps=$(jq -r --arg m "$model" --arg r "$resolution" --arg d "$duration" '.video.models[$m] as $x
     | ($x.label // ""), $x.refs_max, ($x.costs[$r] // "" | tostring), (if $x.edits then $x.costs[$r][$d] // "" else "" end | tostring),
       ($x.costs[$r][$d] // "" | tostring), "end"' "$manifest")
   { read -r label; read -r model_refs_max; read -r render_cost; read -r edit_cost; read -r duration_cost; } <<<"$model_caps"
@@ -184,18 +267,13 @@ else
   wire_section="video.models.$model.wire"
   [ "${#refs[@]}" -le "$model_refs_max" ] || say "$label takes at most $model_refs_max --ref images"
   [ -n "$render_cost" ] \
-    || say "$label renders $(caps ".video.models[\"$model\"].costs | keys | join(\"|\")"), not $render"
+    || say "$label renders $(caps ".video.models[\"$model\"].costs | keys | join(\"|\")"), not $resolution"
   if [ "$edit_mode" = true ]; then
-    [ -n "$edit_cost" ] || say "$label cannot edit a ${duration}s video at $render"
+    [ -n "$edit_cost" ] || say "$label cannot edit a ${duration}s video at $resolution"
   elif [ -z "$duration_cost" ]; then
-    say "$label takes duration $(caps ".video.models[\"$model\"].costs[\"$render\"] | keys | join(\"|\")"), not $duration"
+    say "$label takes duration $(caps ".video.models[\"$model\"].costs[\"$resolution\"] | keys | join(\"|\")"), not $duration"
   fi
 fi
-
-engine=${GEMINI_VIDEO_ENGINE:-$root/bin/gemini-web}
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-video.XXXXXX")
-trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
-result_file="$tmp_dir/result.json"
 
 if [ -n "$extend" ]; then
   engine_args=(generate --prompt "$prompt" --dest "$dest" --extend "$extend" --duration "$duration")
@@ -213,57 +291,9 @@ for ref in ${refs[@]+"${refs[@]}"}; do
   engine_args+=(--ref "$ref")
 done
 
-image_leg_mark "$duration"
-engine_rc=0
-"$engine" "${engine_args[@]}" >"$result_file" || engine_rc=$?
-result=$(tail -n 1 "$result_file" 2>/dev/null) || result=''
-jq -e . >/dev/null 2>&1 <<<"$result" || result='{}'
-image_leg_engine_phases "$result"
-account=$(jq -r '.account // empty' <<<"$result")
-reason=$(jq -r '.reason // empty' <<<"$result")
-
-case "$engine_rc" in
-  0) ;;
-  2)
-    printf 'gemini-video: %s\n' "${reason:-the engine refused the request}" >&2
-    exit 2
-    ;;
-  3)
-    [ -z "$reason" ] || printf 'gemini-video: %s\n' "$reason" >&2
-    image_leg_limit GEMINI "$result"
-    ;;
-  4)
-    printf 'gemini-video: %s\n' "${reason:-account is not signed in to Flow}" >&2
-    exit 4
-    ;;
-  5)
-    [ -z "$reason" ] || printf 'gemini-video: %s\n' "$reason" >&2
-    image_leg_busy "${account:-unknown}"
-    ;;
-  *)
-    printf 'gemini-video: %s\n' "${reason:-engine failed with exit $engine_rc}" >&2
-    exit 1
-    ;;
-esac
-
-if [ ! -s "$dest" ]; then
-  printf 'gemini-video: engine reported success but %s is empty\n' "$dest" >&2
-  exit 1
-fi
-probe=$("$ffprobe_cmd" -v error -show_entries 'stream=width,height:format=duration' \
-  -select_streams v:0 -of json "$dest" 2>/dev/null) || probe=''
-width=$(jq -r '.streams[0].width // empty' <<<"${probe:-{\}}")
-height=$(jq -r '.streams[0].height // empty' <<<"${probe:-{\}}")
-measured=$(jq -r '.format.duration // empty' <<<"${probe:-{\}}")
-if [ -z "$width" ] || [ -z "$height" ]; then
-  printf 'gemini-video: saved %s but ffprobe cannot read a video stream in it\n' "$dest" >&2
-  exit 1
-fi
-measured=${measured%.*}
+deliver "$duration"
 observed_model=$(jq -r '.model // empty' <<<"$result")
 
-printf 'dest=%s\nsize=%sx%s\nformat=%s\nduration=%s\naccount=%s\nmedia=%s\n' \
-  "$dest" "$width" "$height" "$container" "${measured:-$duration}" "$account" "$(jq -r '.media_id // empty' <<<"$result")"
 image_caps_wire_check "$root" gemini "$wire_section" "$observed_model"
 page_caps=$(image_caps_page_check "$result")
 printf '%s surface=%s\n' "${page_caps:-caps=fresh}" "$(jq -r '.build // "unknown"' <<<"$result")"
@@ -277,16 +307,6 @@ while IFS=$'\t' read -r variant variant_media; do
     "$(jq -r '.format.duration // "?" | tostring | sub("\\..*"; "")' <<<"$vprobe")" "$variant_media"
 done < <(jq -r '(.variants // [])[1:][] | [.dest, .media_id] | @tsv' <<<"$result")
 jq -r '(.refused // [])[] | "refused=\(.media_id) \(.error)"' <<<"$result"
-# Flow's 1080p upscale trembles on first/last-frame shots and rings every edge with a halo; gemini-web fixed each one
-# against its 720p, the download kept as raw_file (docs/video-jitter.md). Numbers: global/local px of a 1920 frame.
-jq -r 'def pair: map(tostring) | join("/");
-  (.variants // [.])[] | select(has("ref720")) | .steady as $s
-  | if .ref720 == null then "jitter=unmeasured dest=\(.dest) reason=its 720p was not saved"
-    elif $s == null or ($s.error // null) != null then "jitter=unmeasured dest=\(.dest) ref720_file=\(.ref720) error=\($s.error)"
-    else "jitter=\($s.raw | pair) ref720=\($s.ref | pair) steadied=\($s.steadied)"
-      + (if $s.fixed then " fixed=\($s.fixed | pair)" else "" end) + " cleaned=\($s.cleaned // false)"
-      + (if $s.reason then " reason=\($s.reason)" else "" end) + " dest=\(.dest) ref720_file=\(.ref720)"
-      + (if $s.raw_file then " raw_file=\($s.raw_file)" else "" end) end' <<<"$result"
 # Each delivered take is judged for generation glitches (a door that opens by itself, a limb that twists) by one
 # Sol call on its frames, all takes at once (docs/video-glitch.md): `glitch=ok|defects` and a `t=… fix: …` line per
 # noticeable defect, so the parent remakes with changed sources. A failed check says `glitch=unchecked` and never

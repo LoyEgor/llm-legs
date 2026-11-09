@@ -12,8 +12,8 @@ Evidence and Egor's verdicts: `docs/handoffs/2026-10-21-flow-upscale-oversharp.m
 
 ## What the harness does
 
-- `gemini-video --resolution 1080p` and `gemini-web fetch … --resolution 1080p` also save the 720p of the same media
-  beside the file as `<stem>.720p.mp4` (`share/gemini_web.py` `save_ref720`). After the account's lock is released,
+- `gemini-video --upscale <take>` moves the kept 720p take beside its upscale as `<stem>.720p.mp4`, and `gemini-web
+  fetch … --resolution 1080p` downloads the 720p there (`share/gemini_web.py` `save_ref720`). After the account's lock is released,
   `fix_upscales` runs `video-jitter fix` on each upscale, one decode and one encode (crf 18, its sound and colour tags),
   a pack's at once while available memory stays over the guard's kill line plus 1200 MB a fix (`fix_room`):
   - it trembles (its rise over the 720p passes the gate): anchored, settled, then clamped on the 720p;

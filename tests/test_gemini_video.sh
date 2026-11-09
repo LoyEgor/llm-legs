@@ -39,6 +39,16 @@ export ENGINE_CALLS CLIP
 cat >"$ENGINE" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$ENGINE_CALLS"
+if [ "$1" = upscale ]; then
+  [ "${ENGINE_MODE:-ok}" = ok ] || {
+    printf '{"ok": false, "code": 2, "reason": "x.mp4 is an extension, and Flow has no 1080p download of an extension"}\n'
+    exit 2
+  }
+  cp "$CLIP" "$2"
+  printf '{"ok": true, "account": "acct-a", "media_id": "m-1", "dest": "%s", "ref720": "%s", "steady": {"raw": [1.2, 0.8], "ref": [0.4, 0.3], "steadied": "none", "cleaned": true, "raw_file": "%s"}}\n' \
+    "$2" "${2%.mp4}.720p.mp4" "${2%.mp4}.raw.mp4"
+  exit 0
+fi
 dest=''
 while [ "$#" -gt 0 ]; do
   case "$1" in --dest) dest=$2; shift 2 ;; *) shift ;; esac
@@ -197,12 +207,25 @@ reset_calls
 ENGINE_MODEL=macaron_cookie_t2v_8s_360p video_run --dest "$OUT/low.mp4" --prompt 'water light' --resolution 360p
 assert grep -q -- '--duration 8 --aspect 16:9 --model omni --resolution 360p' "$ENGINE_CALLS"
 
+# 1080p is never a render: 12 takes upscaled and fixed at once took 12 minutes before any was judged (Egor
+# 2026-11-09). Takes render at 720p, are judged by their glitch= line, and only the kept one is upscaled, in place.
 reset_calls
-assert video_run --dest "$OUT/hd.mp4" --prompt 'water light' --resolution 1080p
-assert grep -q -- '--duration 8 --aspect 16:9 --model omni --resolution 1080p' "$ENGINE_CALLS"
-reset_calls
-assert video_run --dest "$OUT/hd4.mp4" --prompt 'water light' --resolution 1080p --duration 4
-assert grep -q -- '--duration 4 --aspect 16:9 --model omni --resolution 1080p' "$ENGINE_CALLS"
+assert test "$(video_rc --dest "$OUT/hd.mp4" --prompt 'water light' --resolution 1080p --count 4)" = 2
+assert grep -q "1080p is Flow's upscale of one kept take: render at 720p, pick a take by its glitch= line, then gemini-video --upscale <that take>" "$VIDEO_ERR"
+cp "$CLIP" "$OUT/kept.mp4"
+assert test "$(video_rc --upscale "$OUT/kept.mp4" --prompt 'water light')" = 2
+assert grep -q -- '--upscale takes only the picked take' "$VIDEO_ERR"
+assert test "$(video_rc --upscale "$OUT/kept.mp4" --resolution 1080p)" = 2
+assert test "$(video_rc --upscale kept.mp4)" = 2
+assert test ! -s "$ENGINE_CALLS"
+assert video_run --upscale "$OUT/kept.mp4" --lock-wait 5
+assert grep -qx -- "upscale $OUT/kept.mp4 --lock-wait 5" "$ENGINE_CALLS"
+assert grep -qx "dest=$OUT/kept.mp4" "$VIDEO_OUT"
+assert grep -qx 'account=acct-a' "$VIDEO_OUT"
+assert grep -qx "jitter=1.2/0.8 ref720=0.4/0.3 steadied=none cleaned=true dest=$OUT/kept.mp4 ref720_file=$OUT/kept.720p.mp4 raw_file=$OUT/kept.raw.mp4" "$VIDEO_OUT"
+assert_fails grep -q '^glitch=' "$VIDEO_OUT"
+assert test "$(ENGINE_MODE=refuse video_rc --upscale "$OUT/kept.mp4")" = 2
+assert grep -q 'no 1080p download of an extension' "$VIDEO_ERR"
 
 reset_calls
 assert video_run --dest "$OUT/ff.mp4" --prompt 'water light' --ref "$FRAME" --account acct-a
@@ -387,7 +410,7 @@ def sent(*args):
         poll(watcher, mid, done=True)
         watcher.media[mid]['url'] = 'https://flow-content.google/video/' + mid
 
-plan = dict(cost=30, count=2, extend=None, what='Omni pair', model='omni', upscale=None, mode='Ingredients')
+plan = dict(cost=30, count=2, extend=None, what='Omni pair', model='omni', mode='Ingredients')
 args = SimpleNamespace(prompt=prompt, dry_run=False, timeout=-1)
 with patch.multiple(g, browser=lambda account: contextlib.nullcontext(context), Watcher=lambda page: watcher,
                     open_project=lambda *a: 'project', page_state=lambda page: {'email': 'fixture', 'build': 'fixture'},
@@ -461,11 +484,8 @@ assert plan(model=None)["model"] == "omni"
 p = plan(ref=[frame, frame, frame])
 assert (p["cost"], p["mode"]) == (20, "Ingredients"), p
 p = plan(model="omni", edit=clip, ref=[frame])
-assert (p["cost"], p["mode"], p["duration"], p["upscale"]) == (24, "Ingredients", None, None), p
-p = plan(resolution="1080p")
-assert (p["cost"], p["resolution"], p["upscale"]) == (20, "720p", "1080p"), p
-p = plan(model="omni", edit=clip, resolution="1080p")
-assert (p["cost"], p["resolution"], p["upscale"]) == (24, "720p", "1080p"), p
+assert (p["cost"], p["mode"], p["duration"]) == (24, "Ingredients", None), p
+assert refused(resolution="1080p") and refused(model="omni", edit=clip, resolution="1080p")
 assert refused(model="omni", duration=4, resolution="4k")
 assert refused(ref=[frame] * 4)
 assert refused(model="omni", ref=[frame] * 5)
@@ -915,7 +935,7 @@ assert (g.make_plan(ns(extend=low, duration=3))["cost"], g.make_plan(ns(extend=l
 assert g.make_plan(ns(duration=3, resolution="360p"))["cost"] == 9
 assert {k: p["extend"][k] for k in ("account", "media_id", "project", "scene", "model")} == \
     {"account": "rich", "media_id": "m-veo", "project": "p-1", "scene": "s-veo", "model": "fast"}, p["extend"]
-assert g.make_plan(ns(resolution="1080p"))["upscale"] is None
+assert g.make_plan(ns(resolution="1080p"))["resolution"] == "720p"
 # Which clips Flow extends is its call (a disabled Extend item): an Omni clip or an extension plans like any.
 assert refusal(extend=grown) is None and g.make_plan(ns(extend=omni))["extend"]["model"] == "omni"
 code, reason = refusal(extend=edited)
@@ -1093,7 +1113,8 @@ try:
         g.upscale_later("rich", "p-1", late, "fast")
     raise AssertionError("a Chrome that crashed on every launch passed")
 except g.Failure as failure:
-    assert "3 launches" in failure.reason and "m-hd --dest" in failure.reason and len(launches) == 2, failure.reason
+    assert "3 launches" in failure.reason and f"--upscale {hd / 'late.mp4'}" in failure.reason and len(launches) == 3, \
+        failure.reason
 
 import json, re
 
@@ -1285,7 +1306,60 @@ assert fetched["ref720"] == str(hd / "u.720p.mp4") and fetched["steady"] == {"st
 assert (hd / "jitter-stub.args").read_text().split() == ["fix", str(hd / "u.mp4"), "--ref720", str(hd / "u.720p.mp4"),
                                                          "--register"]
 # The fix rewrites the file, and Extend still knows it as its media's.
-assert g.extend_source(str(hd / "u.mp4"))["media_id"] == "m-1"
+assert g.saved_clip(str(hd / "u.mp4"))["media_id"] == "m-1"
+# Only the kept take is upscaled, in its place, its 720p moved beside it as the fix's reference: nothing is
+# downloaded twice, and a failed upscale leaves the take as it was.
+import shutil
+clip, frame = sys.argv[6], sys.argv[7]  # the fixture paths: `clip` was reused above for the editor's bytes
+takes = {}
+for name, media_id, model, source in (("kept", "m-kept", "omni", clip), ("lost", "m-lost", "omni", clip),
+                                      ("small", "m-small", "omni", grown.replace("grown", "low-src")),
+                                      ("longer", "m-longer", "extend", clip)):
+    takes[name] = hd / f"{name}.mp4"
+    shutil.copyfile(source, takes[name])
+    g.ledger({"account": "rich", "media_id": media_id, "project": "p-k", "dest": str(takes[name]), "state": "queued",
+              "model": model})
+    g.ledger({"account": "rich", "media_id": media_id, "dest": str(takes[name]), "state": "saved", "model": model,
+              "scene": f"s-{name}", "bytes": takes[name].stat().st_size})
+asked, real_later = [], g.upscale_later
+
+def upscaled(account, project, upscales, model, relaunches=3):
+    u = upscales[0]
+    asked.append((account, project, u["scene"], u["variant"]["media_id"], model, Path(u["variant"]["ref720"]).exists(),
+                  u["path"].exists()))
+    u["path"].write_bytes(b"1080p")
+    u["variant"]["bytes"] = 5
+
+g.upscale_later = upscaled
+with contextlib.redirect_stdout(out := io.StringIO()):
+    g.cmd_upscale(types.SimpleNamespace(take=str(takes["kept"]), lock_wait=0))
+done = json.loads(out.getvalue())
+assert asked == [("rich", "p-k", "s-kept", "m-kept", "omni", True, False)], asked
+assert (hd / "kept.720p.mp4").read_bytes() == Path(clip).read_bytes() and takes["kept"].read_bytes() == b"1080pfixed"
+assert (done["dest"], done["ref720"], done["steady"]) == (str(takes["kept"]), str(hd / "kept.720p.mp4"),
+                                                          {"steadied": "none"}), done
+assert (hd / "jitter-stub.args").read_text().split()[1:3] == [str(takes["kept"]), "--ref720"] and not g._held
+
+
+def crashed(*args, **kwargs):
+    raise g.Failure(1, "Chrome crashed on every 1080p upscaled download (3 launches)")
+
+g.upscale_later = crashed
+for name, code, said in (("lost", 1, "Chrome crashed"), ("small", 2, "small.mp4 is 320x180"),
+                         ("longer", 2, "no 1080p download of an extension")):
+    try:
+        g.cmd_upscale(types.SimpleNamespace(take=str(takes[name]), lock_wait=0))
+        raise AssertionError(f"the upscale of {name} passed")
+    except g.Failure as failure:
+        assert failure.code == code and said in failure.reason, (name, failure.reason)
+    assert takes[name].read_bytes() == Path(clip if name != "small" else takes["small"]).read_bytes(), name
+    assert not (hd / f"{name}.720p.mp4").exists() and not g._held, name
+try:
+    g.cmd_upscale(types.SimpleNamespace(take=frame, lock_wait=0))
+    raise AssertionError("a file Flow never made was upscaled")
+except g.Failure as failure:
+    assert failure.code == 2 and "not a clip gemini-video saved" in failure.reason, failure.reason
+g.upscale_later = real_later
 # An extension lives in its source's scene and its grid tile may show another media's thumbnail (2026-11-08):
 # a scene the ledger knows is opened directly, and the clip saved by the URL that scene's editor sends.
 g.ledger({"account": "rich", "media_id": "m-x", "project": "p-f", "scene": "s-src", "state": "queued"})
@@ -1452,4 +1526,4 @@ EOF
 ENGINE_MODEL=veo_3_1_i2v_s_fast_fl assert video_run --dest "$OUT/frame-key.mp4" --prompt 'water light' --model fast
 assert grep -qx 'model=veo_3_1_i2v_s_fast_fl model_caps=fresh' "$VIDEO_OUT"
 
-echo "PASS: $asserts asserts; manifest gates refused before any spend (frames vs ingredients, refs per model, resolution, edit source length), 1080p as a 720p render plus upscale, manifest-driven model choice, lone --ref as first frame, refs and --edit passed through, the measured footer with wire-pattern freshness, exit 3 kept to credit walls and exit 4 to unsigned profiles, the engine's media readers on real Flow traffic (the new clip from the generation reply, else by prompt and freshness), the generation request's wire key, the engine's plan and costs, pre-browser engine gates, flagged-account detection (a whole failed envelope, never an old tile) and walled-account rotation least recently started first (a new generation stamps it, an extend or dry run never), --extend found through the job ledger (Veo sources only, untouched files, never an extension, pinned to its account and its walls, 720p) with the extend reply read from real traffic, --count variants priced and listed, a charge that differs from the manifest reported, fetch through the clip's grid tile and editor menu (never a batchexecute/as29s request; no ledger project, no listing entry or no tile = exit 1), and the manifest's model/duration/resolution/extend coverage"
+echo "PASS: $asserts asserts; manifest gates refused before any spend (frames vs ingredients, refs per model, resolution, edit source length), 1080p only as one kept take's --upscale, in its place, manifest-driven model choice, lone --ref as first frame, refs and --edit passed through, the measured footer with wire-pattern freshness, exit 3 kept to credit walls and exit 4 to unsigned profiles, the engine's media readers on real Flow traffic (the new clip from the generation reply, else by prompt and freshness), the generation request's wire key, the engine's plan and costs, pre-browser engine gates, flagged-account detection (a whole failed envelope, never an old tile) and walled-account rotation least recently started first (a new generation stamps it, an extend or dry run never), --extend found through the job ledger (Veo sources only, untouched files, never an extension, pinned to its account and its walls, 720p) with the extend reply read from real traffic, --count variants priced and listed, a charge that differs from the manifest reported, fetch through the clip's grid tile and editor menu (never a batchexecute/as29s request; no ledger project, no listing entry or no tile = exit 1), and the manifest's model/duration/resolution/extend coverage"
