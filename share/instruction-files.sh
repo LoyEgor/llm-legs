@@ -666,11 +666,13 @@ instruction_standing_rule() {
 # A top re-read file grows only on Egor's word. Top: listed in token-map's fee-files.json (`tokenmap
 # spend --write`, the markdown files with the largest share of the Fee index, read while at most 14
 # days old), or by name, every CLAUDE.md, CLAUDE.local.md and MEMORY.md. Prints `listed <share_of_fee>
-# <bytes>`, or `class <smallest listed share, - without an export>`; 1 for any other file.
+# <bytes>`, or `class <smallest listed share, - without an export>`; 1 for any other file. A handoff
+# (docs/handoffs/) is never top: chats write those to each other while a task runs (Egor, 2026-11-10).
 instruction_top_file() { # path [home]
   local path=$1 home=${2:-$HOME} file real out=''
   file=${TOKENMAP_FEE_FILES:-$home/.local/share/tokenmap/fee-files.json}
   real=$(realpath "$path" 2>/dev/null) || real=$path
+  case "$path|$real" in */docs/handoffs/*) return 1 ;; esac
   [ -f "$file" ] && out=$(jq -r --arg p "$path" --arg r "$real" '
     ((.generated_at | strings | .[0:19] + "Z" | fromdateiso8601?) // empty) as $gen
     | select(now - $gen <= 1209600)
