@@ -5144,8 +5144,9 @@ def pages_section(now):
     the kit from the main checkout, so one bad commit breaks every page silently. CLI refusals and hints stay in
     `page report`. A suite with no PAGES_DIR of its own never reads the real store."""
     root = os.environ.get("PAGES_DIR") or ("" if os.environ.get("SUITE_JOURNAL_PID") else os.path.expanduser("~/Pages"))
-    path, found = os.path.join(root, ".events.jsonl"), {}
+    path, found, unshown = os.path.join(root, ".events.jsonl"), {}, {}
     cut = datetime.datetime.fromtimestamp(now - 86400, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    week = datetime.datetime.fromtimestamp(now - 7 * 86400, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         with open(path, errors="replace") as handle:
             for text in handle:
@@ -5156,6 +5157,9 @@ def pages_section(now):
                 if isinstance(e, dict) and e.get("where") in ("browser", "server") and str(e.get("at", "")) >= cut:
                     key = (e["where"], str(e.get("pid") or ""), str(e.get("msg") or "")[:120])
                     found.setdefault(key, []).append(str(e.get("at")))
+                elif (isinstance(e, dict) and e.get("op") == "unshown" and isinstance(e.get("shape"), str)
+                      and str(e.get("at", "")) >= week):
+                    unshown[e["shape"]] = e
     except OSError:
         pass
     rows = []
@@ -5166,6 +5170,14 @@ def pages_section(now):
                         head="a local page hit a kit or server error",
                         judge=verdict("pages-error", ident, len(ats), 0, "errors", 24, len(found), "red", fact=say,
                                       evidence=[evidence(now, "pages:" + ident, msg)], bad=len(ats))))
+    # A state the Chats app drew nothing for (a transcript line or a screen notice of a kind it does not know): a
+    # watch until the app draws it or names it quiet (chats-app share/pages/app.py QUIET), logged once a week.
+    for shape, e in sorted(unshown.items()):
+        say = "the Chats app draws nothing for %s · %s · `page doctor`" % (shape, clip(str(e.get("sample") or ""), 80))
+        rows.append(row(["unshown " + clip(shape, 40), "", clip(str(e.get("at") or ""), 20)], key="pages:unshown:" + shape,
+                        say=say, head="the Chats app missed a state of a chat",
+                        judge=verdict("pages-unshown", shape, 1, 0, "findings", 168, len(unshown), "watch", fact=say,
+                                      evidence=[evidence(now, "pages:unshown", e.get("sample") or "")], bad=1)))
     return section("Pages", rows, ["", "errors", "last"], [False, True, False], ok="no page errors in 24 h")
 
 
