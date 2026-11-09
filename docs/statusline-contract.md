@@ -386,7 +386,7 @@ a moved transcript, a stale mark or a payload without `transcript_path` renders 
 ## Full render (background, not a rendered segment)
 
 Every full render also keeps lines 1 and 2 as composed before the first fit step in `render-full-<sid>`,
-written only when they changed: the Chats app (`share/pages`) shows them in full words whatever the tab's
+written only when they changed: the Chats app (chats-app) shows them in full words whatever the tab's
 width. Same freshness as `render-<sid>` (an away replay keeps both), same `render-*` prune.
 
 ## Probe snapshots (background, not a rendered segment)

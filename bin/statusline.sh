@@ -2547,7 +2547,7 @@ if [ -n "$session_id" ]; then
     statusline_same=0
     printf '%s' "$statusline_out" 2>/dev/null > "$statusline_cache_dir/render-$session_id"
   fi
-  # The same two lines before any fit step, for the Chats app (share/pages), whatever the tab's width.
+  # The same two lines before any fit step, for the Chats app (the chats-app repo), whatever the tab's width.
   printf -v statusline_full '%s\n%s' "$full_line1" "$full_line2"
   statusline_prev=''
   { IFS= read -r -d '' statusline_prev < "$statusline_cache_dir/render-full-$session_id"; } 2>/dev/null

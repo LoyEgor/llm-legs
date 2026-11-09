@@ -1632,10 +1632,14 @@ assert grep -Fq '[ "$2" -gt 0 ] || return 1' "$RUN_LIVENESS"
 # lists `$$` and a foreign supervisor then still reads gone.
 assert grep -Fq 'ps -p 1 -o etime=' "$RUN_LIVENESS"
 assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$WORKER_RUN_TEXT")" 5
-# The chats app's run list (display only) reads the same stamp with the same slack and refuses pid 0.
-assert grep -Fq 'PID_SLACK = 30' "$ROOT/share/pages/app.py"
-assert grep -Fq 'or meta["pid"] <= 0:' "$ROOT/share/pages/app.py"
-assert grep -Fq 'abs(now - elapsed - stamp) > PID_SLACK' "$ROOT/share/pages/app.py"
+# The chats app's run list (display only; the chats-app repo beside this one) reads the same stamp with the same slack
+# and refuses pid 0.
+CHATS_APP_PY="$(dirname "$ROOT")/chats-app/share/pages/app.py"
+if test -r "$CHATS_APP_PY"; then
+  assert grep -Fq 'PID_SLACK = 30' "$CHATS_APP_PY"
+  assert grep -Fq 'or meta["pid"] <= 0:' "$CHATS_APP_PY"
+  assert grep -Fq 'abs(now - elapsed - stamp) > PID_SLACK' "$CHATS_APP_PY"
+fi
 if test -r "$JOURNAL_LIB"; then
   assert grep -Fq 'RJ_PID_SLACK=30' "$JOURNAL_LIB"
   assert grep -Fq '[ "$pid" -gt 0 ] || { printf '"'"'unknown\n'"'"'; return 0; }' "$JOURNAL_LIB"

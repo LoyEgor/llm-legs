@@ -314,7 +314,7 @@ this list):
 - `bin/night-run` → `~/.local/bin/night-run` — the night run's jobs, base and report.
 - `bin/llm-reset-redeem` → `~/.local/bin/llm-reset-redeem` — `<vendor>/<account>` spends that account's usage reset, on Egor's word only («сделай ресет <account>», the menubar's Redeem item); `--arm` makes that account's first weekly wall spend one; every redeem is logged in `$CLAUDEB_DIR/reset-redeem.log`.
 - `bin/land` → `~/.local/bin/land` — `<branch> [--repo <dir>]...` lands a worktree's branch, a chat's or a night's: rebase onto main, the suites main's move shares, ff-only, teardown (`docs/fix-orchestrator.md` step 4).
-- `bin/page` → `~/.local/bin/page` — local browser pages (`page help`, `share/pages/CONTRACT.md`); shadows tcl-tk's `page`.
+- `../chats-app/bin/page` → `~/.local/bin/page` — local pages and the Chats app (`page help`); shadows tcl-tk's `page`.
 - `bin/pkill` → `~/.local/bin/pkill` — shadows `/usr/bin/pkill` for every model and vendor: refuses an option after the first pattern (macOS stops option parsing there, and a stray `-P` pattern matches every Claude Bash shell's `pwd -P`), else execs the real tool.
 - `bin/pgrep` → `~/.local/bin/pgrep` — the same guard for `/usr/bin/pgrep` (a link to `bin/pkill`).
 

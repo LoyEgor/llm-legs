@@ -7,7 +7,7 @@ keeps which ones he pinned and in what order.
 One small JSON file beside the chat-name cache (`chat_names.cache_path`), `CHAT_PINS_FILE` for tests:
 `{"version": 1, "pins": ["<session id>", ...]}`. Every change is a read-modify-write under an
 exclusive lock on `<file>.lock`, landed by rename, so two pickers pinning at once both keep their pin
-and a reader never sees half a file. Consumers: `bin/chats`; the iPad chats app (`share/pages/app.py`)
+and a reader never sees half a file. Consumers: `bin/chats`; the iPad chats app (chats-app's `share/pages/app.py`)
 is meant to import it.
 """
 
