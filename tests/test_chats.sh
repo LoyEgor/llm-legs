@@ -1153,6 +1153,42 @@ open_command_test "$OPEN_SID" --account last > "$WORK/open-out" 2> "$WORK/open-e
 assert [ "$?" -eq 1 ]
 assert grep -qx 'chats: no logged-in account named last' "$WORK/open-error"
 
+echo "== moving a chat"
+# A chat moved to another folder (Egor 2026-11-09: the Chats app's chats into its own repo): its transcript and side
+# folder go to that folder's place among the projects, its "cwd" lines say the folder, and it opens there; an open
+# chat or one already there is refused.
+MOVE_SID=52345678-1234-1234-1234-123456789abc
+P="$OPEN_HOME/.claude/projects"
+sed "s/$OPEN_SID/$MOVE_SID/g" "$P/project/$OPEN_SID.jsonl" >"$P/project/$MOVE_SID.jsonl"
+mkdir -p "$P/project/$MOVE_SID/subagents" "$WORK/moved here"
+TO=$(cd "$WORK/moved here" && pwd -P)
+NEWP="$P/$(printf '%s' "$TO" | tr -c 'A-Za-z0-9' '-')"
+move_test() {
+  HOME="$OPEN_HOME" PATH="$WORK/open-bin:$PATH" CLAUDEB_DIR="$OPEN_HOME/.claude-profiles/.claudeb" \
+    CHAT_FIND_ROOT="$P" WORKER_RUN_DIR="$RUNS" CLAUDEB_WORKER_PICK=worker-pick CHAT_FIND_CACHE="$WORK/open-cache.json" \
+    STATUSLINE_CACHE_DIR="$WORK/open-tracks" "$SCRIPT" --move "$@"
+}
+mkdir -p "$OPEN_HOME/.claude/sessions"
+printf '{"pid": %s, "sessionId": "%s"}' "$$" "$MOVE_SID" >"$OPEN_HOME/.claude/sessions/live.json"
+move_test "$MOVE_SID" "$WORK/moved here" > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 1 ]
+assert grep -qx "chats: $MOVE_SID is open: end it first" "$WORK/open-error"
+assert test -f "$P/project/$MOVE_SID.jsonl"
+rm "$OPEN_HOME/.claude/sessions/live.json"
+MOVE=$(move_test "$MOVE_SID" "$WORK/moved here" --timeout 5)
+assert [ "$?" -eq 0 ]
+case "$MOVE" in "cd '$TO' && "*"--resume $MOVE_SID"*) ;; *) fail "moved chat's line: $MOVE" ;; esac
+assert test -f "$NEWP/$MOVE_SID.jsonl"
+assert test -d "$NEWP/$MOVE_SID/subagents"
+assert test ! -e "$P/project/$MOVE_SID.jsonl"
+assert test ! -e "$P/project/$MOVE_SID"
+assert [ "$(jq -r .cwd "$NEWP/$MOVE_SID.jsonl")" = "$TO" ]
+OPEN=$(open_command_test "$MOVE_SID" --timeout 5)
+case "$OPEN" in "cd '$TO' && "*) ;; *) fail "reopened moved chat: $OPEN" ;; esac
+move_test "$MOVE_SID" "$WORK/moved here" > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 1 ]
+assert grep -qx "chats: $MOVE_SID is already in $TO" "$WORK/open-error"
+
 echo "== pinned chats"
 # Egor 2026-11-08: a pinned chat that is open behaves like any other; a closed one is at the very top.
 pins_of() { python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["pins"]))' "$1"; }

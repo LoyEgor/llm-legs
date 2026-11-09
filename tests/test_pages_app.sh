@@ -115,6 +115,12 @@ if "--accounts" in sys.argv:
 if "--new-command" in sys.argv:
     print("cd '%s' && claudeb profile acc4 --permission-mode bypassPermissions" % sys.argv[sys.argv.index("--new-command") + 1])
     sys.exit(print("account=acc4 source=pick"))
+if "--move" in sys.argv:
+    at = sys.argv.index("--move")
+    if sys.argv[at + 1].startswith("dead"):
+        sys.exit("no transcript for " + sys.argv[at + 1])
+    print("cd '%s' && claude --resume %s" % (sys.argv[at + 2], sys.argv[at + 1]))
+    sys.exit(print("account=acc3 source=cache"))
 sid = sys.argv[sys.argv.index("--open-command") + 1]
 if sid.startswith("dead"):
     sys.exit("no transcript for " + sid)
@@ -655,6 +661,14 @@ assert test "$(cat "$WORK/code2")" = 200
 assert test "$(jq -r .opened "$WORK/body2")" = acc3
 assert test "$(grep '^TEXT=' "$WORK/hs.log")" = 'TEXT="hello closed"'
 kill "$opid" "$oscript" 2>/dev/null; rm -f "$WORK/sessions/$opid.json"
+# A chat moved to another folder (Egor 2026-11-09: the Chats app's chats into their own repo): `chats --move` moves
+# it, its line opens it there; a live one is ended first as close ends it.
+: >"$WORK/hs.log"
+assert test "$(post "/api/chat/$osid/move" "{\"cwd\": \"$WORK/nowhere\"}")" = 400
+assert test "$(post "/api/chat/$osid/move" "{\"cwd\": \"$WORK\"}")" = 200
+assert grep -qF "do script \"cd '$WORK' && claude --resume $osid\" end tell" "$WORK/hs.log"
+assert test "$(post "/api/chat/dead0000-2222-3333-4444-555555555555/move" "{\"cwd\": \"$WORK\"}")" = 502
+assert test "$(jq -r .err "$WORK/body")" = "no transcript for dead0000-2222-3333-4444-555555555555"
 # A chat's menu (Egor 2026-11-08). Rename: a live chat gets /rename typed, a closed one the custom-title line
 # /rename writes; branch: `chats`' command with --fork-session and the name, the chat open or not; trash:
 # session-trash marks it and sweeps its own config root (a live one is ended instead, below); untrash restores.
@@ -870,4 +884,4 @@ link = js[js.index("const outLink"):js.index("function inline(")]
 sys.exit(not (js.count("_blank") == 1 and "_blank" in link and "STANDALONE ? `<a href=\"x-safari-${url}\">" in link
   and "window.open" not in js and "STANDALONE && MIC.refused === \x27refused\x27" in js and "data-webreset" in js))' "$ROOT/share/pages/app/app.js"
 
-echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: a look keeps it asleep, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, on a picked account, the folder-trust question answered, a message opening a closed chat, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, the browser first, MacMic after a refusal, a refusal linking to it, what a chat runs (its tree, ports, a stop of its own only, a forced end), a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash, a new chat in a folder picked off the ones chats ran in"
+echo "PASS: $asserts asserts; test_pages_app.sh: client + manifest, LAN cookie, live registry (pid+procStart, tty, env account, worker split), chat-find/warm/load join, transcript items and offsets (torn line held back), send as one bracketed paste to the chat's tty, keys and menu choice, mic relay (remote take, packets, padding, deliver file, one stop, guarded cancel, the pill mirrored: bubble, usealt, restore from idle and over a take, MacMic: a look keeps it asleep, woken, a take on its stream with no packets of ours), https origin, screen and its capped scrollback, menu mirror, load rows, pages, worker runs (row ar liveness, horizon, exit code, pid 0), queued and mid-turn messages, queue take-back (Up, clears, backslash, kept ones re-pasted in order), a line longer than the read window, Earlier blocks of 12 items, past chats (history newest first, search on chat-find with an uncached failure, open live/past/failed/bad id, on a picked account, the folder-trust question answered, a message opening a closed chat, a move to another folder, end: worker 404, busy 409, no exit 504 keeps the window, exit closes a one-tab window), info panel (full statusline runs, changed files, incremental), capped failure logs, no LLM / settings / hooks, one visible-only 1 s poll, taps (redraws on change only, no touch hover, tap-lost), the tail reaching back to speech, a queued paste shown, the outbox kept, the voice pill's buttons in the composer, the take pill above a page, the browser first, MacMic after a refusal, a refusal linking to it, what a chat runs (its tree, ports, a stop of its own only, a forced end), a chat's menu (rename live/closed, branch (its parent's history up to its start until its own), trash and its undo, a busy or unended one refused), Earlier's project and hash, a new chat in a folder picked off the ones chats ran in"

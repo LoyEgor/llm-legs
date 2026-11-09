@@ -1158,7 +1158,8 @@ def chat_accounts(sid):
 
 
 def chats_line(*args):
-    """`chats --open-command SID` / `--new-command DIR`: (the command line, {account, source}), or (None, why)."""
+    """`chats --open-command SID` / `--new-command DIR` / `--move SID DIR`: (the command line, {account, source}), or
+    (None, why)."""
     picker = os.environ.get("APP_CHATS") or os.path.join(repo(), "bin", "chats")
     out = run([sys.executable, picker] + list(args) + ["--timeout", "8"], timeout=40)
     lines = (out or "").splitlines()
@@ -1214,6 +1215,21 @@ def new_chat(cwd):
     if not isinstance(cwd, str) or not cwd.startswith("/") or not os.path.isdir(cwd):
         return 400, {"ok": False, "err": "no such folder"}
     line, meta = chats_line("--new-command", cwd)
+    return (502, {"ok": False, "err": meta}) if line is None else in_window(line, meta)
+
+
+def move_chat(sid, cwd):
+    """A chat into another folder (Egor 2026-11-09: the Chats app's chats into their own repo): a live one ends as
+    close ends it (idle, running nothing; else close's 409), then `chats --move` moves its transcript to that folder
+    and its line opens it there in a new Terminal window, on the account `chats` gives it."""
+    if not isinstance(cwd, str) or not cwd.startswith("/") or not os.path.isdir(cwd):
+        return 400, {"ok": False, "err": "no such folder"}
+    rec, _ = find_live(sid)
+    if rec:
+        code, doc = close_chat(sid)
+        if not doc.get("ok"):
+            return code, doc
+    line, meta = chats_line("--move", sid, cwd)
     return (502, {"ok": False, "err": meta}) if line is None else in_window(line, meta)
 
 
@@ -2089,7 +2105,7 @@ def post(handler, path, body):
             store.event("app", op="new", error=str(doc.get("err"))[:300])
         handler.send_json(code, doc)
         return True
-    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash|stop)", path)
+    m = re.fullmatch(r"/api/chat/([A-Za-z0-9-]+)/(send|key|unqueue|open|close|pin|rename|branch|trash|untrash|stop|move)", path)
     if not m:
         return False
     sid, sub = m.groups()
@@ -2109,7 +2125,7 @@ def post(handler, path, body):
             store.event("app", op="stop", sid=sid, pid=pid, error=None if doc.get("ok") else str(doc.get("err"))[:300])
         handler.send_json(code, doc)
         return True
-    if sub in ("open", "close", "rename", "branch", "trash", "untrash"):
+    if sub in ("open", "close", "rename", "branch", "trash", "untrash", "move"):
         if not SID_RE.match(sid):
             handler.send_json(400, {"ok": False, "err": "bad session id"})
             return True
@@ -2124,7 +2140,8 @@ def post(handler, path, body):
             return True
         code, doc = {"open": lambda: open_chat(sid, account=account), "close": lambda: close_chat(sid, force),
                      "rename": lambda: rename_chat(sid, name), "branch": lambda: open_chat(sid, fork=name),
-                     "trash": lambda: trash_chat(sid, force), "untrash": lambda: untrash_chat(sid)}[sub]()
+                     "trash": lambda: trash_chat(sid, force), "untrash": lambda: untrash_chat(sid),
+                     "move": lambda: move_chat(sid, body.get("cwd") if isinstance(body, dict) else None)}[sub]()
         if store is not None and not doc.get("ok"):
             store.event("app", op=sub, sid=sid, error=str(doc.get("err"))[:300])
         handler.send_json(code, doc)

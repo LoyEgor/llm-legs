@@ -24,7 +24,7 @@ import unicodedata
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "share"))
-from chat_names import fold_session, live_sessions, project_label, resolve_session  # noqa: E402
+from chat_names import fold_session, live_sessions, project_label, resolve_session, transcript_path  # noqa: E402
 import chat_pins  # noqa: E402
 import chat_resume  # noqa: E402
 import limit_hit  # noqa: E402
@@ -54,6 +54,7 @@ MARKS = {"began": time.time(), "paint": None, "rows": None, "rank": None, "count
 USAGE = ("usage: chats --open-command SESSION [--account NAME] [--timeout SECONDS]\n"
          "usage: chats --new-command DIRECTORY [--timeout SECONDS]\n"
          "usage: chats --accounts SESSION [--timeout SECONDS]\n"
+         "usage: chats --move SESSION DIRECTORY [--timeout SECONDS]\n"
          "usage: chats [--days N | --all] [--print]\n"
          "usage: chats --pin SESSION | --unpin SESSION\n"
          "  ↑↓ chat · ←→ account (one ring over both lines) · shift+↑↓ line\n"
@@ -901,8 +902,9 @@ def open_plan(session, timeout):
     return row, cwd, names, order, used, chosen, default, account_for(row, time.time(), names, None)
 
 
-def open_command(session, timeout, asked=None):
+def open_command(session, timeout, asked=None, where=None):
     row, cwd, names, order, _, chosen, default, position = open_plan(session, timeout)
+    cwd = where or cwd
     source = "cache" if position is not None else (
         "pick" if ("claudeb", chosen) in names else "fallback")
     position = default if position is None else position
@@ -982,11 +984,80 @@ def pin_command(token, on):
     print("%s %s" % ("pinned" if on else "unpinned", session))
 
 
+def project_folder(directory):
+    """Claude Code's folder for a chat started in `directory`: every character but a letter or digit as -."""
+    return re.sub(r"[^A-Za-z0-9]", "-", directory)
+
+
+def move_command(session, target, timeout):
+    """`chats --move SESSION DIR`: a closed chat goes to another folder (Egor 2026-11-09: the Chats app's chats into
+    its own repo). Claude Code finds a chat by the folder it runs in (projects/<project_folder>/<id>.jsonl) and `chats`
+    reads that folder off the transcript's first "cwd": the transcript moves to DIR's folder with every "cwd" line of
+    its old folder saying DIR, its side folder (subagents, tool results) with it, and --open-command's line, in DIR,
+    is printed. A live chat is refused: it would go on writing in the old place."""
+    target = os.path.realpath(target)
+    if not os.path.isdir(target):
+        die("no such directory: %s" % target)
+    candidates = resolve_session(session)
+    if len(candidates) != 1:
+        die("session id is ambiguous: %s" % session)
+    session = fold_session(candidates[0])
+    if not session:
+        die("no chat found for %s" % candidates[0])
+    if session in live_sessions():
+        die("%s is open: end it first" % session)
+    path = transcript_path(session)
+    if path is None:
+        die("no transcript for %s" % session)
+    path = str(path)
+    folder = os.path.join(os.path.dirname(os.path.dirname(path)), project_folder(target))
+    moved = os.path.join(folder, session + ".jsonl")
+    if os.path.realpath(os.path.dirname(path)) == os.path.realpath(folder):
+        die("%s is already in %s" % (session, target))
+    if os.path.exists(moved):
+        die("%s already exists" % moved)
+    with open(path, "rb") as handle:
+        body = handle.read()
+    old = None
+    for line in body.splitlines()[:50]:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and isinstance(event.get("cwd"), str) and event["cwd"]:
+            old = event["cwd"]
+            break
+    if old:
+        body = body.replace(b'"cwd":' + json.dumps(old).encode(), b'"cwd":' + json.dumps(target).encode())
+        body = body.replace(b'"cwd": ' + json.dumps(old).encode(), b'"cwd": ' + json.dumps(target).encode())
+    os.makedirs(folder, exist_ok=True)
+    with open(moved + ".tmp", "wb") as handle:
+        handle.write(body)
+    os.replace(moved + ".tmp", moved)
+    side = path[:-len(".jsonl")]
+    if os.path.isdir(side):
+        os.rename(side, os.path.join(folder, session))
+    os.unlink(path)
+    open_command(session, timeout, where=target)
+
+
 def main():
     if sys.argv[1:2] in (["--pin"], ["--unpin"]):
         if len(sys.argv) != 3:
             die("usage: chats --pin SESSION | --unpin SESSION")
         pin_command(sys.argv[2], sys.argv[1] == "--pin")
+        return
+    if sys.argv[1:2] == ["--move"]:
+        args = sys.argv[2:]
+        if len(args) not in (2, 4) or (len(args) == 4 and args[2] != "--timeout"):
+            die("usage: chats --move SESSION DIRECTORY [--timeout SECONDS]")
+        try:
+            timeout = float(args[3]) if len(args) == 4 else 20
+            if not math.isfinite(timeout) or timeout <= 0:
+                raise ValueError
+        except ValueError:
+            die("--timeout must be a positive number of seconds")
+        move_command(args[0], args[1], timeout)
         return
     if sys.argv[1:2] in (["--open-command"], ["--new-command"], ["--accounts"]):
         args = sys.argv[2:]
