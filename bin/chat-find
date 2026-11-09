@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -758,8 +759,8 @@ def main():
     for when, path, state in shown:
         cwd, title = head_facts(path)
         session = os.path.basename(path)[: -len(".jsonl")]
-        launcher = " ".join(chat_resume.resume_argv(
-            session, profile, model_id=state.get("model")))
+        launcher = shlex.join(chat_resume.resume_argv(
+            session, profile, model_id=state.get("model"), name=names.get(path)))
         tally = "name match" if not state["hits"] else "%d%s hit%s" % (
             state["hits"], "+" if state["capped"] else "", "" if state["hits"] == 1 else "s")
         print("LAST %s (%s) · %s · %s" % (

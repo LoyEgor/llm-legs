@@ -8,6 +8,7 @@ kind. Library callers without an explicit kind use account-store discovery.
 import argparse
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -167,19 +168,39 @@ def gateway_accounts():
     return gateway_auth.account_names()
 
 
-def gateway_argv(account, session, alias=None):
+LOOK_UP = object()
+
+
+def name_args(session, name=LOOK_UP):
+    """`--name=<the chat's name>` for a resume: a session takes the name it registers under (what other
+    sessions, ListAgents and the session store show) from /rename or --name only, so a chat reopened
+    without it shows as a placeholder from its folder (`chats-app-43`) instead of its name. `=`: a
+    name may start with -. None found (an unnamed chat, no transcript): nothing. A caller that already
+    resolved the name it shows (chat-find: none for an errand) passes it, None included."""
+    if not session:
+        return []
+    if name is LOOK_UP:
+        try:
+            import chat_names
+            name = chat_names.chat_name(session)
+        except Exception:
+            name = None
+    return ["--name=" + name] if name else []
+
+
+def gateway_argv(account, session, alias=None, name=LOOK_UP):
     argv = ["claudegpt", "p", account or UNKNOWN_ACCOUNT]
     if alias:
         argv += ["--model", alias]
     if session:
-        argv += ["--resume", session]
+        argv += ["--resume", session] + name_args(session, name)
     return argv
 
 
-def claudeb_argv(account, session):
+def claudeb_argv(account, session, name=LOOK_UP):
     argv = ["claudeb", "profile", account] if account else ["claude"]
     if session:
-        argv += ["--resume", session]
+        argv += ["--resume", session] + name_args(session, name)
     return argv
 
 
@@ -187,7 +208,7 @@ def is_gateway_chat(session, model_id=None):
     return bool(gateway_alias(model_id)) or read_stamp(session) is not None
 
 
-def resume_argv(session, account=None, model_id=None):
+def resume_argv(session, account=None, model_id=None, name=LOOK_UP):
     """The command that reopens chat `session` as it was launched.
 
     `account` is the ambient claudeb profile a Claude chat resumes under; it never
@@ -197,8 +218,8 @@ def resume_argv(session, account=None, model_id=None):
     stamp = read_stamp(session)
     if stamp or gateway_alias(model_id):
         alias = gateway_alias(model_id) or (stamp or {}).get("model") or None
-        return gateway_argv((stamp or {}).get("account"), session, alias)
-    return claudeb_argv(account, session)
+        return gateway_argv((stamp or {}).get("account"), session, alias, name)
+    return claudeb_argv(account, session, name)
 
 
 def switch_argv(session, account, model_id=None, gateway=None, alias=None):
@@ -240,6 +261,7 @@ def shell_quote(value):
 
 
 def resume_line(argv, cwd=None):
+    """argv: shell words already quoted (shlex.quote), as a resume's --name may hold spaces."""
     line = " ".join(argv)
     return "cd %s && %s" % (shell_quote(cwd), line) if cwd else line
 
@@ -268,7 +290,7 @@ def main(argv=None):
         if args.model and not args.gateway:
             parser.error("launch --model requires --gateway")
         model = args.model or (GATEWAY_SWITCH_ALIAS if args.gateway else None)
-        print(resume_line(launch_argv(args.account, args.gateway, model)))
+        print(resume_line([shlex.quote(word) for word in launch_argv(args.account, args.gateway, model)]))
         return 0
     session = args.session
     if args.mode == "switch":
@@ -280,7 +302,7 @@ def main(argv=None):
                             gateway=args.gateway, alias=pinned)
     else:
         built = resume_argv(session, args.account, args.model)
-    print(resume_line(built, args.cwd))
+    print(resume_line([shlex.quote(word) for word in built], args.cwd))
     return 3 if UNKNOWN_ACCOUNT in built else 0
 
 

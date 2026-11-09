@@ -250,6 +250,23 @@ refuse_stale_resume() {
   fail "RESUME $resume refused: $why. Start a fresh worker instead: read what the session left (\`worker-run report <its run>\`: the result and any queued messages) and write a brief with what it found, what is left and the same --workdir. Nothing was launched and no account was spent."
 }
 
+# A claudeb worker registers as `<the chat that launched it> · worker` (session store, ListAgents,
+# cross-session notices), not as the placeholder Claude Code derives from its folder (`rentiva-design-c1`).
+# Nothing when the launcher has no name.
+worker_session_name() {
+  local session=''
+  IFS= read -r session 2>/dev/null <"$1/launcher" || :
+  [ -n "$session" ] || return 0
+  python3 - "$SCRIPT_DIRECTORY/../share" "$session" 2>/dev/null <<'PY' || :
+import sys
+sys.path.insert(0, sys.argv[1])
+import chat_names
+name = chat_names.chat_name(sys.argv[2])
+if name:
+    print(name + " · worker")
+PY
+}
+
 supervise_claudeb() {
   local directory="$1" meta="$1/meta.json" account model effort resume cli rc chrome value
   local -a command retry access
@@ -261,6 +278,8 @@ supervise_claudeb() {
   chrome=$(jq -r '.chrome // false' "$meta")
   access=(--dangerously-skip-permissions)
   [ "$(jq -r '.role // "workers"' "$meta")" != research ] || access=(--permission-mode plan)
+  value=$(worker_session_name "$directory")
+  [ -z "$value" ] || access+=("--name=$value")
   REPLY_ARRAY=()
   read_json_array '.add_dirs[]' "$meta"
   for value in "${REPLY_ARRAY[@]}"; do access+=(--add-dir "$value"); done
