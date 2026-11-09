@@ -11,6 +11,7 @@ types a code, ever.
     tg-read read <chat> [--limit N] [--since YYYY-MM-DD] [--json]
     tg-read voice <chat> [--last N] --dest-dir <abs> [--transcribe]   download voice messages (.ogg) and video notes (.mp4)
     tg-read photo <chat> [--last N] --dest-dir <abs>                   download photos as .jpg
+    tg-read file <chat> [--last N] [--name S] --dest-dir <abs>          download sent files under their own names
     tg-read transcribe <abs audio> [--dest <abs .txt>] [--language ru] [--engine auto|elevenlabs|groq]
     tg-read send <chat> (--text <text> | --file <abs>) [--as-written]   post ONE plain-text message as Egor
     tg-read wait <chat> --after <msg id> [--hours 1 | --until HH:MM]   print answers as they come (a background Bash)
@@ -305,6 +306,41 @@ async def cmd_voice(args) -> int:
             break
     if not found:
         print("no voice or video notes in the last", args.scan, "messages", file=sys.stderr)
+        await tg.disconnect()
+        return 1
+    await tg.disconnect()
+    return 0
+
+
+def document_name(message) -> str | None:
+    """A sent file's own name (a document that is not a voice, a video note or a sticker), else None."""
+    if not message.document or message.voice or message.video_note or message.sticker:
+        return None
+    return next((a.file_name for a in message.document.attributes if getattr(a, "file_name", None)),
+                f"file-{message.id}")
+
+
+async def cmd_file(args) -> int:
+    tg = client()
+    await ensure_authorized(tg)
+    entity = await resolve(tg, args.chat)
+    dest_dir = Path(args.dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    found = 0
+    async for message in tg.iter_messages(entity, limit=args.scan):
+        name = document_name(message)
+        if name is None or (args.name and args.name.lower() not in name.lower()):
+            continue
+        dest = dest_dir / f"{message.id}-{Path(name).name}"
+        if not dest.exists():
+            await message.download_media(file=str(dest))
+        caption = (message.text or "").replace("\n", " ")
+        print(f"{dest}\t{sender_name(message)}\t{local_time(message.date)}\t{caption}", flush=True)
+        found += 1
+        if found >= args.last:
+            break
+    if not found:
+        print("no files in the last", args.scan, "messages", file=sys.stderr)
         await tg.disconnect()
         return 1
     await tg.disconnect()
@@ -613,6 +649,12 @@ def main(argv=None) -> int:
     photo.add_argument("--last", type=int, default=1)
     photo.add_argument("--scan", type=int, default=200, help="how many recent messages to look through")
     photo.add_argument("--dest-dir", required=True)
+    file_ = sub.add_parser("file", help="download the last sent files (documents) of a chat under their own names")
+    file_.add_argument("chat")
+    file_.add_argument("--last", type=int, default=1)
+    file_.add_argument("--name", default="", help="only files whose name holds this (case-insensitive)")
+    file_.add_argument("--scan", type=int, default=200, help="how many recent messages to look through")
+    file_.add_argument("--dest-dir", required=True)
     transcribe_ = sub.add_parser("transcribe", help="audio file to text: ElevenLabs, then Groq Whisper")
     transcribe_.add_argument("audio")
     transcribe_.add_argument("--dest", help="the .txt to write (default: <audio>.txt)")
@@ -636,7 +678,7 @@ def main(argv=None) -> int:
     if args.command == "send":
         send_text(args)  # refuse an empty or oversized text before connecting
     handler = {"login": cmd_login, "chats": cmd_chats, "read": cmd_read, "voice": cmd_voice, "photo": cmd_photo,
-               "transcribe": cmd_transcribe, "send": cmd_send, "wait": cmd_wait}[args.command]
+               "file": cmd_file, "transcribe": cmd_transcribe, "send": cmd_send, "wait": cmd_wait}[args.command]
     code = asyncio.run(handler(args))
     if args.command == "login" and code == 0:
         LOGIN_NEEDED.unlink(missing_ok=True)
