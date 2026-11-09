@@ -688,7 +688,9 @@ summary=$(jq -r \
       join("\u001e")
     end;
   # `--list` walks the very array the table rows were rendered from, so its order cannot drift
-  # from the table; sorting it again here would give the picker a second ranking.
+  # from the table; sorting it again here would give the picker a second ranking. The trailing
+  # `5h!` is the five-hour deferral the rank leads with, so a picker that weighs a preference of
+  # its own (chats: the warm prompt cache) can still rank it under the deferral, never re-deriving it.
   def list_rows($ordered; $vendor; $sel; $off; $pinned; $paused):
     $ordered | map([$vendor, .name,
       (if (.wk | type) == "number" then (.wk | round | tostring) else "-" end),
@@ -697,8 +699,10 @@ summary=$(jq -r \
        elif ($off == "true" and $pinned == null) or (.enabled == false and .name != $sel) then "off"
        elif .token_expiry then "token-expiry"
        elif .unlisted == true then "no-model"
+       elif .blocked == true then "blocked"
        elif .walled then "walled"
-       else "ok" end)] | join("\t")) | join("\u001e");
+       else "ok" end),
+      (if .defer5h then "5h!" else "-" end)] | join("\t")) | join("\u001e");
   # The one-line face of the same rows, for the stderr of a query that could not answer.
   def reason($rows; $state; $note):
     ($note | map(. + " | ") | join("")) +

@@ -1510,10 +1510,10 @@ assert test "$query_rc" -eq 2
 query --list --role browser
 assert test "$query_rc" -eq 0
 browser_list_line() { grep -m1 -- "^$1	$2	" <<<"$query_out"; }
-assert test "$(browser_list_line claudeb cl-walled)" = "$(printf 'claudeb\tcl-walled\t5\twalled')"
-assert test "$(browser_list_line claudeb cl-busy)" = "$(printf 'claudeb\tcl-busy\t60\tok')"
-assert test "$(browser_list_line codex cx-free)" = "$(printf 'codex\tcx-free\t10\tok')"
-assert test "$(browser_list_line codex cx-out)" = "$(printf 'codex\tcx-out\t0\toff')"
+assert test "$(browser_list_line claudeb cl-walled)" = "$(printf 'claudeb\tcl-walled\t5\twalled\t5h!')"
+assert test "$(browser_list_line claudeb cl-busy)" = "$(printf 'claudeb\tcl-busy\t60\tok\t-')"
+assert test "$(browser_list_line codex cx-free)" = "$(printf 'codex\tcx-free\t10\tok\t-')"
+assert test "$(browser_list_line codex cx-out)" = "$(printf 'codex\tcx-out\t0\toff\t-')"
 assert grep -qx "$(printf 'NEXT\tclaudeb\tcl-busy')" <<<"$query_out"
 assert grep -qx "$(printf 'NEXT\tcodex\tcx-free')" <<<"$query_out"
 assert grep -qx "$(printf 'NEXT\tgemini\t-')" <<<"$query_out"
@@ -2438,11 +2438,11 @@ query --list
 assert test "$query_rc" -eq 0
 assert test -n "$(list_names claudeb)"
 assert test "$(list_names claudeb)" = "$(table_names claude)"
-assert test "$(list_line claudeb session)" = "$(printf 'claudeb\tsession\t0\tok')"
-assert test "$(list_line claudeb dead)" = "$(printf 'claudeb\tdead\t0\tlogin')"
-assert test "$(list_line claudeb walled-wk)" = "$(printf 'claudeb\twalled-wk\t100\twalled')"
-assert test "$(list_line claudeb walled-5h)" = "$(printf 'claudeb\twalled-5h\t5\twalled')"
-assert test "$(list_line claudeb off)" = "$(printf 'claudeb\toff\t0\toff')"
+assert test "$(list_line claudeb session)" = "$(printf 'claudeb\tsession\t0\tok\t-')"
+assert test "$(list_line claudeb dead)" = "$(printf 'claudeb\tdead\t0\tlogin\t-')"
+assert test "$(list_line claudeb walled-wk)" = "$(printf 'claudeb\twalled-wk\t100\twalled\t-')"
+assert test "$(list_line claudeb walled-5h)" = "$(printf 'claudeb\twalled-5h\t5\twalled\t5h!')"
+assert test "$(list_line claudeb off)" = "$(printf 'claudeb\toff\t0\toff\t-')"
 assert test "$(grep -c '^NEXT	' <<<"$query_out")" -eq 4
 list_out=$query_out
 query --account claudeb
@@ -2450,21 +2450,21 @@ assert test "$(query_out=$list_out; next_of claudeb)" = "$query_out"
 query_out=$list_out
 assert test "$(next_of codex)" = -
 assert test "$(next_of grok)" = -
-# Dead auth wins the state column over the pool and the vendor switch: `chats` hides only `login`.
+# Dead auth wins the state column over the pool and the vendor switch: `chats` offers only `ok`.
 run_filter claude_pool '.vendors.claude.accounts |= map(if .account == "dead" then .enabled = false else . end)'
 query --list
-assert test "$(list_line claudeb dead)" = "$(printf 'claudeb\tdead\t0\tlogin')"
+assert test "$(list_line claudeb dead)" = "$(printf 'claudeb\tdead\t0\tlogin\t-')"
 write_config 'claudeb_paused=on'
 query --list
-assert test "$(list_line claudeb dead)" = "$(printf 'claudeb\tdead\t0\tlogin')"
-assert test "$(list_line claudeb session)" = "$(printf 'claudeb\tsession\t0\tpaused')"
+assert test "$(list_line claudeb dead)" = "$(printf 'claudeb\tdead\t0\tlogin\t-')"
+assert test "$(list_line claudeb session)" = "$(printf 'claudeb\tsession\t0\tpaused\t-')"
 write_config
 run_case golden
 query --list
 assert test "$(list_names claudeb)" = "$(table_names claude)"
 assert test "$(list_names codex)" = "$(table_names codex)"
 assert test "$(list_names gemini)" = "$(table_names gemini)"
-assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tok')"
+assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tok\t-')"
 list_out=$query_out
 for list_vendor in claudeb codex gemini; do
   query --account "$list_vendor"
@@ -2487,12 +2487,26 @@ write_config
 # `ok` for workers.
 query_case claude_pool --list --role chat
 assert test "$query_rc" -eq 0
-assert test "$(list_line claudeb dry)" = "$(printf 'claudeb\tdry\t100\twalled')"
-assert test "$(list_line claudeb tie-a)" = "$(printf 'claudeb\ttie-a\t40\tok')"
-assert test "$(list_line claudeb session)" = "$(printf 'claudeb\tsession\t0\tok')"
+assert test "$(list_line claudeb dry)" = "$(printf 'claudeb\tdry\t100\twalled\t-')"
+assert test "$(list_line claudeb tie-a)" = "$(printf 'claudeb\ttie-a\t40\tok\t-')"
+assert test "$(list_line claudeb session)" = "$(printf 'claudeb\tsession\t0\tok\t-')"
 query --list --role workers
-assert test "$(list_line claudeb dry)" = "$(printf 'claudeb\tdry\t5\tok')"
-assert test "$(list_line claudeb tie-a)" = "$(printf 'claudeb\ttie-a\t20\tok')"
+assert test "$(list_line claudeb dry)" = "$(printf 'claudeb\tdry\t5\tok\t-')"
+assert test "$(list_line claudeb tie-a)" = "$(printf 'claudeb\ttie-a\t20\tok\t-')"
+# The five-hour deferral rides as a trailing column, so a picker ranks a preference of its own under
+# it without re-deriving the threshold, and an account the bucket cannot run (Fable-incapable here)
+# is `blocked`, never `ok` (Egor 2026-11-09: chats offered both as free).
+run_filter claude_pool '.vendors.claude.accounts = [
+  {account:"deep",enabled:true,five_hour:{used_pct:85},weekly:{used_pct:10},fable:{used_pct:10}},
+  {account:"nofb",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:10},fable:{used_pct:10},
+   rotation:{usable:{general:true,fable:false}}},
+  {account:"free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:20},fable:{used_pct:20}}]'
+query --list --role chat --model fable
+assert test "$(list_line claudeb deep)" = "$(printf 'claudeb\tdeep\t10\tok\t5h!')"
+assert test "$(list_line claudeb nofb)" = "$(printf 'claudeb\tnofb\t10\tblocked\t-')"
+assert test "$(next_of claudeb)" = free
+query --list --role chat --model opus
+assert test "$(list_line claudeb nofb)" = "$(printf 'claudeb\tnofb\t10\tok\t-')"
 # The NEXT line of the listing follows the same bucket as its rows.
 run_filter claude_pool '.vendors.claude.accounts = [
   {account:"wk-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:0},fable:{used_pct:90}},
@@ -2508,16 +2522,16 @@ query --list --role chat --model opus
 assert test "$(next_of claudeb)" = wk-free
 # Other vendors have one bucket and the role never moves it.
 query_case golden --list --role chat
-assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tok')"
+assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tok\t-')"
 write_config 'codex_reviewers=off'
 query --list --role reviewers
-assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\toff')"
+assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\toff\t-')"
 assert test "$(next_of codex)" = -
 query --list
-assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tok')"
+assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tok\t-')"
 write_config 'codex_paused=on'
 query --list
-assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tpaused')"
+assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tpaused\t-')"
 assert test "$(next_of codex)" = -
 write_config
 query --list --account claudeb

@@ -77,6 +77,11 @@ claudeb = [("claudeb", "alona"), ("claudeb", "com")]
 print("account-warm:", chats.account_for(row, now, claudeb, 1))
 print("account-cold:", chats.account_for(row, now + 600, claudeb, 1))
 print("account-absent:", chats.account_for(row, now, [("claudeb", "com"), ("claudeb", "beta")], 1))
+# worker-pick's five-hour deferral outranks the cache as it outranks everything in its rank: a warm
+# account it defers yields to a default it does not, and keeps the chat when that one is deferred too.
+print("account-deferred:", chats.account_for(row, now, claudeb, 1, {("claudeb", "alona")}),
+      chats.account_for(row, now, claudeb, 1, set(claudeb)),
+      chats.account_for(row, now, claudeb, None, {("claudeb", "alona")}))
 # A gateway chat: the model id says which store its account is in, so the warm name
 # picked up from the track is the GATEWAY `notcom` and never the claudeb profile of
 # the same name, and Enter reopens it through claudegpt rather than claudeb.
@@ -189,6 +194,7 @@ assert has_line 'warm: alona None' "$OUT"
 assert has_line 'account-warm: 0' "$OUT"
 assert has_line 'account-cold: 1' "$OUT"
 assert has_line 'account-absent: 1' "$OUT"
+assert has_line 'account-deferred: 1 0 0' "$OUT"
 assert has_line 'gateway-model: Astra' "$OUT"
 assert has_line 'gateway-account: 1' "$OUT"
 assert has_line 'gateway-label: gpt:notcom notcom' "$OUT"
@@ -336,13 +342,14 @@ assert has_line 'gateway-bucket-ttl: 300' "$OUT"
 # Freest on the left, in the order `worker-pick --list` prints each vendor and never one the
 # picker works out itself; a gateway account is ranked by the codex row of the same name.
 mkdir -p "$WORK/profiles/alpha" "$WORK/profiles/beta" "$WORK/profiles/zeta" \
-  "$WORK/profiles/omega" "$STUB/list"
+  "$WORK/profiles/omega" "$WORK/profiles/kappa" "$WORK/profiles/iota" "$STUB/list"
 cat >"$STUB/list/worker-pick" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in "--list --role chat"|"--list --role chat --model "*) ;; *) false ;; esac || exit 2
-printf '%s\t%s\t%s\t%s\n' \
-  claudeb omega 5 ok claudeb beta - login claudeb alpha 100 walled claudeb ghost 1 ok \
-  codex delta 30 ok codex gamma 0 login codex epsilon 60 ok gemini alpha 3 ok
+printf '%s\t%s\t%s\t%s\t%s\n' \
+  claudeb omega 5 ok - claudeb beta - login - claudeb alpha 100 walled 5h! claudeb zeta 2 blocked - \
+  claudeb kappa 85 ok 5h! claudeb ghost 1 ok - \
+  codex delta 30 ok - codex gamma 0 login - codex epsilon 60 ok - gemini alpha 3 ok -
 printf 'NEXT\t%s\t%s\n' claudeb omega codex delta gemini alpha grok -
 EOF
 chmod +x "$STUB/list/worker-pick"
@@ -356,7 +363,7 @@ chats = importlib.util.module_from_spec(spec)
 loader.exec_module(chats)
 chats.PROFILES = sys.argv[2]
 
-order, used, hidden, chosen = chats.ranking()
+order, used, hidden, chosen, deferred = chats.ranking()
 with patch.object(chats.chat_resume, "gateway_accounts",
                   return_value=["gamma", "epsilon", "zulu", "delta"]):
     names = chats.profiles()
@@ -366,14 +373,19 @@ lines = chats.account_lines(bar, used, 0)
 print("line1:", "|".join(label.strip() for _, label, _ in lines[0]))
 print("line2:", "|".join(label.strip() for _, label, _ in lines[1]))
 print("chosen:", chosen, chats.current_profile(bar, chosen))
+print("deferred:", " ".join(sorted(entry[1] for entry in deferred)))
 PY
 ) || fail "ranking probe failed"
-# zeta and zulu have no row in the listing at all: no data is not a logout, so they follow the
-# ranked ones unlabelled; ghost has no profile here, and gemini is no line of this bar.
-assert has_line 'offered: omega alpha zeta gpt:delta gpt:epsilon gpt:zulu' "$OUT"
-assert has_line 'line1: omega 5%|alpha 100%!|zeta' "$OUT"
+# Every account worker-pick refuses a chat is gone, the walled and the blocked as well as the
+# logged-out (Egor 2026-11-09: a spent five-hour window must not be offered); the five-hour
+# deferral stays offered, marked. iota and zulu have no row in the listing at all: no data is not
+# a logout, so they follow the ranked ones unlabelled; ghost has no profile here, and gemini is
+# no line of this bar.
+assert has_line 'offered: omega kappa iota gpt:delta gpt:epsilon gpt:zulu' "$OUT"
+assert has_line 'line1: omega 5%|kappa 85% 5h!|iota' "$OUT"
 assert has_line 'line2: gpt:delta 30%|gpt:epsilon 60%|gpt:zulu' "$OUT"
 assert has_line 'chosen: omega 0' "$OUT"
+assert has_line 'deferred: alpha kappa' "$OUT"
 assert test -z "$(grep -n 'llm-limits' "$SCRIPT")"
 
 # --- the bar is the ranking of the bucket the landed chat spends --------------
@@ -403,11 +415,11 @@ loader.exec_module(chats)
 boards = chats.rankings()
 for model in ("claude-fable-5-1", "claude-opus-5-5", "anthropic.ccr.astra", None):
     board = chats.board_of({"model": model})
-    order, used, hidden, chosen = boards[board]
+    order, used, hidden, chosen, deferred = boards[board]
     print("board:", model, board, chosen, used[("claudeb", "omega")])
 PY
 ) || fail "boards probe failed"
-assert has_line 'board: claude-fable-5-1 fable alpha 100%!' "$OUT"
+assert has_line 'board: claude-fable-5-1 fable alpha 100%' "$OUT"
 assert has_line 'board: claude-opus-5-5 weekly omega 10%' "$OUT"
 assert has_line 'board: anthropic.ccr.astra weekly omega 10%' "$OUT"
 assert has_line 'board: None weekly omega 10%' "$OUT"
@@ -831,7 +843,7 @@ assert has_line 'quit: None' "$OUT"
 assert has_line 'full-rows: 3' "$OUT"
 assert has_line 'full-accounts: ' "$OUT"
 assert has_line 'full-account: -' "$OUT"
-assert has_line 'full-note: no logged-in account to open it under' "$OUT"
+assert has_line 'full-note: no account to open it under: worker-pick lists every one logged out or walled' "$OUT"
 
 # --- a worker session's launcher comes off the run record --------------------
 # The env stamp `worker-run` exports into a worker is one of two sides, and the one a sub-shell, a
@@ -887,8 +899,8 @@ assert chats.restack([], [("claudeb", "alpha")], (None, None, None)) == [0, 0, 0
 names = [("claudeb", "alpha"), ("claudeb", "omega")]
 rows = [dict(session="0", cwd=sys.argv[2], model="opus"), dict(session="1", cwd=sys.argv[2], model="opus"),
         dict(session="2", cwd=sys.argv[2], model="fable")]
-boards = {"weekly": ([("claudeb", "omega"), ("claudeb", "alpha")], {}, set(), "omega"),
-          "fable": ([("claudeb", "alpha"), ("claudeb", "omega")], {}, set(), "alpha")}
+boards = {"weekly": ([("claudeb", "omega"), ("claudeb", "alpha")], {}, {}, "omega", set()),
+          "fable": ([("claudeb", "alpha"), ("claudeb", "omega")], {}, {}, "alpha", set())}
 
 
 asked_boards = threading.Event()
@@ -940,7 +952,7 @@ row = dict(session="s", cwd=sys.argv[2], model=None)
 with patch.object(chats, "resolve_session", lambda s: [s]), patch.object(chats, "fold_session", lambda s: s), \
         patch.object(chats, "fetch_chats", lambda level: [row]), patch.object(chats, "annotate", lambda rows: rows), \
         patch.object(chats, "profiles", lambda: list(names)), \
-        patch.object(chats, "ranking", lambda timeout, model=None: asked.append(model) or ([], {}, set(), None)), \
+        patch.object(chats, "ranking", lambda timeout, model=None: asked.append(model) or ([], {}, {}, None, set())), \
         patch.object(chats, "die", side_effect=SystemExit):
     try:
         with contextlib.redirect_stdout(io.StringIO()):
@@ -1151,7 +1163,24 @@ assert [ "$(printf '%s\n' "$OPEN" | tail -1)" = 'account=picked source=asked' ]
 assert test "${OPEN#*"profile picked --resume $OPEN_SID"}" != "$OPEN"
 open_command_test "$OPEN_SID" --account last > "$WORK/open-out" 2> "$WORK/open-error"
 assert [ "$?" -eq 1 ]
-assert grep -qx 'chats: no logged-in account named last' "$WORK/open-error"
+assert grep -qx 'chats: last cannot take a chat: worker-pick lists it login' "$WORK/open-error"
+open_command_test "$OPEN_SID" --account nobody > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 1 ]
+assert grep -qx 'chats: no logged-in account named nobody' "$WORK/open-error"
+# A walled account is no chat's, its cache included, and a five-hour deferral outranks the cache
+# while a free account remains (Egor 2026-11-09: worker-pick's rules, not a second set).
+mkdir -p "$OPEN_HOME/.claude-profiles/free"
+for state in walled-- ok-5h!; do
+  cat > "$WORK/open-bin/worker-pick" <<PICK
+#!/bin/sh
+printf 'claudeb\tfree\t10\tok\t-\nclaudeb\tpicked\t90\t${state%%-*}\t${state#*-}\nNEXT\tclaudeb\tfree\n'
+PICK
+  OPEN=$(open_command_test "$OPEN_SID")
+  assert [ "$(printf '%s\n' "$OPEN" | tail -1)" = 'account=free source=pick' ]
+  assert [ "$(accounts_test "$OPEN_SID" | jq -r '[.accounts[] | select(.default) | .name] | join(",")')" = free ]
+done
+open_command_test "$OPEN_SID" --account picked > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 0 ]
 
 echo "== moving a chat"
 # A chat moved to another folder (Egor 2026-11-09: the Chats app's chats into its own repo): its transcript and side

@@ -463,11 +463,14 @@ routing-math paragraph the rules above replace.
   pinned account, then applies the rest of rule 2's vector to all rows — pins among themselves the
   same way; a vendor with nothing selectable, or switched off for workers, holds no row at all.
 - `worker-pick --list [--role <role>]` is the same answer for a program that shows every
-  account: one `<vendor>\t<account>\t<weekly % or ->\t<state>` line per account, state one of
-  `ok`, `walled`, `login`, `paused`, `off` (the vendor closed for that role, or the account out
-  of the pool), each vendor's rows in exactly the order its section of the table prints them,
+  account: one `<vendor>\t<account>\t<weekly % or ->\t<state>\t<5h! or ->` line per account, state one of
+  `ok`, `walled`, `login`, `blocked` (the bucket's models refused to the account), `paused`, `off` (the
+  vendor closed for that role, or the account out of the pool), `5h!` the five-hour deferral, each
+  vendor's rows in exactly the order its section of the table prints them,
   then one `NEXT\t<vendor>\t<account or ->` line per vendor naming what `--account <vendor>`
-  answers for that role. `bin/chats` orders its account bar by it and ranks nothing itself.
+  answers for that role. `bin/chats` orders its account bar by it, offers only `ok` accounts and
+  ranks nothing itself: its one preference of its own, the account holding a chat's prompt cache,
+  ranks under the deferral (Egor 2026-11-09).
 - `worker-pick --menu` is the table for the menubar's Routing submenu. It routes exactly like
   the plain table. The difference is the vendor sections: every vendor gets a header line of
   its own naming its switch state (`on`, `workers off · reviewers off`, `workers off`,

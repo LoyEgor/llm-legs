@@ -44,6 +44,7 @@ WINDOWS = (7, 30, 120, 0)
 # conversation itself off the right edge.
 CAPS = (22, 12, 10)
 FOOTER = ("claudeb", "gpt")
+NO_ACCOUNT = "no account to open it under: worker-pick lists every one logged out or walled"
 # The mark of a pinned chat that is not open, which is what lifts it to the top (Egor 2026-11-08);
 # one column wide on every terminal (east-asian width N), so the rows below it stay aligned.
 PIN_GLYPH = "⚑"
@@ -269,22 +270,23 @@ def worker_pick():
 
 def ranking(timeout=10, model=None):
     """`worker-pick --list --role chat --model <model>`, the one ranking the bar shows, as
-    (order, used, hidden, chosen): every account in its order, the label each one's usage adds,
-    the logged-out ones, and the claudeb account a chat on that model would be given.
+    (order, used, hidden, chosen, deferred): every account in its order, the label each one's usage
+    adds, the ones it cannot give a chat on that model with their state (logged out, walled, ...),
+    the claudeb account it would give, and the ones it ranks down for their five-hour window.
 
     Zero-token — it reads the cached limits table. A gateway account spends the Codex
     subscription behind it, so the codex rows order the `gpt` line.
     """
-    order, used, hidden, chosen = [], {}, set(), None
+    order, used, hidden, chosen, deferred = [], {}, {}, None, set()
     command = [worker_pick(), "--list", "--role", "chat"] + (["--model", model] if model else [])
     try:
         done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except Exception as error:
         limit_hit.expired("probe.cli", error, "the account ranking: chats shows no order and no NEXT account",
                           "bin/chats:done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)")
-        return order, used, hidden, chosen
+        return order, used, hidden, chosen, deferred
     if done.returncode != 0:
-        return order, used, hidden, chosen
+        return order, used, hidden, chosen, deferred
     for line in done.stdout.splitlines():
         fields = line.split("\t")
         if fields[0] == "NEXT":
@@ -292,17 +294,20 @@ def ranking(timeout=10, model=None):
                 chosen = fields[2]
             continue
         launcher = {"claudeb": "claudeb", "codex": "gpt"}.get(fields[0])
-        if not launcher or len(fields) != 4:
+        if not launcher or len(fields) < 4:
             continue
         entry = (launcher, fields[1])
         order.append(entry)
-        if fields[3] == "login":
-            hidden.add(entry)
-        mark = (fields[2] + "%" if fields[2].isdigit() else "") + \
-            ("!" if fields[3] == "walled" else "")
+        # Every state but `ok` is worker-pick refusing the account to a chat, so none is offered.
+        if fields[3] != "ok":
+            hidden[entry] = fields[3]
+        if fields[4:5] == ["5h!"]:
+            deferred.add(entry)
+        mark = " ".join(part for part in (fields[2] + "%" if fields[2].isdigit() else "",
+                                          "5h!" if entry in deferred else "") if part)
         if mark:
             used[entry] = mark
-    return order, used, hidden, chosen
+    return order, used, hidden, chosen, deferred
 
 
 # One model of each bucket; which bucket a model spends is chat_model_bucket's answer alone, the
@@ -350,8 +355,8 @@ def rankings(timeout=10):
 
 
 def arrange(names, order, hidden):
-    """The bar in worker-pick's order, freest first on each line, the logged-out accounts
-    gone; one it does not list follows in directory order, since no data is not a logout."""
+    """The bar in worker-pick's order, freest first on each line, the accounts it refuses a
+    chat gone; one it does not list follows in directory order, since no data is not a logout."""
     rank = {entry: position for position, entry in enumerate(order)}
     kept = [entry for entry in names if entry not in hidden]
     return sorted(kept, key=lambda entry: (FOOTER.index(entry[0]), rank.get(entry, len(rank))))
@@ -385,16 +390,26 @@ def refollow(row, landed, profile, held):
     return row.get("session") != landed or profile == held
 
 
-def account_for(row, now, names, default):
-    """The account a landed row implies: the one whose cache still holds this
-    chat, else back to the account the picker opened on.
+def warm_position(row, now, names):
+    """The bar position of the account whose prompt cache still holds this chat, else None.
 
     Never the claudegpt launch stamp: it outlives the one reopen it recorded, so a
     Claude chat once reopened through the gateway would resolve to gpt forever.
     """
     vendor = "gpt" if chat_resume.gateway_alias(row.get("model")) else "claudeb"
     warm = (vendor, warm_name(row, now))
-    return names.index(warm) if warm[1] and warm in names else default
+    return names.index(warm) if warm[1] and warm in names else None
+
+
+def account_for(row, now, names, default, deferred=frozenset()):
+    """The account a landed row implies: the one whose cache still holds this chat, else
+    back to the account the picker opened on. The cache ranks under worker-pick's five-hour
+    deferral, as everything does in its rank: a warm account it defers loses to a default it
+    does not, since that window walls within a few answers and the cache saves nothing then."""
+    warm = warm_position(row, now, names)
+    if warm is None or (names[warm] in deferred and default is not None and names[default] not in deferred):
+        return default
+    return warm
 
 
 def widen(result, asked, level, chats, windows):
@@ -630,7 +645,7 @@ def run(screen, chats, names, used, profile, level, windows):
     if not ready:
         chats, pending = [], 0
         listing.start(fetcher(windows[0]))
-    boards, shown = {}, None
+    boards, shown, deferred = {}, None, frozenset()
     if used is None:
         used = {}
         ranked.start(rankings)
@@ -680,7 +695,7 @@ def run(screen, chats, names, used, profile, level, windows):
         # Opus chat are each offered the account freest for their own model.
         want = board_of(rows[max(0, min(view["cursor"], len(rows) - 1))] if rows else {})
         if boards and want != shown and want in boards:
-            order, used, hidden, chosen = boards[want]
+            order, used, hidden, chosen, deferred = boards[want]
             kept = arrange(everyone, order, hidden)
             profile, held, default = restack(names, kept, (profile, held, default))
             names, shown = kept, want
@@ -716,7 +731,7 @@ def run(screen, chats, names, used, profile, level, windows):
         # rather than keeping whichever chat's cache was picked up on the way.
         if rows and refollow(rows[view["cursor"]], landed, profile, held):
             landed = rows[view["cursor"]].get("session")
-            profile = held = account_for(rows[view["cursor"]], view["now"], names, default)
+            profile = held = account_for(rows[view["cursor"]], view["now"], names, default, deferred)
         height = body_rows(screen)
         view["top"] = max(min(view["top"], view["cursor"]), view["cursor"] - height + 1)
         view["top"] = max(0, min(view["top"], max(0, len(rows) - height)))
@@ -846,7 +861,7 @@ def run(screen, chats, names, used, profile, level, windows):
                 opening = rows[view["cursor"]].get("session")
                 continue
             if not names:
-                note = "no logged-in account to open it under"
+                note = NO_ACCOUNT
                 continue
             chosen = rows[view["cursor"]]
             # The chat's own directory, worktree and all: the project column shows the main
@@ -895,9 +910,10 @@ def reopen_argv(row, vendor, account):
 
 
 def open_plan(session, timeout):
-    """What --open-command and --accounts weigh for a chat: (row, cwd, bar, order, used, chosen, default, cached),
-    the bar the accounts in worker-pick's order without the logged-out ones, `cached` the position of the one whose
-    prompt cache still holds the chat."""
+    """What --open-command and --accounts weigh for a chat: (row, cwd, bar, order, used, chosen, hidden, cached, take),
+    the bar the accounts in worker-pick's order without the ones it refuses a chat (`hidden`, with their state),
+    `cached` the position of the one whose prompt cache still holds the chat, `take` the one a plain open takes
+    (account_for, the picker's own rule)."""
     candidates = resolve_session(session)
     if len(candidates) != 1:
         die("session id is ambiguous: %s" % session)
@@ -919,24 +935,26 @@ def open_plan(session, timeout):
     if not model:
         learn_buckets(("",) + BOARD_MODELS)
         model = next((m for m in BOARD_MODELS if board_of({"model": m}) == board_of(row)), None)
-    order, used, hidden, chosen = ranking(timeout, model)
+    order, used, hidden, chosen, deferred = ranking(timeout, model)
     names = arrange(names, order, hidden)
-    default = current_profile(names, chosen)
-    return row, cwd, names, order, used, chosen, default, account_for(row, time.time(), names, None)
+    now = time.time()
+    take = account_for(row, now, names, current_profile(names, chosen), deferred)
+    return row, cwd, names, order, used, chosen, hidden, warm_position(row, now, names), take
 
 
 def open_command(session, timeout, asked=None, where=None):
-    row, cwd, names, order, _, chosen, default, position = open_plan(session, timeout)
+    row, cwd, names, order, _, chosen, hidden, cached, position = open_plan(session, timeout)
     cwd = where or cwd
-    source = "cache" if position is not None else (
+    source = "cache" if cached is not None and position == cached else (
         "pick" if ("claudeb", chosen) in names else "fallback")
-    position = default if position is None else position
     if asked:
         if ("claudeb", asked) not in names:
-            die("no logged-in account named %s" % asked)
+            state = hidden.get(("claudeb", asked))
+            die("%s cannot take a chat: worker-pick lists it %s" % (asked, state) if state
+                else "no logged-in account named %s" % asked)
         position, source = names.index(("claudeb", asked)), "asked"
     if position is None:
-        die("no logged-in account to open it under")
+        die(NO_ACCOUNT)
     vendor, account = names[position]
     command, own = reopen_argv(row, vendor, account)
     if own:
@@ -957,12 +975,12 @@ def accounts_json(session, timeout):
     """`chats --accounts SID`: the Anthropic accounts a chat can be opened under, in worker-pick's order, as JSON:
     {accounts: [{name, used, warm, until, default}], gateway}; `warm` holds its prompt cache until `until` (epoch s,
     else null), `default` is the one --open-command takes; a gateway chat opens on its own gateway, so it lists none."""
-    row, _, names, _, used, _, default, position = open_plan(session, timeout)
+    row, _, names, _, used, _, _, cached, take = open_plan(session, timeout)
     if chat_resume.is_gateway_chat(row["session"], row.get("model")):
         print(json.dumps({"accounts": [], "gateway": True}))
         return
-    take = names[default if position is None else position] if names else None
-    warm = names[position] if position is not None else None
+    take = names[take] if take is not None else None
+    warm = names[cached] if cached is not None else None
     print(json.dumps({"accounts": [{"name": entry[1], "used": used.get(entry, ""), "warm": entry == warm,
                                     "until": row.get("until") if entry == warm else None,
                                     "default": entry == take} for entry in names if entry[0] == "claudeb"],
@@ -975,13 +993,13 @@ def new_command(cwd, timeout):
     if not os.path.isdir(cwd):
         die("no such directory: %s" % cwd)
     names = profiles()
-    order, _, hidden, chosen = ranking(timeout)
+    order, _, hidden, chosen, _ = ranking(timeout)
     if not order:
         die("worker-pick did not answer within %gs, so no account is known to be logged in" % timeout)
     names = [entry for entry in arrange(names, order, hidden) if entry[0] == "claudeb"]
     position = current_profile(names, chosen)
     if position is None:
-        die("no logged-in account to open it under")
+        die(NO_ACCOUNT)
     account = names[position][1]
     command = chat_resume.launch_argv(account)
     command[0] = os.path.join(HERE, command[0])
