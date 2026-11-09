@@ -1144,7 +1144,8 @@ accounts_test() {
 }
 assert [ "$(accounts_test "$OPEN_SID")" = '{"accounts": [], "gateway": true}' ]
 rm -f "$CLAUDEGPT_HOME/sessions/$OPEN_SID"
-assert [ "$(accounts_test "$OPEN_SID")" = '{"accounts": [{"name": "picked", "used": "10%", "warm": true, "default": true}], "gateway": false}' ]
+# The warm one carries when its cache ends (the app shows its minutes).
+assert [ "$(accounts_test "$OPEN_SID" | jq -c '.accounts[] |= (.until |= (. > now))')" = '{"accounts":[{"name":"picked","used":"10%","warm":true,"until":true,"default":true}],"gateway":false}' ]
 OPEN=$(open_command_test "$OPEN_SID" --account picked --timeout 5)
 assert [ "$(printf '%s\n' "$OPEN" | tail -1)" = 'account=picked source=asked' ]
 assert test "${OPEN#*"profile picked --resume $OPEN_SID"}" != "$OPEN"

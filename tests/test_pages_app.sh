@@ -590,6 +590,8 @@ assert test "$(get "$base/api/history")" = 200
 assert test "$(jq -r '[.chats[] | .sid + "|" + .name + "|" + .text] | join(",")' "$WORK/body")" = "$sid|Fixture chat|,$past|Old chat|old words"
 # Its project is the folder `chats` shows (a worktree's main checkout); its hash spares an unchanged list.
 assert test "$(jq -r '[.chats[].project] | join(",")' "$WORK/body")" = "proj,old"
+# A chat whose prompt cache is warm carries when it ends (Earlier shows its minutes, orange, as for a live one).
+assert test "$(jq -r '[.chats[] | .until > now] | map(tostring) | join(",")' "$WORK/body")" = "true,false"
 h=$(jq -r .h "$WORK/body")
 assert test "$(get "$base/api/history?h=$h")" = 200
 assert test "$(jq -c . "$WORK/body")" = "{\"same\":true,\"h\":\"$h\"}"
@@ -611,7 +613,7 @@ assert grep -qF "do script \"cd \\\"/x/old\\\" && claude --resume $past\" end te
 assert test "$(post "/api/chat/dead0000-2222-3333-4444-555555555555/open" '{}')" = 502
 assert test "$(jq -r .err "$WORK/body")" = "no transcript for dead0000-2222-3333-4444-555555555555"
 assert test "$(post "/api/chat/abc/open" '{}')" = 400
-# Open in Terminal offers `chats --accounts`' list; an account he picks goes to `chats` as --account.
+# Open on Mac offers `chats --accounts`' list; an account he picks goes to `chats` as --account.
 assert test "$(get "$base/api/chat/$past/accounts")" = 200
 assert test "$(jq -c '[[.accounts[] | [.name, .used, .warm, .default]], .gateway]' "$WORK/body")" \
   = '[[["acc3","10%",true,true],["acc4","",false,false]],false]'

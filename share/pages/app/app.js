@@ -180,8 +180,14 @@ function snippet(c) {
 
 const SPIN = '<svg class="spin" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" opacity=".3" d="M18 12a6 6 0 1 0-12 0 6 6 0 0 0 12 0zm2 0a8 8 0 1 1-16 0 8 8 0 0 1 16 0z"/><path fill="currentColor" d="M12 4a8 8 0 1 1-8 8h2a6 6 0 1 0 6-6V4z"/></svg>';
 
+// A row's time: the minutes its prompt cache has left, orange, while it is warm (a closed chat's too); else how long
+// ago it spoke.
+function tmHtml(until, spoke) {
+  const warm = left(until);
+  return `<span class="tm${warm ? ' warm' : ''}">${warm ? '◔ ' + warm : ago(spoke)}</span>`;
+}
+
 function chatRow(c, usual) {
-  const warm = left(c.until);
   const unread = c.spoke && c.spoke > (seen[c.sid] || 0) + 1 && S.sid !== c.sid;
   const lead = c.status === 'busy' ? SPIN : c.status === 'shell' ? SPIN.replace('class="spin"', 'class="spin dim"')
     : unread ? '<span class="dot"></span>' : '';
@@ -189,7 +195,7 @@ function chatRow(c, usual) {
   return `<a class="row${S.sid === c.sid ? ' sel' : ''}${unread ? ' unread' : ''}" href="#chat/${esc(c.sid)}">` +
     `<span class="lead">${lead}</span><div class="body"><div class="l1"><span class="name">${esc(c.name)}</span>` +
     (c.procs ? `<span class="np">${ICON.procs}${c.procs}</span>` : '') +
-    `<span class="tm${warm ? ' warm' : ''}">${warm ? '◔ ' + warm : ago(c.spoke)}</span></div>` +
+    `${tmHtml(c.until, c.spoke)}</div>` +
     `<div class="l2">${esc(acct + snippet(c))}</div></div></a>`;
 }
 
@@ -216,7 +222,7 @@ function histRow(r, pin) {
   const sub = [base(r.cwd), r.text || r.title].filter(Boolean).join(' · ');
   return `<a class="row past${S.sid === r.sid ? ' sel' : ''}" href="#chat/${esc(r.sid)}"><span class="lead">${pin ? '⚑' : ''}</span>` +
     `<div class="body"><div class="l1"><span class="name">${esc(r.name || r.sid.slice(0, 8))}</span>` +
-    `<span class="tm">${ago(r.spoke)}</span></div><div class="l2">${esc(sub)}</div></div></a>`;
+    `${tmHtml(r.until, r.spoke)}</div><div class="l2">${esc(sub)}</div></div></a>`;
 }
 
 // Earlier (Egor 2026-11-08): a pinned chat that is not open heads it (⚑), as `chats` lists it; then every other
@@ -315,9 +321,17 @@ async function searchSaid() {
 
 const pastRow = (sid) => S.hist.find((r) => r.sid === sid) || (S.found && (S.found.rows || []).find((r) => r.sid === sid));
 
-// Open in Terminal on the account he picks (Egor 2026-11-09: the choice sits by the button; a message opens the chat on
-// the default one): the Anthropic accounts in worker-pick's order with how much of each is used, a dot on the one
-// still holding the chat's cache, the default picked. A gateway chat has none and opens on its own.
+// Open on Mac on the account he picks (Egor 2026-11-09: the choice sits by the button, on its line; a message opens the
+// chat on the default one): the Anthropic accounts in worker-pick's order with how much of each is used, grey, and on
+// the one still holding the chat's cache its minutes, orange as in the list; the default picked. A gateway chat has
+// none and opens on its own.
+function accountTimes() {
+  $('#accts').querySelectorAll('[data-until]').forEach((n) => {
+    const w = left(+n.dataset.until);
+    if (n.textContent !== (w ? '◔ ' + w : '')) n.textContent = w ? '◔ ' + w : '';
+  });
+}
+
 async function loadAccounts(sid) {
   const box = $('#accts');
   Object.assign(box.dataset, {sid, pick: '', def: ''});
@@ -328,20 +342,21 @@ async function loadAccounts(sid) {
   const def = (d.accounts.find((a) => a.default) || d.accounts[0]).name;
   box.dataset.def = box.dataset.pick = def;
   box.innerHTML = d.accounts.map((a) => `<button type="button" class="acct${a.name === def ? ' on' : ''}" data-acct="${esc(a.name)}">` +
-    `${a.warm ? '<i class="dot"></i>' : ''}<span>${esc(a.name)}</span><small>${esc(a.used)}</small></button>`).join('');
+    `<span>${esc(a.name)}</span><small>${esc(a.used)}</small>${a.warm && a.until ? `<small class="warm" data-until="${+a.until}"></small>` : ''}</button>`).join('');
+  accountTimes();
   box.hidden = !!(S.opening && S.opening.sid === sid);
 }
 
-// Open in Terminal: the server runs `chats --open-command` and types it into a new Terminal window; the chat then
+// Open on Mac: the server runs `chats --open-command` and types it into a new Terminal window; the chat then
 // shows up live (the same id, or a new one in the same folder) and the view follows it.
 async function openPast(account) {
-  const sid = S.sid, p = pastRow(sid) || {};
+  const sid = S.sid, p = pastRow(sid) || {}, box = $('#accts'), had = !box.hidden;
   $('#openbtn').disabled = true;
-  $('#pastnote').innerHTML = '<span class="shimmer">Opening in Terminal on the Mac…</span>';
+  box.hidden = true;
+  $('#pastnote').innerHTML = '<span class="shimmer">Opening on the Mac…</span>';
   const d = await api(`/api/chat/${encodeURIComponent(sid)}/open`, account ? {account} : {}, 45000).catch((e) => ({ok: false, err: e.message || 'no connection'}));
   $('#openbtn').disabled = false;
-  if (!d.ok) { $('#pastnote').textContent = '⚠ ' + (d.err || 'did not open'); return; }
-  $('#accts').hidden = true;
+  if (!d.ok) { $('#pastnote').textContent = '⚠ ' + (d.err || 'did not open'); box.hidden = !had; return; }
   if (d.live) { refreshChats(); return; }
   S.opening = {sid, at: now(), cwd: p.cwd || '', known: new Set(S.chats.map((c) => c.sid))};
   $('#pastnote').innerHTML = `<span class="shimmer">Opened${d.account ? ' as ' + esc(d.account) : ''} · waiting for it…</span>`;
@@ -354,7 +369,7 @@ function followOpening() {
   if (!o.follow && chat(o.sid)) { S.opening = null; if (S.sid === o.sid) openChat(o.sid); return; }
   const fresh = S.chats.find((c) => !o.known.has(c.sid) && (!o.cwd || c.cwd === o.cwd));
   if (fresh) { S.opening = null; if (o.follow || S.sid === o.sid) location.hash = '#chat/' + encodeURIComponent(fresh.sid); return; }
-  if (now() - o.at > 60) { S.opening = null; if (S.sid === o.sid) $('#pastnote').textContent = 'Opened in Terminal; it has not shown up here yet'; }
+  if (now() - o.at > 60) { S.opening = null; if (S.sid === o.sid) $('#pastnote').textContent = 'Opened on the Mac; it has not shown up here yet'; }
 }
 
 // Pin: the chat stays at the top of the list while it is not open (share/chat_pins.py, the same pins as `chats`).
@@ -1132,9 +1147,9 @@ function renderHead() {
   $('#pastbar').hidden = !!(c || r);
   if (!c && !r) {
     const p = pastRow(S.sid);
-    title(`<b>${esc(p && p.name || S.sid)}</b><small>${esc([p && base(p.cwd), p && ago(p.spoke), 'not open'].filter(Boolean).join(' · '))}</small>`);
-    if (!S.opening || S.opening.sid !== S.sid) { $('#openbtn').disabled = false; $('#pastnote').textContent = 'Not open on the Mac'; }
-    if ($('#accts').dataset.sid !== S.sid) loadAccounts(S.sid);
+    title(`<b>${esc(p && p.name || S.sid)}</b><small>${esc([p && base(p.cwd), p && (left(p.until) ? '◔' + left(p.until) : ago(p.spoke)), 'not open'].filter(Boolean).join(' · '))}</small>`);
+    if ($('#accts').dataset.sid !== S.sid) { $('#openbtn').disabled = false; $('#pastnote').textContent = ''; loadAccounts(S.sid); }
+    accountTimes();
     return;
   }
   // The chat's own statusline in full words and its colours, else what the screen shows under the prompt.
@@ -1305,7 +1320,7 @@ function renderSend() {
 }
 
 // A closed chat takes a message too (Egor 2026-11-09): the server opens it on its default account and sends it once
-// it is up; Open in Terminal is for picking the account.
+// it is up; Open on Mac is for picking the account.
 const closed = (sid) => !chat(sid) && !runOf(sid) && !!pastRow(sid);
 const canSend = (sid) => live(chat(sid)) || closed(sid);
 

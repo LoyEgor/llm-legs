@@ -1037,7 +1037,8 @@ def history_doc(seen=""):
 
 def history():
     """chat-find --recent, newest real message first: every chat he can go back to (live ones too; the client marks
-    them), with what it last said; a pinned chat older than its window comes in too, as `chats` lists it."""
+    them), with what it last said, and `until` while its prompt cache is warm (Egor 2026-11-09: Earlier shows the
+    cache's minutes as a live chat does); a pinned chat older than its window comes in too, as `chats` lists it."""
     rows = []
     # chat-find answers from its own cache in a tenth of a second: a closed chat is in Earlier within seconds.
     found = dict(cached("recent", HISTORY_TTL, recent))
@@ -1045,8 +1046,11 @@ def history():
     if gone:
         found.update(cached(("pinned", gone), HISTORY_TTL, lambda: recent(gone)))
     label = shared("chat_names").project_label
+    now = time.time()
     for r in found.values():
-        rows.append({"sid": r["session"], "name": r.get("name") or "", "cwd": r.get("cwd") or "",
+        held = dict(r)
+        until = held.get("until") if warm(held) and (held.get("until") or 0) > now else None
+        rows.append({"sid": r["session"], "name": r.get("name") or "", "cwd": r.get("cwd") or "", "until": until,
                      "project": label(r.get("cwd") or ""),
                      "branch": r.get("branch") or "", "model": r.get("model") or "",
                      "spoke": r.get("spoke") or r.get("at"), "role": r.get("role") or "",
@@ -1978,16 +1982,11 @@ def get(handler, path, query):
         full = os.path.join(static_dir(), name)
         try:
             with open(full, "rb") as fh:
-                filestat = os.fstat(fh.fileno())
-                tag = '"%x-%x"' % (filestat.st_mtime_ns, filestat.st_size)
-                # An unchanged file is revalidated, not sent again (166 KB per load on the iPad's Wi-Fi)
-                same = handler.headers.get("If-None-Match") == tag
-                body = b"" if same else fh.read()
+                body = fh.read()
         except OSError:
             handler.reply(404, b"not found\n")
             return True
-        headers = [("Cache-Control", "no-cache"), ("ETag", tag)]
-        handler.reply(304 if same else 200, body, TYPES[os.path.splitext(name)[1]], headers)
+        handler.reply(200, body, TYPES[os.path.splitext(name)[1]], [("Cache-Control", "no-cache")])
         return True
     if path == "/api/chats":
         handler.send_json(200, cached("chats", 2.5, chats))

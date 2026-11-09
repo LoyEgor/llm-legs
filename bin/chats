@@ -930,8 +930,8 @@ def open_command(session, timeout, asked=None):
 
 def accounts_json(session, timeout):
     """`chats --accounts SID`: the Anthropic accounts a chat can be opened under, in worker-pick's order, as JSON:
-    {accounts: [{name, used, warm, default}], gateway}; `warm` holds its prompt cache, `default` is the one
-    --open-command takes; a gateway chat opens on its own gateway, so it lists none."""
+    {accounts: [{name, used, warm, until, default}], gateway}; `warm` holds its prompt cache until `until` (epoch s,
+    else null), `default` is the one --open-command takes; a gateway chat opens on its own gateway, so it lists none."""
     row, _, names, _, used, _, default, position = open_plan(session, timeout)
     if chat_resume.is_gateway_chat(row["session"], row.get("model")):
         print(json.dumps({"accounts": [], "gateway": True}))
@@ -939,6 +939,7 @@ def accounts_json(session, timeout):
     take = names[default if position is None else position] if names else None
     warm = names[position] if position is not None else None
     print(json.dumps({"accounts": [{"name": entry[1], "used": used.get(entry, ""), "warm": entry == warm,
+                                    "until": row.get("until") if entry == warm else None,
                                     "default": entry == take} for entry in names if entry[0] == "claudeb"],
                       "gateway": False}))
 
