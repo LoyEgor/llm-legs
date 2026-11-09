@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Growth gate for files LLMs re-read across sessions. Any growth beyond the
-# threshold is denied ONCE with the recurring token cost quoted; the same edit
-# passes on retry once the transcript shows the file re-read after that denial
-# (the deny is the "audit it, then tell Egor" step, not a wall).
+# Growth gate for files LLMs re-read across sessions. A top file (instruction_top_file) grows only
+# on Egor's word: any growth is denied until his typed yes to the model's question, which passes
+# the next growing edit of that file once. Any other file's growth beyond the threshold is denied
+# ONCE with the recurring token cost quoted; the same edit passes on retry once the transcript
+# shows the file re-read after that denial (the "audit it, then tell Egor" step, not a wall).
 {
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
@@ -39,6 +40,7 @@ command -v jq >/dev/null 2>&1 ||
 # A size warning about the global file is not a decision of its own: the edit may still be priced,
 # denied and retried, so the note rides along with whatever this gate ends up saying.
 ceiling_note=''
+spent_note=''
 
 # An exit 0 with nothing printed is an allow, so a denial jq cannot print leaves by exit 2 instead.
 deny() { # tag reason
@@ -54,7 +56,8 @@ deny() { # tag reason
 
 pass() { # [decision detail]
   [ -z "${1:-}" ] || gate_journal bloat "$1" "$sid" "$file_path" "${delta:-}" "${2:-}"
-  [ -n "$ceiling_note" ] && jq -cn --arg c "$ceiling_note" \
+  local note="$spent_note${spent_note:+${ceiling_note:+ }}$ceiling_note"
+  [ -n "$note" ] && jq -cn --arg c "$note" \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
   exit 0
 }
@@ -235,6 +238,27 @@ if [ -n "$global" ] && [ "$delta" -gt 0 ] 2>/dev/null; then
   if [ "$prospective" -gt "$INSTRUCTION_GLOBAL_WARN_BYTES" ] 2>/dev/null; then
     ceiling_note="Global CLAUDE.md would be ${prospective} bytes. ${bound}"
   fi
+fi
+
+# A top file has no threshold: any growth waits for Egor's word, which the deny asks the model to
+# get, and a re-read opens nothing. His yes passes one growing edit of this file, whatever its text
+# — the model compacts between his OK and the write — and the pass prices the growth.
+if [ "$delta" -gt 0 ] 2>/dev/null && top=$(instruction_top_file "$file_path" "$HOME"); then
+  if instruction_in_relay; then
+    instruction_inflight_clear "$sid"
+    gate_journal bloat relay-refused "$sid" "$file_path" "$delta"
+    instruction_relay_refusal "$file_path" >&2
+    exit 2
+  fi
+  instruction_span_live "$sid" "$transcript_path" && pass span-pass
+  if instruction_top_granted "$sid" "$transcript_path" "$file_path"; then
+    file_bytes=0
+    [ -f "$file_path" ] && file_bytes=$(wc -c <"$file_path") && file_bytes=${file_bytes// /}
+    spent_note=$(instruction_top_spent "$top" "$delta" "$file_bytes")
+    pass granted word
+  fi
+  instruction_top_ask "$sid" "$transcript_path" "$file_path"
+  deny top "Instruction-bloat gate: $(instruction_top_denial "$file_path")"
 fi
 
 # Nothing below the base threshold is ever denied: a measured rate only raises the bound above it,

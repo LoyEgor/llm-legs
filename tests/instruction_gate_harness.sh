@@ -118,6 +118,11 @@ live_span() { WORDS_LIB=$SPAN_LIB "$@"; }
 
 CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 REAL_MD="$REPO/global/CLAUDE.md"
+# Egor's typed turn through the real word intake: his yes answers the ask a top file's denial left.
+egor_says() { # session text
+  jq -cn --arg s "$1" --arg p "$2" '{hook_event_name:"UserPromptSubmit",session_id:$s,prompt:$p}' |
+    bash -c '. "$1"; words_python "$2" intake' _ "$HOME/.claude/hooks/lib/words.sh" "$1" >/dev/null
+}
 
 bash_payload() {
   jq -cn --arg c "$1" --arg s "${GATE_SID:-session-one}" --arg d "${GATE_CWD:-}" \

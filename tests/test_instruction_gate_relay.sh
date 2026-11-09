@@ -42,24 +42,27 @@ relay_edit "$CLAUDE_MD"; assert_eq 2 "$relay_rc"
 
 echo "== relay worker: ordinary repository markdown and the memory files are no part of that rule"
 # The rule is about what every later session re-reads. A repository's own contract docs are read
-# on demand, and appending a pointer line to a project's memory index is the workflow every agent
-# is told to follow: refusing those stops a worker doing the job it was sent for.
+# on demand, and a memory entry is recalled on its topic: refusing those stops a worker doing the
+# job it was sent for. A memory index rides in every session of its project, a top file that grows
+# only on Egor's word, which never reaches a worker.
 mkdir -p "$WORK/project/docs" "$HOME/.claude-profiles/com/projects/thing/memory"
 printf 'a contract doc\n' > "$WORK/project/docs/DIAGNOSTICS.md"
 printf 'a memory\n' > "$HOME/.claude-profiles/com/projects/thing/memory/note.md"
 printf 'index\n' > "$HOME/.claude-profiles/com/projects/thing/memory/MEMORY.md"
 for open_path in "$WORK/project/docs/DIAGNOSTICS.md" \
                  "$HOME/.claude-profiles/com/projects/thing/memory/note.md" \
-                 "$HOME/.claude-profiles/com/projects/thing/memory/MEMORY.md" \
                  "$WORK/unrelated.py"; do
   relay_edit "$open_path"
   assert_eq 0 "$relay_rc"
   assert_eq "" "$relay_err"
 done
+relay_edit "$HOME/.claude-profiles/com/projects/thing/memory/MEMORY.md"
+assert_eq 2 "$relay_rc"
+assert_contains "$REFUSAL" "$relay_err"
 
 echo "== relay worker: the chat Egor negotiated with keeps the audit protocol"
-# Nothing about the ordinary session moved: it is still priced, still denied on stdout, and still
-# offered the retry the audit earns.
+# Nothing about the ordinary session moved: it is still denied on stdout, and still offered its
+# way through — Egor's word for a top file, the audited retry for the rest.
 relay_edit "$CLAUDE_MD" "INSTRUCTION_BLOAT_GATE_STAMPS=$BLOAT_STAMPS"
 assert_eq 0 "$relay_rc"
 assert_eq "" "$relay_err"

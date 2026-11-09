@@ -20,7 +20,7 @@
 # without the shell's own parser. Both cost one round trip; the retry passes.
 #
 # Same contract as the Edit/Write gate: the exact retry passes ONCE, so a deny costs Egor one
-# round trip and never becomes a wall.
+# round trip and never becomes a wall — except a top file's, which passes on his word alone.
 {
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
@@ -546,6 +546,28 @@ case "$class" in
   always|span) instruction_in_relay && { instruction_inflight_clear "$sid"; gate_journal write relay-refused "$sid" "$abs"
     instruction_relay_refusal "$hit" >&2; exit 2; } ;;
 esac
+
+# A top file (instruction_top_file) is retried on Egor's word alone, as the Edit door does: his yes
+# to the model's question passes the next write of the file once, and a repeat opens nothing. The
+# span keeps its own refusal below — he is away, so there is nobody to ask.
+if [ "$class" != debt ] && [ -z "$span" ] && top=$(instruction_top_file "$abs" "$HOME"); then
+  if instruction_top_granted "$sid" "$transcript" "$abs"; then
+    gate_journal write granted "$sid" "$abs" "${landed_bytes:-}" word
+    size=0
+    [ -f "$abs" ] && size=$(wc -c <"$abs") && size=${size// /}
+    jq -cn --arg c "$(instruction_top_spent "$top" "${landed_bytes:-}" "$size")" \
+      '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
+    exit 0
+  fi
+  instruction_inflight_clear "$sid"
+  instruction_top_ask "$sid" "$transcript" "$abs"
+  gate_journal write denied "$sid" "$abs" "${landed_bytes:-}" top
+  reason="Instruction gate: ${landed_bytes:+this landing grows $hit by $landed_bytes B that no gate priced. }$(instruction_top_denial "$hit")"
+  jq -cn --arg hook "${0##*/}" --arg r "$reason" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null ||
+    { printf '%s\n' "$reason" >&2; exit 2; }
+  exit 0
+fi
 
 # The session is part of the key: a parallel chat spending its own retry must not spend this
 # one's, and a later session must not inherit approval Egor gave in an earlier turn.

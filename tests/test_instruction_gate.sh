@@ -296,12 +296,13 @@ echo "== write gate: the denial quotes what THIS class of file costs"
 # reader to do started from a number two orders of magnitude out for a skill.
 # A command already denied once in this suite would be spending its retry here, not being
 # priced, so every one of these carries its own marker.
-assert_contains "~3,000 times a week, ~15,000 times a month" "$(price a "$CLAUDE_MD")"
-assert_contains "~3,000 times a week, ~15,000 times a month" "$(price b "$REAL_MD")"
+# A top file is not priced at all: it grows on Egor's word, and the figure comes once he gave it.
+assert_contains "is a top re-read file" "$(price a "$CLAUDE_MD")"
+assert_contains "is a top re-read file" "$(price b "$REAL_MD")"
 assert_contains "~500 times a week, ~3,000 times a month" "$(price c "$HOME/.claude/agents/codex-worker.md")"
 assert_contains "~30 times a week, ~150 times a month" "$(price d "$HOME/.claude/docs/review-tiers.md")"
 assert_contains "~20 times a week, ~100 times a month" "$(price e "$HOME/.claude/skills/demo/SKILL.md")"
-assert_contains "~700 times a week, ~3,000 times a month" "$(price f "$WORK/proj/CLAUDE.md")"
+assert_contains "is a top re-read file" "$(price f "$WORK/proj/CLAUDE.md")"
 
 echo "== write gate: reads and non-targets stay silent"
 assert_eq pass "$(decision "grep -n rules $CLAUDE_MD")"
@@ -361,7 +362,7 @@ assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','wb').write(b'x')\"")
 assert_eq deny "$(decision "python3 -c \"Path('$CLAUDE_MD').write_bytes(b'x')\"")"
 
 echo "== write gate: one deny, then the identical command passes"
-cmd="echo retry > $CLAUDE_MD"
+cmd="echo retry > $DOC"
 assert_eq deny "$(decision "$cmd")"
 # A twin arriving in the same batch is not a retry: it must neither pass nor eat the stamp the
 # real retry is waiting for.
@@ -374,10 +375,10 @@ append_write_user
 assert_eq pass "$(decision "$cmd")"
 # The claim is consumed by the retry, so the call after it is denied again.
 assert_eq deny "$(decision "$cmd")"
-assert_eq deny "$(decision "echo other > $CLAUDE_MD")"
+assert_eq deny "$(decision "echo other > $DOC")"
 
 echo "== write gate: another session does not inherit this one's approval"
-cmd2="echo cross-session > $CLAUDE_MD"
+cmd2="echo cross-session > $DOC"
 assert_eq deny "$(decision "$cmd2")"
 age_stamps
 assert_eq deny "$(GATE_SID=session-two decision "$cmd2")"
@@ -394,7 +395,7 @@ learn_stamp() { # command [session]
 }
 JW="$INSTRUCTION_WATCH_STATE/events.jsonl"
 forged_count() { cat "$JW" 2>/dev/null | grep -c '"kind":"stamp-forged"' || true; }
-cmd3="echo forged > $CLAUDE_MD"
+cmd3="echo forged > $DOC"
 h3=$(learn_stamp "$cmd3")
 mkdir -p "$INSTRUCTION_WRITE_GATE_STAMPS/$h3"
 age_stamps
@@ -405,13 +406,13 @@ assert_contains "rc=2" "$out"
 assert_contains "retry stamp" "$out"
 assert_eq $((n0 + 1)) "$(forged_count)"
 assert_eq session-one "$(grep '"kind":"stamp-forged"' "$JW" | tail -1 | jq -r .sid)"
-assert_eq "$CLAUDE_MD" "$(grep '"kind":"stamp-forged"' "$JW" | tail -1 | jq -r '.files[0]')"
+assert_eq "$DOC" "$(grep '"kind":"stamp-forged"' "$JW" | tail -1 | jq -r '.files[0]')"
 assert [ ! -d "$INSTRUCTION_WRITE_GATE_STAMPS/$h3" ]
 assert_eq deny "$(decision "$cmd3")"
 age_stamps
 append_write_user
 assert_eq pass "$(decision "$cmd3")"
-cmd4="echo borrowed > $CLAUDE_MD"
+cmd4="echo borrowed > $DOC"
 assert_eq deny "$(decision "$cmd4")"
 h4a=$(learn_stamp "$cmd4")
 h4b=$(learn_stamp "$cmd4" session-two)
@@ -425,7 +426,7 @@ assert_eq session-two "$(grep '"kind":"stamp-forged"' "$JW" | tail -1 | jq -r .s
 
 # The record and the stamp are both computable from the session, the path and the command; the
 # denial the harness wrote into this session's transcript is not.
-cmd5="echo recorded > $CLAUDE_MD"
+cmd5="echo recorded > $DOC"
 h5=$(learn_stamp "$cmd5")
 mkdir -p "$INSTRUCTION_WRITE_GATE_STAMPS/$h5" "$INSTRUCTION_WATCH_STATE/denied"
 printf 'session-one %s\n' "$(date +%s)" > "$INSTRUCTION_WATCH_STATE/denied/$h5"
@@ -438,7 +439,7 @@ assert_eq $((n0 + 1)) "$(forged_count)"
 assert [ ! -d "$INSTRUCTION_WRITE_GATE_STAMPS/$h5" ]
 # The tag echoed by a command of the model's own, even spelled as the harness spells a denial,
 # starts with the command's exit line and witnesses nothing.
-cmd6="echo echoed > $CLAUDE_MD"
+cmd6="echo echoed > $DOC"
 h6=$(learn_stamp "$cmd6")
 mkdir -p "$INSTRUCTION_WRITE_GATE_STAMPS/$h6"
 printf 'session-one %s\n' "$(date +%s)" > "$INSTRUCTION_WATCH_STATE/denied/$h6"
@@ -452,7 +453,7 @@ out=$(gate "$cmd6" 2>&1; echo "rc=$?")
 assert_contains "rc=2" "$out"
 assert [ ! -d "$INSTRUCTION_WRITE_GATE_STAMPS/$h6" ]
 # Without the harness's prefix the gate's own wording is text any error result can start with.
-cmd7="echo unprefixed > $CLAUDE_MD"
+cmd7="echo unprefixed > $DOC"
 h7=$(learn_stamp "$cmd7")
 mkdir -p "$INSTRUCTION_WRITE_GATE_STAMPS/$h7"
 printf 'session-one %s\n' "$(date +%s)" > "$INSTRUCTION_WATCH_STATE/denied/$h7"
@@ -465,6 +466,22 @@ out=$(gate "$cmd7" 2>&1; echo "rc=$?")
 assert_contains "rc=2" "$out"
 assert [ ! -d "$INSTRUCTION_WRITE_GATE_STAMPS/$h7" ]
 
+echo "== write gate: a top file's retry is Egor's word, never a repeat or a turn of anyone's"
+# His typed yes, read by the word intake, answers the ask the denial left; any other user turn,
+# the identical command or a second write after the spent word opens nothing.
+cmd8="echo top >> $CLAUDE_MD"
+assert_eq deny "$(live_span decision "$cmd8")"
+age_stamps
+append_write_user
+assert_eq deny "$(live_span decision "$cmd8")"
+egor_says session-one 'ок'
+out=$(live_span gate "$cmd8")
+assert_eq "" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // ""')"
+assert_contains "Egor's word spent" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')"
+assert_eq deny "$(live_span decision "$cmd8")"
+egor_says session-one 'нет'
+assert_eq deny "$(live_span decision "$cmd8")"
+
 echo "== write gate: a trailing redirect or comment does not move the destination"
 assert_eq deny "$(decision "printf x | tee $CLAUDE_MD 2>/dev/null")"
 assert_eq deny "$(decision "printf x | tee $CLAUDE_MD # harmless note")"
@@ -473,7 +490,7 @@ assert_eq deny "$(decision "echo x > $CLAUDE_MD 2>&1")"
 echo "== write gate: the destination is named, not the source"
 out=$(gate "printf x | tee $CLAUDE_MD < $WORK/MEMORY.md" \
       | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "writes to $CLAUDE_MD" "$out"
+assert_contains "$CLAUDE_MD is a top re-read file" "$out"
 
 echo "== write gate: standing inside .claude is not an escape"
 assert_eq deny "$(GATE_CWD="$HOME/.claude/skills/demo" decision 'echo x > SKILL.md')"
@@ -551,15 +568,15 @@ assert_eq deny "$(decision "printf x | tee $WORK/proj=1/CLAUDE.md")"
 echo "== write gate: the denial names the destination whichever end it stands at"
 out=$(gate "printf name-the-destination | tee $CLAUDE_MD" \
       | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "writes to $CLAUDE_MD" "$out"
+assert_contains "$CLAUDE_MD is a top re-read file" "$out"
 out=$(gate "python3 -c \"open('$CLAUDE_MD','w').write(open('$WORK/MEMORY.md').read())\"" \
       | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "writes to $CLAUDE_MD" "$out"
+assert_contains "$CLAUDE_MD is a top re-read file" "$out"
 
 echo "== write gate: the name reported is the one written, not one named in the arguments"
 out=$(gate "printf x | tee $WORK/dummyCLAUDE.md $REPO/CLAUDE.md" \
       | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "writes to $REPO/CLAUDE.md" "$out"
+assert_contains "$REPO/CLAUDE.md is a top re-read file" "$out"
 
 echo "== write gate: a mention beside an unrelated write is still not a target"
 assert_eq deny "$(decision "cat $WORK/unrelated.py | tee -a $CLAUDE_MD")"

@@ -5,34 +5,89 @@
 fmt() { "$@"; }
 
 echo "== bloat gate: the measured multipliers reach the message"
-msg=$(bloat "$CLAUDE_MD" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "~15,000 times a month" "$msg"
+msg=$(bloat "$DOC" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+assert_contains "~150 times a month" "$msg"
 assert_contains "tokens/week and " "$msg"
 # The audit is the cheapest way out of the denial, so it stands first and is named as a step.
 assert_contains "Protocol, fastest path first" "$msg"
 assert_contains "(1) AUDIT" "$msg"
 assert_contains "$(fmt instruction_standing_rule)" "$msg"
 
-echo "== bloat gate: every name the global file answers to is the global file"
-# Each profile directory carries its own symlink to it, and those spellings were being priced
-# as a project file at a fifth of the real cost.
+echo "== bloat gate: a top file's growth is the short ask, under every name, with no figure"
+# Every CLAUDE.md, CLAUDE.local.md and memory index rides in every session of its project: such a
+# file grows only on Egor's word, and nothing is priced before he gave it.
 profile_link
-msg=$(bloat "$HOME/.claude-profiles/com/CLAUDE.md" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "~15,000 times a month" "$msg"
-msg=$(bloat "$REAL_MD" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "~15,000 times a month" "$msg"
+for top in "$CLAUDE_MD" "$HOME/.claude-profiles/com/CLAUDE.md" "$REAL_MD" "$REPO/CLAUDE.md" \
+           "$REPO/CLAUDE.local.md" "$WORK/memory/MEMORY.md"; do
+  msg=$(bloat "$top" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+  assert_contains "$top is a top re-read file; it grows only on Egor's word. Stop and ask him" "$msg"
+  case "$msg" in *"times a month"*|*tokens*) fail "a top file's ask quoted a figure: $msg" ;; esac
+done
 
-echo "== bloat gate: a project file rides in one project's sessions, not in all of them"
-# The global rate quoted for a project CLAUDE.md or memory index overstated it by five times.
-msg=$(bloat "$REPO/CLAUDE.md" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "~3,000 times a month" "$msg"
-msg=$(bloat "$WORK/memory/MEMORY.md" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "~3,000 times a month" "$msg"
+echo "== bloat gate: a top file grows on Egor's typed yes alone, once, and the pass prices it"
+TOP_T="$WORK/top-transcript.jsonl"
+: > "$TOP_T"
+top_try() { # session path new-string
+  jq -cn --arg s "$1" --arg p "$2" --arg n "$3" --arg t "$TOP_T" \
+    '{tool_name:"Edit",cwd:"/tmp",session_id:$s,transcript_path:$t,tool_input:{file_path:$p,old_string:"x",new_string:$n}}' |
+    live_span bash "$BLOAT"
+}
+top_dec() { # session path new-string
+  local out
+  out=$(top_try "$@")
+  [ -n "$out" ] || { printf 'pass\n'; return 0; }
+  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"'
+}
+# No threshold: one byte is growth.
+assert_eq deny "$(top_dec top-one "$CLAUDE_MD" xy)"
+# A re-read opens nothing, nor does a machine turn or his no.
+jq -cn --arg p "$CLAUDE_MD" '{type:"assistant",message:{role:"assistant",content:[{type:"tool_use",name:"Read",input:{file_path:$p}}]}}' >> "$TOP_T"
+assert_eq deny "$(top_dec top-one "$CLAUDE_MD" xy)"
+egor_says top-one '<task-notification>done</task-notification>'
+assert_eq deny "$(top_dec top-one "$CLAUDE_MD" xy)"
+egor_says top-one 'нет, не надо'
+assert_eq deny "$(top_dec top-one "$CLAUDE_MD" xy)"
+# His word is for the file the question was about, in the chat it was asked in.
+egor_says top-other 'ок'
+assert_eq deny "$(top_dec top-other "$CLAUDE_MD" xy)"
+egor_says top-one 'ок, добавляй'
+assert_eq deny "$(top_dec top-one "$REPO/CLAUDE.md" xy)"
+out=$(top_try top-one "$CLAUDE_MD" "$big")
+assert_eq "" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // ""')"
+assert_contains "Egor's word spent. No fresh fee-files.json prices this file." \
+  "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')"
+assert_eq deny "$(top_dec top-one "$CLAUDE_MD" xy)"
+# A shrink needs no word.
+assert_eq "" "$(jq -cn --arg p "$CLAUDE_MD" '{tool_name:"Edit",cwd:"/tmp",session_id:"top-one",
+  tool_input:{file_path:$p,old_string:"global rules",new_string:"rules"}}' | live_span bash "$BLOAT")"
+# fee-files.json makes a listed file top and prices the growth from its share of the Fee index; an
+# unlisted file of the class is below the smallest listed share; an export past 14 days lists nothing.
+export TOKENMAP_FEE_FILES="$WORK/fee-files.json"
+HOT="$WORK/hot.md"
+rep 0 400 > "$HOT"
+fee_files() { # generated-at
+  jq -n --arg gen "$1" --arg hot "$(realpath "$HOT")" \
+    '{generated_at:$gen, files:[{path:$hot, bytes:401, fee:20, share_of_fee:0.02}]}' > "$TOKENMAP_FEE_FILES"
+}
+fee_files "$(date +%Y-%m-%dT%H:%M:%S+02:00)"
+assert_eq deny "$(top_dec top-two "$HOT" 0123456789)"
+egor_says top-two 'да'
+assert_contains "Net +9 bytes ≈ +0.045% of the Fee index (7d)." \
+  "$(top_try top-two "$HOT" 0123456789 | jq -r '.hookSpecificOutput.additionalContext')"
+assert_eq deny "$(top_dec top-three "$CLAUDE_MD" xy)"
+egor_says top-three 'ok'
+assert_contains "Net +1 bytes, below the top-20, < 0.154% of the Fee index (7d)." \
+  "$(top_try top-three "$CLAUDE_MD" xy | jq -r '.hookSpecificOutput.additionalContext')"
+fee_files "$(date -u -v-15d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '-15 days' +%Y-%m-%dT%H:%M:%SZ)"
+assert_eq pass "$(top_dec top-four "$HOT" 0123456789)"
+unset TOKENMAP_FEE_FILES
 
 echo "== bloat gate: the repo path behind the symlinked directory is the same file"
 # ~/.claude/docs and ~/.claude/agents are symlinks into the config repository, and the repo
 # path is the one anybody editing the repo actually types.
 docs_link
+# The first section's denial of this same edit left the stamp its retry would spend.
+rm -rf "$BLOAT_STAMPS"
 assert_eq deny "$(bloat_decision "$HOME/.claude/docs/review-tiers.md")"
 assert_eq deny "$(bloat_decision "$REPO_DOCS/review-tiers.md")"
 assert_eq deny "$(bloat_decision "$REPO_DOCS/not-created-yet.md")"
@@ -44,18 +99,18 @@ assert_eq pass "$(bloat_decision "$WORK/no-such-dir/ordinary.md")"
 
 echo "== bloat gate: one deny, then the identical edit passes"
 rm -rf "$BLOAT_STAMPS"
-assert_eq deny "$(bloat_decision "$CLAUDE_MD")"
+assert_eq deny "$(bloat_decision "$DOC")"
 fresh_stamps "$BLOAT_STAMPS"
-assert_eq deny "$(bloat_decision "$CLAUDE_MD")"
+assert_eq deny "$(bloat_decision "$DOC")"
 age_stamps "$BLOAT_STAMPS"
-assert_eq pass "$(bloat_decision "$CLAUDE_MD")"
-assert_eq deny "$(bloat_decision "$CLAUDE_MD")"
+assert_eq pass "$(bloat_decision "$DOC")"
+assert_eq deny "$(bloat_decision "$DOC")"
 
 echo "== bloat gate: another session does not inherit this one's approval"
 rm -rf "$BLOAT_STAMPS"
 bloat_sid() {
   local out
-  out=$(jq -cn --arg p "$CLAUDE_MD" --arg n "$big" --arg s "$1" \
+  out=$(jq -cn --arg p "$DOC" --arg n "$big" --arg s "$1" \
           '{tool_name:"Edit",cwd:"/tmp",session_id:$s,tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \
         | bash "$BLOAT")
   [ -n "$out" ] || { printf 'pass\n'; return 0; }
@@ -67,10 +122,10 @@ assert_eq deny "$(bloat_sid session-two)"
 assert_eq pass "$(bloat_sid session-one)"
 
 echo "== bloat gate: an unusable stamp cache denies rather than waving the growth through"
-assert_eq deny "$(INSTRUCTION_BLOAT_GATE_STAMPS=/dev/null/nope bloat_decision "$CLAUDE_MD")"
+assert_eq deny "$(INSTRUCTION_BLOAT_GATE_STAMPS=/dev/null/nope bloat_decision "$DOC")"
 
 echo "== bloat gate: growth under the threshold is nobody's business"
-small=$(jq -cn --arg p "$CLAUDE_MD" \
+small=$(jq -cn --arg p "$DOC" \
   '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"x",new_string:"xy"}}' \
   | bash "$BLOAT")
 assert_eq "" "$small"
@@ -117,73 +172,73 @@ count_in() { find "$RETRY_STAMPS" -mindepth 1 -maxdepth 1 "$@" | wc -l | tr -d '
 
 rm -rf "$RETRY_STAMPS"
 # A read from before the denial is not the audit it asked for.
-append_read "$CLAUDE_MD"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-one Edit "$TRANSCRIPT")"
+append_read "$DOC"
+assert_eq deny "$(retry_decision "$DOC" retry-one Edit "$TRANSCRIPT")"
 age_stamps "$RETRY_STAMPS"
-assert_contains "Gate retry requires re-reading" "$(retry_reason "$CLAUDE_MD" retry-one Edit "$TRANSCRIPT")"
+assert_contains "Gate retry requires re-reading" "$(retry_reason "$DOC" retry-one Edit "$TRANSCRIPT")"
 # The refused retry must not spend the stamp the real retry is still waiting for.
 assert_eq 1 "$(count_in -type d)"
-append_read "$CLAUDE_MD"
+append_read "$DOC"
 age_stamps "$RETRY_STAMPS"
-assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-one Edit "$TRANSCRIPT")"
+assert_eq pass "$(retry_decision "$DOC" retry-one Edit "$TRANSCRIPT")"
 # The stamp and the note it was denied with are both gone, so the next identical edit starts over.
 assert_eq 0 "$(count_in)"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-one Edit "$TRANSCRIPT")"
+assert_eq deny "$(retry_decision "$DOC" retry-one Edit "$TRANSCRIPT")"
 
 echo "== bloat gate: a planted retry stamp is refused and recorded, not honoured"
 FORGE="$WORK/learn-bloat"
-retry_payload "$CLAUDE_MD" forge-one Edit "$TRANSCRIPT" \
+retry_payload "$DOC" forge-one Edit "$TRANSCRIPT" \
   | INSTRUCTION_BLOAT_GATE_STAMPS="$FORGE/stamps" INSTRUCTION_WATCH_STATE="$FORGE/state" \
     bash "$BLOAT" >/dev/null 2>&1
 hb=$(find "$FORGE/stamps" -mindepth 1 -maxdepth 1 -type d)
 mkdir -p "$RETRY_STAMPS/${hb##*/}"
 age_stamps "$RETRY_STAMPS"
-append_read "$CLAUDE_MD"
-out=$(retry_bloat "$CLAUDE_MD" forge-one Edit "$TRANSCRIPT" 2>&1; echo "rc=$?")
+append_read "$DOC"
+out=$(retry_bloat "$DOC" forge-one Edit "$TRANSCRIPT" 2>&1; echo "rc=$?")
 assert_contains "rc=2" "$out"
 assert_eq forge-one "$(grep '"kind":"stamp-forged"' "$INSTRUCTION_WATCH_STATE/events.jsonl" | tail -1 | jq -r .sid)"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" forge-one Edit "$TRANSCRIPT")"
+assert_eq deny "$(retry_decision "$DOC" forge-one Edit "$TRANSCRIPT")"
 
 echo "== bloat gate: the read counts under either spelling of the file"
-# ~/.claude/CLAUDE.md is a symlink into a config repository: the edit lands on one name and the
+# ~/.claude/docs is a symlink into a config repository: the edit lands on one name and the
 # read is as likely to carry the other.
 rm -rf "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$REAL_MD" retry-link Edit "$TRANSCRIPT")"
-append_read "$CLAUDE_MD"
+assert_eq deny "$(retry_decision "$REPO_DOCS/review-tiers.md" retry-link Edit "$TRANSCRIPT")"
+append_read "$DOC"
 age_stamps "$RETRY_STAMPS"
-assert_eq pass "$(retry_decision "$REAL_MD" retry-link Edit "$TRANSCRIPT")"
+assert_eq pass "$(retry_decision "$REPO_DOCS/review-tiers.md" retry-link Edit "$TRANSCRIPT")"
 rm -rf "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-link-back Edit "$TRANSCRIPT")"
-append_read "$REAL_MD"
-age_stamps "$RETRY_STAMPS"
-assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-link-back Edit "$TRANSCRIPT")"
-# Reading a different file is not reading this one.
-rm -rf "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-other Edit "$TRANSCRIPT")"
+assert_eq deny "$(retry_decision "$DOC" retry-link-back Edit "$TRANSCRIPT")"
 append_read "$REPO_DOCS/review-tiers.md"
 age_stamps "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-other Edit "$TRANSCRIPT")"
+assert_eq pass "$(retry_decision "$DOC" retry-link-back Edit "$TRANSCRIPT")"
+# Reading a different file is not reading this one.
+rm -rf "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$DOC" retry-other Edit "$TRANSCRIPT")"
+append_read "$HOME/.claude/agents/codex-worker.md"
+age_stamps "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$DOC" retry-other Edit "$TRANSCRIPT")"
 
 echo "== bloat gate: the tool's own spelling of the path is the one recorded"
 # Read takes a tilde path and the transcript keeps it unexpanded, while realpath resolves it
 # against the working directory: a real re-read was being thrown away.
 rm -rf "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-tilde Edit "$TRANSCRIPT")"
-append_read '~/.claude/CLAUDE.md'
+assert_eq deny "$(retry_decision "$DOC" retry-tilde Edit "$TRANSCRIPT")"
+append_read '~/.claude/docs/review-tiers.md'
 age_stamps "$RETRY_STAMPS"
-assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-tilde Edit "$TRANSCRIPT")"
+assert_eq pass "$(retry_decision "$DOC" retry-tilde Edit "$TRANSCRIPT")"
 
 echo "== bloat gate: a ranged read is not the audit the denial asked for"
 # The denial promises the check is mechanical, and the protocol asks for the WHOLE file; a read
 # carrying an offset or a limit is recorded exactly like a full one.
 rm -rf "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-ranged Edit "$TRANSCRIPT")"
-append_ranged_read "$CLAUDE_MD"
+assert_eq deny "$(retry_decision "$DOC" retry-ranged Edit "$TRANSCRIPT")"
+append_ranged_read "$DOC"
 age_stamps "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-ranged Edit "$TRANSCRIPT")"
-append_read "$CLAUDE_MD"
+assert_eq deny "$(retry_decision "$DOC" retry-ranged Edit "$TRANSCRIPT")"
+append_read "$DOC"
 age_stamps "$RETRY_STAMPS"
-assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-ranged Edit "$TRANSCRIPT")"
+assert_eq pass "$(retry_decision "$DOC" retry-ranged Edit "$TRANSCRIPT")"
 
 echo "== bloat gate: a file that does not exist yet has nothing to re-read"
 rm -rf "$RETRY_STAMPS"
@@ -196,46 +251,46 @@ echo "== bloat gate: a transcript it cannot read leaves the retry working"
 # The gate does not own the transcript; a payload without one, or one naming a file that is not
 # there, must behave exactly as it did before the read was ever required.
 rm -rf "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-blind Edit "")"
+assert_eq deny "$(retry_decision "$DOC" retry-blind Edit "")"
 age_stamps "$RETRY_STAMPS"
-assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-blind Edit "")"
+assert_eq pass "$(retry_decision "$DOC" retry-blind Edit "")"
 rm -rf "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-gone Edit "$WORK/no-such-transcript.jsonl")"
+assert_eq deny "$(retry_decision "$DOC" retry-gone Edit "$WORK/no-such-transcript.jsonl")"
 age_stamps "$RETRY_STAMPS"
-assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-gone Edit "$WORK/no-such-transcript.jsonl")"
+assert_eq pass "$(retry_decision "$DOC" retry-gone Edit "$WORK/no-such-transcript.jsonl")"
 # A transcript carrying lines that are not JSON at all is still readable for the ones that are.
 rm -rf "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-junk Edit "$TRANSCRIPT")"
+assert_eq deny "$(retry_decision "$DOC" retry-junk Edit "$TRANSCRIPT")"
 printf 'not json at all\n' >> "$TRANSCRIPT"
-append_read "$CLAUDE_MD"
+append_read "$DOC"
 printf '{"type":"user"}\n' >> "$TRANSCRIPT"
 age_stamps "$RETRY_STAMPS"
-assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-junk Edit "$TRANSCRIPT")"
+assert_eq pass "$(retry_decision "$DOC" retry-junk Edit "$TRANSCRIPT")"
 
 echo "== bloat gate: a transcript that shrank took the evidence with it"
 # Truncated or rotated under the same name: the tail past the remembered byte is empty from then
 # on, which would deny the retry forever instead of once.
 rm -rf "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-cut Edit "$TRANSCRIPT")"
+assert_eq deny "$(retry_decision "$DOC" retry-cut Edit "$TRANSCRIPT")"
 : > "$TRANSCRIPT"
 age_stamps "$RETRY_STAMPS"
-assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-cut Edit "$TRANSCRIPT")"
+assert_eq pass "$(retry_decision "$DOC" retry-cut Edit "$TRANSCRIPT")"
 
 echo "== bloat gate: each denial moves the byte the audit has to beat"
 # The stamp is swept after a day and the note beside it is not: a note left from an old cycle
 # would let a read from that cycle answer a denial issued today.
 rm -rf "$RETRY_STAMPS"
-append_read "$CLAUDE_MD"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-fresh Edit "$TRANSCRIPT")"
+append_read "$DOC"
+assert_eq deny "$(retry_decision "$DOC" retry-fresh Edit "$TRANSCRIPT")"
 find "$RETRY_STAMPS" -mindepth 1 -maxdepth 1 -type d -exec rmdir {} + 2>/dev/null
 assert_eq 1 "$(count_in -name '*.read')"
-append_read "$CLAUDE_MD"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-fresh Edit "$TRANSCRIPT")"
+append_read "$DOC"
+assert_eq deny "$(retry_decision "$DOC" retry-fresh Edit "$TRANSCRIPT")"
 age_stamps "$RETRY_STAMPS"
-assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-fresh Edit "$TRANSCRIPT")"
-append_read "$CLAUDE_MD"
+assert_eq deny "$(retry_decision "$DOC" retry-fresh Edit "$TRANSCRIPT")"
+append_read "$DOC"
 age_stamps "$RETRY_STAMPS"
-assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-fresh Edit "$TRANSCRIPT")"
+assert_eq pass "$(retry_decision "$DOC" retry-fresh Edit "$TRANSCRIPT")"
 
 echo "== note sweep: an aged note goes, a file that only borrowed its name stays"
 # The stamp directory is env-overridable and a misconfigured one is somebody's real data, so the
@@ -250,7 +305,7 @@ touch -t "$(date -v-25H +%Y%m%d%H%M.%S 2>/dev/null || date -d '-25 hours' +%Y%m%
 # A note of the right shape that has not aged out belongs to a denial still waiting for its retry.
 printf '42\n%s\n' "$TRANSCRIPT" > "$NOTE_SWEEP/8899aabbccddeeff.read"
 assert_contains 'permissionDecision":"deny' \
-  "$(retry_payload "$CLAUDE_MD" note-sweep Edit "$TRANSCRIPT" \
+  "$(retry_payload "$DOC" note-sweep Edit "$TRANSCRIPT" \
      | INSTRUCTION_BLOAT_GATE_STAMPS="$NOTE_SWEEP" bash "$BLOAT")"
 assert [ ! -f "$NOTE_SWEEP/0123456789abcdef.read" ]
 assert [ -f "$NOTE_SWEEP/abcdef0123456789.read" ]
@@ -305,32 +360,20 @@ price_bloat() {
     | bash "$BLOAT" | jq -r '.hookSpecificOutput.permissionDecisionReason'
 }
 FROZEN_WORDING="times a month — every token added is paid for that many times over (measured)."
-LIVE_WORDING="measured by the local read index over its last 30-day window"
-# 3.2 bytes per token, rounded the way jq rounds it rather than truncated.
-live_tokens=$(( ((${#big} - 1) * 10 + 16) / 32 ))
+# A CLAUDE.md, CLAUDE.local.md or memory index grows on Egor's word with no figure before it, so
+# its rate is checked where the canary and the watcher still read it: the shared parser.
+rates_of() { instruction_live_rates "$1" "$HOME"; }
 write_rates "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-msg=$(price_bloat global-fresh "$CLAUDE_MD")
-assert_contains "~20,000 times a month" "$msg"
-assert_contains "$LIVE_WORDING" "$msg"
-# The cost is the product of the two figures printed beside it, not of the measurement behind them:
-# the message orders its reader to quote all three to Egor, so 125 tokens at the ~20,000 re-reads
-# it shows has to come to the 2.5M it shows, and never to the 2,513,875 the raw 20,111 would give.
-assert_eq 125 "$live_tokens"
-assert_contains "~2.5M/month" "$msg"
-# Every name the global file answers to resolves to the one the export keys it by.
-assert_contains "~20,000 times a month" "$(price_bloat global-profile "$HOME/.claude-profiles/com/CLAUDE.md")"
-assert_contains "~20,000 times a month" "$(price_bloat global-repo "$REAL_MD")"
+assert_eq "legacy||20111.0|" "$(rates_of "$CLAUDE_MD")"
 
 echo "== bloat gate: a project the index measured is priced at that project's own rate"
-assert_contains "~700 times a month" "$(price_bloat proj-literal "$WORK/liveproj/CLAUDE.md")"
-assert_contains "~700 times a month" "$(price_bloat proj-local "$WORK/liveproj/CLAUDE.local.md")"
-assert_contains "~500 times a month" "$(price_bloat proj-resolved "$WORK/livereal/CLAUDE.md")"
-# A project nobody measured is not free, it is the class rate — and so is a memory index filed
-# under a directory the export does not carry.
-msg=$(price_bloat proj-unmeasured "$WORK/unmeasured/CLAUDE.md")
-assert_contains "~3,000 times a month" "$msg"
-assert_contains "$FROZEN_WORDING" "$msg"
-assert_contains "~3,000 times a month" "$(price_bloat proj-memory "$WORK/liveproj/memory/MEMORY.md")"
+assert_eq "legacy||812.4|" "$(rates_of "$WORK/liveproj/CLAUDE.md")"
+assert_eq "legacy||812.4|" "$(rates_of "$WORK/liveproj/CLAUDE.local.md")"
+assert_eq "legacy||407.0|" "$(rates_of "$WORK/livereal/CLAUDE.md")"
+# A project nobody measured answers nothing, and so does a memory index filed under a directory
+# the export does not carry: the class rate stands.
+assert_eq "" "$(rates_of "$WORK/unmeasured/CLAUDE.md")"
+assert_eq "" "$(rates_of "$WORK/liveproj/memory/MEMORY.md")"
 # A project rate is the price of the instruction files that ride in that project's sessions, not
 # of every file that shares their directory. Left unrestricted it priced ~/.claude/settings.json
 # at the rate measured from its neighbours and denied it, quoting a re-read that never happens.
@@ -361,12 +404,9 @@ echo "== bloat gate: a memory index is priced by the project its path encodes"
 # /x/repo/other does — so a prefix test handed a busy neighbour the rate of this index.
 # 641 for the root and 400 for the subdirectory come to the ~1,000 shown; the 9,000-read
 # neighbour would carry it to ~10,000 the moment it were counted.
-msg=$(price_bloat mem-slug "$MEM_DIR/MEMORY.md")
-assert_contains "~1,000 times a month" "$msg"
-assert_contains "$LIVE_WORDING" "$msg"
+assert_eq "legacy||1041|" "$(rates_of "$MEM_DIR/MEMORY.md")"
 # A slug the export never measured is the class rate, not a match on a neighbouring project.
-assert_contains "~3,000 times a month" \
-  "$(price_bloat mem-unknown "$WORK/profiles/com/projects/-nowhere-at-all/memory/MEMORY.md")"
+assert_eq "" "$(rates_of "$WORK/profiles/com/projects/-nowhere-at-all/memory/MEMORY.md")"
 
 echo "== bloat gate: a memory file is priced by its class, whatever the index says"
 # The recall that loads one names no path, so the index sees only the times it was opened by hand.
@@ -385,7 +425,7 @@ assert_contains "~150 times a month" "$(price_bloat mem-file-measured "$mem_file
 write_rates "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # The index of the set is not one of its entries: MEMORY.md is measured with the project it belongs
 # to, and blinding it would throw away the one memory-shaped file the export does see.
-assert_contains "~1,000 times a month" "$(price_bloat mem-index-still-live "$MEM_DIR/MEMORY.md")"
+assert_eq "legacy||1041|" "$(rates_of "$MEM_DIR/MEMORY.md")"
 
 echo "== bloat gate: an unpinned memory entry is loaded only on recall, so its size is not gated"
 unpinned="$MEM_DIR/recalled.md"
@@ -415,50 +455,45 @@ assert_contains "~100 times a month" "$(price_bloat command-file "$CMD_DIR/spawn
 
 echo "== bloat gate: a rate under one read a month is not a free file"
 # round() would print 0, and "~0 times a month" reads as permission rather than as a small cost.
-msg=$(price_bloat tiny /tmp/tiny-project/CLAUDE.md)
-assert_contains "~1 time a month" "$msg"
-assert_contains "$LIVE_WORDING" "$msg"
+assert_eq "legacy||0.4|" "$(rates_of /tmp/tiny-project/CLAUDE.md)"
+assert_eq 0.5 "$(fmt instruction_display_rate 0.4)"
 
 echo "== bloat gate: a stamp from the future is a broken clock, not a fresher measurement"
 write_rates "$(stamp_ahead 6)"
-msg=$(price_bloat future "$CLAUDE_MD")
-assert_contains "~15,000 times a month" "$msg"
-assert_contains "$FROZEN_WORDING" "$msg"
+assert_eq "" "$(rates_of "$CLAUDE_MD")"
 # Skew of a couple of minutes is not that, and must not throw the reading away.
 write_rates "$(stamp_ahead 0)"
-assert_contains "~20,000 times a month" "$(price_bloat no-skew "$CLAUDE_MD")"
+assert_eq "legacy||20111.0|" "$(rates_of "$CLAUDE_MD")"
 
 echo "== bloat gate: the two benign producer drifts still parse"
 # fromdateiso8601 accepts one spelling; a fractional second or a +00:00 offset must degrade to the
 # same reading rather than to a silent fallback nobody would notice.
 jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%S.123456Z)" \
   '{generated_at:$gen,window_days:30,global:{reads:20111.0}}' > "$RATES"
-assert_contains "~20,000 times a month" "$(price_bloat frac-seconds "$CLAUDE_MD")"
+assert_eq "legacy||20111.0|" "$(rates_of "$CLAUDE_MD")"
 jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
   '{generated_at:$gen,window_days:30,global:{reads:20111.0}}' > "$RATES"
-assert_contains "~20,000 times a month" "$(price_bloat utc-offset "$CLAUDE_MD")"
+assert_eq "legacy||20111.0|" "$(rates_of "$CLAUDE_MD")"
 
 echo "== bloat gate: an export past its window is not a number anybody can reproduce"
 write_rates "$(stamp_ago 20)"
-msg=$(price_bloat stale "$CLAUDE_MD")
-assert_contains "~15,000 times a month" "$msg"
-assert_contains "$FROZEN_WORDING" "$msg"
-assert_contains "~3,000 times a month" "$(price_bloat stale-proj "$WORK/liveproj/CLAUDE.md")"
+assert_eq "" "$(rates_of "$CLAUDE_MD")"
+assert_eq "" "$(rates_of "$WORK/liveproj/CLAUDE.md")"
 # Just inside the window still counts.
 write_rates "$(stamp_ago 13)"
-assert_contains "~20,000 times a month" "$(price_bloat nearly-stale "$CLAUDE_MD")"
+assert_eq "legacy||20111.0|" "$(rates_of "$CLAUDE_MD")"
 
 echo "== bloat gate: an export it cannot read leaves the constants standing"
 rm -f "$RATES"
-assert_contains "~15,000 times a month" "$(price_bloat no-file "$CLAUDE_MD")"
+assert_eq "" "$(rates_of "$CLAUDE_MD")"
 printf 'not json at all\n' > "$RATES"
-assert_contains "~15,000 times a month" "$(price_bloat malformed "$CLAUDE_MD")"
+assert_eq "" "$(rates_of "$CLAUDE_MD")"
 printf '{"projects":{}}\n' > "$RATES"
-assert_contains "~15,000 times a month" "$(price_bloat no-timestamp "$CLAUDE_MD")"
+assert_eq "" "$(rates_of "$CLAUDE_MD")"
 jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{generated_at:$gen,projects:{}}' > "$RATES"
-assert_contains "~15,000 times a month" "$(price_bloat no-global-key "$CLAUDE_MD")"
+assert_eq "" "$(rates_of "$CLAUDE_MD")"
 jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{generated_at:$gen,global:{reads:"lots"}}' > "$RATES"
-assert_contains "~15,000 times a month" "$(price_bloat unusable-rate "$CLAUDE_MD")"
+assert_eq "" "$(rates_of "$CLAUDE_MD")"
 
 echo "== bloat gate: the classes the export does not cover keep their own constants"
 # docs, agents, skills and instructions are not in the export yet, and a live lookup that answers
@@ -473,25 +508,25 @@ assert_eq pass "$(bloat_decision "$WORK/ordinary.md")"
 
 echo "== write gate: the denial quotes the same live figure the bloat gate does"
 # Two gates quoting different numbers for one file is what teaches a reader that neither is real.
-assert_contains "~5,000 times a week, ~20,000 times a month" "$(price live-a "$CLAUDE_MD")"
-assert_contains "~5,000 times a week, ~20,000 times a month" "$(price live-b "$REAL_MD")"
-assert_contains "~200 times a week, ~700 times a month" "$(price live-c "$WORK/liveproj/CLAUDE.md")"
-# A class the export does not carry, and a project it never measured, keep the constant.
+# A class the export does not carry keeps the constant; a top file is asked about, never priced.
 assert_contains "~30 times a week, ~150 times a month" "$(price live-d "$HOME/.claude/docs/review-tiers.md")"
-assert_contains "~700 times a week, ~3,000 times a month" "$(price live-e "$WORK/unmeasured/CLAUDE.md")"
+for top in "$CLAUDE_MD" "$REAL_MD" "$WORK/liveproj/CLAUDE.md" "$WORK/unmeasured/CLAUDE.md"; do
+  assert_contains "is a top re-read file; it grows only on Egor's word." "$(price "live-$asserts" "$top")"
+done
 
 echo "== bloat gate: current path rates price every Markdown file in weekly terms"
 README="$WORK/liveproj/README.md"
 CHEAP_MD="$WORK/liveproj/cheap.md"
 ABSENT_MD="$WORK/liveproj/absent.md"
 PROJECT_MEMORY="$WORK/liveproj/MEMORY.md"
+HOT_DOC="$WORK/liveproj/hot-doc.md"
 printf 'readme\n' > "$README"
 printf 'cheap\n' > "$CHEAP_MD"
 printf 'memory\n' > "$PROJECT_MEMORY"
 write_current_rates() {
   jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg global "$CLAUDE_MD" \
     --arg project "$WORK/liveproj" --arg readme "$README" --arg cheap "$CHEAP_MD" \
-    --arg memory "$PROJECT_MEMORY" --arg project_claude "$WORK/liveproj/CLAUDE.md" '{
+    --arg memory "$PROJECT_MEMORY" --arg project_claude "$WORK/liveproj/CLAUDE.md" --arg hot "$HOT_DOC" '{
     generated_at: $gen, window_days: 30,
     global: {reads: 20111.0, limit_units: 9800.0, requests: 130000, contexts: 1900},
     projects: {($project): {reads: 812.4, limit_units: 400.0, requests: 8000, contexts: 60}},
@@ -507,6 +542,9 @@ write_current_rates() {
         ($readme): {mode: "on-demand",
           monthly: {reads: 4000.0, limit_units: 2000.0},
           weekly: {reads: 1000.0, limit_units: 500.0}},
+        ($hot): {mode: "on-demand",
+          monthly: {reads: 20111.0, limit_units: 9800.0},
+          weekly: {reads: 6176.0, limit_units: 3000.0}},
         ($cheap): {mode: "on-demand",
           monthly: {reads: 3.0, limit_units: 2.0},
           weekly: {reads: 2.0, limit_units: 1.0}},
@@ -541,11 +579,8 @@ assert_contains "~500 times a week" "$msg"
 assert_contains "~2,000 times a month" "$msg"
 assert_contains "tokens/week" "$msg"
 assert_contains "tokenmap reads $README" "$msg"
-memory_growth=$(rep m 3000)
-msg=$(growth_output "$PROJECT_MEMORY" "$memory_growth" path-memory \
-  | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "~150 times a week" "$msg"
-assert_contains "~500 times a month" "$msg"
+assert_eq "measured|150.0|400.0|" "$(rates_of "$PROJECT_MEMORY")"
+assert_eq "measured|3000.0|9800.0|" "$(rates_of "$CLAUDE_MD")"
 
 echo "== number formatting: the figures are readable before they are anything else"
 # Seven bare digits are read wrong more often than right, and these numbers exist to be acted on.
@@ -596,10 +631,10 @@ assert_eq pass "$(growth_decision "$CHEAP_MD" "$cheap_growth" threshold-cheap)"
 echo "== bloat gate: the weekly threshold is never stricter than 120 bytes"
 exactly_120=$(rep g 121)
 over_120=$(rep g 122)
-assert_eq pass "$(growth_decision "$CLAUDE_MD" "$exactly_120" clamp-pass)"
-assert_eq deny "$(growth_decision "$CLAUDE_MD" "$over_120" clamp-deny)"
+assert_eq pass "$(growth_decision "$HOT_DOC" "$exactly_120" clamp-pass)"
+assert_eq deny "$(growth_decision "$HOT_DOC" "$over_120" clamp-deny)"
 # Bytes, not characters: 61 two-byte letters are 121 bytes of growth though only 60 characters.
-assert_eq deny "$(growth_decision "$CLAUDE_MD" "$(rep ж 61)" clamp-multibyte)"
+assert_eq deny "$(growth_decision "$HOT_DOC" "$(rep ж 61)" clamp-multibyte)"
 
 echo "== bloat gate: a Markdown file the export proves cheap passes without a word"
 # A note that says "not gated" changes nothing the model does, and it rode on every scratch file.
@@ -627,28 +662,18 @@ printf 'x\n' > "$UNMEASURED/CLAUDE.md"
 printf 'x\n' > "$UNMEASURED/nested/CLAUDE.md"
 jq --arg p "$UNMEASURED/nested" '.projects[$p] = {reads: 600.0, limit_units: 300.0}' "$RATES" \
   > "$RATES.sub" && mv "$RATES.sub" "$RATES"
-msg=$(price_bloat unmeasured-project "$UNMEASURED/CLAUDE.md")
-assert_contains "~300 times a month" "$msg"
+assert_eq "legacy||300.0|" "$(rates_of "$UNMEASURED/CLAUDE.md")"
 # The project rate belongs to the instruction files, not to everything sharing their directory.
 assert_eq "" "$(growth_output "$UNMEASURED/settings.json" "$cheap_growth" unmeasured-neighbour)"
 # The sessions that pay for a CLAUDE.md are the ones at or below its directory, so a repository
 # root file collects every subdirectory that ran sessions, not only the exact-key match.
 jq --arg p "$UNMEASURED" '.projects[$p] = {reads: 400.0, limit_units: 200.0}' "$RATES" \
   > "$RATES.root" && mv "$RATES.root" "$RATES"
-assert_contains "~500 times a month" "$(price_bloat unmeasured-sum "$UNMEASURED/CLAUDE.md")"
+assert_eq "legacy||500|" "$(rates_of "$UNMEASURED/CLAUDE.md")"
 write_current_rates
 
-echo "== write gate: current path rates use the same weekly-first figures"
-msg=$(price current-global "$CLAUDE_MD")
-assert_contains "re-read ~3,000 times a week" "$msg"
-assert_contains "~10,000 times a month" "$msg"
-assert_contains "tokenmap reads $CLAUDE_MD" "$msg"
-msg=$(price current-project "$WORK/liveproj/CLAUDE.md")
-assert_contains "re-read ~150 times a week" "$msg"
-assert_contains "~500 times a month" "$msg"
-
-write_rates "$(stamp_ago 20)"
-assert_contains "~3,000 times a week, ~15,000 times a month" "$(price live-f "$CLAUDE_MD")"
+echo "== current path rates reach a project CLAUDE.md through the shared parser"
+assert_eq "measured|150.0|400.0|" "$(rates_of "$WORK/liveproj/CLAUDE.md")"
 
 # Every later section is about the constants, so the export stops being in effect here.
 unset TOKENMAP_RATES
@@ -709,22 +734,21 @@ echo "== bloat gate: the ceiling is not gated by the growth threshold"
 rep g 32998 > "$REAL_MD"
 assert_eq 32999 "$(wc -c <"$REAL_MD" | tr -d '[:space:]')"
 assert_eq deny "$(ceil_decision "$CLAUDE_MD" x xyz tiny-over)"
-# Landing exactly on the cap is not past it — it is only worth a warning.
-exact_out=$(ceil "$CLAUDE_MD" x xy tiny-exact)
-assert_eq "" "$(printf '%s' "$exact_out" | jq -r '.hookSpecificOutput.permissionDecision // ""')"
-assert_contains "would be 33000 bytes" \
-  "$(printf '%s' "$exact_out" | jq -r '.hookSpecificOutput.additionalContext // ""')"
+# Landing exactly on the cap is not past it — it is only worth a warning, beside the ask.
+exact_msg=$(ceil_reason "$CLAUDE_MD" x xy tiny-exact)
+assert_contains "is a top re-read file" "$exact_msg"
+assert_contains "would be 33000 bytes" "$exact_msg"
 
-echo "== bloat gate: between the two bounds the warning rides along with the ordinary pricing"
+echo "== bloat gate: between the two bounds the warning rides along with the ask and the spent word"
 rm -rf "$CEIL_STAMPS"
 rep g 29899 > "$REAL_MD"
-msg=$(ceil_reason "$CLAUDE_MD" x "$big" warn-flow)
-assert_contains "tokens/week and " "$msg"
+msg=$(live_span ceil_reason "$CLAUDE_MD" x "$big" warn-flow)
+assert_contains "is a top re-read file" "$msg"
 assert_contains "would be 30299 bytes" "$msg"
-append_read "$CLAUDE_MD"
-age_stamps "$CEIL_STAMPS"
-warn_out=$(ceil "$CLAUDE_MD" x "$big" warn-flow)
+egor_says ceil-warn-flow 'да'
+warn_out=$(live_span ceil "$CLAUDE_MD" x "$big" warn-flow)
 assert_eq "" "$(printf '%s' "$warn_out" | jq -r '.hookSpecificOutput.permissionDecision // ""')"
+assert_contains "Egor's word spent." "$(printf '%s' "$warn_out" | jq -r '.hookSpecificOutput.additionalContext // ""')"
 assert_contains "would be 30299 bytes" \
   "$(printf '%s' "$warn_out" | jq -r '.hookSpecificOutput.additionalContext // ""')"
 # Under the warning bound the size is nobody's business, so the ordinary denial says nothing about it.
@@ -735,35 +759,37 @@ case "$(ceil_reason "$CLAUDE_MD" x "$big" quiet)" in
 esac
 
 echo "== bloat gate: the ceiling belongs to the global file alone"
-# Every other guarded file is priced, however large it is: only the global one rides in every
-# session of every project.
+# Every other file is asked about or priced, however large it is: only the global one rides in
+# every session of every project.
 mkdir -p "$WORK/bigproj"
 rep g 39999 > "$WORK/bigproj/CLAUDE.md"
 msg=$(ceil_reason "$WORK/bigproj/CLAUDE.md" x "$big" other-file)
-assert_contains "tokens/week and " "$msg"
+assert_contains "is a top re-read file" "$msg"
 case "$msg" in *ceiling*) fail "a project file was held to the global file's ceiling" ;; esac
 printf 'global rules\n' > "$REAL_MD"
 
 echo "== bloat gate: the denial names the file's md-compact state from review-bench receipts"
 export WORKER_STATS_DIR="$WORK/worker-stats"
-mkdir -p "$WORKER_STATS_DIR/receipts" "$WORK/mdrepo" "$WORK/mdcopy"
-printf 'rules\n' > "$WORK/mdrepo/CLAUDE.md"
-git -C "$WORK/mdrepo" init -q && git -C "$WORK/mdrepo" add CLAUDE.md \
+# A skill, not the repo's CLAUDE.md: that one is a top file, asked about with no figure or state.
+MDS=.claude/skills/x/SKILL.md
+mkdir -p "$WORKER_STATS_DIR/receipts" "$WORK/mdrepo/${MDS%/*}" "$WORK/mdcopy/${MDS%/*}"
+printf 'rules\n' > "$WORK/mdrepo/$MDS"
+git -C "$WORK/mdrepo" init -q && git -C "$WORK/mdrepo" add "$MDS" \
   && git -C "$WORK/mdrepo" -c user.name=t -c user.email=t@t commit -qm r
 md_commit=$(git -C "$WORK/mdrepo" rev-parse HEAD)
-assert_contains "md-compact: no review found." "$(price_bloat md-none "$WORK/mdrepo/CLAUDE.md")"
+assert_contains "md-compact: no review found." "$(price_bloat md-none "$WORK/mdrepo/$MDS")"
 jq -n --arg r "$WORK/mdrepo" --arg c "$md_commit" \
-  '{repo: $r, commit: $c, ts: "2026-10-13T17:25:57+00:00", lens: "md-compact", scope: ["CLAUDE.md"]}' \
+  '{repo: $r, commit: $c, ts: "2026-10-13T17:25:57+00:00", lens: "md-compact", scope: [".claude/skills/x/SKILL.md"]}' \
   > "$WORKER_STATS_DIR/receipts/md.json"
 jq -n --arg r "$WORK/mdrepo" --arg c "$md_commit" \
-  '{repo: $r, commit: $c, ts: "2026-10-14T00:00:00+00:00", lens: "bugs", scope: ["CLAUDE.md"]}' \
+  '{repo: $r, commit: $c, ts: "2026-10-14T00:00:00+00:00", lens: "bugs", scope: [".claude/skills/x/SKILL.md"]}' \
   > "$WORKER_STATS_DIR/receipts/bugs.json"
-assert_contains "md-compact: reviewed 2026-10-13, unchanged since." "$(price_bloat md-same "$WORK/mdrepo/CLAUDE.md")"
-printf 'rules\n' > "$WORK/mdcopy/CLAUDE.md"
-assert_contains "md-compact: a byte-identical copy reviewed 2026-10-13." "$(price_bloat md-copy "$WORK/mdcopy/CLAUDE.md")"
-printf 'rules, longer\n' > "$WORK/mdrepo/CLAUDE.md"
+assert_contains "md-compact: reviewed 2026-10-13, unchanged since." "$(price_bloat md-same "$WORK/mdrepo/$MDS")"
+printf 'rules\n' > "$WORK/mdcopy/$MDS"
+assert_contains "md-compact: a byte-identical copy reviewed 2026-10-13." "$(price_bloat md-copy "$WORK/mdcopy/$MDS")"
+printf 'rules, longer\n' > "$WORK/mdrepo/$MDS"
 assert_contains "md-compact: reviewed 2026-10-13 at 6 bytes, changed since (now 14)." \
-  "$(price_bloat md-changed "$WORK/mdrepo/CLAUDE.md")"
+  "$(price_bloat md-changed "$WORK/mdrepo/$MDS")"
 unset WORKER_STATS_DIR
 
 echo "OK ($asserts assertions)"

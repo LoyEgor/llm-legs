@@ -253,25 +253,36 @@ echo "== gate journal: every decision on an instruction file outlives its retry 
 GJ="$INSTRUCTION_WATCH_STATE/gates.jsonl"
 gj_last() { tail -1 "$GJ" | jq -r "$1"; }
 rm -rf "$BLOAT_STAMPS"
-assert_eq deny "$(bloat_decision "$CLAUDE_MD")"
-assert_eq "bloat denied 399 cost $(realpath "$REAL_MD")" "$(gj_last '"\(.gate) \(.decision) \(.delta) \(.detail) \(.real)"')"
+assert_eq deny "$(bloat_decision "$DOC")"
+assert_eq "bloat denied 399 cost $(realpath "$DOC")" "$(gj_last '"\(.gate) \(.decision) \(.delta) \(.detail) \(.real)"')"
 age_stamps "$BLOAT_STAMPS"
-assert_eq pass "$(bloat_decision "$CLAUDE_MD")"
-assert_eq "granted $CLAUDE_MD" "$(gj_last '"\(.decision) \(.file)"')"
-assert_eq "" "$(jq -cn --arg p "$CLAUDE_MD" \
+assert_eq pass "$(bloat_decision "$DOC")"
+assert_eq "granted $DOC" "$(gj_last '"\(.decision) \(.file)"')"
+assert_eq "" "$(jq -cn --arg p "$DOC" \
   '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"x",new_string:"yy"}}' | bash "$BLOAT")"
 assert_eq "passed 1 threshold 120" "$(gj_last '"\(.decision) \(.delta) \(.detail)"')"
 n=$(wc -l <"$GJ")
-assert_eq "" "$(jq -cn --arg p "$CLAUDE_MD" \
+assert_eq "" "$(jq -cn --arg p "$DOC" \
   '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"xy",new_string:"z"}}' | bash "$BLOAT")"
 assert_eq "$n" "$(wc -l <"$GJ")"
-cmd="echo journaled >> $CLAUDE_MD"
+cmd="echo journaled >> $DOC"
 assert_eq deny "$(decision "$cmd")"
-assert_eq "write denied always" "$(gj_last '"\(.gate) \(.decision) \(.detail)"')"
+assert_eq "write denied span" "$(gj_last '"\(.gate) \(.decision) \(.detail)"')"
 age_stamps
 append_write_user
 assert_eq pass "$(decision "$cmd")"
 assert_eq "write granted" "$(gj_last '"\(.gate) \(.decision)"')"
+# A top file journals the ask and the word spent on it, however small the growth.
+top_edit() { jq -cn --arg p "$1" --arg n "$2" \
+  '{tool_name:"Edit",cwd:"/tmp",session_id:"journal-top",tool_input:{file_path:$p,old_string:"x",new_string:$n}}' |
+  live_span bash "$BLOAT"; }
+top_edit "$CLAUDE_MD" yy >/dev/null
+assert_eq "bloat denied 1 top $(realpath "$REAL_MD")" "$(gj_last '"\(.gate) \(.decision) \(.delta) \(.detail) \(.real)"')"
+egor_says journal-top 'да'
+top_edit "$CLAUDE_MD" yy >/dev/null
+assert_eq "bloat granted 1 word" "$(gj_last '"\(.gate) \(.decision) \(.delta) \(.detail)"')"
+assert_eq deny "$(live_span decision "echo journaled >> $CLAUDE_MD")"
+assert_eq "write denied top" "$(gj_last '"\(.gate) \(.decision) \(.detail)"')"
 
 echo "== write gate: a leading cd is the directory a relative target resolves against"
 assert_eq deny "$(decision "cd ~/.claude/docs && echo x >> review-tiers.md")"

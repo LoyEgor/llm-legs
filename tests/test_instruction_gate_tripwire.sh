@@ -432,7 +432,7 @@ printf 'somebody real data\n' > "$SWEEP/agents/keep.md"
 printf 'loose file\n' > "$SWEEP/abcdef0123456789"
 touch -A -250000 "$SWEEP/agents" "$SWEEP/0123456789abcdef" "$SWEEP/deadbeefdeadbeef" \
       "$SWEEP/abcdef0123456789"
-assert_eq deny "$(INSTRUCTION_WRITE_GATE_STAMPS="$SWEEP" decision "echo sweep > $CLAUDE_MD")"
+assert_eq deny "$(INSTRUCTION_WRITE_GATE_STAMPS="$SWEEP" decision "echo sweep > $DOC")"
 assert [ -f "$SWEEP/agents/keep.md" ]
 assert [ -f "$SWEEP/abcdef0123456789" ]
 # An aged stamp is still what the sweep is for.

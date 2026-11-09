@@ -663,6 +663,73 @@ instruction_standing_rule() {
   printf "Egor's standing rule for files LLMs re-read across sessions: they do not grow without his explicit OK in the current turn, and that binds every tool equally; an Edit that nets <= 0 bytes needs no OK."
 }
 
+# A top re-read file grows only on Egor's word. Top: listed in token-map's fee-files.json (`tokenmap
+# spend --write`, the markdown files with the largest share of the Fee index, read while at most 14
+# days old), or by name, every CLAUDE.md, CLAUDE.local.md and MEMORY.md. Prints `listed <share_of_fee>
+# <bytes>`, or `class <smallest listed share, - without an export>`; 1 for any other file.
+instruction_top_file() { # path [home]
+  local path=$1 home=${2:-$HOME} file real out=''
+  file=${TOKENMAP_FEE_FILES:-$home/.local/share/tokenmap/fee-files.json}
+  real=$(realpath "$path" 2>/dev/null) || real=$path
+  [ -f "$file" ] && out=$(jq -r --arg p "$path" --arg r "$real" '
+    ((.generated_at | strings | .[0:19] + "Z" | fromdateiso8601?) // empty) as $gen
+    | select(now - $gen <= 1209600)
+    | [.files[]? | objects | select((.share_of_fee | type) == "number" and (.bytes | type) == "number")] as $f
+    | (first($f[] | select(.path == $p or .path == $r)) | "listed \(.share_of_fee) \(.bytes)")
+      // "class \([$f[].share_of_fee] | min // "-")"' "$file" 2>/dev/null)
+  case "$out" in listed\ *) printf '%s\n' "$out"; return 0 ;; esac
+  case "${path##*/}" in
+    [Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee].[Ll][Oo][Cc][Aa][Ll].[Mm][Dd]) ;;
+    [Mm][Ee][Mm][Oo][Rr][Yy].[Mm][Dd]) ;;
+    *) return 1 ;;
+  esac
+  case "$out" in class\ *) printf '%s\n' "$out" ;; *) printf 'class -\n' ;; esac
+}
+
+instruction_top_denial() { # path
+  printf "%s is a top re-read file; it grows only on Egor's word. Stop and ask him in <= 2 short lines in Russian: what you want to add, and whether the task works without it — if yes, the cheaper home (on-demand doc, tool --help/error text, hook). No figures yet. Wait for his answer." "$1"
+}
+
+# The line a spent word adds to the write: the growth as a share of the Fee index, from the
+# file's own share; an unlisted file of the class is below the smallest listed one.
+instruction_top_spent() { # top-answer delta-bytes|'' file-bytes
+  local kind share size delta=$2 bytes=${3:-0} below='' pct
+  read -r kind share size <<<"$1"
+  case "$share" in ''|-) printf "Egor's word spent. No fresh fee-files.json prices this file. Tell him the net bytes in one line."; return ;; esac
+  case "$bytes" in ''|*[!0-9]*) bytes=0 ;; esac
+  [ "$kind" = listed ] && [ "${size:-0}" -gt 0 ] 2>/dev/null && bytes=$size
+  [ "$kind" = listed ] || below='below the top-20, <'
+  case "$delta" in
+    ''|*[!0-9]*)
+      pct=$(awk -v s="$share" 'BEGIN { printf "%.3f", s * 100 }')
+      printf "Egor's word spent on a write no gate measures; the file is %s %s%% of the Fee index (7d). Tell him the net bytes and their share in one line." "${below:-≈}" "$pct" ;;
+    *)
+      pct=$(awk -v s="$share" -v d="$delta" -v b="$bytes" 'BEGIN { printf "%.3f", s * 100 * d / (b > 0 ? b : d) }')
+      if [ -n "$below" ]; then pct=", $below $pct"; else pct=" ≈ +$pct"; fi
+      printf "Egor's word spent. Net +%s bytes%s%% of the Fee index (7d). Tell him this figure in one line." "$delta" "$pct" ;;
+  esac
+}
+
+# His word reaches the gates through the chat's word store (claude-setup hooks/lib/words.sh, words.py):
+# a denial leaves ask.md-grow naming the file, his next typed turn answers it, and a yes there is
+# grant.md-grow, spent by the next growing write of that file. His turns up to the denial are taken
+# first, so only a turn typed after the question answers it. No word store: no ask, no grant.
+instruction_top_ask() { # session transcript path
+  ( . "${WORDS_LIB:-${HOME:-}/.claude/hooks/lib/words.sh}" && command -v words_dir || exit 1
+    dir=$(words_dir "$1") || exit 1
+    words_sync "$1" "$2"
+    mkdir -p "$dir" && jq -cn --arg p "$(realpath "$3" 2>/dev/null || printf '%s' "$3")" \
+      '{path: $p, at: (now | floor)}' >"$dir/ask.md-grow" ) >/dev/null 2>&1
+}
+
+instruction_top_granted() { # session transcript path -> 0 once his grant for this file is spent
+  ( . "${WORDS_LIB:-${HOME:-}/.claude/hooks/lib/words.sh}" && command -v words_grant_fresh || exit 1
+    words_sync "$1" "$2"
+    target=$(words_grant_fresh "$1" md-grow | jq -r '.target // ""') && [ -n "$target" ] || exit 1
+    case "$target" in "$3"|"$(realpath "$3" 2>/dev/null)") ;; *) exit 1 ;; esac
+    rm "$(words_dir "$1")/grant.md-grow" ) >/dev/null 2>&1
+}
+
 # The nearest ancestor of a path that exists, resolved through every symlink in it. A Write creates
 # the file and may be creating its directory too, so the walk goes up: a new subdirectory of docs/
 # is still under docs/. CDPATH makes cd print where it landed, which would ride along in the
