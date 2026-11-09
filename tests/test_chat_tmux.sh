@@ -142,6 +142,29 @@ assert grep -qxF "end run $viewer" "$WORK/osa"
 closed() { grep -qxF "end run 42" "$WORK/osa"; }
 until_ok closed || fail "no close of window 42: $(tail -3 "$WORK/osa")"
 asserts=$((asserts + 1))
+# Terminal windows for every chat (the apps' switch): on, each session with no viewer gets a window and the flag file
+# is there; off, a viewer's client detaches and its window (id 42) closes, the chat runs on, the flag is gone.
+assert [ "$(helper mirror)" = off ]
+: >"$WORK/opened"
+read -r state n < <(helper mirror on)
+assert [ "$state" = on ] && assert [ "$n" -ge 1 ]
+assert [ "$(grep -c -- '-a Terminal ' "$WORK/opened")" = "$n" ]
+assert grep -qxF -- "-a Terminal $WORK/s/view/scr.command" "$WORK/opened"
+assert [ "$(helper mirror)" = on ] && assert [ -e "$WORK/s/mirror" ]
+outer -f "$WORK/outer.conf" new-session -d -x 90 -y 40 "env -u TMUX python3 -B $HELPER attach scr"
+until_ok seen "1 90x40" || fail "scr not attached for the mirror"
+viewer=$(outer display -p '#{pane_tty}')
+: >"$WORK/osa"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>%s/osa\ncase "$2" in *"set found"*) [ "$3" = "%s" ] && echo 42;; esac\nexit 0\n' \
+  "$WORK" "$viewer" >"$WORK/osascript"
+assert [ "$(helper mirror off)" = "off 1" ]
+until_ok seen "0 90x40" || fail "the viewer stayed attached after mirror off"
+asserts=$((asserts + 1))
+until_ok closed || fail "no close of the viewer's window 42: $(tail -3 "$WORK/osa")"
+asserts=$((asserts + 1))
+assert grep -q '^scr ' <(helper ls)
+assert [ "$(helper mirror)" = off ] && assert [ ! -e "$WORK/s/mirror" ]
+assert [ "$(helper unview scr)" = 0 ]
 unset CHAT_TMUX_OSASCRIPT CHAT_TMUX_OPEN
 
 # End: by tty, by name; the server stays for the next chat.
@@ -155,4 +178,4 @@ for s in $(t list-sessions -F '#{session_name}'); do helper end "$s"; done
 assert [ -z "$(helper ls)" ]   # a server with no session left lists nothing, no error
 assert [ "$(python3 -B -c "import sys; sys.path.insert(0, '$ROOT/share'); import chat_tmux as c; print(' '.join(c.attach_argv('x')[1:3] + c.attach_argv('x')[-2:]))")" = "-S $CHAT_TMUX_SOCKET -t =x" ]
 
-printf 'PASS: %s asserts; chat_tmux starts a chat line detached in a login shell on its own socket (UTF-8, tmux-256color, Homebrew PATH from a launchd-like start), finds its pane by tty, pastes bracketed with LF as CR and clears, sends a lone Escape, types literal text, maps a viewer'\''s tty to its pane and raises it or opens a new view, reads the screen and its scrollback, names sessions c-<sid8> (-2 on a clash), keeps a detached viewer'\''s size, and ends one session leaving the server\n' "$asserts"
+printf 'PASS: %s asserts; chat_tmux starts a chat line detached in a login shell on its own socket (UTF-8, tmux-256color, Homebrew PATH from a launchd-like start), finds its pane by tty, pastes bracketed with LF as CR and clears, sends a lone Escape, types literal text, maps a viewer'\''s tty to its pane and raises it or opens a new view, mirrors every chat in Terminal and back (a window per unviewed session; viewers detached and closed), reads the screen and its scrollback, names sessions c-<sid8> (-2 on a clash), keeps a detached viewer'\''s size, and ends one session leaving the server\n' "$asserts"

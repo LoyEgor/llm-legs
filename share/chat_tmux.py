@@ -21,6 +21,8 @@ CLI (the first word picks; a target is a pane id %N, a tty /dev/ttysN or a sessi
   chat_tmux.py client TTY                                       -> "<pane> <pane tty>" a client on TTY shows (exit 1: none)
   chat_tmux.py view TARGET                                      -> its chat on the Mac: "front" (a viewer's tab raised)
                                                                    or "opened" (a new Terminal window attached)
+  chat_tmux.py unview TARGET                                    -> its viewers detached, their windows closed: "<n>"
+  chat_tmux.py mirror [on|off]                                  -> "on"|"off" (with on/off: "<state> <windows>")
 """
 
 import os
@@ -320,6 +322,54 @@ def view(word):
     return "opened"
 
 
+# Terminal windows for every chat (Egor 2026-11-09: while the apps are debugged he wants the chats in Terminal too, to
+# compare; else none, the apps alone, nothing redrawn twice): a flag file beside the socket, read by the Chats app's
+# server (a chat it starts gets its window when on) and set from either app.
+MIRROR = os.path.join(os.path.dirname(SOCKET), "mirror")
+
+
+def mirrored():
+    return os.path.exists(MIRROR)
+
+
+def unview(word):
+    """`word`'s session loses its viewers: each tmux client on it detaches, and a one-tab Terminal window it ran in
+    closes once its shell has ended (close_ended; a tab whose shell runs on stays). The chat runs on -> clients."""
+    session = tmux("display-message", "-p", "-t", target(word), "#{session_name}").strip()
+    ttys = tmux("list-clients", "-t", "=" + session, "-F", "#{client_tty}").split()
+    if not ttys:
+        return 0
+    windows = viewer_windows(ttys)
+    tmux("detach-client", "-s", "=" + session)
+    if windows:
+        close_ended(windows)
+    return len(ttys)
+
+
+def mirror(on):
+    """Terminal windows for every chat on (each session with no viewer gets a window now) or off (every viewer's
+    window closes) -> how many windows it opened or closed. A session that fails is skipped: the rest still go."""
+    if on:
+        os.makedirs(os.path.dirname(MIRROR), mode=0o700, exist_ok=True)
+        with open(MIRROR, "a", encoding="utf-8"):
+            pass
+    elif mirrored():
+        os.remove(MIRROR)
+    sessions = {}
+    for p in panes().values():
+        sessions[p["session"]] = sessions.get(p["session"], 0) + p["attached"]
+    done = 0
+    for session, attached in sorted(sessions.items()):
+        try:
+            if on and not attached:
+                done += view(session) == "opened"
+            elif not on and attached:
+                done += unview(session)
+        except TmuxError:
+            continue
+    return done
+
+
 def main(args):
     if not args:
         print(__doc__.split("CLI")[1].strip(), file=sys.stderr)
@@ -373,6 +423,15 @@ def main(args):
             print(*shown)
         elif verb == "view":
             print(view(rest[0]))
+        elif verb == "unview":
+            print(unview(rest[0]))
+        elif verb == "mirror":
+            if rest and rest[0] not in ("on", "off"):
+                raise TmuxError("mirror on|off")
+            if rest:
+                print(rest[0], mirror(rest[0] == "on"))
+            else:
+                print("on" if mirrored() else "off")
         else:
             raise TmuxError("unknown verb %s" % verb)
     except (TmuxError, IndexError, ValueError) as error:
