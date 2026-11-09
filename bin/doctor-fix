@@ -1003,7 +1003,7 @@ orchestrate() { # lines-file -> its <ref>\t<brief>\t<worktree> lines once one ch
   local lines=$1 opened account session id ids=() branch wt top
   while IFS=$'\t' read -r id _; do ids+=("$id"); done <"$lines"
   [ ${#ids[@]} -gt 0 ] || die "no runs in $lines"
-  if ! opened=$(CHAT_OPEN_OPENER="${DOCTOR_FIX_OPENER:-open -a Terminal}" \
+  if ! opened=$(CHAT_OPEN_OPENER="${DOCTOR_FIX_OPENER:-}" \
     CHAT_OPEN_WORKER_PICK="${DOCTOR_FIX_WORKER_PICK:-$repo_root/bin/worker-pick}" \
     chat_open "${lines%.lines}.command" "$repo_root" \
       "Fix orchestrator: read $repo_root/docs/fix-orchestrator.md in full and follow it for the runs in $lines." 2>&1); then

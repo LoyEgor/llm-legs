@@ -466,7 +466,7 @@ cmd_start() {
   # the menu's own command, detached (≈25 s) so the chat opens at once, long done by finish, its first reader.
   perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$HOME/.local/bin/tokenmap" spend --range 7d --write \
     </dev/null >"$nights_dir/$id.spend-7d.log" 2>&1 &
-  if ! opened=$(CHAT_OPEN_OPENER="${NIGHT_RUN_OPENER:-open -a Terminal}" \
+  if ! opened=$(CHAT_OPEN_OPENER="${NIGHT_RUN_OPENER:-}" \
     CHAT_OPEN_WORKER_PICK="${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" \
     CHAT_OPEN_PREFIX="caffeinate -i" \
     chat_open "$nights_dir/$id.command" "$(main_checkout)" "сделай чистку — night run $id$marker" 2>&1); then
@@ -1142,7 +1142,7 @@ carry_owner_chats() { # id -> <ref>\t<prompt>\topened <account> <session>|messag
       printf '%s\t%s\tmessage %s\n' "$ref" "$prompt" "$owner"
       continue
     fi
-    if ! opened=$(CHAT_OPEN_OPENER="${NIGHT_RUN_OPENER:-open -a Terminal}" \
+    if ! opened=$(CHAT_OPEN_OPENER="${NIGHT_RUN_OPENER:-}" \
         CHAT_OPEN_WORKER_PICK="${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" \
         chat_open "$nights_dir/$id.$ref.command" "$(jq -r '.cwd' <<<"$batch")" "$(<"$prompt")" "$session" 2>&1); then
       "$script_path" job "$id" set "$ref" state=failed-launch reason="owner chat did not open: $opened" >/dev/null

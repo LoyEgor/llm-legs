@@ -14,6 +14,8 @@ assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexp
 jqe() { jq -e "$@" >/dev/null; }
 
 export HOME="$WORK/home" RUN_SUITES_JOURNAL="$WORK/runs.jsonl" DOCTORS_DIR="$WORK/doctors" NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" CHAT_NAMES_CACHE="$WORK/names.json"
+# HOME moved: land's rebase commits as someone, whatever identity the shell running the suite has.
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 # base's split handoff is bin/code-doctor's (tests/test_code_doctor.sh); here it writes none.
 export NIGHT_RUN_CODE_DOCTOR=true
 NIGHTS="$DOCTORS_DIR/nights"

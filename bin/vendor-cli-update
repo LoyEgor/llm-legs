@@ -459,7 +459,7 @@ update_now() {
     fi
     VENDOR_CLI_UPDATE_DETACHED=1 perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' \
       lockf -k -t 0 "$state_dir/manual.lock" "$script_path" now </dev/null >>"$state_dir/launchd.log" 2>&1 &
-    printf 'vendor update started: CLIs, model lists and fingerprints first, then one orchestrator chat dispatching a fixer per vendor opens in Terminal; progress in %s\n' "$log_file"
+    printf 'vendor update started: CLIs, model lists and fingerprints first, then one orchestrator chat dispatching a fixer per vendor opens detached in tmux (Open on Mac shows it); progress in %s\n' "$log_file"
     return 0
   fi
   local rc=0 vendor bin_dir bin_dirs=''

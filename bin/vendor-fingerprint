@@ -582,7 +582,7 @@ day_launch() { # -> the requested events' runs, then one orchestrator chat dispa
   [ -s "$lines" ] || { rm -f "$lines"; return 0; }
   file="$events_dir/$(head -n 1 "$lines" | cut -f1)"
   mv -f "$lines" "$file.lines" || { rm -f "$lines"; return 1; }
-  if ! opened=$(DOCTOR_FIX_OPENER="${VENDOR_FINGERPRINT_OPENER:-open -a Terminal}" \
+  if ! opened=$(DOCTOR_FIX_OPENER="${VENDOR_FINGERPRINT_OPENER:-}" \
     DOCTOR_FIX_WORKER_PICK="${VENDOR_FINGERPRINT_WORKER_PICK:-$repo_root/bin/worker-pick}" \
     "$doctor_fix" orchestrate "$file.lines" 2>&1 >/dev/null); then
     while IFS=$'\t' read -r run _; do unlaunch "$run"; done <"$file.lines"

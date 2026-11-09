@@ -19,7 +19,8 @@ chat_open_pick() { # [worker-pick args...] -> the account an opened chat may run
 chat_open() {
   local file=$1 workdir=$2 prompt=$3 resume=${4:-} claudeb account session word prefix_quoted='' model=$chat_open_model line
   local -a opener prefix=() launch=()
-  read -r -a opener <<<"${CHAT_OPEN_OPENER:-open -a Terminal}"
+  # A delegated chat runs unattended: a detached session of the chats' tmux, no window (Open on Mac shows it).
+  read -r -a opener <<<"${CHAT_OPEN_OPENER:-python3 -B $chat_open_repo/share/chat_tmux.py open}"
   # %q: a prefix word is data. The generated script is what actually runs.
   if [ -n "${CHAT_OPEN_PREFIX:-}" ]; then
     read -r -a prefix <<<"$CHAT_OPEN_PREFIX"
