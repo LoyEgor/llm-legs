@@ -681,6 +681,66 @@ check([(r["key"], r["limit"]) for r in module.judge_regressions(
            {d: {"values": {opened: [2.4, 6]}} for d in ("2026-09-30", "2026-10-01")}, "2026-10-02", lambda c: 0.0)[0]]
       == [(opened, 2.0)],
       "the Chats app's open over its 2 s ceiling on both judged days is a regression")
+posted = "background.chats_app_post_s|all|-"
+creep = {h.local_day(LO - offset * 86400): {"values": {posted: [round(0.53 - offset * 0.01, 2), 9]}}
+         for offset in range(3, 17)}
+creep.update({d: {"values": {posted: [0.55, 9]}} for d in ("2026-09-30", "2026-10-01")})
+best = module.ratchet_down({}, dict(creep, **{"2026-09-01": {"values": {posted: [0.1, 4]}}}), "2026-10-02")
+check(best == {posted: {"value": 0.37, "day": h.local_day(LO - 16 * 86400)}}
+      and module.ratchet_down(best, {"2026-10-01": {"values": {posted: [0.3, 5]}}}, "2026-10-02")[posted]["value"] == 0.3
+      and module.ratchet_down(best, {"2026-10-01": {"values": {posted: [0.9, 5]}}}, "2026-10-02") == best
+      and module.ratchet_down(best, {"2026-10-02": {"values": {posted: [0.1, 5]}}}, "2026-10-02") == best,
+      "the best is the lowest closed day with full exposure, lowered by a day that beats it, never raised: %s" % best)
+raised = {posted: {"value": 0.5, "day": "2026-10-01", "accepted": "2026-10-02"}}
+fell = module.ratchet_down(raised, dict(creep, **{"2026-10-03": {"values": {posted: [0.45, 9]}}}), "2026-10-04")
+check(module.ratchet_down(raised, creep, "2026-10-04") == raised and fell[posted]["value"] == 0.45
+      and module.ratchet_down(fell, creep, "2026-10-05") == fell,
+      "an accepted best stays above the days it overruled and falls only to a later day")
+check([(r["key"], r["limit"], r.get("ratchet"), r["best"]["value"])
+       for r in module.judge_regressions(creep, "2026-10-02", lambda c: 0.0, best)[0]] == [(posted, 0.481, True, 0.37)]
+      and 0.55 < 1.3 * h.median([v["values"][posted][0] for d, v in creep.items() if d < "2026-09-30"]),
+      "a slow creep within 1.3 x its trailing median is red against 1.3 x the best, under the OM floor")
+check(module.judge_regressions(dict(creep, **{"2026-10-01": {"values": {posted: [0.4, 9]}}}), "2026-10-02",
+                               lambda c: 0.0, best)[0] == []
+      and module.judge_regressions(dict(creep, **{"2026-10-01": {"values": {posted: [0.9, 4]}}}), "2026-10-02",
+                                   lambda c: 0.0, best)[0] == [],
+      "one judged day within 1.3 x the best, or short of its exposure, leaves it quiet")
+both = {d: {"values": {opened: [2.4, 6]}} for d in ("2026-09-30", "2026-10-01")}
+check([(r["limit"], r.get("ceiling"), r.get("ratchet")) for r in module.judge_regressions(
+           both, "2026-10-02", lambda c: 0.0, {opened: {"value": 0.5, "day": "2026-01-01"}})[0]] == [(2.0, True, None)]
+      and [r["limit"] for r in module.judge_regressions({d: {"values": {opened: [1.0, 6]}} for d in both}, "2026-10-02",
+                                                        lambda c: 0.0, {opened: {"value": 0.5, "day": "2026-01-01"}})[0]]
+      == [0.65],
+      "over both its ceiling and its best is one regression, the ceiling's; under the ceiling the best still judges")
+ratchet_dir = os.path.join(work, "speed-ratchet")
+os.makedirs(os.path.join(ratchet_dir, "days"))
+for day in ("2026-09-30", "2026-10-01"):
+    with open(os.path.join(ratchet_dir, "days", day + ".json"), "w") as handle:
+        json.dump({"day": day, "values": {posted: [0.5 if day == "2026-10-01" else 0.6, 6]}}, handle)
+planted = {posted: {"value": 0.2, "day": "2026-01-01"}, opened: {"value": 0.3, "day": "2026-01-01"}}
+with open(os.path.join(ratchet_dir, "state.json"), "w") as handle:
+    json.dump({"best": planted}, handle)
+seen_red = speed("speed-ratchet")[0]
+reg = [p for p in seen_red["problems"] if p["id"] == "regression:" + posted]
+check(len(reg) == 1 and reg[0]["limit"] == 0.26 and reg[0]["fact"].endswith(" · best 0.2 on 2026-01-01")
+      and json.load(open(os.path.join(ratchet_dir, "state.json"))) == {"best": planted},
+      "the best from state.json judges a run, and --json writes nothing back: %s" % reg)
+refused, _ = speed("speed-ratchet", "--ratchet-accept", "background.chats_app_post_s")
+accepted, _ = speed("speed-ratchet", "--ratchet-accept", "background.chats_app_post_s", "--note", "new route checks")
+row = json.loads(accepted.stdout)
+journal = [json.loads(line) for line in open(os.path.join(ratchet_dir, "ratchet.jsonl"))]
+kept = json.load(open(os.path.join(ratchet_dir, "state.json")))["best"]
+check(refused.returncode == 2 and "--note" in refused.stderr and accepted.returncode == 0
+      and (row["key"], row["from"], row["to"], row["day"]) == (posted, 0.2, 0.5, "2026-10-01") and journal == [row]
+      and journal[0]["note"] == "new route checks" and kept[posted]["value"] == 0.5 and kept[opened] == planted[opened],
+      "--ratchet-accept needs --note, raises the best to the lower judged day and journals why: %s %s"
+      % (refused.stderr[-200:], accepted.stdout))
+check(not [p for p in speed("speed-ratchet")[0]["problems"] if p["id"] == "regression:" + posted],
+      "after the accept the same days are no regression")
+speed("speed-ratchet", "--quiet", DOCTORS_DIR=os.path.join(work, "doctors-ratchet"),
+      HARNESS_DOCTOR_DIR=os.path.join(work, "harness-ratchet"))
+check(json.load(open(os.path.join(ratchet_dir, "state.json")))["best"][opened] == planted[opened],
+      "a write run keeps a best whose day left every window")
 
 harness = {"status": "problems", "as_of_s": HI, "problem_count": 3, "blind_spots": [], "periods": {}, "extras": [],
            "title": "Harness doctor: 3 problems", "footer": "as of 21:50",
