@@ -124,6 +124,15 @@ export TOOL_CALLS=1 STUB_NO_RECORD=1
 start_ok claudeb
 said=$(WORKER_RUN_SAY_WAIT_S=0 "$RUNNER" say "$RUN_ID" 'no record')
 assert test "$said" = 'queued: the worker reads it at its next tool call'
+# A worker filling up: the note still goes, one CONTEXT line warns from 80 % of the resume cap on.
+printf 'inbox-near\n' >"$RUN_DIR/session"
+mkdir -p "$CLAUDEB_PROFILES_ROOT/picked/projects/fixture"
+printf '%s\n' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":125000}}}' \
+  >"$CLAUDEB_PROFILES_ROOT/picked/projects/fixture/inbox-near.jsonl"
+said=$(WORKER_RUN_SAY_WAIT_S=0 "$RUNNER" say "$RUN_ID" 'near full')
+assert test "$said" = $'queued: the worker reads it at its next tool call\nCONTEXT: ~125k, nearly full — send no more mid-run notes; plan a fresh worker for the follow-up'
+assert grep -q 'near full' "$RUN_DIR/inbox"
+rm -f "$RUN_DIR/session" "$CLAUDEB_PROFILES_ROOT/picked/projects/fixture/inbox-near.jsonl"
 tool_call_done 1
 assert test ! -s "$STUB_DIR/context-1"
 assert test ! -e "$RUN_DIR/inbox.delivered"

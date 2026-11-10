@@ -212,6 +212,56 @@ codex_session_model() { # account session
   printf '%s' "$model"
 }
 
+# The context a claudeb transcript's last turn carried, in tokens; nothing when unknown.
+transcript_context_tokens() { # transcript
+  local usage tokens
+  usage='select(.message.usage) | (.message.usage | ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)))'
+  tokens=$(tail -c 262144 "$1" 2>/dev/null | sed 1d | jq -r "$usage" 2>/dev/null | tail -n1)
+  [[ "$tokens" =~ ^[0-9]+$ ]] || tokens=$(jq -r "$usage" "$1" 2>/dev/null | tail -n1)
+  [[ "$tokens" =~ ^[0-9]+$ ]] && printf '%s' "$tokens"
+  return 0
+}
+
+# How full a context is against the resume cap: no at the cap (refuse_stale_resume refuses), last
+# from 80 % of it, ok below. One reading for the refusal, a finished run's report and `say`.
+context_level() { # tokens
+  if [ "$1" -ge "$RESUME_CONTEXT_CAP" ]; then printf no
+  elif [ "$1" -ge $((RESUME_CONTEXT_CAP * 4 / 5)) ]; then printf last
+  else printf ok; fi
+}
+
+# "<level> <k>" for a claudeb session's live context; nothing where it is unknown (other vendors,
+# no transcript, no usage row).
+session_context_level() { # vendor account session
+  local transcript tokens
+  [ "$1" = claudeb ] && [ -n "$3" ] || return 0
+  transcript=$(session_transcript "$1" "$2" "$3") || return 0
+  tokens=$(transcript_context_tokens "$transcript")
+  [ -n "$tokens" ] || return 0
+  printf '%s %s' "$(context_level "$tokens")" "$(((tokens + 500) / 1000))"
+}
+
+# A finished run's RESUME line, only when a resume is refused or close to it.
+resume_context_line() { # vendor account session
+  local level
+  level=$(session_context_level "$@")
+  case "$level" in
+    no\ *) printf 'RESUME: no — context ~%sk, near compaction; a follow-up needs a fresh, self-contained brief\n' "${level#* }" ;;
+    last\ *) printf 'RESUME: last — context ~%sk, one short follow-up at most\n' "${level#* }" ;;
+  esac
+  return 0
+}
+
+# `say` to a live worker filling up: the note is delivered all the same, this only warns.
+say_context_line() { # vendor account session
+  local level
+  level=$(session_context_level "$@")
+  case "$level" in
+    no\ *|last\ *) printf 'CONTEXT: ~%sk, nearly full — send no more mid-run notes; plan a fresh worker for the follow-up\n' "${level#* }" ;;
+  esac
+  return 0
+}
+
 refuse_stale_resume() {
   local vendor="$1" account="$2" resume="$3" transcript threshold ttl now mtime idle tokens token_k idle_text why='' usage
   [ -n "$resume" ] || return 0
@@ -226,12 +276,7 @@ refuse_stale_resume() {
   now=$(date +%s)
   idle=$((now - mtime))
   tokens=''
-  if [ "$vendor" = claudeb ]; then
-    usage='select(.message.usage) | (.message.usage | ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)))'
-    tokens=$(tail -c 262144 "$transcript" 2>/dev/null | sed 1d | jq -r "$usage" 2>/dev/null | tail -n1)
-    [[ "$tokens" =~ ^[0-9]+$ ]] || tokens=$(jq -r "$usage" "$transcript" 2>/dev/null | tail -n1)
-    [[ "$tokens" =~ ^[0-9]+$ ]] || tokens=''
-  fi
+  [ "$vendor" = claudeb ] && tokens=$(transcript_context_tokens "$transcript")
   [ -n "$tokens" ] || tokens=$(($(stat -f %z "$transcript" 2>/dev/null || echo 0) / 4))
   token_k=$(((tokens + 500) / 1000))
   if [ "$idle" -ge 3600 ]; then
@@ -241,7 +286,7 @@ refuse_stale_resume() {
   fi
   if [ "$idle" -gt "$threshold" ]; then
     why="idle $idle_text, past its ~$ttl cache: resuming writes its ~${token_k}k context again at full price"
-  elif [ "$vendor" = claudeb ] && [ "$tokens" -ge "$RESUME_CONTEXT_CAP" ]; then
+  elif [ "$vendor" = claudeb ] && [ "$(context_level "$tokens")" = no ]; then
     why="its context is ~${token_k}k, near compaction: a resume there compacts twice as often as a fresh worker"
   else
     return 0

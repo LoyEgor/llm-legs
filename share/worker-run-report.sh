@@ -85,6 +85,10 @@ escalate_lines() { # directory vendor
   printf 'ESCALATE-BRIEF: %s\n' "$brief"
 }
 
+resume_line() { # directory vendor
+  resume_context_line "$2" "$(jq -r '.account // empty' "$1/meta.json" 2>/dev/null)" "$(session_id "$1")"
+}
+
 terminal_report() {
   local directory="$1" code vendor status
   code=$(tr -d '[:space:]' <"$directory/exit_code")
@@ -92,6 +96,7 @@ terminal_report() {
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   status=$(terminal_status "$directory" "$vendor" "$code")
   printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
+  resume_line "$directory" "$vendor"
   reroute_lines "$directory"
   workdir_escape_line "$directory"
   memguard_lines "$directory"
@@ -171,6 +176,7 @@ report_run() {
     [[ "$code" =~ ^[0-9]+$ ]] || code=unknown
     status=$(terminal_status "$directory" "$vendor" "$code")
     printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
+    resume_line "$directory" "$vendor"
     memguard_lines "$directory"
     outcome_with_knobs "$directory" print_outcome "$directory" "$vendor" "$code"
     ended_orphans_line "$directory"

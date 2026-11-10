@@ -135,11 +135,19 @@ assert test "$(tail -n1 "$WORKER_RUN_DIR/prelaunch.jsonl" | jq -c '[.outcome, .r
 # Warm, but at 151k near compaction.
 touch "$claude_transcript"
 refused_resume claudeb claude-cold 'its context is ~151k, near compaction'
+# A finished run's report says so before a RESUME brief is written, by the same cap.
+resume_verdict() { CLAUDEB_PROFILES_ROOT="$CLAUDEB_PROFILES_ROOT" bash -c 'source "$1/share/worker-run-vendors.sh"; resume_context_line claudeb resumeacct "$2"' _ "$ROOT" "$1"; }
+assert test "$(resume_verdict claude-cold)" = 'RESUME: no — context ~151k, near compaction; a follow-up needs a fresh, self-contained brief'
 
 claude_small="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/claude-small.jsonl"
 printf '%s\n' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":90000,"cache_creation_input_tokens":500}}}' >"$claude_small"
 # UTC stamps: a local `touch -t` in the DST fall-back hour names its earlier instant, an hour off.
 touch -d "$(date -u -v-50M +%Y-%m-%dT%H:%M:%SZ)" "$claude_small"
+assert test -z "$(resume_verdict claude-small)"
+claude_near="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/claude-near.jsonl"
+printf '%s\n' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":125000}}}' >"$claude_near"
+assert test "$(resume_verdict claude-near)" = 'RESUME: last — context ~125k, one short follow-up at most'
+assert test -z "$(resume_verdict claude-missing)"
 clear_stub
 start_ok claudeb --account resumeacct --resume claude-small
 assert test "$(grep -c 'refused' "$WORK/start.err")" -eq 0

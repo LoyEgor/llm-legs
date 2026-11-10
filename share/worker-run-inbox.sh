@@ -35,13 +35,14 @@ say_run() {
   if [ "$mode" = hook ]; then
     while :; do
       at=$(inbox_delivered_at "$directory" "$end")
-      [ -z "$at" ] || { printf 'delivered at %s\n' "$at"; return 0; }
+      [ -z "$at" ] || { printf 'delivered at %s\n' "$at"; say_context_line "$vendor" "$(jq -r '.account // empty' "$directory/meta.json")" "$(session_id "$directory")"; return 0; }
       [ "$waited" -lt $((${WORKER_RUN_SAY_WAIT_S:-2} * 10)) ] || break
       sleep 0.1
       waited=$((waited + 1))
     done
   fi
   inbox_queued_text "$vendor" "$mode" true
+  say_context_line "$vendor" "$(jq -r '.account // empty' "$directory/meta.json")" "$(session_id "$directory")"
 }
 
 inbox_lines() { # directory
