@@ -620,22 +620,30 @@ def short_model(name):
         or re.sub(r"-20\d{6}$", "", (name or "").replace("claude-", "")) or "-"
 
 
-def report_recent(args):
+def recent_rows(root=ROOT, days=None, sessions=None, cache=None, agents=False, limit=None):
+    """--recent's rows, what --json prints. The chats app's server imports this file and calls it: a process per
+    listing (every few seconds while a chat talks) was most of its CPU. Not thread-safe (the cache files): one caller
+    at a time."""
     # A corpus that is not his own (a test fixture, or anything CHAT_FIND_ROOT
     # points at) gets no cache unless one is named: the shared cache is keyed by
     # path alone and must not mix corpora.
     # A few named chats are measured directly: the cache would cost more to load than they do.
-    only = set(args.session) if args.session else None
-    cache_path = args.cache or (CACHE if args.root == HIS_CORPUS and only is None else None)
-    rows = scan_recent(args.root, args.days, cache_path, args.agents, args.limit, only)
+    only = set(sessions) if sessions else None
+    cache_path = cache or (CACHE if root == HIS_CORPUS and only is None else None)
+    rows = scan_recent(root, days, cache_path, agents, limit, only)
     launchers, store = worker_run_launchers(), store_names()
     for row in rows:
         row["name"] = chat_name(row["session"], row.pop("title", None),
                                 headless=row.get("via") == HEADLESS_VIA, launchers=launchers,
                                 store=store)
+    return rows
+
+
+def report_recent(args):
+    rows = recent_rows(args.root, args.days, args.session, args.cache, args.agents, args.limit)
     if args.json:
-        json.dump(rows, sys.stdout, ensure_ascii=False)
-        sys.stdout.write("\n")
+        # json.dump streams through the pure-Python encoder (save_cache): dumps is a fifth of it.
+        sys.stdout.write(json.dumps(rows, ensure_ascii=False) + "\n")
         return
     now = datetime.now(timezone.utc).astimezone()
     for row in rows:
