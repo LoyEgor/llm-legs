@@ -371,11 +371,11 @@ own rows are re-read often enough to stay bright, and when no gateway chat is op
 
 Every render appends `<start_us>\t<end_us>\t<session_id>\t<cpu_ms>\t<same>` (`$EPOCHREALTIME`; cpu_ms: bash
 `times` with children, `-` under bash < 5.3; same: 1 if the lines equal the session's last render in
-`render-<sid>`, else 0; `a` for an away replay) to `${HARNESS_DOCTOR_DIR:-~/.cache/harness-doctor}/statusline/<day>.tsv`
+`render-<sid>`, else 0; `a` for an away replay, `r` for a rest replay) to `${HARNESS_DOCTOR_DIR:-~/.cache/harness-doctor}/statusline/<day>.tsv`
 for the Harness doctor, which prunes it. One `printf` append, `mkdir -p` on failure, no lock; a failed write
 is silent.
 
-## Away replay (the one sanctioned freeze)
+## Away replay (sanctioned freeze)
 
 While Egor is away (`share/presence.sh`, shared-invariants row em), a render whose transcript is not newer
 than `render-<sid>` prints that file and exits before jq, git or any probe: nobody reads the line, and every
@@ -383,11 +383,23 @@ payload-derived cache only moves with the transcript. A full render while away r
 when unchanged. presence.lua drops the mark within 2 s of his return, so the freeze ends at the next refresh;
 a moved transcript, a stale mark or a payload without `transcript_path` renders in full.
 
+## Rest replay (bounded freeze, `STATUSLINE_REST_S`, default 15 s, 0 off)
+
+A full render with no work rows leaves `render-rest-<sid>` and its `.at` stamp, taken as the render begins. The
+record holds the lines, the payload without `cost.total_duration_ms`, COLUMNS, PPID, the fit margin and the account
+variables, a deadline, and every file the render read: an mtime no newer than `.at`, or the exact bytes for the
+caches probes rewrite unchanged. A render whose payload, key and files all match before the deadline prints the
+lines and exits before any source or parse (timing row `r`). The deadline is the earliest of now+N and every second
+a clock could turn a cell: limits `lc_until`, reset-label steps, warmth, the hide ages, fable file age, reset-marker
+lapse. Cells with no file or clock to watch may lag by up to N (+A/-D for edits that touch no index, HEAD or reflog,
+↓↑ after a fetch, the keepalive flag, ports within 45 s instead of 30). A replay leaves `render-*` and the rl caches
+as a full render with unchanged lines would.
+
 ## Full render (background, not a rendered segment)
 
 Every full render also keeps lines 1 and 2 as composed before the first fit step in `render-full-<sid>`,
 written only when they changed: the Chats app (chats-app) shows them in full words whatever the tab's
-width. Same freshness as `render-<sid>` (an away replay keeps both), same `render-*` prune.
+width. Same freshness as `render-<sid>` (an away or rest replay keeps both), same `render-*` prune.
 
 ## Probe snapshots (background, not a rendered segment)
 
