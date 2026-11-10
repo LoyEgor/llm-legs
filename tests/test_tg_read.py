@@ -40,6 +40,19 @@ class ParsingTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, 2)
         self.assertEqual(parsed(["send", "me", "--text", "a" * 4000]).command, "send")
 
+    def test_send_photos_checked_before_connecting(self):
+        photo = str(Path(__file__).resolve())
+        self.assertEqual(parsed(["send", "me", "--text", "hi", "--photo", photo, "--photo", photo]).photo, [photo, photo])
+        self.assertEqual(parsed(["send", "me", "--text", "hi"]).photo, [])
+        bad = (["--photo", "/no/such.png"], ["--photo", "rel.png"], ["--photo", photo] * 11)
+        for extra in bad:
+            with self.assertRaises(SystemExit) as caught, contextlib.redirect_stderr(io.StringIO()):
+                tg_read.main(["send", "me", "--text", "hi", *extra])
+            self.assertEqual(caught.exception.code, 2)
+        with self.assertRaises(SystemExit) as caught, contextlib.redirect_stderr(io.StringIO()):
+            tg_read.main(["send", "me", "--text", "a" * 1025, "--photo", photo])
+        self.assertEqual(caught.exception.code, 2)
+
     def test_send_as_written_flag(self):
         self.assertFalse(parsed(["send", "me", "--text", "hi"]).as_written)
         self.assertTrue(parsed(["send", "me", "--text", "hi", "--as-written"]).as_written)

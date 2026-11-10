@@ -59,6 +59,8 @@ LOGIN_NEEDED = CONFIG_DIR / "login-needed"  # the menubar's Telegram "login need
 GROQ_KEYS = Path("/Volumes/Work/Projects/transcriptions-gpt/settings/groq_keys.txt")
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 MAX_SEND = 4000
+MAX_CAPTION = 1024  # Telegram's limit for the text under photos
+MAX_PHOTOS = 10  # one album
 FALL_BACK = re.compile(r"USAGE_LIMIT|credits|quota|\b402\b|\b429\b", re.IGNORECASE)
 
 
@@ -486,8 +488,16 @@ def send_text(args) -> str:
     if not text.strip():
         print("tg-read: refusing to send an empty text", file=sys.stderr)
         sys.exit(2)
-    if len(text) > MAX_SEND:
-        print(f"tg-read: refusing to send {len(text)} chars (over {MAX_SEND})", file=sys.stderr)
+    limit = MAX_CAPTION if args.photo else MAX_SEND
+    if len(text) > limit:
+        print(f"tg-read: refusing to send {len(text)} chars (over {limit})", file=sys.stderr)
+        sys.exit(2)
+    for photo in args.photo:
+        if not Path(photo).is_absolute() or not Path(photo).is_file():
+            print(f"tg-read: no photo file at {photo!r} (give an absolute path)", file=sys.stderr)
+            sys.exit(2)
+    if len(args.photo) > MAX_PHOTOS:
+        print(f"tg-read: refusing {len(args.photo)} photos (one album holds {MAX_PHOTOS})", file=sys.stderr)
         sys.exit(2)
     return text
 
@@ -511,7 +521,14 @@ async def cmd_send(args) -> int:
             return 2
         if dropped:
             print(f"dropped: {', '.join(dropped)}")
-    message = await tg.send_message(entity, text, parse_mode=None, link_preview=False)
+    if args.photo:
+        # The photos as one album with the text under it, as Egor posts pictures himself.
+        sent = await tg.send_file(entity, args.photo if len(args.photo) > 1 else args.photo[0], caption=text,
+                                  parse_mode=None)
+        message = sent[-1] if isinstance(sent, list) else sent
+        print(f"photos: {len(args.photo)}")
+    else:
+        message = await tg.send_message(entity, text, parse_mode=None, link_preview=False)
     name = "Saved Messages" if args.chat == "me" else chat_name(entity)
     print(f"sent #{message.id} to {name} at {local_time(message.date)}")
     if not getattr(entity, "is_self", False):
@@ -660,11 +677,13 @@ def main(argv=None) -> int:
     transcribe_.add_argument("--dest", help="the .txt to write (default: <audio>.txt)")
     transcribe_.add_argument("--language", default="ru")
     transcribe_.add_argument("--engine", choices=("auto", "elevenlabs", "groq"), default="auto")
-    send = sub.add_parser("send", help="post ONE plain-text message to a chat as Egor")
+    send = sub.add_parser("send", help="post ONE plain-text message (optionally under photos) to a chat as Egor")
     send.add_argument("chat")
     body = send.add_mutually_exclusive_group(required=True)
     body.add_argument("--text")
     body.add_argument("--file", help="absolute path of a text file to post")
+    send.add_argument("--photo", action="append", default=[],
+                      help="absolute path of a picture to post with the text as its caption; repeat for an album")
     send.add_argument("--as-written", action="store_true",
                       help="keep an opening greeting and the addressee's name: only when Egor's own words carry them")
     wait = sub.add_parser("wait", help="block until the chat answers Egor's message; run as a background Bash")
