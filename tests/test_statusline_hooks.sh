@@ -3659,6 +3659,128 @@ assert_eq "$rest_moved" "$(cat "$REST_DIR/out")"
 REST_S=0 rest_run 2.5 25000 $((rest_now + 15))
 assert_eq "rest-sess 1" "$(rest_last)"
 
+# fast-parity: the native first pass (share/statusline-fast.c, built by bin/statusline-fast-build) takes the
+# renders the script's first pass replays, prints the same bytes and writes the same row kind. `fast-probe` is
+# that program built to hand a render it does not replay to a stub, so each case shows who decided: on one
+# fixture state the probe runs first (its replay or hand-off writes nothing the script reads), then the script.
+# A render the script replays the probe must have replayed to the byte; one the script draws the probe must
+# have handed over with its stdin whole and no row.
+FAST_DIR="$WORK/fast"
+mkdir -p "$FAST_DIR/speed/presence"
+printf '#!/bin/sh\nprintf HANDOFF\ncat\n' > "$FAST_DIR/stub"
+chmod +x "$FAST_DIR/stub"
+assert "$ROOT/bin/statusline-fast-build" "$FAST_DIR/statusline-fast" >/dev/null
+STATUSLINE_FAST_SCRIPT="$FAST_DIR/stub" assert "$ROOT/bin/statusline-fast-build" "$FAST_DIR/fast-probe" >/dev/null
+assert "$FAST_DIR/statusline-fast" --fingerprint >/dev/null
+fast_transcript="$FAST_DIR/transcript.jsonl"
+printf '{"type":"assistant"}\n' > "$fast_transcript"
+fast_now=$(date +%s) fast_ms=0
+fast_rec="$HOME/.cache/claude-statusline/render-rest-fast-sess"
+fast_journal="$FAST_DIR/hd/statusline/$(date +%Y-%m-%d).tsv"
+# No $(...) around a render: the record names the parent. Each run sends another total_duration_ms.
+fast_run() { # program -> the lines in $FAST_DIR/out, the payload in $fast_payload
+  fast_ms=$((fast_ms + 3000))
+  fast_payload=$(statusline_payload fast-sess "{\"transcript_path\":\"$fast_transcript\",\"cost\":{\"total_cost_usd\":${FAST_COST:-1.5},\"total_duration_ms\":$fast_ms}}")
+  STATUSLINE="$1" STATUSLINE_REST_S=15 STATUSLINE_NOW=${FAST_NOW:-$fast_now} SPEED_DOCTOR_DIR="$FAST_DIR/speed" \
+    HARNESS_DOCTOR_DIR="$FAST_DIR/hd" FIT_COLUMNS=${FAST_COLUMNS:-} run_statusline "$fast_payload" > "$FAST_DIR/out"
+}
+fast_kind() { tail -1 "$fast_journal" | cut -f3,5 | tr '\t' ' '; }
+fast_rows() { wc -l < "$fast_journal" | tr -d ' '; }
+fast_settle() { # the script, until its record is at rest
+  local i
+  for i in 1 2 3 4; do
+    fast_run "$STATUSLINE"
+    [ "$(fast_kind)" != "fast-sess r" ] || return 0
+  done
+  fail "fast-parity: the script left no record at rest"
+}
+fast_case() { # label a|r|full -> the probe, then the script, on one state
+  local rows
+  rows=$(fast_rows)
+  fast_run "$FAST_DIR/fast-probe"
+  cp "$FAST_DIR/out" "$FAST_DIR/out.probe"
+  if [ "$2" = full ]; then
+    printf 'HANDOFF%s' "$fast_payload" > "$FAST_DIR/out.want"
+    assert cmp -s "$FAST_DIR/out.want" "$FAST_DIR/out.probe"
+    assert_eq "$1: $rows rows" "$1: $(fast_rows) rows"
+    fast_run "$STATUSLINE"
+    assert grep -Eq '^fast-sess [01]$' <<< "$(fast_kind)"
+  else
+    assert_eq "$1: fast-sess $2, row $((rows + 1))" "$1: $(fast_kind), row $(fast_rows)"
+    assert grep -Eq "^[0-9]{16}	[0-9]{16}	fast-sess	[0-9]+	$2\$" <<< "$(tail -1 "$fast_journal")"
+    fast_run "$STATUSLINE"
+    assert_eq "$1: fast-sess $2, row $((rows + 2))" "$1: $(fast_kind), row $(fast_rows)"
+    assert cmp -s "$FAST_DIR/out" "$FAST_DIR/out.probe"
+  fi
+}
+fast_mark() { printf '%s\t%s\n' "$(($(date +%s) - 900))" "$(($(date +%s) - $1))" > "$FAST_DIR/speed/presence/away"; }
+fast_settle
+cp "$FAST_DIR/out" "$FAST_DIR/out.rest"
+# Away: the mark on, stale, on with the transcript moved, off.
+printf 'REPLAYED' > "$HOME/.cache/claude-statusline/render-fast-sess"
+fast_mark 30
+fast_case 'away' a
+assert_eq REPLAYED "$(cat "$FAST_DIR/out.probe")"
+fast_mark 600
+fast_case 'away mark stale' r
+assert cmp -s "$FAST_DIR/out.rest" "$FAST_DIR/out.probe"
+fast_mark 30
+printf '{"type":"user"}\n' >> "$fast_transcript"
+fast_case 'away, transcript newer' full
+/bin/rm -f "$FAST_DIR/speed/presence/away"
+fast_settle
+fast_case 'rest record valid' r
+# Rest: the clock past the record, another terminal width, another payload, an m file written.
+FAST_NOW=$((fast_now + 15)) fast_case 'rest record expired' full
+fast_settle
+FAST_COLUMNS=120 fast_case 'rest env changed' full
+fast_settle
+FAST_COST=2.5 fast_case 'rest payload changed' full
+fast_settle
+printf '{"type":"user"}\n' >> "$fast_transcript"
+fast_case 'rest m file written' full
+# A c file: its bytes as the record holds them, then others.
+fast_settle
+printf 'dep bytes' > "$FAST_DIR/dep"
+fast_good=$(<"$fast_rec")
+printf '%s\x1ec%s\x1d%s\x1eend' "${fast_good%$'\x1e'end}" "$FAST_DIR/dep" 'dep bytes' > "$fast_rec"
+fast_case 'rest c file as read' r
+printf 'new bytes' > "$FAST_DIR/dep"
+fast_case 'rest c file changed' full
+# A record cut before its end.
+fast_settle
+fast_good=$(<"$fast_rec")
+printf '%s' "${fast_good%nd}" > "$fast_rec"
+fast_case 'rest record torn' full
+# The program as deployed: its replay is the record's bytes, a render it does not replay is the script's.
+fast_settle
+cp "$FAST_DIR/out" "$FAST_DIR/out.rest"
+fast_run "$FAST_DIR/statusline-fast"
+assert_eq "fast-sess r" "$(fast_kind)"
+assert cmp -s "$FAST_DIR/out.rest" "$FAST_DIR/out"
+FAST_COST=3.5 fast_run "$FAST_DIR/statusline-fast"
+assert_eq "fast-sess 0" "$(fast_kind)"
+assert grep -Fq '$3.50' "$FAST_DIR/out"
+cp "$FAST_DIR/out" "$FAST_DIR/out.fast"
+FAST_COST=3.5 fast_run "$STATUSLINE"
+assert cmp -s "$FAST_DIR/out.fast" "$FAST_DIR/out"
+# A build whose rule sources have moved replays nothing: the same state, handed to the script.
+FAST_ROOT="$FAST_DIR/root"
+mkdir -p "$FAST_ROOT/bin" "$FAST_ROOT/share"
+cp "$ROOT/bin/statusline-fast-build" "$ROOT/bin/statusline.sh" "$FAST_ROOT/bin/"
+cp "$ROOT/share/presence.sh" "$ROOT/share/cpu-ms.sh" "$ROOT/share/statusline-fast.c" "$FAST_ROOT/share/"
+STATUSLINE_FAST_SCRIPT="$FAST_DIR/stub" assert "$FAST_ROOT/bin/statusline-fast-build" "$FAST_DIR/fast-stale" >/dev/null
+fast_settle
+cp "$FAST_DIR/out" "$FAST_DIR/out.rest"
+fast_run "$FAST_DIR/fast-stale"
+assert_eq "fast-sess r" "$(fast_kind)"
+assert cmp -s "$FAST_DIR/out.rest" "$FAST_DIR/out"
+printf '# moved\n' >> "$FAST_ROOT/share/presence.sh"
+assert_eq 1 "$("$FAST_DIR/fast-stale" --fingerprint >/dev/null; echo $?)"
+fast_run "$FAST_DIR/fast-stale"
+printf 'HANDOFF%s' "$fast_payload" > "$FAST_DIR/out.want"
+assert cmp -s "$FAST_DIR/out.want" "$FAST_DIR/out"
+
 # file_mtime/file_inode/file_size through bash's stat loadable must answer what the stat(1)
 # fallback does, lstat included; a BASH with no lib/bash beside it takes the fallback.
 STAT_DIR="$WORK/stat-helpers"

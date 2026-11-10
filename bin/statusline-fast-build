@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# statusline-fast-build [OUT]: compiles share/statusline-fast.c, the native first pass of bin/statusline.sh (the
+# away and rest replays without a bash start), into OUT (default ~/.local/libexec/statusline-fast). The binary
+# carries this checkout's path and a hash of the rule sources (the script's first pass, share/presence.sh,
+# share/cpu-ms.sh, the C file): once one of them moves it replays nothing and runs the script, until this is run
+# again. `OUT --fingerprint` exits 0 while the build is current.
+# Exit 3 with no C compiler, OUT untouched: the status line keeps running the script.
+# STATUSLINE_FAST_SCRIPT=<path> (the suite) builds a copy that hands a render it does not replay to <path>.
+{
+set -eu
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+out=${1:-$HOME/.local/libexec/statusline-fast}
+cc=${CC:-cc}
+fail() { printf 'statusline-fast-build: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+command -v "$cc" >/dev/null 2>&1 || fail "no C compiler ($cc): the status line keeps running bin/statusline.sh" 3
+script=${STATUSLINE_FAST_SCRIPT:-$root/bin/statusline.sh}
+case "$root$script" in *[\"\\]*) fail "a path with a quote or a backslash: $root $script" ;; esac
+fresh=$(sed -n 's/^PRESENCE_MARK_FRESH_S=\([0-9][0-9]*\)$/\1/p' "$root/share/presence.sh")
+[ -n "$fresh" ] || fail "PRESENCE_MARK_FRESH_S not found in share/presence.sh"
+
+mkdir -p "$(dirname "$out")"
+tmp="$out.build.$$"
+trap 'rm -f "$tmp"' EXIT
+compile() { # fingerprint
+  "$cc" -O2 -Wall -Wextra -o "$tmp" -DSL_ROOT="\"$root\"" -DSL_SCRIPT="\"$script\"" -DSL_AWAY_FRESH_S="$fresh" \
+    -DSL_FP="0x${1}ull" "$root/share/statusline-fast.c"
+}
+# The hash has one implementation, the program's: a first build reports it, the second carries it.
+compile 0
+fp=$("$tmp" --fingerprint | cut -d' ' -f2) || :
+[[ "$fp" =~ ^[0-9a-f]{16}$ ]] && [ "$fp" != 0000000000000000 ] ||
+  fail "no fingerprint: a rule source is missing or the script's first pass has lost its closing lines"
+compile "$fp"
+"$tmp" --fingerprint >/dev/null || fail "the build does not match its own sources"
+mv -f "$tmp" "$out"
+printf '%s\n' "$out"
+exit; }
