@@ -32,7 +32,7 @@ from cpu_audit import STATUSLINE  # noqa: E402
 import limit_hit  # noqa: E402
 import log_stores  # noqa: E402
 import machine_probe  # noqa: E402
-from fix_commit import fix_commit, fix_landed, siblings_dir  # noqa: E402
+from fix_commit import LANDED_FILE, fix_commit, fix_landed, siblings_dir, use_memo  # noqa: E402
 from spend import read_json, read_jsonl  # noqa: E402
 
 HOME = os.path.expanduser("~")
@@ -773,7 +773,13 @@ def tick(now=None):
             # (11-09: the first cli.js ever seen, chatgpt-web's, was blamed for a pnpm project's 20 core-hours).
             fresh[name] = ""
     if fresh:
-        write_json(origins_file, dict(list({**origins, **fresh}.items())[-BACKGROUND["origins"]:]))
+        # The cap drops the oldest tags no live process carries. Dropping by age alone took the tags of the longest-
+        # lived processes first, each learned again on the next tick: at the cap every tick rewrote the whole file
+        # (11-10: 4000 tags, 463 KB a minute, 0.7 GB a day) and a dropped "" forgot that its name is ambiguous.
+        live = {entry[2] for entry in last.values()}
+        merged = {**origins, **fresh}
+        kept = [item for item in merged.items() if item[0] not in live] + [item for item in merged.items() if item[0] in live]
+        write_json(origins_file, dict(kept[-BACKGROUND["origins"]:]))
     row["self"] = {"wall_s": round(time.time() - now, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
                    "steps": steps.out}
     folder = os.path.join(state_dir(), "ticks")
@@ -3513,6 +3519,8 @@ def nightly_summary(night, jobs_named):
 
 
 def document(now, started, persist=True):
+    # when a fix's commit reached HEAD is asked of git once, then remembered (4 git runs per fix per judge before)
+    use_memo(os.path.join(state_dir(), LANDED_FILE), persist)
     rows = tick_rows(now - 2 * DAY_S, now)
     days = rollup(now, rows, persist)
     night = read_json(os.path.join(state_dir(), "nightly.json"))

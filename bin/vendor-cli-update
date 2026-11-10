@@ -2,6 +2,36 @@
 {
 set -u
 
+state_dir="${VENDOR_CLI_UPDATE_STATE_DIR:-$HOME/.cache/vendor-cli-update}"
+state_file="$state_dir/state.json"
+pass_every_s=86400
+check_every_s=7200
+# agy updates itself; npm installs never do, and a vendor lists a new model only to a client at least
+# as new as the model's minimal_client_version. The native claude's own updater is off
+# (DISABLE_AUTOUPDATER), so it is updated here too; the npm claude is a second install that any PATH
+# with /usr/local/bin or nvm first runs instead of the native one.
+vendors="codex grok claude"
+checked="$vendors gemini"
+
+due_vendors() { # -> `all` when a full pass is due, else the vendors whose version check is due or whose last result wants a retry
+  local due
+  due=$(jq -r --arg vendors "$vendors" --arg checked "$checked" --argjson now "$EPOCHSECONDS" --argjson max "$pass_every_s" --argjson check "$check_every_s" '
+    def at($f): $f // "" | try fromdateiso8601 catch 0;
+    . as $s | ($vendors | split(" ")) as $v
+    | if any($v[]; at($s[.].passed_at) < $now - $max) then "all"
+      else $checked | split(" ")[] | select(at($s[.].checked_at) < $now - $check
+        or any($s[.].result, $s[. + "-native"].result; IN("busy", "install-failed", "check-failed"))) end' \
+    "$state_file" 2>/dev/null) && [ -s "$state_file" ] || due=all
+  printf '%s\n' "${due//$'\n'/ }"
+}
+
+# launchd's half-hourly `run --if-due` with nothing due ends here: one jq, before the libraries, the script's own
+# path and the lock's re-exec are paid for, and nothing is written (11-10: 36 such runs a day started 81 processes
+# each). Anything due takes the whole path below, which asks again under the lock.
+if [ "${1:-}" = run ] && [ "${2:-}" = --if-due ] && [ -z "${VENDOR_CLI_UPDATE_LOCKED:-}" ] && [ -z "$(due_vendors)" ]; then
+  exit 0
+fi
+
 resolve_script() {
   local source="${BASH_SOURCE[0]}" directory
   while [ -L "$source" ]; do
@@ -16,8 +46,6 @@ script_path=$(resolve_script)
 repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 . "$repo_root/share/limit-hit.sh"
 . "$repo_root/share/llm-launch.sh"
-state_dir="${VENDOR_CLI_UPDATE_STATE_DIR:-$HOME/.cache/vendor-cli-update}"
-state_file="$state_dir/state.json"
 log_file="$state_dir/update.log"
 codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
 grok_profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
@@ -29,14 +57,6 @@ agent_dir="$HOME/Library/LaunchAgents"
 label="com.llm-legs.vendor-cli-update"
 plist="$agent_dir/$label.plist"
 wrapper="$HOME/.local/libexec/vendor-cli-update"
-pass_every_s=86400
-check_every_s=7200
-# agy updates itself; npm installs never do, and a vendor lists a new model only to a client at least
-# as new as the model's minimal_client_version. The native claude's own updater is off
-# (DISABLE_AUTOUPDATER), so it is updated here too; the npm claude is a second install that any PATH
-# with /usr/local/bin or nvm first runs instead of the native one.
-vendors="codex grok claude"
-checked="$vendors gemini"
 
 package_of() {
   case $1 in
@@ -371,18 +391,6 @@ check_agy() {
   else
     record gemini current "$installed" "$latest"
   fi
-}
-
-due_vendors() { # -> `all` when a full pass is due, else the vendors whose version check is due or whose last result wants a retry
-  local due
-  due=$(jq -r --arg vendors "$vendors" --arg checked "$checked" --argjson now "$EPOCHSECONDS" --argjson max "$pass_every_s" --argjson check "$check_every_s" '
-    def at($f): $f // "" | try fromdateiso8601 catch 0;
-    . as $s | ($vendors | split(" ")) as $v
-    | if any($v[]; at($s[.].passed_at) < $now - $max) then "all"
-      else $checked | split(" ")[] | select(at($s[.].checked_at) < $now - $check
-        or any($s[.].result, $s[. + "-native"].result; IN("busy", "install-failed", "check-failed"))) end' \
-    "$state_file" 2>/dev/null) && [ -s "$state_file" ] || due=all
-  printf '%s\n' "${due//$'\n'/ }"
 }
 
 # launchd starts `run --if-due` every half hour: a full pass once a day, and in between only the

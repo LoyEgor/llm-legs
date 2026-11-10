@@ -171,9 +171,35 @@ def sync_settled(ledger_file, settled_file):
     return changed
 
 
+def _common_dir(root):
+    """git's `--git-common-dir` of checkout top `root` off its `.git` alone, or None where only git can tell (no
+    `.git` there, a GIT_* override, an unreadable or unusual layout)."""
+    if any(os.environ.get(name) for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE")):
+        return None
+    dot = os.path.join(root, ".git")
+    if os.path.isdir(dot):
+        return os.path.realpath(dot) if os.path.isfile(os.path.join(dot, "HEAD")) else None
+    try:
+        with open(dot, encoding="utf-8") as handle:
+            line = handle.read().strip()
+        if not line.startswith("gitdir: ") or "\n" in line:
+            return None
+        gitdir = os.path.join(root, line[len("gitdir: "):])
+        with open(os.path.join(gitdir, "commondir"), encoding="utf-8") as handle:
+            common = os.path.realpath(os.path.join(gitdir, handle.read().strip()))
+    except (OSError, ValueError):
+        return None
+    return common if os.path.isfile(os.path.join(common, "HEAD")) else None
+
+
 @functools.lru_cache(maxsize=None)
 def main_checkout(root):
-    """The main checkout of checkout `root`, which a linked worktree resolves too."""
+    """The main checkout of checkout `root`, which a linked worktree resolves too. Read from `root/.git` itself where
+    that settles it (a directory: the main checkout; a linked worktree's file: its gitdir's `commondir`), since the
+    System doctor's minute tick asks this on every run; git answers the rest."""
+    common = _common_dir(root)
+    if common:
+        return os.path.dirname(common)
     try:
         common = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
                                 capture_output=True, text=True, timeout=10).stdout.strip()

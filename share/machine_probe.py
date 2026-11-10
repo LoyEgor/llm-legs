@@ -25,10 +25,13 @@ def command(name):
 
 
 def spawn(name, args, timeout=10):
-    """(pid, stdout) of one probe run; the pid is the system's newest at that moment, the births counter."""
+    """(pid, stdout) of one probe run; the pid is the system's newest at that moment, the births counter.
+    close_fds=False lets Python start it with posix_spawn, one task where fork + exec are two (the minute tick's
+    probes were 12 of its 20); every descriptor Python opens is close-on-exec, so the probe inherits none."""
     try:
         process = subprocess.Popen([command(name)] + list(args), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                   stdin=subprocess.DEVNULL, text=True, env=dict(os.environ, LC_ALL="C"))
+                                   stdin=subprocess.DEVNULL, text=True, env=dict(os.environ, LC_ALL="C"),
+                                   close_fds=False)
     except OSError:
         return None, ""
     try:
