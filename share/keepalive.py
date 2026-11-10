@@ -31,6 +31,7 @@ COLDS = """SELECT r.session_id, r.ts, r.gap_seconds FROM requests r JOIN session
   WHERE r.day >= ? AND r.waste_cause = 'expired (1h+ idle)' AND r.vendor = 'claude' AND r.is_sidechain = 0
     AND COALESCE(r.agent_id, '') = '' AND s.kind = 'chat' AND s.entrypoint = 'cli' AND r.prev_ctx >= ?"""
 _memo = {}
+_seen = {"path": None, "write": False, "rows": None}
 
 
 def journal_path():
@@ -156,6 +157,50 @@ def outcome(row, now=None):
             "kind": "unread" if phase == "before" else "compacted" if compacted else "no return"}
 
 
+def use_seen(path, write):
+    """Keep each settled ping's outcome in `path` across runs, keyed by its journal row and its transcript's mtime and
+    size: a transcript nothing was appended to is not read again. Only a run with `write` saves the file."""
+    _seen.update(path=path, write=write, rows=None)
+
+
+def seen_outcome(row, now, kept):
+    """outcome(row, now) off the store when the ping's hour is over (the answer no longer turns on the clock) and its
+    transcript is the file the stored answer read; `kept` collects the rows this summary still holds."""
+    at = epoch(row.get("ts"))
+    if not _seen["path"] or at is None or now - at <= TTL:
+        return outcome(row, now)
+    if _seen["rows"] is None:
+        try:
+            with open(_seen["path"]) as f:
+                rows = json.load(f)
+        except (OSError, ValueError):
+            rows = None
+        _seen["rows"] = rows if isinstance(rows, dict) else {}
+    key = json.dumps([row.get(k) for k in ("ts", "transcript", "offset", "since", "context")])
+    stamp, held = list(changed(row.get("transcript") or "")[1:]), _seen["rows"].get(key)
+    if isinstance(held, list) and len(held) == 2 and held[0] == stamp and stamp[0] is not None:
+        kept[key] = held
+        return dict(held[1])
+    found = outcome(row, now)
+    if stamp[0] is not None and stamp == list(changed(row.get("transcript") or "")[1:]):
+        kept[key] = [stamp, found]
+    return found
+
+
+def save_seen(kept):
+    """The store holds the window's pings only; written when it changed, never by a dry run."""
+    if not _seen["path"] or _seen["rows"] is None or kept == _seen["rows"]:
+        return
+    _seen["rows"] = kept
+    if _seen["write"]:
+        try:
+            with open(_seen["path"] + ".tmp", "w") as f:
+                json.dump(kept, f, separators=(",", ":"))
+            os.replace(_seen["path"] + ".tmp", _seen["path"])
+        except OSError:
+            pass
+
+
 def colds(since):
     """(session, request time, idle seconds before it) of each tokenmap cold re-read the hook should have covered."""
     try:
@@ -214,12 +259,14 @@ def summary(now, path=None):
     pings = [r for r in rows if r.get("decision") == "ping"]
     out = {"pings": len(pings), "kinds": {}, "cost": 0.0, "value": 0.0, "missed": missed(rows, since),
            "last": max((r["ts"] for r in pings), default=None)}
+    kept = {}
     for row in pings:
-        found = outcome(row, now)
+        found = seen_outcome(row, now, kept)
         out["kinds"][found["kind"]] = out["kinds"].get(found["kind"], 0) + 1
         out["cost"] += found["cost"]
         out["value"] += found["value"]
     out["ratio"] = round(out["value"] / out["cost"], 1) if out["cost"] else None
+    save_seen(kept)
     _memo.clear()
     _memo[key] = out
     return out

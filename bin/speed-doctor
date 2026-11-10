@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
 import cpu_audit  # noqa: E402
 import fix_commit  # noqa: E402
+import keepalive  # noqa: E402
 import ledger_contract  # noqa: E402
 import spend  # noqa: E402
 import suite_audit  # noqa: E402
@@ -1605,6 +1606,7 @@ def collect(write, now):
     started, cpu_start = time.monotonic(), H.cpu_s()
     folder = state_dir()
     fix_commit.use_memo(os.path.join(folder, fix_commit.LANDED_FILE), write)
+    keepalive.use_seen(os.path.join(folder, "keepalive-outcomes.json"), write)
     state = H.read_json(os.path.join(folder, "state.json"), {})
     PROBE_HELD.update(state.get("probe_days") or {})
     ledger = H.load_ledger()[0] or {}
