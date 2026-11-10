@@ -564,7 +564,7 @@
     },
     "uploads": "refused in this region: every upload so far read has_vocals=true (a Flow drum stem included) and is_in_restricted_remix_region refuses vocals, so --ref-audio and --edit <non-Flow audio> exit 1",
     "menus": {
-      "More options": ["Remix", "Details", "Download", "Share...", "Add to...", "Split stems", "Report", "Delete"],
+      "More options": ["Remix", "Details", "Download", "Share...", "Create video", "Add to...", "Split stems", "Report", "Delete"],
       "Remix": ["Start session", "Cover", "Replace", "Extend", "Use prompt", "Variation", "Trim"],
       "Download": ["Download video", "Get stems", "M4A", "MP3", "WAV"]
     }

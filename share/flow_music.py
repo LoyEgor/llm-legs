@@ -216,10 +216,17 @@ def pick_model(page, label: str) -> None:
         raise drift(f"the model chip shows {chosen!r}, not {label!r}")
 
 
-def compose(page, plan: dict) -> dict:
-    """Every control is set on each take: the panel keeps the last session's values."""
+def compose(page, plan: dict, account: str = "-") -> dict:
+    """Every control is set on each take: the panel keeps the last session's values. A one-time notice hides the
+    panel from the accessibility tree (2026-11-10: "Sessions now have memory", Got it / Go to settings): its
+    [role=dialog] is a 0x0 box, so close_promos takes it for hidden, and the first Got it click saves the
+    onboarding setting but leaves the modal up; a second one closes it."""
     sound = page.get_by_role("textbox", name="Sound description", exact=True)
     try:
+        for _ in range(4):
+            if sound.is_visible() or not page.get_by_role("button", name="Got it", exact=True).count():
+                break
+            gw.dismiss_dialogs(page, account)
         if not sound.is_visible():
             page.get_by_role("button", name="Toggle compose panel", exact=True).click(timeout=8000)
         sound.wait_for(timeout=10000)
@@ -658,7 +665,7 @@ def one_take(context, account: str, plan: dict, take: int) -> dict:
         trimmed = open_edit(page, traffic, account, plan)
         controls = trim_window(page, plan) if plan["mode"] == "trim" else edit_panel(page, plan, title)
     else:
-        controls = compose(page, {**plan, "title": title})
+        controls = compose(page, {**plan, "title": title}, account)
     if plan["ref_audio"]:
         attach_audio(page, traffic, account, Path(plan["ref_audio"]), plan["upload_wait_s"])
     if plan["dry_run"]:

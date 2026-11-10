@@ -328,9 +328,19 @@ class Page:
     def get_by_text(self, text, exact=False):
         return Loc(self, ("text", text))
 
+    notice = 0  # clicks the memory notice takes to close; while up, the panel is out of the accessibility tree
+
+    def locator(self, selector):
+        return Loc(self, ("css", selector))
+
     def exists(self, key):
+        name = key[2] if len(key) > 2 else None
+        if key[0] == "css" or name in ("Get started", "Dismiss", "No thanks"):
+            return False
+        if name in ("Got it", "^Got it\\b"):
+            return self.notice > 0
         if key[:2] == ("role", "textbox") and key[2] == "Sound description":
-            return self.panel
+            return self.panel and not self.notice
         if key[:2] == ("role", "menuitem") and key[2] in ("WAV", "MP3", "M4A"):
             return ("hover", ("role", "menuitem", "Download")) in self.log
         return key != ("role", "button", "Expand Details section") or not self.panel_details
@@ -339,7 +349,9 @@ class Page:
 
     def act(self, what, key):
         self.log.append((what, key))
-        if what == "click" and key == ("role", "button", "Toggle compose panel"):
+        if what == "click" and key[-1] in ("Got it", "^Got it\\b"):
+            self.notice -= 1
+        elif what == "click" and key == ("role", "button", "Toggle compose panel"):
             self.panel = True
         elif what == "click" and key[1] == "switch":
             self.switches[key[2]] = not self.switches[key[2]]
@@ -413,6 +425,12 @@ assert page.values["Lyrics"] == "" and page.values["Sound description"] == "Jazz
 assert page.switches == {"Toggle instrumental mode": True, "Toggle advanced sound mode": True}, page.switches
 assert page.log[0] == ("click", ("role", "button", "Toggle compose panel")), page.log[0]
 assert ("click", ("role", "menuitem", "^Lyria\\ 3\\ Pro ")) in page.log
+# A notice over the open panel (2026-11-10, "Sessions now have memory") closes on its second Got it click.
+covered = Page()
+covered.values = dict(page.values)
+covered.panel, covered.notice = True, 2
+assert fm.compose(covered, plan)["title"] == "song-ab12" and covered.notice == 0, covered.log
+assert ("click", ("role", "button", "Toggle compose panel")) not in covered.log, covered.log
 broken = Page()
 broken.values = dict(page.values, Length="")
 broken.panel = True
