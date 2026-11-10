@@ -488,7 +488,7 @@ def send_text(args) -> str:
     if not text.strip():
         print("tg-read: refusing to send an empty text", file=sys.stderr)
         sys.exit(2)
-    limit = MAX_CAPTION if args.photo else MAX_SEND
+    limit = MAX_CAPTION if args.photo or args.doc else MAX_SEND
     if len(text) > limit:
         print(f"tg-read: refusing to send {len(text)} chars (over {limit})", file=sys.stderr)
         sys.exit(2)
@@ -496,6 +496,9 @@ def send_text(args) -> str:
         if not Path(photo).is_absolute() or not Path(photo).is_file():
             print(f"tg-read: no photo file at {photo!r} (give an absolute path)", file=sys.stderr)
             sys.exit(2)
+    if args.doc and (args.photo or not Path(args.doc).is_absolute() or not Path(args.doc).is_file()):
+        print(f"tg-read: --doc takes one existing file by absolute path, without --photo (got {args.doc!r})", file=sys.stderr)
+        sys.exit(2)
     if len(args.photo) > MAX_PHOTOS:
         print(f"tg-read: refusing {len(args.photo)} photos (one album holds {MAX_PHOTOS})", file=sys.stderr)
         sys.exit(2)
@@ -527,6 +530,10 @@ async def cmd_send(args) -> int:
                                   parse_mode=None)
         message = sent[-1] if isinstance(sent, list) else sent
         print(f"photos: {len(args.photo)}")
+    elif args.doc:
+        # A file as a file (a certificate, an archive): saved on the phone as it is, the text under it.
+        message = await tg.send_file(entity, args.doc, caption=text, parse_mode=None, force_document=True)
+        print(f"document: {Path(args.doc).name}")
     else:
         message = await tg.send_message(entity, text, parse_mode=None, link_preview=False)
     name = "Saved Messages" if args.chat == "me" else chat_name(entity)
@@ -684,6 +691,7 @@ def main(argv=None) -> int:
     body.add_argument("--file", help="absolute path of a text file to post")
     send.add_argument("--photo", action="append", default=[],
                       help="absolute path of a picture to post with the text as its caption; repeat for an album")
+    send.add_argument("--doc", help="absolute path of one file to post as a document, the text as its caption")
     send.add_argument("--as-written", action="store_true",
                       help="keep an opening greeting and the addressee's name: only when Egor's own words carry them")
     wait = sub.add_parser("wait", help="block until the chat answers Egor's message; run as a background Bash")

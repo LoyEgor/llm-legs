@@ -22,6 +22,7 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
     tg-read transcribe /tmp/voice/voice-20261022-1200-123.ogg [--dest /tmp/t.txt] [--language ru] [--engine auto|elevenlabs|groq]
     tg-read send me --text "test"            # or --file /abs/message.txt
     tg-read send "Гапоненко" --file /abs/msg.txt --photo /abs/a.png --photo /abs/b.png   # an album, the text as its caption
+    tg-read send me --text "Сертификат" --doc /abs/mac-chats-ca.crt      # one file as a document, the text as its caption
     tg-read wait 5136327405 --after 223868   # [--hours 1 | --until 23:00] [--every 15] [--settle 20]
 
 - `chats`, `read`, `voice`, `photo` and `file` are read-only: they never send, mark read or delete.
@@ -30,7 +31,8 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
   `-` (Egor cannot type those); `normalized: yo=<n> dashes=<n>` is printed when anything changed.
   It refuses (exit 2) an empty text, more than 4000 chars, or a channel. Nothing edits or deletes.
   With `--photo` (absolute paths, up to 10) the pictures go as one album with the text as its
-  caption: at most 1024 chars, and every file is checked before connecting.
+  caption: at most 1024 chars, and every file is checked before connecting. `--doc` (one absolute path, not with
+  `--photo`) posts a file as a document (saved on the phone as it is), the text as its caption, the same limit.
 - `send` also writes as Egor does (claude-setup `hooks/lib/owner_text.py` `as_egor`): an opening
   greeting goes when the chat already talked today (a person: any message, a group: his own), and the
   person's name used as an address (`Славо, …` / `…, Слава!`) and the message's final period (not an

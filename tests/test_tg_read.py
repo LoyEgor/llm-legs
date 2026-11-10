@@ -53,6 +53,18 @@ class ParsingTests(unittest.TestCase):
             tg_read.main(["send", "me", "--text", "a" * 1025, "--photo", photo])
         self.assertEqual(caught.exception.code, 2)
 
+    def test_send_doc_checked_before_connecting(self):
+        doc = str(Path(__file__).resolve())
+        self.assertEqual(parsed(["send", "me", "--text", "hi", "--doc", doc]).doc, doc)
+        self.assertIsNone(parsed(["send", "me", "--text", "hi"]).doc)
+        for extra in (["--doc", "/no/such.crt"], ["--doc", "rel.crt"], ["--doc", doc, "--photo", doc]):
+            with self.assertRaises(SystemExit) as caught, contextlib.redirect_stderr(io.StringIO()):
+                tg_read.main(["send", "me", "--text", "hi", *extra])
+            self.assertEqual(caught.exception.code, 2)
+        with self.assertRaises(SystemExit) as caught, contextlib.redirect_stderr(io.StringIO()):
+            tg_read.main(["send", "me", "--text", "a" * 1025, "--doc", doc])
+        self.assertEqual(caught.exception.code, 2)
+
     def test_send_as_written_flag(self):
         self.assertFalse(parsed(["send", "me", "--text", "hi"]).as_written)
         self.assertTrue(parsed(["send", "me", "--text", "hi", "--as-written"]).as_written)
