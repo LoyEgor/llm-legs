@@ -1723,8 +1723,8 @@ assert test "$query_out" = session
 write_config
 
 # `--role chat` ignores everything that steers delegated work: the pin, the pool toggle and the
-# workers/reviewers switches (Egor 2026-10-06). The bucket follows the chat's model — this suite's
-# default is Fable, so `dry` (5% weekly, 100% fable) is no chat candidate. `off`, out of the pool,
+# workers/reviewers switches (Egor 2026-10-06). A chat ranks on the weekly bucket; one on Fable — this
+# suite's default — is walled by the fable bucket too, so `dry` (5% weekly, 100% fable) is no chat candidate. `off`, out of the pool,
 # is one, and the pinned `tie-b` is ranked like any other.
 write_config 'claudeb_profile=tie-b'
 query_case claude_pool --account claudeb --role chat --exclude session
@@ -1732,37 +1732,41 @@ assert test "$query_rc" -eq 0
 assert test "$query_out" = off
 query --account claudeb
 assert test "$query_out" = tie-b
-# The two buckets disagreeing is the whole point of the role: the weekly ranking takes `wk-free`
-# and the chat takes the account whose FABLE budget is the largest.
+# A chat on Fable still ranks on the weekly bucket (Egor 2026-11-10: the Fable limit is a part of the
+# weekly one, an account is chosen by the week it has left); its fable bucket only walls it. So the
+# chat skips `fb-wall` and takes `wk-free`, while only `--fable` ranks on the fable bucket.
 run_filter claude_pool '.vendors.claude.accounts = [
-  {account:"wk-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:0},fable:{used_pct:90}},
+  {account:"fb-wall",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:0},fable:{used_pct:100}},
+  {account:"wk-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:10},fable:{used_pct:90}},
   {account:"fb-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:60},fable:{used_pct:10}}]'
 query --account claudeb
-assert test "$query_out" = wk-free
+assert test "$query_out" = fb-wall
 query --account claudeb --role chat
 assert test "$query_rc" -eq 0
+assert test "$query_out" = wk-free
+query --account claudeb --fable
 assert test "$query_out" = fb-free
 query --account claudeb --role reviewers
-assert test "$query_out" = wk-free
-# A chat on any other Claude model spends the weekly bucket like ordinary work: named with
+assert test "$query_out" = fb-wall
+# A chat on any other Claude model is not walled by the fable bucket: its model named with
 # --model, or read from the default model when the chat is a new one.
 query --account claudeb --role chat --model claude-opus-5-5
 assert test "$query_rc" -eq 0
-assert test "$query_out" = wk-free
+assert test "$query_out" = fb-wall
 query --account claudeb --role chat --model claude-fable-5-1
-assert test "$query_out" = fb-free
+assert test "$query_out" = wk-free
 printf '{"model":"opus"}\n' > "$CHAT_SETTINGS"
 query --account claudeb --role chat
-assert test "$query_out" = wk-free
+assert test "$query_out" = fb-wall
 query --account claudeb --role chat --model Fable
-assert test "$query_out" = fb-free
+assert test "$query_out" = wk-free
 printf '{}\n' > "$CHAT_SETTINGS"
 query --account claudeb --role chat
-assert test "$query_out" = wk-free
+assert test "$query_out" = fb-wall
 rm -f "$CHAT_SETTINGS"
 query --account claudeb --role chat
 assert test "$query_rc" -eq 0
-assert test "$query_out" = wk-free
+assert test "$query_out" = fb-wall
 printf '{"model":"fable[1m]"}\n' > "$CHAT_SETTINGS"
 # The model is a chat's fact: no other role spends it, so naming one elsewhere is refused.
 query --account claudeb --model fable
@@ -2482,13 +2486,12 @@ query --account claudeb --role chat
 assert test "$query_out" = session
 assert test "$(query_out=$list_out; next_of claudeb)" = session
 write_config
-# The role picks the column as well: under `chat` the percentage IS the fable one and a
-# fable-walled account is `walled` there, while the same account reads its weekly percentage and
-# `ok` for workers.
+# A chat lists the weekly percentage like workers do; a fable-walled account is `walled` for a chat
+# on Fable, while the same account is `ok` for workers.
 query_case claude_pool --list --role chat
 assert test "$query_rc" -eq 0
-assert test "$(list_line claudeb dry)" = "$(printf 'claudeb\tdry\t100\twalled\t-')"
-assert test "$(list_line claudeb tie-a)" = "$(printf 'claudeb\ttie-a\t40\tok\t-')"
+assert test "$(list_line claudeb dry)" = "$(printf 'claudeb\tdry\t5\twalled\t-')"
+assert test "$(list_line claudeb tie-a)" = "$(printf 'claudeb\ttie-a\t20\tok\t-')"
 assert test "$(list_line claudeb session)" = "$(printf 'claudeb\tsession\t0\tok\t-')"
 query --list --role workers
 assert test "$(list_line claudeb dry)" = "$(printf 'claudeb\tdry\t5\tok\t-')"
@@ -2507,19 +2510,21 @@ assert test "$(list_line claudeb nofb)" = "$(printf 'claudeb\tnofb\t10\tblocked\
 assert test "$(next_of claudeb)" = free
 query --list --role chat --model opus
 assert test "$(list_line claudeb nofb)" = "$(printf 'claudeb\tnofb\t10\tok\t-')"
-# The NEXT line of the listing follows the same bucket as its rows.
+# The NEXT line of the listing follows the same rule as its rows.
 run_filter claude_pool '.vendors.claude.accounts = [
-  {account:"wk-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:0},fable:{used_pct:90}},
+  {account:"fb-wall",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:0},fable:{used_pct:100}},
+  {account:"wk-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:10},fable:{used_pct:90}},
   {account:"fb-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:60},fable:{used_pct:10}}]'
 query --list --role chat
-assert test "$(next_of claudeb)" = fb-free
+assert test "$(next_of claudeb)" = wk-free
+assert test "$(list_line claudeb fb-wall)" = "$(printf 'claudeb\tfb-wall\t0\twalled\t-')"
 query --list --role workers
-assert test "$(next_of claudeb)" = wk-free
-# The picker asks one list per bucket, naming a model of each.
+assert test "$(next_of claudeb)" = fb-wall
+# The picker asks one list per model, naming one.
 query --list --role chat --model fable
-assert test "$(next_of claudeb)" = fb-free
-query --list --role chat --model opus
 assert test "$(next_of claudeb)" = wk-free
+query --list --role chat --model opus
+assert test "$(next_of claudeb)" = fb-wall
 # Other vendors have one bucket and the role never moves it.
 query_case golden --list --role chat
 assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tok\t-')"

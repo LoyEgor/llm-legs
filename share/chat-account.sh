@@ -41,8 +41,8 @@ chat_account_resolve() {
   return 0
 }
 
-# Prints the weekly bucket a chat on model $1 spends: `fable` (Fable has a bucket of its own) or
-# `weekly` (every other model). With no argument the chat is a new one, which starts on the default
+# Prints the bucket a chat on model $1 spends besides the weekly one: `fable` (Fable has a bucket of its
+# own, which walls the chat; worker-pick still ranks it on the weekly one) or `weekly` (every other model). With no argument the chat is a new one, which starts on the default
 # /model saves into the shared settings.json.
 chat_model_bucket() {
   chat_model_bucket_set "$@"

@@ -24,10 +24,12 @@ account first.
 An account is measured on its **weekly** bucket and the reset that bucket carries. A vendor
 that reports no weekly percentage at all is measured on its five-hour reading over the
 neutral window instead — its five-hour reset says nothing about a week. A `--fable` query
-reads the same formula against the fable bucket and the fable reset, and so does every
-`--role chat` answer on Claude whose chat runs Fable: a chat spends the bucket of its model (`--model`, else the
-default model in the shared settings.json; `chat_model_bucket` in `share/chat-account.sh`), and every model
-but Fable spends the general weekly one. An account whose budget
+reads the same formula against the fable bucket and the fable reset. A `--role chat` answer
+ranks on the weekly bucket whatever the chat's model (Egor 2026-11-10: the Fable limit is a part of
+the weekly one, and a chat's account is chosen by the week it has left); a chat running Fable
+(`--model`, else the default model in the shared settings.json; `chat_model_bucket` in
+`share/chat-account.sh`) is also walled at 100% of the fable bucket, blocked where Fable cannot run,
+and no candidate where nobody measured a fable window. An account whose budget
 is `null` — no numeric percentage in either bucket — is not a candidate.
 
 Two accounts at the same percentage are not equal: the one whose week resets sooner may
