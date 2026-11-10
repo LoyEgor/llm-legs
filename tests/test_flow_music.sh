@@ -895,6 +895,39 @@ class StudioPage(NoticePage):
         self.handler(self.reply)
 
 
+# 2026-11-10: a signed-in profile served the signed-out landing ("Create song" at /session?t=true) enters with
+# one "Create a song" click, no owner step; the credits call comes after the click.
+class ShownAt(Shown):
+    def nth(self, index):
+        return self
+
+    def click(self, timeout=None):
+        super().click(timeout)
+        self.page.handler(self.page.reply)
+
+
+class StaleLanding(StudioPage):
+    url = fm.SITE + "/session?t=true"
+
+    def get_by_role(self, role, name=None, exact=False):
+        return ShownAt(self, (role, getattr(name, "pattern", name)))
+
+    def locator(self, selector):
+        return ShownAt(self, ("css", selector))
+
+    def goto(self, url, wait_until=None, timeout=None):
+        pass
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+landing = StaleLanding(10500, [], ("button", r"^Create a song\b"))
+landed = fm.Traffic(landing)
+fm.open_page(landing, landed, "egbogd", "/session", timeout_s=2)
+assert landed.balance == 10500 and landing.clicked == [("button", r"^Create a song\b")], landing.clicked
+
+
 class Context:
     def __init__(self, page):
         self.page = page

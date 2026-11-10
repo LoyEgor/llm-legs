@@ -151,6 +151,7 @@ def open_page(page, traffic: Traffic, account: str, path: str, timeout_s: float 
     traffic.balance = None
     page.goto(f"{SITE}{path}", wait_until="domcontentloaded", timeout=timeout_s * 1000)
     deadline = time.time() + timeout_s
+    entered = False
     while time.time() < deadline:
         traffic.poll()
         if traffic.balance is not None:
@@ -164,6 +165,13 @@ def open_page(page, traffic: Traffic, account: str, path: str, timeout_s: float 
             gw.write_meta(account, music_signed_in=False)
             raise gw.Failure(4, f"Flow Music shows {account} signed out; the owner signs in once at flowmusic.app "
                                 "(Continue with Google)")
+        # A signed-in profile can be served the signed-out landing (2026-11-10, egbogd and locomthebest at
+        # /session?t=true: "Create song", users/me null, no credits call); "Create a song" restores the session
+        # with no Google step. A real sign-out ends above, on the page that click leads to.
+        if not entered and gw.click_if_visible(page, "button", re.compile(r"^Create a song\b")):
+            entered = True
+            gw.ledger({"kind": "flow-music", "event": "landing-entered", "account": account})
+            continue
         page.wait_for_timeout(300)
     raise gw.Failure(1, f"Flow Music did not load within {timeout_s:.0f}s ({page.url})")
 
@@ -220,16 +228,22 @@ def compose(page, plan: dict, account: str = "-") -> dict:
     """Every control is set on each take: the panel keeps the last session's values. A one-time notice hides the
     panel from the accessibility tree (2026-11-10: "Sessions now have memory", Got it / Go to settings): its
     [role=dialog] is a 0x0 box, so close_promos takes it for hidden, and the first Got it click saves the
-    onboarding setting but leaves the modal up; a second one closes it."""
+    onboarding setting but leaves the modal up; a second one closes it. It can also land seconds after the page
+    (egbogd, after the landing click), so it is watched for until the panel shows."""
     sound = page.get_by_role("textbox", name="Sound description", exact=True)
+    toggle = page.get_by_role("button", name="Toggle compose panel", exact=True)
+    notice = page.get_by_role("button", name="Got it", exact=True)
+    toggled, deadline = False, time.time() + 20
     try:
-        for _ in range(4):
-            if sound.is_visible() or not page.get_by_role("button", name="Got it", exact=True).count():
-                break
-            gw.dismiss_dialogs(page, account)
-        if not sound.is_visible():
-            page.get_by_role("button", name="Toggle compose panel", exact=True).click(timeout=8000)
-        sound.wait_for(timeout=10000)
+        while not sound.is_visible():
+            if time.time() > deadline:
+                raise TimeoutError("the Sound description field did not show")
+            if notice.count():
+                gw.dismiss_dialogs(page, account)
+            elif not toggled and toggle.count() and toggle.first.is_visible():
+                toggle.first.click(timeout=8000)
+                toggled = True
+            page.wait_for_timeout(500)
     except Exception as error:  # noqa: BLE001
         raise drift("no compose panel (Toggle compose panel)") from error
     fill(page, page.get_by_role("textbox", name="Lyrics", exact=True), plan["lyrics"], "Lyrics")
