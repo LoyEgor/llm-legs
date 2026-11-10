@@ -37,14 +37,16 @@ snapshot_ps() { # key
 # With base and max, `<file>.ivl` is the seconds the render waits before the next run: doubled up to
 # max while the output repeats, back to base on the first change (bin/statusline.sh, probe_due).
 probe_publish() { # file content [base max] -> written whole (tmp + rename); probe_same 1 when the file already held it
-  local old='' tmp="$1.tmp.${BASHPID:-$$}" ivl=''
+  local old='' tmp="$1.tmp.${BASHPID:-$$}" ivl='' had
   { IFS= read -r -d '' old < "$1"; } 2>/dev/null
   [ "$old" = "$2" ] && probe_same=1 || probe_same=0
   printf '%s' "$2" > "$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null || rm -f "$tmp" 2>/dev/null
   [ -n "${4:-}" ] || return 0
   { read -r ivl < "$1.ivl"; } 2>/dev/null
+  had=$ivl
   [[ "$ivl" =~ ^[0-9]+$ ]] && [ "$probe_same" = 1 ] && ivl=$((ivl * 2 < $4 ? ivl * 2 : $4)) || ivl=$3
-  printf '%s\n' "$ivl" > "$1.ivl" 2>/dev/null
+  # Only its content is read (probe_due): an interval that stays is not rewritten, most runs once it sits at max.
+  [ "$ivl" = "$had" ] || printf '%s\n' "$ivl" > "$1.ivl" 2>/dev/null
 }
 
 # `<start_us>\t<wall_ms>\t<cpu_ms>\t<kind>\t<same>`: the merge-kick journal's columns plus the kind; cpu_ms is
