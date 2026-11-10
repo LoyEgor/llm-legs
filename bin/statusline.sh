@@ -16,13 +16,120 @@ if [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
   echo "statusline: bash 5 required (found $BASH_VERSION)"
   exit 0
 fi
+# Two passes over this file. The first runs only the block below: the away and rest replays, which need no
+# jq, git or probe, and no parse of the 2500-line render either — at rest that parse and the bash start are the
+# whole cost. A render that does not replay sources this file once more, whole (`.` reads it in one go, so an
+# edit landing mid-render tears neither pass), and that second pass skips this block and renders.
 {
+if [ -z "${statusline_pass:-}" ]; then
+statusline_pass=render
 unset STATUSLINE_REEXEC
 statusline_start_us=${EPOCHREALTIME//[!0-9]/}
 export GIT_OPTIONAL_LOCKS=0
 
-IFS= read -r -d '' input || :
+# -N reads the pipe a block at a time; -d '' would read it byte by byte.
+IFS= read -r -N 16777216 input || :
 statusline_cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
+
+# Never $0: `bash bin/statusline.sh` would double the directory, and the harness may invoke a
+# symlink — realpath resolves both to the script's real home.
+statusline_loadables="${BASH%/bin/*}/lib/bash"
+statusline_realpath=''
+enable -f "$statusline_loadables/realpath" realpath 2>/dev/null && statusline_realpath=1
+if ! { [ -n "$statusline_realpath" ] && realpath -a statusline_self "${BASH_SOURCE[0]}" >/dev/null 2>&1; }; then
+  statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="${BASH_SOURCE[0]}"
+fi
+# `.` searches PATH for a name without a slash.
+[[ "$statusline_self" = */* ]] || statusline_self=./$statusline_self
+statusline_dir=${statusline_self%/*}
+. "$statusline_dir/../share/cpu-ms.sh"
+. "$statusline_dir/../share/presence.sh"
+
+# Render timing for the Harness doctor, which prunes the files itself. One O_APPEND write per
+# render keeps concurrent sessions' lines whole without a lock. $1 = the session, $2 = 1 unchanged, 0 changed,
+# - no session, a away replay, r rest replay.
+statusline_timing_row() {
+  local dir="${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/statusline" day end_us cpu_ms
+  printf -v day '%(%Y-%m-%d)T' -1
+  end_us=${EPOCHREALTIME//[!0-9]/}
+  suite_journal_cpu_ms cpu_ms ''
+  printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$end_us" "$1" "${cpu_ms:--}" "$2" 2>/dev/null \
+    >>"$dir/$day.tsv" ||
+    { /bin/mkdir -p "$dir" 2>/dev/null &&
+      printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$end_us" "$1" "${cpu_ms:--}" "$2" 2>/dev/null \
+        >>"$dir/$day.tsv"; }
+}
+
+statusline_sid='' statusline_transcript=''
+[[ $input =~ \"session_id\"[[:space:]]*:[[:space:]]*\"([^\"/]+)\" ]] && statusline_sid=${BASH_REMATCH[1]}
+[[ $input =~ \"transcript_path\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]] && statusline_transcript=${BASH_REMATCH[1]}
+
+# Away replay (docs/statusline-contract.md "Away replay"): while Egor is away, a chat whose transcript
+# has not moved since its last full render repeats that render — no jq, no git, no probe. presence.lua
+# drops the mark within seconds of his return, and the next refresh renders in full.
+statusline_away=0
+if [ -n "$statusline_sid" ] && presence_away "$EPOCHSECONDS"; then
+  statusline_away=1
+  away_render="$statusline_cache_dir/render-$statusline_sid"
+  away_out=''
+  if [ -n "$statusline_transcript" ] && [ -s "$away_render" ] && ! [ "$statusline_transcript" -nt "$away_render" ]; then
+    { IFS= read -r -d '' away_out <"$away_render"; } 2>/dev/null
+  fi
+  if [ -n "$away_out" ]; then
+    printf '%s' "$away_out"
+    statusline_timing_row "$statusline_sid" a
+    exit 0
+  fi
+fi
+
+# Rest replay (docs/statusline-contract.md "Rest replay"): a chat whose payload, terminal and every file its
+# last full render read are as they were, before the first second its clock could change a cell, prints that
+# render again. The payload is compared whole but for cost.total_duration_ms, the harness's wall clock since
+# the chat started. The full render leaves the record (render-rest-<sid>, fields \x1e-separated:
+# `rest1`, the epoch it is good until, this key, the payload, the lines, one field per file read — `m<path>`
+# ends the replay once written after the `.at` stamp the full render took as it began, `c<path>\x1d<bytes>`
+# once its bytes differ — and `end`, so a record read mid-write never replays).
+printf -v statusline_rest_env '%s\x1f' "${COLUMNS-}" "$PPID" "${STATUSLINE_FIT_MARGIN-}" "${CLAUDE_LIMITS_ACCOUNT-}" \
+  "${CLAUDE_CONFIG_DIR-}" "${CLAUDEGPT_ACCOUNT-}"
+statusline_rest_key=$input
+[[ $input =~ \"total_duration_ms\"[[:space:]]*:[[:space:]]*[0-9]+ ]] &&
+  statusline_rest_key=${input/"${BASH_REMATCH[0]}"/}
+# STATUSLINE_REST_S=0 turns it off: no record read, written or cleared.
+if [ -n "$statusline_sid" ] && [ "${STATUSLINE_REST_S-}" != 0 ]; then
+  statusline_rest="$statusline_cache_dir/render-rest-$statusline_sid"
+  rest_f=()
+  { IFS=$'\x1e' read -r -d '' -a rest_f <"$statusline_rest"; } 2>/dev/null
+  if [ "${#rest_f[@]}" -ge 6 ] && [ "${rest_f[0]}" = rest1 ] && [ "${rest_f[-1]}" = end ] &&
+    [ "${STATUSLINE_NOW:-$EPOCHSECONDS}" -lt "${rest_f[1]}" ] 2>/dev/null &&
+    [ "${rest_f[2]}" = "$statusline_rest_env" ] && [ "${rest_f[3]}" = "$statusline_rest_key" ]; then
+    rest_ok=1
+    for ((rest_i = 5; rest_i < ${#rest_f[@]} - 1; rest_i++)); do
+      rest_d=${rest_f[rest_i]}
+      case $rest_d in
+        m*) ! [ "${rest_d:1}" -nt "$statusline_rest.at" ] || { rest_ok=''; break; } ;;
+        c*)
+          rest_p=${rest_d%%$'\x1d'*} rest_c=''
+          { IFS= read -r -d '' rest_c <"${rest_p:1}"; } 2>/dev/null
+          [ "$rest_c" = "${rest_d#*$'\x1d'}" ] || { rest_ok=''; break; } ;;
+        *) rest_ok=''; break ;;
+      esac
+    done
+    if [ -n "$rest_ok" ]; then
+      printf '%s' "${rest_f[4]}"
+      statusline_timing_row "$statusline_sid" r
+      exit 0
+    fi
+  fi
+  # Stamp first, so a file written while this render reads it is newer than the stamp; the old record goes
+  # with it, so no replay pairs it with a stamp it was not taken against.
+  { : >"$statusline_rest.at"; : >"$statusline_rest"; } 2>/dev/null
+fi
+
+. "$statusline_self"
+exit
+fi
+}
+{
 cache_rl="$HOME/.claude/statusline-cache-rl"
 acct="${CLAUDE_LIMITS_ACCOUNT:-}"
 if [ -z "$acct" ]; then
@@ -38,58 +145,20 @@ account_cache_dir="$claudeb_dir/limits"
 account_cache="$account_cache_dir/$acct.json"
 limits_file="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 
-# Never $0: `bash bin/statusline.sh` would double the directory, and the harness may invoke a
-# symlink — realpath resolves both to the script's real home.
-# rmdir, mkdir and realpath loadables; mkdir -p stays /bin/mkdir (the loadable's -p chmods every existing parent and fails on /var).
-statusline_loadables="${BASH%/bin/*}/lib/bash"
+# rmdir and mkdir loadables (realpath is the first pass's); mkdir -p stays /bin/mkdir (the loadable's -p chmods
+# every existing parent and fails on /var).
 enable -f "$statusline_loadables/rmdir" rmdir 2>/dev/null
 enable -f "$statusline_loadables/mkdir" mkdir 2>/dev/null
-statusline_realpath=''
-enable -f "$statusline_loadables/realpath" realpath 2>/dev/null && statusline_realpath=1
-if ! { [ -n "$statusline_realpath" ] && realpath -a statusline_self "${BASH_SOURCE[0]}" >/dev/null 2>&1; }; then
-  statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="${BASH_SOURCE[0]}"
-fi
-statusline_dir=${statusline_self%/*}
 . "$statusline_dir/../share/limits-view.sh"
 . "$statusline_dir/../share/codex-accounts.sh"
-. "$statusline_dir/../tests/lib/suite-journal.sh" --lib
 . "$statusline_dir/../share/statusline-probe.sh"
-. "$statusline_dir/../share/presence.sh"
 
-# Render timing for the Harness doctor, which prunes the files itself. One O_APPEND write per
-# render keeps concurrent sessions' lines whole without a lock. $1 = the session, $2 = 1 unchanged, 0 changed,
-# - no session, a away replay.
-statusline_timing_row() {
-  local dir="${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/statusline" day end_us cpu_ms
-  printf -v day '%(%Y-%m-%d)T' -1
-  end_us=${EPOCHREALTIME//[!0-9]/}
-  suite_journal_cpu_ms cpu_ms ''
-  printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$end_us" "$1" "${cpu_ms:--}" "$2" 2>/dev/null \
-    >>"$dir/$day.tsv" ||
-    { /bin/mkdir -p "$dir" 2>/dev/null &&
-      printf '%s\t%s\t%s\t%s\t%s\n' "$statusline_start_us" "$end_us" "$1" "${cpu_ms:--}" "$2" 2>/dev/null \
-        >>"$dir/$day.tsv"; }
-}
-
-# Away replay (docs/statusline-contract.md "Away replay"): while Egor is away, a chat whose transcript
-# has not moved since its last full render repeats that render — no jq, no git, no probe. presence.lua
-# drops the mark within seconds of his return, and the next refresh renders in full.
-statusline_away=0
-if presence_away "$EPOCHSECONDS" && [[ $input =~ \"session_id\"[[:space:]]*:[[:space:]]*\"([^\"/]+)\" ]]; then
-  statusline_away=1
-  away_sid=${BASH_REMATCH[1]}
-  away_render="$statusline_cache_dir/render-$away_sid"
-  away_out=''
-  if [[ $input =~ \"transcript_path\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]] && [ -s "$away_render" ] &&
-    ! [ "${BASH_REMATCH[1]}" -nt "$away_render" ]; then
-    { IFS= read -r -d '' away_out <"$away_render"; } 2>/dev/null
-  fi
-  if [ -n "$away_out" ]; then
-    printf '%s' "$away_out"
-    statusline_timing_row "$away_sid" a
-    exit 0
-  fi
-fi
+# The rest replay's record (first pass): every file this render reads whose change must end a replay — by its
+# mtime (rest_mdep) or, for a cache its writer rewrites unchanged, by its bytes (rest_cdep, the bytes as read
+# when given) — and, through rest_by once the clock is read, the first second that clock could turn a cell.
+rest_mdeps=() rest_cdeps=()
+rest_mdep() { rest_mdeps+=("$@"); }
+rest_cdep() { if [ "$#" -gt 1 ]; then rest_cdeps+=("$1"$'\x1d'"$2"); else rest_cdeps+=("$1"); fi; }
 
 statusline_parent_dir() {
   local path="$1"
@@ -386,6 +455,11 @@ repo_debt_lines() { # var toplevel now tree-state
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     { [ "$((now - cache_mtime))" -le 120 ] || { [ "$cached_key" = "$key" ] && [ "$((now - cache_mtime))" -le 360 ]; }; }; then
     printf -v "$out" '%s' "$cached"
+    # A walk republishes an unchanged answer, so the bytes count while it shows; its age hides it.
+    rest_cdep "$cache"; [ -z "$fam" ] || rest_cdep "$fam"
+    if [ "$cached_key" = "$key" ]; then rest_by $((cache_mtime + 361)); else rest_by $((cache_mtime + 121)); fi
+  else
+    rest_mdep "$cache"; [ -z "$fam" ] || rest_mdep "$fam"
   fi
 }
 
@@ -420,6 +494,7 @@ review_session_line() { # session now
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 15 ]; then
     printf -v "$out" '%s' "$cached"
+    rest_cdep "$cache"; rest_by $((cache_mtime + 121))
     return 0
   fi
   if [ -n "$cached" ] && [[ "$cached_gate" =~ ^[0-9]+$ ]] && [ "$((now - cached_gate))" -lt 90 ]; then
@@ -427,6 +502,8 @@ review_session_line() { # session now
     if [ "$stamp" = "$cached_stamp" ]; then
       printf '%s\n%s\n%s\n' "$cached" "$stamp" "$cached_gate" > "$cache" 2>/dev/null
       printf -v "$out" '%s' "$cached"
+      # This render's own restamp writes the bytes it read.
+      rest_cdep "$cache" "$cached"$'\n'"$stamp"$'\n'"$cached_gate"$'\n'
       return 0
     fi
   fi
@@ -451,10 +528,13 @@ review_session_line() { # session now
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 120 ]; then
     printf -v "$out" '%s' "$cached"
+    rest_cdep "$cache"; rest_by $((cache_mtime + 121))
   elif [ -n "$cached" ]; then
     printf -v "$out" '%s' 'no'
+    rest_mdep "$cache"
   else
     printf -v "$out" '%s' 'no'
+    rest_mdep "$cache"
   fi
 }
 
@@ -505,6 +585,7 @@ unpushed_marker() { # toplevel session now
   if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 100 ]; then
     printf -v "$out" '%s' "${cached:-off}"
+    rest_cdep "$cache"; [ "$cached" != unpushed ] || rest_by $((cache_mtime + 121))
     return 0
   fi
   if ensure_dir "$statusline_cache_dir" 2>/dev/null; then
@@ -529,8 +610,11 @@ unpushed_marker() { # toplevel session now
   if [ "$cached" = unpushed ] && [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 120 ]; then
     printf -v "$out" '%s' unpushed
+    rest_cdep "$cache"; rest_by $((cache_mtime + 121))
   else
     printf -v "$out" '%s' off
+    # The refresh this render may have fired republishes what a stale cache held, and that shows.
+    rest_mdep "$cache"
   fi
 }
 
@@ -765,11 +849,13 @@ rl_cost_prev=""
 rl_cost_now=""
 rl_reset_at=""
 rl_reset_active=false
+rl_reset_honored_s=691200
+[ "$acct" = main ] || rest_mdep "$account_cache_dir/$acct.reset-at"
 if [ "$acct" != main ] && [ -r "$account_cache_dir/$acct.reset-at" ]; then
   read -r rl_reset_at < "$account_cache_dir/$acct.reset-at" 2>/dev/null
   case "$rl_reset_at" in
     ''|*[!0-9]*) ;;
-    *) [ $((EPOCHSECONDS - rl_reset_at)) -lt 691200 ] && rl_reset_active=true ;;
+    *) [ $((EPOCHSECONDS - rl_reset_at)) -lt "$rl_reset_honored_s" ] && rl_reset_active=true ;;
   esac
 fi
 if [ -n "$session_id" ]; then
@@ -798,6 +884,8 @@ elif [ -n "$rl_json" ]; then
     rl_target="$account_cache"
   fi
   file_mtime_to rl_mtime "$rl_target"
+  # Another chat's or claudeb's write is the only way the same payload could merge differently.
+  rest_mdep "$rl_target"
   snapshot_lock="$rl_target.lock"
   # The cache read must sit under the same lock as the write: a concurrent
   # claudeb merge landing between them would be clobbered by this render.
@@ -834,9 +922,23 @@ else
   if [ -r "$rl_cache_file" ]; then IFS= read -r -d '' rl_json < "$rl_cache_file" || :; fi
   rl_from_cache=1
   file_mtime_to rl_mtime "$rl_cache_file"
+  rest_mdep "$rl_cache_file"
 fi
 
 now=${STATUSLINE_NOW:-$EPOCHSECONDS}
+# A replay lasts STATUSLINE_REST_S (0: none) at most — what no record names (a tracked file's edit, a pushed
+# ref) reaches the line by then — and never past a second rest_by names.
+rest_s=${STATUSLINE_REST_S:-15}
+[[ "$rest_s" =~ ^[0-9]+$ ]] || rest_s=15
+rest_s=$((10#$rest_s))
+rest_until=$((now + rest_s))
+rest_by() { # epoch -> the replay ends by it when it lies ahead
+  [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt "$now" ] && [ "$1" -lt "$rest_until" ] && rest_until=$1
+  return 0
+}
+# The same payload merges differently once a usage-reset marker stops being honored.
+[[ "$rl_reset_at" =~ ^[0-9]+$ ]] && rest_by $((rl_reset_at + rl_reset_honored_s))
+rest_mdep "$limits_file"
 h5_absent=false; h5_pct=""; h5_reset=""; h5_dim=""; wk_pct=""; wk_reset=""; wk_dim=""; wk_origin=""
 h5_stale=""; wk_stale=""; fable_found=""; fable_pct=""; fable_reset=""; fable_dim=""
 want_rl=0; want_claude=0; want_codex=0; limits_mtime=0
@@ -954,6 +1056,7 @@ limits_lines=$(jq -nr --arg rl "$rl_json" --argjson want_rl "$want_rl" --argjson
       > "$limits_cache.$$" && /bin/mv -f "$limits_cache.$$" "$limits_cache"; } 2>/dev/null
 fi
 { IFS= read -r limits_a; IFS= read -r limits_b; IFS= read -r limits_c; IFS= read -r limits_d; } <<< "$limits_lines"
+rest_by "${limits_lines##*$'\n'}"
 
 [ "$want_rl" = 1 ] && IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim wk_origin h5_absent <<< "$limits_a"
 
@@ -983,9 +1086,9 @@ esac
 
 dir=${dir_path%"${dir_path##*[!/]}"}
 dir=${dir##*/}; [ -z "$dir_path" ] || dir=${dir:-/}
-project_top=""; project_common=""; project_root=""; project_name=""; project_is_wt=0
+project_top=""; project_common=""; project_root=""; project_name=""; project_is_wt=0; project_gitdir=""
 if repo_dirs_cached p "$dir_path"; then
-  project_top="$REPO_TOP"; project_common="$REPO_COMMON"
+  project_top="$REPO_TOP"; project_common="$REPO_COMMON"; project_gitdir="$REPO_GITDIR"
   project_root="$REPO_ROOT"; project_name="$REPO_NAME"; project_is_wt="$REPO_IS_WT"
   # A chat launched inside a linked worktree would otherwise be labelled by the
   # worktree's own name, hiding which project it belongs to.
@@ -996,13 +1099,13 @@ model_suffix=""
 [ -n "$effort" ] && model_suffix=" ${effort}"
 
 git_dir="$dir_path"
-active_top=""; active_common=""; active_root=""; active_name=""; active_is_wt=0
+active_top=""; active_common=""; active_root=""; active_name=""; active_is_wt=0; active_gitdir=""
 adopt_repo_dirs() {
-  active_top="$REPO_TOP"; active_common="$REPO_COMMON"
+  active_top="$REPO_TOP"; active_common="$REPO_COMMON"; active_gitdir="$REPO_GITDIR"
   active_root="$REPO_ROOT"; active_name="$REPO_NAME"; active_is_wt="$REPO_IS_WT"
 }
 adopt_project_dirs() {
-  active_top="$project_top"; active_common="$project_common"
+  active_top="$project_top"; active_common="$project_common"; active_gitdir="$project_gitdir"
   active_root="$project_root"; active_name="$project_name"; active_is_wt="$project_is_wt"
 }
 # The middle block — the dir cluster, the branch, the counters, the autonomy dot,
@@ -1030,6 +1133,11 @@ if [ -n "$shown_tree" ] && [ "$shown_tree" != "$project_top" ] && repo_dirs_cach
 else
   adopt_project_dirs
 fi
+[ -z "$session_id" ] || rest_mdep "$place_journal"
+# The middle block's git state: a checkout, a stage or a commit by anyone moves HEAD, the index or HEAD's
+# reflog, and a worktree added or removed moves `worktrees/`. An edit of a tracked file moves none of them.
+[ -z "$active_gitdir" ] ||
+  rest_mdep "$active_gitdir/HEAD" "$active_gitdir/index" "$active_gitdir/logs/HEAD" "$active_common/worktrees"
 
 dir_foreign=0
 wt_show=0
@@ -1220,8 +1328,18 @@ fi
 h5_time=""
 [[ "$h5_reset" =~ ^[0-9]+$ ]] && TZ=Europe/Kyiv printf -v h5_time '%(%H:%M)T' "$h5_reset" 2>/dev/null
 
+# The replay ends where a reset label below turns: its form at a day and an hour out and at the reset, and
+# the next step of an `<n>h` or `<n>m` countdown.
+rest_by_label() { # reset epoch
+  local rem=$(( $1 - now ))
+  rest_by $(( $1 - 86400 )); rest_by $(( $1 - 3600 )); rest_by "$1"
+  if [ "$rem" -gt 3600 ] && [ "$rem" -le 86400 ]; then rest_by $(( $1 + 1801 - (rem + 1800) / 3600 * 3600 ))
+  elif [ "$rem" -gt 0 ] && [ "$rem" -le 3600 ]; then rest_by $(( $1 + 31 - (rem + 30) / 60 * 60 )); fi
+}
+
 wk_arrow_txt=""
 if [ -n "$wk_reset" ]; then
+  rest_by_label "$wk_reset"
   rem=$(( wk_reset - now ))
   if [ "$rem" -gt 86400 ] || [ "$rem" -le 0 ]; then
     TZ=Europe/Kyiv printf -v dow '%(%u)T' "$wk_reset"
@@ -1251,7 +1369,9 @@ if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$fable_account" ] && [ "$fable_accou
     # age is the backstop.
     file_mtime_to limits_mtime "$limits_file"
     [[ "$limits_mtime" =~ ^[0-9]+$ ]] && [ $((now - limits_mtime)) -gt "$LIMITS_STALE_FABLE" ] && fable_dim=1
+    [[ "$limits_mtime" =~ ^[0-9]+$ ]] && rest_by $((limits_mtime + LIMITS_STALE_FABLE + 1))
     if [[ "$fable_reset" =~ ^[0-9]+$ ]]; then
+      rest_by_label "$fable_reset"
       fable_dow=""; fable_time=""
       TZ=Europe/Kyiv printf -v fable_dow '%(%u)T' "$fable_reset"
       TZ=Europe/Kyiv printf -v fable_time '%(%H:%M)T' "$fable_reset"
@@ -1854,6 +1974,9 @@ else
   cache_state=cold
 fi
 
+# Warmth turns on the clock at its response's second and at the end of its TTL.
+[[ "$warm_ts" =~ ^[0-9]+$ ]] && [[ "$warm_ttl" =~ ^[0-9]+$ ]] && { rest_by "$warm_ts"; rest_by $((warm_ts + warm_ttl)); }
+
 ctx_tokens_part=""
 ctx_warn_part=""
 if [ "$cache_state" = warm ]; then
@@ -1919,6 +2042,7 @@ abbrev_model() { # var display-name
 pin_body=""
 if [ -n "$session_id" ]; then
   pin_file="${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}/$session_id"
+  rest_mdep "$pin_file"
   if [ -s "$pin_file" ]; then
     IFS= read -r pin_line < "$pin_file" || :
     case "$pin_line" in
@@ -1973,6 +2097,13 @@ if [ -n "$session_id" ]; then
     if [ -n "$project_top" ]; then ports_top=$project_top ports_common=$project_common
     else ports_top=$active_top ports_common=$active_common; fi
     ( "$probe_bin" "$session_id" "$PPID" "$ports_top" "$ports_common" >/dev/null 2>&1 & ) 2>/dev/null
+  fi
+  # The probe rewrites the cache unchanged every run: its bytes say whether the line moved, and the second it
+  # goes stale ends the replay. A stale one shows nothing, so any write of it may.
+  if [[ "$ports_mtime" =~ ^[0-9]+$ ]] && [ "$((now - ports_mtime))" -le 60 ]; then
+    rest_cdep "$ports_cache"; rest_by $((ports_mtime + 61))
+  else
+    rest_mdep "$ports_cache"
   fi
   if [[ "$ports_mtime" =~ ^[0-9]+$ ]] && [ "$((now - ports_mtime))" -le 60 ]; then
     ports_own=""; ports_away=""
@@ -2357,6 +2488,11 @@ if [ -n "$session_id" ]; then
   if probe_due "$work_cache" "$work_mtime" 4 && [ -x "$work_bin" ]; then
     ( "$work_bin" "$session_id" "$PPID" >/dev/null 2>&1 & ) 2>/dev/null
   fi
+  # A line here keeps a running clock, so a render that draws one leaves no record. An idle probe rewrites
+  # the blank cache unchanged, so its bytes are what count; records too stale to show count by their writes.
+  work_text=''
+  { IFS= read -r -d '' work_text < "$work_cache"; } 2>/dev/null
+  if [[ "$work_text" = *[![:space:]]* ]]; then rest_mdep "$work_cache"; else rest_cdep "$work_cache"; fi
   if [[ "$work_mtime" =~ ^[0-9]+$ ]] && [ "$((now - work_mtime))" -le 15 ]; then
     w_agents=() w_cmds=()
     while IFS= read -r work_line || [ -n "$work_line" ]; do
@@ -2553,6 +2689,27 @@ if [ -n "$session_id" ]; then
   { IFS= read -r -d '' statusline_prev < "$statusline_cache_dir/render-full-$session_id"; } 2>/dev/null
   [ "$statusline_prev" = "$statusline_full" ] ||
     printf '%s' "$statusline_full" 2>/dev/null > "$statusline_cache_dir/render-full-$session_id"
+  # The record the first pass replays from — none while a work line's clock runs, none with no cap, and none
+  # under a session name other than the one the first pass read.
+  if [ "$session_id" = "$statusline_sid" ] && [ "$rest_s" -gt 0 ] && [ "$statusline_rc" = 0 ] &&
+    [ "${#work_rows[@]}" = 0 ]; then
+    [ -z "$transcript_path" ] || rest_mdep "$transcript_path"
+    rest_rec=rest1$'\x1e'$rest_until$'\x1e'$statusline_rest_env$'\x1e'$statusline_rest_key$'\x1e'$statusline_out
+    for rest_d in ${rest_mdeps[@]+"${rest_mdeps[@]}"}; do rest_rec+=$'\x1e'm$rest_d; done
+    for rest_d in ${rest_cdeps[@]+"${rest_cdeps[@]}"}; do
+      if [[ "$rest_d" = *$'\x1d'* ]]; then
+        rest_rec+=$'\x1e'c$rest_d
+      elif [ "$rest_d" -nt "$statusline_rest.at" ]; then
+        # Written since this render read it: the bytes now are not the ones it drew.
+        rest_rec+=$'\x1e'm$rest_d
+      else
+        rest_c=''
+        { IFS= read -r -d '' rest_c < "$rest_d"; } 2>/dev/null
+        rest_rec+=$'\x1e'c$rest_d$'\x1d'$rest_c
+      fi
+    done
+    printf '%s\x1eend' "$rest_rec" 2>/dev/null > "$statusline_rest"
+  fi
 fi
 
 statusline_timing_row "$session_id" "$statusline_same"

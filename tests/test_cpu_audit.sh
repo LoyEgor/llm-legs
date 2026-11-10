@@ -87,6 +87,12 @@ check(shown["statusline/render"] == 1.5 and shown["statusline/work"] is None and
       and "statusline/render · 2.5 CPU-min/day · 1.5 wasted ·" in first["problems"][1]["fact"],
       "wasted is the median CPU of runs whose output equalled the previous one, unknown without a same column: %s"
       % shown)
+replays = {}
+for same in ("r", "a", "-"):
+    cpu_audit.add(replays, "statusline/render", 0.25, same)
+check(replays["statusline/render"] == [0.75, 3, 0.25, 1],
+      "a rest replay row (same r) is judged and wasted, it reprints the last render; an away or sessionless row is "
+      "counted but not judged: %s" % replays)
 check(first["selection"] == ["cpu:" + k for k, v in ranked if v >= 1]
       and {p["cpu"]["due"] for p in first["problems"]} == {"never audited"}
       and all(p["rule"] == "cpu_audit" and p["unit"] == "% CPU" and p["group"] == "CPU audits"

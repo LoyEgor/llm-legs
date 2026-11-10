@@ -51,6 +51,9 @@ CLAUDEB_FIX="$WORK/claudeb"
 export HOME TMPDIR
 # CLAUDE_CONFIG_DIR too: a suite run from a chat inherits that chat's account and its server flags.
 unset HARNESS_DOCTOR_DIR SPEED_DOCTOR_DIR CLAUDEB_DIR CLAUDE_CONFIG_DIR CLAUDEGPT_ACCOUNT CLAUDE_PROJECT_DIR
+# Cases re-render one session after changing what a rest replay accepts to lag by up to N seconds (a tracked
+# file's edit, a refresher's cache); the rest replay's own block turns it on.
+export STATUSLINE_REST_S=0
 mkdir -p "$HOME/.claude" "$FIXTURES" "$TMPDIR" "$CLAUDEB_FIX/limits"
 CODEX_FIX="$HOME/.codex-profiles"
 mkdir -p "$CODEX_FIX/work4" "$CODEX_FIX/.codexb/fast-mode"
@@ -3611,6 +3614,50 @@ assert_eq "$away_full" "$(away_run)"
 away_mark 30
 printf 'REPLAYED' > "$HOME/.cache/claude-statusline/render-away-sess"
 assert_eq "$away_full" "$(away_run "$(statusline_payload away-sess)")"
+
+# Rest replay (the suite runs with STATUSLINE_REST_S=0): a chat whose payload — total_duration_ms aside — and
+# every file its last full render read are unchanged reprints that render, timing row `r`, until N seconds after
+# the render; a changed payload, a written file it read, or the clock past N renders in full.
+REST_DIR="$WORK/rest"
+mkdir -p "$REST_DIR"
+rest_transcript="$REST_DIR/transcript.jsonl"
+printf '{"type":"assistant"}\n' > "$rest_transcript"
+rest_now=$(date +%s)
+# The record is keyed by the terminal and the parent; Claude Code stays the parent between renders, so no $(...)
+# around a render here: each would be another parent.
+rest_run() { # cost duration_ms [now] -> the lines in $REST_DIR/out
+  STATUSLINE_REST_S=${REST_S:-15} STATUSLINE_NOW=${3:-$rest_now} HARNESS_DOCTOR_DIR="$REST_DIR/hd" run_statusline \
+    "$(statusline_payload rest-sess "{\"transcript_path\":\"$rest_transcript\",\"cost\":{\"total_cost_usd\":$1,\"total_duration_ms\":$2}}")" \
+    > "$REST_DIR/out"
+}
+rest_last() { tail -1 "$REST_DIR/hd/statusline/$(date +%Y-%m-%d).tsv" | cut -f3,5 | tr '\t' ' '; }
+rest_run 1.5 1000
+assert_eq "rest-sess 0" "$(rest_last)"
+rest_full=$(cat "$REST_DIR/out")
+# The first render's own writes (probe caches) end its record; the second leaves one at rest.
+rest_run 1.5 4000
+rest_run 1.5 7000
+assert_eq "rest-sess r" "$(rest_last)"
+assert_eq "$rest_full" "$(cat "$REST_DIR/out")"
+assert_eq "$rest_full" "$(cat "$HOME/.cache/claude-statusline/render-rest-sess")"
+rest_run 2.5 10000
+assert_eq "rest-sess 0" "$(rest_last)"
+rest_moved=$(cat "$REST_DIR/out")
+assert grep -Fq '$2.50' <<< "$rest_moved"
+rest_run 2.5 13000
+assert_eq "rest-sess r" "$(rest_last)"
+printf '{"type":"user"}\n' >> "$rest_transcript"
+rest_run 2.5 16000
+assert_eq "rest-sess 1" "$(rest_last)"
+rest_run 2.5 19000
+assert_eq "rest-sess r" "$(rest_last)"
+rest_run 2.5 22000 $((rest_now + 14))
+assert_eq "rest-sess r" "$(rest_last)"
+rest_run 2.5 25000 $((rest_now + 15))
+assert_eq "rest-sess 1" "$(rest_last)"
+assert_eq "$rest_moved" "$(cat "$REST_DIR/out")"
+REST_S=0 rest_run 2.5 25000 $((rest_now + 15))
+assert_eq "rest-sess 1" "$(rest_last)"
 
 # file_mtime/file_inode/file_size through bash's stat loadable must answer what the stat(1)
 # fallback does, lstat included; a BASH with no lib/bash beside it takes the fallback.

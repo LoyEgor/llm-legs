@@ -60,10 +60,12 @@ def hour_line(line):
 
 
 def add(found, key, cpu, same):
+    """same: 1 output equalled the previous run's, 0 it did not, r a statusline rest replay (bin/statusline.sh), which
+    reprints the last full render by construction, so wasted; anything else is not judged."""
     t = found.setdefault(key, [0.0, 0, 0.0, 0])
     t[0], t[1] = t[0] + cpu, t[1] + 1
-    if same in ("0", "1"):
-        t[2], t[3] = t[2] + (cpu if same == "1" else 0.0), t[3] + 1
+    if same in ("0", "1", "r"):
+        t[2], t[3] = t[2] + (cpu if same != "0" else 0.0), t[3] + 1
 
 
 def hook_line(local_day):
