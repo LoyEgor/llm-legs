@@ -395,6 +395,12 @@ lapse. Cells with no file or clock to watch may lag by up to N (+A/-D for edits 
 ↓↑ after a fetch, the keepalive flag, ports within 45 s instead of 30). A replay leaves `render-*` and the rl caches
 as a full render with unchanged lines would.
 
+**Native first pass.** `share/statusline-fast.c` (built by `bin/statusline-fast-build` into
+`~/.local/libexec/statusline-fast`, which `~/.claude/statusline.sh` links to) repeats both replays without a bash
+start and execs the script for every other render. An edit to the first pass, `share/presence.sh` or
+`share/cpu-ms.sh` needs a rebuild; until then it replays nothing and the script does. Guard: suite section
+fast-parity. Back to the script alone: `ln -sfn <repo>/bin/statusline.sh ~/.claude/statusline.sh`.
+
 ## Full render (background, not a rendered segment)
 
 Every full render also keeps lines 1 and 2 as composed before the first fit step in `render-full-<sid>`,
