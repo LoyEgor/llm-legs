@@ -555,12 +555,14 @@ EOF
   : >"$bt/osa.log"
   "$RUNNER" _deliver "$fixture" 0 >/dev/null 2>&1 || :
   assert grep -qxF -- '-e tell application "System Events" to set visible of process "Google Chrome" to false' "$bt/osa.log"
-  assert grep -qxF -- '-e tell application id "com.google.Chrome" to quit' "$bt/osa.log"
+  # its windows close first, or Chrome's next start restores them
+  assert grep -qxF '  close every window' "$bt/osa.log"
+  assert grep -qxF '  quit' "$bt/osa.log"
   # a page of Egor's own (his ChatGPT app, 2026-10-31) keeps Chrome running: only the example.com windows close
   printf 'https://chatgpt.com/c/x\n\nhttps://example.com/#worker-run=Profile-1\nhttp://127.0.0.1:5/form?case=c\n\n' >"$bt/tabs"
   : >"$bt/osa.log"
   "$RUNNER" _deliver "$fixture" 0 >/dev/null 2>&1 || :
-  assert_fails grep -qF 'to quit' "$bt/osa.log"
+  assert_fails grep -qx '  quit' "$bt/osa.log"
   assert grep -qx '      close w' "$bt/osa.log"
   assert grep -q 'kept by https://chatgpt.com$' "$WORKER_RUN_DIR/browse/idle.log"
   mv -f "$bt/tabs.1" "$bt/tabs"

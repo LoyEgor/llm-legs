@@ -39,7 +39,8 @@ class MailFindTests(unittest.TestCase):
         self.opened = self.dir / "opened"
         env = {
             "WORKER_RUN_DIR": str(self.dir),
-            "MAIL_FIND_OSASCRIPT": stub(self.dir / "osascript", f'printf "%s" "$4" > "{self.query}"; cat "{self.reply}"'),
+            "MAIL_FIND_OSASCRIPT": stub(self.dir / "osascript", f'if [ "$1" = -e ]; then echo "$2" >> "{self.dir}/quits"; '
+                                        f'else printf "%s" "$4" > "{self.query}"; cat "{self.reply}"; fi'),
             "MAIL_FIND_PGREP": stub(self.dir / "pgrep", f'[ -e "{self.dir}/running" ]'),
             "MAIL_FIND_OPEN": stub(self.dir / "open", f'echo "$@" > "{self.opened}"; touch "{self.dir}/running"'),
             "MAIL_FIND_DIA_JS": stub(self.dir / "dia-js", f'cat "{self.dir}/tabs" 2>/dev/null'),
@@ -69,6 +70,7 @@ class MailFindTests(unittest.TestCase):
         self.assertIn("a@b.c  Invoice  [LoyEgor@gmail.com/All Mail]", lines[0])
         self.assertTrue(lines[-1].startswith("FRESH: LoyEgor@gmail.com: Mail was running; newest letter"))
         self.assertFalse(any(line.startswith("NEXT:") for line in lines))
+        self.assertFalse((self.dir / "quits").exists())  # a Mail already running stays
         query = json.loads(self.query.read_text())
         self.assertEqual((query["words"], query["from"], query["check"]), (["invoice"], ["a@b.c"], False))
 
@@ -107,6 +109,7 @@ class MailFindTests(unittest.TestCase):
         self.assertEqual(self.opened.read_text().split(), ["-g", "-j", "-a", "Mail"])
         self.assertTrue(json.loads(self.query.read_text())["check"])
         self.assertIn("Mail was closed: started it in the background", lines[-2])
+        self.assertIn("com.apple.mail", (self.dir / "quits").read_text())  # the Mail it started is quit
         self.assertTrue(lines[-1].startswith("NEXT:"))
 
     def test_pool_account_name_selects_its_mailbox(self):

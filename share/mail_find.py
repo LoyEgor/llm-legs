@@ -5,7 +5,8 @@
 Words match a letter's subject or sender, `from:` its sender alone, all of them case-insensitively; a hit line is the
 date, sender, subject and account/folder, never the body or a link unless `--body N` asks for the Nth hit. Every
 run ends with one `FRESH:` line per account: whether Mail was running and the newest letter it holds there. Mail not
-running is started in the background and asked to check for new mail. When the question is about recent mail and
+running is started in the background for this read, asked to check for new mail, and quit once read (Egor
+2026-11-11: a Mail the tool opened stayed open). When the question is about recent mail and
 Mail found nothing (a window of 6 h or less, Mail just started, or its newest letter older than the window), the
 last line is `NEXT:`, the web read that settles it: the Chrome profile `worker-run browse` binds to that address, or
 Egor's open Dia tab of that mailbox. Exit 0 with hits, 1 with none, 2 on bad arguments, 3 when Mail cannot be read.
@@ -93,6 +94,11 @@ def start_mail():
         time.sleep(0.5)
 
 
+def quit_mail():
+    subprocess.run([env("MAIL_FIND_OSASCRIPT", "/usr/bin/osascript"), "-e", 'tell application id "com.apple.mail" to quit'],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def ask_mail(query):
     run = subprocess.run([env("MAIL_FIND_OSASCRIPT", "/usr/bin/osascript"), "-l", "JavaScript", SCRIPT,
                           json.dumps(query)], capture_output=True, text=True)
@@ -178,6 +184,9 @@ def main(argv=None):
     except (RuntimeError, ValueError) as err:
         print(f"mail-find: Apple Mail could not be read: {err}", file=sys.stderr)
         return 3
+    finally:
+        if not was_running:
+            quit_mail()
     rows, hits = found.get("accounts") or [], found.get("hits") or []
     if args.account and not rows:
         print(f"mail-find: Mail has no account '{args.account}'", file=sys.stderr)
@@ -195,7 +204,7 @@ def main(argv=None):
         lines.append(f"--- body of hit {args.body} ---\n{body}" if body is not None
                      else f"no hit {args.body}: {len(hits)} found")
     state = "Mail was running" if was_running else "Mail was closed: started it in the background, asked it to check " \
-        "for new mail just now"
+        "for new mail and quit it after this read"
     for row in rows:
         newest = row.get("newest")
         held = f"newest letter {local(newest):%Y-%m-%d %H:%M} ({age(now - local(newest))} ago)" if newest \

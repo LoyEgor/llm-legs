@@ -185,7 +185,8 @@ browse_marker() { printf 'https://example.com/#worker-run=%s\n' "${1// /-}"; }
 # quits, or the windows a canary or run opened stay on Egor's screen for good (three, 2026-10-18). A page of
 # his own keeps it running (his ChatGPT app window in Profile 1 did from 10-31 to 11-03, and each daily canary
 # added its example.com windows, shown with his app): then only those windows and tabs close. Each action is
-# one line of browse/idle.log.
+# one line of browse/idle.log. Its windows close before the quit: Chrome restores the windows a quit leaves open at
+# its next start, in every profile they were in (Egor saw canary pages come back in several accounts, 2026-11-11).
 browse_quit_idle() { # [run id that is ending]
   local urls kept closed
   [ -z "$(chrome_runs | grep -vxF -- "${1:-}")" ] || return 0
@@ -194,7 +195,10 @@ browse_quit_idle() { # [run id that is ending]
   kept=$(grep -v -e '^$' -e '^https://example\.com/' -e '^http://127\.0\.0\.1:' -e '^chrome://newtab/' <<<"$urls" |
     sed -E 's#^([a-z-]+://[^/]*).*#\1#' | sort -u | paste -sd ' ' -)
   if [ -z "$kept" ]; then
-    "${BROWSE_OSASCRIPT:-osascript}" -e 'tell application id "com.google.Chrome" to quit' >/dev/null 2>&1 || :
+    "${BROWSE_OSASCRIPT:-osascript}" -e 'tell application id "com.google.Chrome"
+  close every window
+  quit
+end tell' >/dev/null 2>&1 || :
     { printf '%s quit at %s\n' "$(date '+%F %T')" "${1:-a browse end}" >>"$(browse_dir)/idle.log"; } 2>/dev/null || :
     return 0
   fi
