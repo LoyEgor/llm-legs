@@ -3614,6 +3614,25 @@ assert_eq "$away_full" "$(away_run)"
 away_mark 30
 printf 'REPLAYED' > "$HOME/.cache/claude-statusline/render-away-sess"
 assert_eq "$away_full" "$(away_run "$(statusline_payload away-sess)")"
+# Unseen: with no away mark, a fresh presence/unseen naming the chat freezes it as away does; another chat named,
+# a stale or misshapen file, or a moved transcript renders in full.
+/bin/rm -f "$AWAY_DIR/speed/presence/away"
+unseen_mark() { printf '%s\n%s\n' "$(($(date +%s) - $1))" "$2" > "$AWAY_DIR/speed/presence/unseen"; }
+: > "$away_transcript"
+away_run >/dev/null
+printf 'REPLAYED' > "$HOME/.cache/claude-statusline/render-away-sess"
+unseen_mark 30 other-sess
+assert_eq "$away_full" "$(away_run)"
+printf 'REPLAYED' > "$HOME/.cache/claude-statusline/render-away-sess"
+unseen_mark 30 away-sess
+assert_eq REPLAYED "$(away_run)"
+assert_eq "away-sess a" "$(away_last)"
+unseen_mark 600 away-sess
+assert_eq "$away_full" "$(away_run)"
+printf 'REPLAYED' > "$HOME/.cache/claude-statusline/render-away-sess"
+printf '0%s\naway-sess\n' "$(date +%s)" > "$AWAY_DIR/speed/presence/unseen"
+assert_eq "$away_full" "$(away_run)"
+/bin/rm -f "$AWAY_DIR/speed/presence/unseen"
 
 # Rest replay (the suite runs with STATUSLINE_REST_S=0): a chat whose payload — total_duration_ms aside — and
 # every file its last full render read are unchanged reprints that render, timing row `r`, until N seconds after
@@ -3728,6 +3747,19 @@ fast_mark 30
 printf '{"type":"user"}\n' >> "$fast_transcript"
 fast_case 'away, transcript newer' full
 /bin/rm -f "$FAST_DIR/speed/presence/away"
+# Unseen: the list names the chat, names another, is stale; the C program replays exactly where the script does.
+fast_settle
+cp "$FAST_DIR/out" "$FAST_DIR/out.rest"
+printf 'REPLAYED' > "$HOME/.cache/claude-statusline/render-fast-sess"
+printf '%s\nother\nfast-sess\n' "$(($(date +%s) - 30))" > "$FAST_DIR/speed/presence/unseen"
+fast_case 'unseen' a
+assert_eq REPLAYED "$(cat "$FAST_DIR/out.probe")"
+printf '%s\nother\n' "$(($(date +%s) - 30))" > "$FAST_DIR/speed/presence/unseen"
+fast_case 'unseen, another chat' r
+assert cmp -s "$FAST_DIR/out.rest" "$FAST_DIR/out.probe"
+printf '%s\nfast-sess\n' "$(($(date +%s) - 600))" > "$FAST_DIR/speed/presence/unseen"
+fast_case 'unseen list stale' r
+/bin/rm -f "$FAST_DIR/speed/presence/unseen"
 fast_settle
 fast_case 'rest record valid' r
 # Rest: the clock past the record, another terminal width, another payload, an m file written.

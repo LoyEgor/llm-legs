@@ -288,6 +288,29 @@ static int away(long long now) {
   return now - written <= SL_AWAY_FRESH_S;
 }
 
+/* share/presence.sh presence_unseen: presence/unseen is `<epoch>\n` (no leading zero, at most 12 digits), then
+ * `<session id>\n` lines of [A-Za-z0-9-], written within SL_AWAY_FRESH_S, and one of its lines is this session.
+ * A NUL (bash's `read` stops there and could still match what precedes it) is left to the script. */
+static int unseen(const char *sid, size_t sid_n, long long now) {
+  buf b;
+  if (unsure) return 0;
+  slurp(path3(dir_or_home("SPEED_DOCTOR_DIR", "/.cache/speed-doctor"), "/presence/unseen", ""), &b, 1u << 20);
+  if (unsure || b.n < 2 || b.p[0] < '1' || b.p[0] > '9') return 0;
+  size_t i = 0;
+  long long written = 0;
+  while (i < b.n && b.p[i] >= '0' && b.p[i] <= '9') written = written * 10 + (b.p[i++] - '0');
+  if (i > 12 || i >= b.n || b.p[i] != '\n') return 0;
+  int named = 0;
+  for (size_t line = ++i; i < b.n; line = ++i) {
+    while (i < b.n && ((b.p[i] >= 'A' && b.p[i] <= 'Z') || (b.p[i] >= 'a' && b.p[i] <= 'z') ||
+                       (b.p[i] >= '0' && b.p[i] <= '9') || b.p[i] == '-'))
+      i++;
+    if (i == line || i >= b.n || b.p[i] != '\n') return 0;
+    if (i - line == sid_n && !memcmp(b.p + line, sid, sid_n)) named = 1;
+  }
+  return now - written <= SL_AWAY_FRESH_S && named;
+}
+
 static void put(int fd, const char *p, size_t n) {
   while (n) {
     ssize_t did = write(fd, p, n);
@@ -349,7 +372,7 @@ static void replay(const buf *in) {
   long long now = (long long)started.tv_sec;
   buf out;
 
-  if (away(now) && !unsure && has_tp) {
+  if ((away(now) || unseen(sid, sid_n, now)) && !unsure && has_tp) {
     char *transcript = strndup(tp, (size_t)(tp_end - tp)), *render = path3(cache, "/render-", session);
     struct stat st;
     if (stat(render, &st) == 0 && st.st_size > 0 && !newer(transcript, render) && !unsure) {

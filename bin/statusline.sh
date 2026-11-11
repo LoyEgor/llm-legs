@@ -64,11 +64,13 @@ statusline_sid='' statusline_transcript=''
 [[ $input =~ \"session_id\"[[:space:]]*:[[:space:]]*\"([^\"/]+)\" ]] && statusline_sid=${BASH_REMATCH[1]}
 [[ $input =~ \"transcript_path\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]] && statusline_transcript=${BASH_REMATCH[1]}
 
-# Away replay (docs/statusline-contract.md "Away replay"): while Egor is away, a chat whose transcript
-# has not moved since its last full render repeats that render — no jq, no git, no probe. presence.lua
-# drops the mark within seconds of his return, and the next refresh renders in full.
+# Away replay (docs/statusline-contract.md "Away replay"): while Egor is away, or while nobody sees this
+# chat (presence_unseen: a tmux pane no viewer, page or app shows), a chat whose transcript has not moved
+# since its last full render repeats that render — no jq, no git, no probe. presence.lua drops the away mark
+# within seconds of his return, the Chats app's server rewrites the unseen list as a page opens a chat, and
+# the next refresh renders in full.
 statusline_away=0
-if [ -n "$statusline_sid" ] && presence_away "$EPOCHSECONDS"; then
+if [ -n "$statusline_sid" ] && { presence_away "$EPOCHSECONDS" || presence_unseen "$statusline_sid" "$EPOCHSECONDS"; }; then
   statusline_away=1
   away_render="$statusline_cache_dir/render-$statusline_sid"
   away_out=''
