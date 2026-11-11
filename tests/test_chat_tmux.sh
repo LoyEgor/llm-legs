@@ -204,7 +204,29 @@ assert [ "$(helper closed scr)" = closed ]
 assert grep -qxF '/api/chat/abc12345/close {"force": true}' "$WORK/app.posts"
 assert [ "$(helper closed nosuch)" = gone ]
 : >"$WORK/app.posts"
+# The hook names a client, not a session: the session it showed is what the attach hooks wrote for its tty.
+assert [ "$(helper closed --client /dev/ttys999)" = unknown ]   # nothing written for it: nothing ends
+t set-option -g @viewer_ttys998 scr
+assert [ "$(helper closed --client /dev/ttys998)" = closed ]
+assert [ -z "$(t show-options -gqv @viewer_ttys998)" ]   # read once
+: >"$WORK/app.posts"
 helper hook   # the hook now carries this stub app's address
+# Windows of other sessions close while scr has none: for a dead client tmux's #{session_name} names whichever session
+# it finds best, often another chat (2026-11-11: a closed window would have ended a chat nobody was looking at).
+for o in oa ob; do
+  t new-session -d -s "$o" 'sleep 60'
+  outer -f "$WORK/outer.conf" new-session -d -s "v$o" -x 90 -y 40 "env -u TMUX python3 -B $HELPER attach $o"
+done
+both() { [ "$(t list-clients -F '#{session_name}' | sort | tr '\n' ' ')" = "oa ob " ]; }
+until_ok both || fail "oa and ob not attached: $(t list-clients -F '#{session_name}')"
+asserts=$((asserts + 1))
+outer kill-session -t =voa; sleep 0.5; outer kill-session -t =vob
+gone_oa() { [ -z "$(t show-options -gq | grep '^@viewer_')" ]; }
+until_ok gone_oa || fail "the hook read no viewer: $(t show-options -gq | grep '^@viewer_')"
+asserts=$((asserts + 1))
+sleep 1
+assert [ ! -s "$WORK/app.posts" ]   # no chat ended for them
+t kill-session -t =oa; t kill-session -t =ob
 outer -f "$WORK/outer.conf" new-session -d -x 90 -y 40 "env -u TMUX python3 -B $HELPER attach scr"
 until_ok seen "1 90x40" || fail "scr not attached for the hook"
 assert [ "$(helper closed scr)" = viewed ]

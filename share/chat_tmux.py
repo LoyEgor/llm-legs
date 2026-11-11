@@ -23,6 +23,7 @@ CLI (the first word picks; a target is a pane id %N, a tty /dev/ttysN or a sessi
                                                                    or "opened" (a new Terminal window attached)
   chat_tmux.py unview TARGET                                    -> its viewers detached, their windows closed: "<n>"
   chat_tmux.py closed SESSION                                   -> a viewer left it (the hook): its chat ends unless hidden
+  chat_tmux.py closed --client TTY                              -> the same for the session that client showed
   chat_tmux.py hook                                             -> sets that hook on the running server
   chat_tmux.py mirror [on|off]                                  -> "on"|"off" (with on/off: "<state> <windows>")
 """
@@ -350,17 +351,46 @@ APP = os.environ.get("CHAT_TMUX_APP") or "http://127.0.0.1:4791"
 PGREP = os.environ.get("CHAT_TMUX_PGREP") or "/usr/bin/pgrep"
 
 
+VIEWER = "@viewer_"  # global option per client tty (its basename): the session that client last showed
+
+
 def hook():
-    """The server runs `closed` for a session each time a client leaves it (set again on every start and view: the
-    live server predates the hook). Its socket and stubs ride in the command, as the server's env has none. The
-    session is #{session_name}: a client that died (the window closed) leaves #{hook_session_name} empty."""
+    """The server runs `closed --client <tty>` each time a client leaves (set again on every start and view: the live
+    server predates the hook). Which session the client showed is read from VIEWER, written by the attach hooks: a
+    client that died (the window closed) leaves #{hook_session_name} empty, and #{session_name} then names whichever
+    session tmux finds best, often another chat (tmux 3.7b). Its socket and stubs ride in the command, as the
+    server's env has none. Every answer goes nowhere: run-shell shows a command's output (and a failing exit) in view
+    mode over the current pane, which blanked a live chat's window and took his keys."""
     pinned = " ".join("%s=%s" % (k, shlex.quote(os.environ[k])) for k in
                       ("CHAT_TMUX_APP", "CHAT_TMUX_PGREP", "CHAT_TMUX_CLOSE_GRACE") if os.environ.get(k))
-    # Its answer goes nowhere: run-shell shows a command's output (and a failing exit) in view mode over the current
-    # pane, which blanked a live chat's window and took his keys.
-    line = "%s CHAT_TMUX_SOCKET=%s %s %s closed '#{session_name}' >/dev/null 2>&1 || true" % (
+    quiet = " >/dev/null 2>&1 || true"
+    line = "%s CHAT_TMUX_SOCKET=%s %s %s closed --client '#{hook_client}'" % (
         pinned, shlex.quote(SOCKET), shlex.quote(sys.executable), shlex.quote(os.path.abspath(__file__)))
-    tmux("set-hook", "-g", "client-detached", "run-shell -b %s" % shlex.quote(line.strip()))
+    saw = "%s -S %s set-option -g %s#{b:client_tty} '#{session_name}'" % (
+        shlex.quote(TMUX), shlex.quote(SOCKET), VIEWER)
+    for name in ("client-attached", "client-session-changed"):
+        tmux("set-hook", "-g", name, "run-shell -b %s" % shlex.quote(saw + quiet))
+    try:  # viewers from before it; a server with no session yet has none (tmux: "no current target")
+        viewers = tmux("list-clients", "-F", "#{client_tty}\t#{session_name}").splitlines()
+    except TmuxError:
+        viewers = []
+    for row in viewers:
+        tty, _, session = row.partition("\t")
+        if tty and session:
+            tmux("set-option", "-g", VIEWER + os.path.basename(tty), session)
+    tmux("set-hook", "-g", "client-detached", "run-shell -b %s" % shlex.quote(line.strip() + quiet))
+
+
+def viewed_by(tty):
+    """The session the client on `tty` showed (VIEWER), forgotten as it is read; "" when none was written."""
+    name = VIEWER + os.path.basename(tty)
+    try:
+        session = tmux("show-options", "-gqv", name).strip()
+        if session:
+            tmux("set-option", "-gu", name)
+    except TmuxError:
+        return ""
+    return session
 
 
 def closed(session):
@@ -497,7 +527,11 @@ def main(args):
         elif verb == "unview":
             print(unview(rest[0]))
         elif verb == "closed":
-            print(closed(rest[0]))
+            if rest[0] == "--client":
+                session = viewed_by(rest[1])
+                print(closed(session) if session else "unknown")
+            else:
+                print(closed(rest[0]))
         elif verb == "hook":
             hook()
         elif verb == "mirror":
