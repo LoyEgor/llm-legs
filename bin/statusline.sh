@@ -389,10 +389,11 @@ journal_dir() { # var toplevel
 }
 
 # Keyed per TOP: follows the shown tree. Off the render path: pricing walks every diff of the family,
-# so an answer whose key still holds waits 300s and a moved key at least 15s. The key carries the
+# so an answer whose key still holds waits 300s and a moved key at least 60s (a walk costs 2-8 CPU-s:
+# at 15s the debt outspent the renders, 2026-11-11 audit). The key carries the
 # shown tree's HEAD and diff counters; a sibling checkout's edits reach it by the 300s only. The
 # answer is the FAMILY's, so a walk publishes it once more under the family and a top that would
-# walk adopts one under 15s old instead; one walk at a time per family.
+# walk adopts one under 60s old instead; one walk at a time per family.
 repo_debt_lines() { # var toplevel now tree-state
   local out="$1" top="$2" now="$3" state="$4"
   printf -v "$out" ''
@@ -421,11 +422,11 @@ repo_debt_lines() { # var toplevel now tree-state
   if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
     { IFS= read -r cached_key; IFS= read -r cached || :; } < "$cache" 2>/dev/null
   fi
-  if [[ "$cache_mtime" =~ ^[0-9]+$ ]] && { [ "$((now - cache_mtime))" -le 15 ] ||
+  if [[ "$cache_mtime" =~ ^[0-9]+$ ]] && { [ "$((now - cache_mtime))" -le 60 ] ||
     { [ "$cached_key" = "$key" ] && [ "$((now - cache_mtime))" -le 300 ]; }; }; then
     :
   elif [ -n "$fam" ] && file_mtime_to fam_mtime "$fam" && [[ "$fam_mtime" =~ ^[0-9]+$ ]] &&
-    [ "$((now - fam_mtime))" -le 15 ] && { IFS= read -r fam_answer < "$fam"; } 2>/dev/null; then
+    [ "$((now - fam_mtime))" -le 60 ] && { IFS= read -r fam_answer < "$fam"; } 2>/dev/null; then
     cached=$fam_answer cached_key=$key cache_mtime=$fam_mtime
   elif ensure_dir "$statusline_cache_dir" 2>/dev/null; then
     file_mtime_to lock_mtime "$lock"

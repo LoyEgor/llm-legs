@@ -5262,7 +5262,7 @@ assert test -d "$debt_lock"
 rmdir "$debt_lock" 2>/dev/null
 # The walk prices the whole family, so an answer whose key still holds is asked again only past
 # 300s, and stands that long. The shown tree's HEAD and diff counters are in the key: moving them
-# asks again once the answer is 15s old, and the old number stands its 120s meanwhile.
+# asks again once the answer is 60s old, and the old number stands its 120s meanwhile.
 DEBT_HOLD=
 DEBT_ANSWER='LINES=33 FILES=3'
 debt_render repo-debt-key "$REVIEW_DIRTY" >/dev/null
@@ -5286,10 +5286,10 @@ assert debt_asked
 debt_settle
 printf 'line\n' >> "$REVIEW_DIRTY/change.txt"
 DEBT_ANSWER='LINES=34 FILES=3'
-: > "$DEBT_LOG"; debt_age 10
+: > "$DEBT_LOG"; debt_age 50
 assert grep -Fq "${DIM}33${RESET}" <<< "$(run_statusline "$debt_payload")"
 assert debt_unasked
-debt_age 20
+debt_age 70
 assert grep -Fq "${DIM}33${RESET}" <<< "$(run_statusline "$debt_payload")"
 assert debt_asked
 assert grep -Fq "${DIM}34${RESET}" <<< "$(run_statusline "$debt_payload")"
@@ -5306,7 +5306,7 @@ DEBT_CMD=
 rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
 
 # The answer is the family's: two worktrees of one repository share one walk. The second asks no
-# `review-debt` while the first's answer is under 15s old and shows it, and a walk is asked again
+# `review-debt` while the first's answer is under 60s old and shows it, and a walk is asked again
 # once that answer is older.
 DEBT_WT="$FIXTURES/review-dirty-wt"
 git -C "$REVIEW_DIRTY" worktree add -q -b debt-wt "$DEBT_WT"
@@ -5319,7 +5319,7 @@ assert test "$(wc -l < "$DEBT_LOG" | tr -d ' ')" = 1
 debt_fam_b_out=$(run_statusline "$(statusline_payload repo-debt-fam-b "" "$DEBT_WT")")
 assert grep -Fq "${DIM}41${RESET}" <<< "$debt_fam_b_out"
 assert debt_unasked
-debt_age 20
+debt_age 70
 DEBT_ANSWER='LINES=42 FILES=4'
 run_statusline "$(statusline_payload repo-debt-fam-b "" "$DEBT_WT")" >/dev/null
 assert debt_asked
