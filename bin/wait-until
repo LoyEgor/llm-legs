@@ -66,6 +66,8 @@ check() {
   esac
 }
 
+# bash's loadable sleep, as memlogd: a poll tick spawns no process (0.85M sleeps a day, 2026-11-11 audit).
+enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 start=$SECONDS
 while :; do
   what=
