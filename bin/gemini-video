@@ -44,7 +44,7 @@ usage() {
   printf 'usage: gemini-video --dest <absolute .%s path> --prompt <motion description> [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--ref <absolute image path>]... [--edit <absolute video path>] [--extend <absolute path of a Flow clip>] [--duration <%s>] [--resolution <%s>] [--aspect <%s>] [--model <%s>] [--count <%s>] [--account <geminib profile>] [--lock-wait <seconds>]\n       gemini-video --upscale <absolute path of a 720p take> [--lock-wait <seconds>]\n' \
     "$container" "$durations" "$resolutions" "$video_aspects" "$(caps '.video.models | keys | join("|")')" "$counts" >&2
   printf '  Google Flow on the account'\''s subscription, through a hidden Chrome (gemini-web)\n' >&2
-  printf '  frames (--first-frame/--last-frame; a lone --ref is the first frame) or ingredients (several --ref, --edit), never both\n' >&2
+  printf '  frames (--first-frame/--last-frame; a lone --ref is the first frame; --last-frame needs --first-frame) or ingredients (several --ref, --edit), never both\n' >&2
   printf '  --edit reworks a video of up to %ss (any source, a Grok clip too) on Omni; the clip keeps its length\n' "$edit_max" >&2
   printf '  --extend continues a Flow clip gemini-video saved, on its own account, on %s: one file of the clip and its continuation by --duration %s s (default %s), at the clip resolution (an extension of an extension too)\n' "$extend_model" "$extend_s" "$extend_default" >&2
   printf '  --count 2-4 renders variants in one send (dest, then <stem>-2, ...) at that multiple of the credits; default 1\n' >&2
@@ -203,6 +203,8 @@ if [ "${#refs[@]}" -eq 1 ] && [ -z "$first_frame" ] && [ -z "$edit" ]; then
   first_frame=${refs[0]}
   refs=()
 fi
+[ -n "$first_frame" ] || [ -z "$last_frame" ] \
+  || say "Flow starts no generation from an end frame alone; give --first-frame too, or drop --last-frame"
 if { [ -n "$first_frame" ] || [ -n "$last_frame" ]; } && { [ "${#refs[@]}" -gt 0 ] || [ -n "$edit" ]; }; then
   say "frames (--first-frame/--last-frame) and ingredients (--ref/--edit) are separate Flow modes; pick one"
 fi

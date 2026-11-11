@@ -2281,6 +2281,9 @@ def make_plan(args) -> dict:
                        ("--edit", args.edit), *[("--ref", ref) for ref in args.ref]]:
         if path and not Path(path).is_file():
             raise Failure(2, f"{flag} {path} is not a file")
+    if args.last_frame and not args.first_frame:
+        raise Failure(2, "Flow starts no generation from an end frame alone; give --first-frame too, "
+                         "or drop --last-frame")
     if (args.first_frame or args.last_frame) and (args.ref or args.edit):
         raise Failure(2, "frames and ingredients are separate Flow modes: pass --first/--last-frame "
                          "or --ref/--edit, not both")
