@@ -183,7 +183,9 @@ else
       [ -n "$k" ] || continue
       v=$(jq -r --arg k "$k" '.mcpServers.cua_repl.env[$k]' "$manifest")
       if ! grep -Fq "$k = \"$v\"" <<<"$cua_env" && ! grep -Fq "$k = '$v'" <<<"$cua_env" &&
-         ! grep -Fqx "$(jq -rn --arg k "$k" --arg v "$v" '"\($k | tojson) = \($v | tojson)"')" <<<"$cua_env"; then
+         ! grep -Fqx "$(jq -r --arg k "$k" '"\($k | tojson) = \(.mcpServers.cua_repl.env[$k] | tojson)"' "$manifest")" <<<"$cua_env"; then
+        # The TOML line is built from the manifest itself: $v lost a trailing newline to $(...)
+        # (NODE_REPL_JS_BANNER ends in \n since plugin 26.1103), so a repaired config never matched.
         cua_out_of_sync=true
         break
       fi

@@ -638,6 +638,15 @@ EOF
   assert grep -qxF 'args = ["/third-version/launch.mjs"]' "$BT_WORK/override.toml"
   assert test "$(grep -c '/third-version/' "$SYNC_TEST_HOME/config.toml")" -eq 0
 
+  # 0: an env value ending in a newline (NODE_REPL_JS_BANNER, plugin 26.1103) reads in sync after repair
+  jq '.mcpServers.cua_repl.env.NODE_REPL_JS_BANNER = "await x;\n"' "$newer_manifest" >"$BT_WORK/banner-manifest" &&
+    cp "$BT_WORK/banner-manifest" "$newer_manifest"
+  : >"$BT_WORK/banner.toml"
+  assert env CODEX_HOME="$SYNC_TEST_HOME" BROWSE_CODEX_CONFIG="$BT_WORK/banner.toml" PATH="$BT_WORK/bin:$PATH" \
+    "$ROOT/bin/codex-cua-repl-sync" >/dev/null
+  jq 'del(.mcpServers.cua_repl.env.NODE_REPL_JS_BANNER)' "$newer_manifest" >"$BT_WORK/banner-manifest" &&
+    mv "$BT_WORK/banner-manifest" "$newer_manifest"
+
   # 1: multiline/quoted instruction values survive TOML fill
   jq '.mcpServers.cua_repl.env.NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "line1\nquote \"here\" and \\slash"' \
     "$newer_manifest" >"$BT_WORK/nl-manifest" && mv "$BT_WORK/nl-manifest" "$newer_manifest"

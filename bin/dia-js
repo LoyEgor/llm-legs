@@ -104,7 +104,7 @@ on run argv
             end if
             if mode is "focus" then return "1"
             set r to execute t javascript js
-            if r is missing value then return ""
+            if r is missing value then return "dia-js:no-answer"
             return r as text
           end if
         end repeat
@@ -297,5 +297,10 @@ if [ "$state" = bare ]; then
   target=$(choose)
   focus=1
 fi
-osa exec "$(cut -f1 <<<"$target")" "$focus" "$js"
+tid=$(cut -f1 <<<"$target")
+out=$(osa exec "$tid" "$focus" "$js")
+# A live tab always answers JSON text (undefined reads "null"); no answer = the tab is asleep (discarded).
+[ "$out" != dia-js:no-answer ] ||
+  die "tab $tid returned nothing: it is asleep (Dia discarded it); rerun with --focus to wake it (Egor sees the switch), or pick an awake tab of the same site from dia-js --list"
+printf '%s\n' "$out"
 exit; }

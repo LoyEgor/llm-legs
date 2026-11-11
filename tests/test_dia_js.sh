@@ -32,7 +32,7 @@ case "\$1" in
   count) grep -c . "$WORK/tabs.now" ;;
   front) awk -F '\t' '\$2 == "1" { print \$3 }' "$WORK/tabs.now" ;;
   quit) : >"$WORK/ps.now"; : >"$WORK/tabs.now" ;;
-  exec) printf 'ran %s focus=%s js=%s\n' "\$2" "\$3" "\$4" ;;
+  exec) [ "\$2" != ASLEEP ] || { echo dia-js:no-answer; exit 0; }; printf 'ran %s focus=%s js=%s\n' "\$2" "\$3" "\$4" ;;
   visible) cat "$WORK/visible.now" ;;
   focus) echo 1 ;;
 esac
@@ -57,6 +57,12 @@ DJ="$ROOT/bin/dia-js"
 reset ps.flag tabs.before tabs.after
 assert test "$(printf 'document.title' | "$DJ" --active)" = 'ran T2 focus=0 js=document.title'
 assert test "$(printf 'x' | "$DJ" --tab-id T3)" = 'ran T3 focus=0 js=x'
+# an asleep tab answers missing value: a loud failure naming --focus, never an empty success
+printf 'ASLEEP\t0\thttps://mail.example/\tMail\n' >>"$WORK/tabs.now"
+rc=0; err=$(printf '1+1' | "$DJ" --tab-id ASLEEP 2>&1) || rc=$?
+assert test "$rc" = 1
+assert grep -q 'asleep.*--focus' <<<"$err"
+grep -v '^ASLEEP' "$WORK/tabs.now" >"$WORK/tabs.tmp"; mv "$WORK/tabs.tmp" "$WORK/tabs.now"
 printf 'from-file' >"$WORK/code.js"
 assert test "$("$DJ" --url-contains /form --file "$WORK/code.js")" = 'ran T1 focus=0 js=from-file'
 assert test "$(grep -c '^quit' "$WORK/osa.log")" -eq 0
