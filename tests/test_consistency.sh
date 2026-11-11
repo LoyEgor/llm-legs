@@ -3432,6 +3432,10 @@ assert grep -qF 'string.format("%d\t%d\n", awaySince, math.floor(now))' "$ROOT/h
 assert grep -qx 'local AWAY_S, WATCH_S, GRACE_S = 600, 2, 30' "$ROOT/hammerspoon/presence.lua"
 assert grep -qx 'PRESENCE_MARK_FRESH_S=180' "$ROOT/share/presence.sh"
 assert grep -qx 'GEMINI_AWAY_MIN=60' "$ROOT/bin/llm-refresh"
+# The AskUserQuestion gate reads the mark only through presence_away and its PRESENCE_SINCE, never by path.
+assert grep -qF 'llm-legs/share}/presence.sh"' "$CLAUDE_SETUP/hooks/away-ask-gate.sh"
+assert grep -qF '(now - PRESENCE_SINCE) / 60' "$CLAUDE_SETUP/hooks/away-ask-gate.sh"
+assert eq "$(grep -c 'presence/away"' "$CLAUDE_SETUP/hooks/away-ask-gate.sh")" 0
 assert grep -qF 'return dir .. "/away-off"' "$ROOT/hammerspoon/presence.lua"
 assert grep -qF 'if M.enabled() and (idle >= AWAY_S or stillAway(now, idle)) then markAway(now, idle) else M.back() end' "$ROOT/hammerspoon/presence.lua"
 assert doc_has '| em | Away mark |'

@@ -4,11 +4,11 @@
 # slowed down. Builtins only — the statusline asks on every render.
 PRESENCE_MARK_FRESH_S=180
 
-# presence_away <now epoch>: status 0 while away.
+# presence_away <now epoch>: status 0 while away, PRESENCE_SINCE then his last input epoch.
 presence_away() {
-  local left written
-  { IFS=$'\t' read -r left written <"${SPEED_DOCTOR_DIR:-$HOME/.cache/speed-doctor}/presence/away"; } 2>/dev/null ||
+  local written
+  { IFS=$'\t' read -r PRESENCE_SINCE written <"${SPEED_DOCTOR_DIR:-$HOME/.cache/speed-doctor}/presence/away"; } 2>/dev/null ||
     return 1
-  [[ "$left" =~ ^[0-9]+$ && "$written" =~ ^[0-9]+$ ]] || return 1
+  [[ "$PRESENCE_SINCE" =~ ^[0-9]+$ && "$written" =~ ^[0-9]+$ ]] || return 1
   [ $(($1 - written)) -le "$PRESENCE_MARK_FRESH_S" ] || return 1
 }
