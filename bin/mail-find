@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Find a mail letter in Apple Mail (every account: Gmail, iCloud; inbox, All Mail, spam), with each account's freshness and the Gmail web check when Mail may be behind: share/mail_find.py.
+# usage: mail-find <words or from:addr> [--since 3h|2d] [--account <mailbox>] [--body N] [--json]
+{
+set -u
+root=$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+exec python3 "$root/share/mail_find.py" "$@"
+exit; }
