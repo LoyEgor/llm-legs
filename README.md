@@ -318,8 +318,8 @@ this list):
 - `../chats-app/bin/share` → `~/.local/bin/share` — a folder as a public static site on Vercel (`share <dir>`, `share`, `share rm <name>`), the one way to a link for someone outside: each page tells Egor's ntfy topic when it is opened and how it was read (`share seen [<name>]` lists the visits of the last 12 h; `--no-watch` turns it off).
 - `bin/pkill` → `~/.local/bin/pkill` — shadows `/usr/bin/pkill` for every model and vendor: refuses an option after the first pattern (macOS stops option parsing there, and a stray `-P` pattern matches every Claude Bash shell's `pwd -P`), else execs the real tool.
 - `bin/pgrep` → `~/.local/bin/pgrep` — the same guard for `/usr/bin/pgrep` (a link to `bin/pkill`).
-- `bin/ipad` → `~/.local/bin/ipad` — Egor's iPad over the home Wi-Fi, no cable: `ipad` reachable/locked, `shot` a screenshot, `tabs` and `js EXPR` Safari's pages, `open URL`, `launch BUNDLE`, `cdp` a DevTools endpoint as ios_webkit_debug_proxy gave on the cable (pymobiledevice3: usbmuxd's Wi-Fi link, Apple's own tunnel, no root).
-- `bin/iphone` → `~/.local/bin/iphone` — Egor's iPhone over the home Wi-Fi, no cable, for a test on a real phone: the same commands as `ipad` (`bin/ipad` itself, a link: the name picks the device); `open` and `launch` need it unlocked.
+- `bin/ipad` → `~/.local/bin/ipad` — Egor's iPad over the home Wi-Fi, no cable: `ipad` reachable/locked, `shot` a screenshot, `tabs` and `js EXPR` Safari's pages, `open URL`, `launch BUNDLE`, `apps`, `install APP` (a .app his free team signed), `log [SECONDS]` the live system log, `cdp` a DevTools endpoint as ios_webkit_debug_proxy gave on the cable (pymobiledevice3: usbmuxd's Wi-Fi link, Apple's own tunnel, no root).
+- `bin/iphone` → `~/.local/bin/iphone` — Egor's iPhone over the home Wi-Fi, no cable, for a test on a real phone: the same commands as `ipad` (`bin/ipad` itself, a link: the name picks the device); `open`, `launch`, `apps` and `install` need it unlocked.
 
 Run by path, no link (worker preambles name them):
 - `bin/wait-until` — `[--max SEC] pid N|gone PATTERN|files GLOB N|log FILE REGEX` waits for a job to end, never a fixed `sleep` poll.

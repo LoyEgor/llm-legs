@@ -11,13 +11,21 @@ in Safari's pages, open a link, bring an app up. One script; the name it is call
   {cmd} launch BUNDLE_ID        brings an app to the front (com.egorloy.chats: the Chats app, on the iPad)
   {cmd} cdp [--port 9222]       a DevTools endpoint as ios_webkit_debug_proxy gave over the cable (GET /json, WebSocket),
                                left running in the background; one serves every chat
+  {cmd} apps                    the apps devicectl lists there (ours and his): bundle id, name, version
+  {cmd} install APP             installs a built .app signed for this device by his free team (Xcode's automatic
+                               signing): it runs 7 days unless re-signed (chats-app's sideload-keeper), 3 such apps a
+                               device at most (the iPad holds 3: Chats, MacMic, Аудиокниги)
+  {cmd} log [SECONDS] [--match WORD | --process NAME]
+                               the device's live log for SECONDS (default 10), filtered; at most 400 lines, the last
 
 Both are his work devices and he tests on them (Egor 2026-11-11, the iPad: «без шнура у всех чатов»; 2026-11-12, the
 iPhone too: «чтобы у них такая возможность была»): looking (status, shot, tabs, js that reads) needs no ask; open,
-launch and js that clicks change what he sees, so only when the task needs them. Builds of the Chats app reach the
+launch, install and js that clicks change what he sees, so only when the task needs them; no command removes an app,
+updates iOS or erases (a work device: an update is his, in Settings, Automatic Updates). Builds of the Chats app reach the
 iPad by themselves (chats-app apple/pad-sync.sh). Over pymobiledevice3: usbmuxd's Wi-Fi link for the web inspector,
-Apple's own CoreDevice tunnel (`--native`, no root) for the screenshot (black while its screen is off); devicectl for open
-and launch, which need the device unlocked (devicectl mounts its developer disk image then). Needs the device on the
+Apple's own CoreDevice tunnel (`--native`, no root) for the screenshot (black while its screen is off); syslog for the
+log; devicectl for open, launch, apps and install, which need the device unlocked (devicectl mounts its developer disk
+image then). Needs the device on the
 home network, awake enough to answer, Safari's Advanced > Web Inspector on. {env} picks another device.
 Exit: 0 done, 1 the device did not answer or the step failed (one line why), 2 usage.
 """
@@ -25,6 +33,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -180,6 +189,70 @@ def launch(bundle):
     print("in front: " + bundle)
 
 
+def apps():
+    udid, _, _ = need_device()
+    out_json = "/tmp/%s-apps-%d.json" % (CMD, os.getpid())
+    rc, out, err = run(["xcrun", "devicectl", "device", "info", "apps", "--device", udid, "--json-output", out_json], 60)
+    try:
+        with open(out_json, encoding="utf-8") as handle:
+            found = json.load(handle).get("result", {}).get("apps") or []
+    except (OSError, ValueError):
+        found = None
+    finally:
+        if os.path.exists(out_json):
+            os.unlink(out_json)
+    if rc or found is None:
+        die("no app list: " + ctl_error(err or out))
+    for a in sorted(found, key=lambda a: a.get("bundleIdentifier") or ""):
+        print("%s\t%s\t%s%s" % (a.get("bundleIdentifier"), a.get("name"), a.get("version") or "",
+                                "\tbuilt here" if a.get("builtByDeveloper") else ""))
+
+
+def install(app):
+    if not (os.path.isdir(app) and app.rstrip("/").endswith(".app")):
+        die("not a built .app folder: " + app, 2)
+    udid, _, _ = need_device()
+    rc, out, err = run(["xcrun", "devicectl", "device", "install", "app", "--device", udid, app], 300)
+    if rc:
+        die("did not install %s: %s" % (os.path.basename(app.rstrip("/")), ctl_error(err or out)))
+    print("installed: " + os.path.basename(app.rstrip("/")))
+
+
+LOG_CAP = 400
+
+
+def log(rest):
+    """syslog live for some seconds; pymobiledevice3's own filters (-m a word, -pn a process name)."""
+    secs, flt = 10, []
+    while rest:
+        arg = rest.pop(0)
+        if arg.isdigit():
+            secs = max(1, min(int(arg), 600))
+        elif arg in ("--match", "--process") and rest:
+            flt += ["-m" if arg == "--match" else "-pn", rest.pop(0)]
+        else:
+            die("usage: %s log [SECONDS] [--match WORD | --process NAME]" % CMD, 2)
+    udid, _, _ = need_device()
+    # Unbuffered and stopped by SIGINT: a killed child's buffered lines would be lost.
+    p = subprocess.Popen([PMD, "syslog", "live", "--udid", udid] + flt, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         text=True, errors="replace", env=dict(os.environ, PYTHONUNBUFFERED="1"))
+    try:
+        out, err = p.communicate(timeout=secs)
+    except subprocess.TimeoutExpired:
+        p.send_signal(signal.SIGINT)
+        try:
+            out, err = p.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, err = p.communicate()
+    lines = (out or "").splitlines()
+    if not lines and err:
+        die("no log: " + last_error(err))
+    if len(lines) > LOG_CAP:
+        print("(%d lines; the last %d)" % (len(lines), LOG_CAP))
+    print("\n".join(lines[-LOG_CAP:]))
+
+
 def cdp(port):
     """One `webinspector cdp` per port, kept running: a second call finds it answering and only names it."""
     import urllib.request
@@ -242,6 +315,12 @@ def main(argv):
         open_url(rest[0])
     elif cmd == "launch" and len(rest) == 1:
         launch(rest[0])
+    elif cmd == "apps" and not rest:
+        apps()
+    elif cmd == "install" and len(rest) == 1:
+        install(rest[0])
+    elif cmd == "log":
+        log(list(rest))
     elif cmd == "cdp" and (not rest or (len(rest) == 2 and rest[0] == "--port" and rest[1].isdigit())):
         cdp(int(rest[1]) if rest else 9222)
     else:
