@@ -1,15 +1,16 @@
-"""mail-find: look for a letter in Apple Mail (every account, All Mail/Inbox and Spam), honest about how fresh Mail is.
+"""mail-find: look for an older letter in Apple Mail (every account, All Mail/Inbox and Spam); today's mail is read on the web.
 
   mail-find <words or from:addr...> [--since 3h|2d] [--account <mailbox>] [--limit N] [--body N] [--json]
 
+Mail is closed as a rule and so behind (Egor 2026-11-11): a letter of today, a window of `--since` 1d or less, is
+never looked for there; Mail is not opened and the answer is the `NEXT:` web read for each mailbox. An older letter
+is looked for in Mail: a closed Mail is started hidden, fetches new mail while it is read, and is quit after.
 Words match a letter's subject or sender, `from:` its sender alone, all of them case-insensitively; a hit line is the
-date, sender, subject and account/folder, never the body or a link unless `--body N` asks for the Nth hit. Every
-run ends with one `FRESH:` line per account: whether Mail was running and the newest letter it holds there. Mail not
-running is started in the background for this read, asked to check for new mail, and quit once read (Egor
-2026-11-11: a Mail the tool opened stayed open). When the question is about recent mail and
-Mail found nothing (a window of 6 h or less, Mail just started, or its newest letter older than the window), the
-last line is `NEXT:`, the web read that settles it: the Chrome profile `worker-run browse` binds to that address, or
-Egor's open Dia tab of that mailbox. Exit 0 with hits, 1 with none, 2 on bad arguments, 3 when Mail cannot be read.
+date, sender, subject and account/folder, never the body or a link unless `--body N` asks for the Nth hit. A Mail
+read ends with one `FRESH:` line per account: whether Mail was running and the newest letter it holds there. When
+Mail found nothing and may be behind (it was closed, or its newest letter is older than the window), the last line
+is `NEXT:`, the web read that settles it: the Chrome profile `worker-run browse` binds to that address, or Egor's
+open Dia tab of that mailbox. Exit 0 with hits, 1 with none, 2 on bad arguments, 3 when Mail cannot be read.
 """
 
 import argparse
@@ -23,9 +24,10 @@ from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 SCRIPT = os.path.join(HERE, "mail_find.js")
-# A window up to this long asks about mail Mail may not have fetched yet (Egor 2026-11-11: a fresh letter is
-# checked on the web).
-RECENT = timedelta(hours=6)
+MAILBOXES = os.environ.get("MAIL_FIND_MAILBOXES") or os.path.expanduser("~/.cache/mail-find/mailboxes.json")
+# A window up to this long asks about today's mail, which a mostly closed Mail has not fetched: it is read on the
+# web and Mail is left closed (Egor 2026-11-11).
+TODAY = timedelta(days=1)
 SPAN = re.compile(r"^(\d+)([mhd])$")
 UNIT = {"m": "minutes", "h": "hours", "d": "days"}
 START_WAIT_S = 90
@@ -78,6 +80,28 @@ def profile_for(addresses, accounts):
     lower = {a.lower() for a in addresses}
     return next((name for name, row in sorted(accounts.items())
                  if isinstance(row, dict) and str(row.get("email", "")).lower() in lower), None)
+
+
+def known_mailboxes():
+    """Mail's accounts as of its last read ({name, addresses}); the pool registry's addresses before any."""
+    try:
+        with open(MAILBOXES, encoding="utf-8") as handle:
+            rows = json.load(handle)
+        if isinstance(rows, list) and rows:
+            return rows
+    except (OSError, ValueError):
+        pass
+    return [{"name": row["email"], "addresses": [row["email"]]} for _, row in sorted(registry().items())
+            if isinstance(row, dict) and row.get("email")]
+
+
+def remember_mailboxes(rows):
+    try:
+        os.makedirs(os.path.dirname(MAILBOXES), exist_ok=True)
+        with open(MAILBOXES, "w", encoding="utf-8") as handle:
+            json.dump([{"name": r["name"], "addresses": r.get("addresses") or []} for r in rows], handle)
+    except OSError:
+        pass
 
 
 def mail_running():
@@ -147,16 +171,15 @@ def behind(row, args, was_running, now):
         return True
     if not args.since:
         return False
-    if args.since <= RECENT or not row.get("newest"):
+    if not row.get("newest"):
         return True
     return local(row["newest"]) < now - args.since
 
 
-def next_line(row, accounts, tabs):
+def next_line(row, accounts, tabs, head="NEXT: Mail may be behind for this window; read Gmail on the web: "):
     addresses = row.get("addresses") or []
     profile = profile_for(addresses, accounts)
     tab = dia_tab_for(addresses, tabs)
-    head = "NEXT: Mail may be behind for this window; read Gmail on the web: "
     if profile and tab:
         return f"{head}ACCOUNT: {profile} BROWSER: chrome, or Egor's open Dia tab: dia-js --tab-id {tab}"
     if profile:
@@ -173,6 +196,8 @@ def main(argv=None):
     if args.account:
         row = accounts.get(args.account)
         wanted = [row["email"]] if isinstance(row, dict) and row.get("email") else [args.account]
+    if args.since and args.since <= TODAY:
+        return web_only(args, accounts, wanted)
     was_running = mail_running()
     if not was_running:
         start_mail()
@@ -188,6 +213,8 @@ def main(argv=None):
         if not was_running:
             quit_mail()
     rows, hits = found.get("accounts") or [], found.get("hits") or []
+    if not args.account and rows:
+        remember_mailboxes(rows)
     if args.account and not rows:
         print(f"mail-find: Mail has no account '{args.account}'", file=sys.stderr)
         return 2
@@ -203,8 +230,8 @@ def main(argv=None):
         body = found.get("body")
         lines.append(f"--- body of hit {args.body} ---\n{body}" if body is not None
                      else f"no hit {args.body}: {len(hits)} found")
-    state = "Mail was running" if was_running else "Mail was closed: started it in the background, asked it to check " \
-        "for new mail and quit it after this read"
+    state = "Mail was running" if was_running else "Mail was closed: started it hidden, it fetched new mail while " \
+        "read and was quit after; letters of the last days may be missing"
     for row in rows:
         newest = row.get("newest")
         held = f"newest letter {local(newest):%Y-%m-%d %H:%M} ({age(now - local(newest))} ago)" if newest \
@@ -224,6 +251,26 @@ def main(argv=None):
     else:
         print("\n".join(lines + nexts))
     return 0 if hits else 1
+
+
+def web_only(args, accounts, wanted):
+    """Today's mail: Mail stays closed, each mailbox's web read is the answer."""
+    rows = known_mailboxes()
+    if wanted:
+        lower = {w.lower() for w in wanted}
+        rows = [r for r in rows if r["name"].lower() in lower or lower & {a.lower() for a in r["addresses"]}] or \
+            [{"name": wanted[0], "addresses": wanted}]
+    head = f"NEXT: a letter of the last {age(args.since)} is read on the web, Mail is not opened for it: "
+    tabs = dia_tabs()
+    nexts = [line for line in (next_line(row, accounts, tabs, head) for row in rows) if line] or \
+        [f"{head}no Chrome profile of `worker-run browse` and no Dia tab holds "
+         f"{', '.join(r['name'] for r in rows) or 'a mailbox'}"]
+    if args.json:
+        print(json.dumps({"hits": [], "accounts": rows, "mail_was_running": None, "body": None, "next": nexts},
+                         ensure_ascii=False, indent=1))
+    else:
+        print("\n".join(nexts))
+    return 1
 
 
 if __name__ == "__main__":

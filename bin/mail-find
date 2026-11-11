@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Find a mail letter in Apple Mail (every account: Gmail, iCloud; inbox, All Mail, spam), with each account's freshness and the Gmail web check when Mail may be behind: share/mail_find.py.
+# Find an older mail letter in Apple Mail (every account: Gmail, iCloud; inbox, All Mail, spam), refreshing it meanwhile; a letter of today (--since 1d or less) gets the Gmail web read, Mail unopened: share/mail_find.py.
 # usage: mail-find <words or from:addr> [--since 3h|2d] [--account <mailbox>] [--body N] [--json]
 {
 set -u
