@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""ipad: Egor's iPad from any chat over the home Wi-Fi, no cable: look at its screen, read and run JS in Safari's pages.
+"""ipad, iphone: Egor's iPad or iPhone from any chat over the home Wi-Fi, no cable: look at its screen, read and run JS
+in Safari's pages, open a link, bring an app up. One script; the name it is called by picks the device.
 
-  ipad                         reachable or not (Wi-Fi or USB), locked or not
-  ipad shot [FILE]             a screenshot (PNG, 2732x2048), prints its path (default /tmp/ipad-shot-<time>.png)
-  ipad tabs                    the inspectable pages: app, URL, title (Safari's only while Safari is in front)
-  ipad js EXPR [--url PART]    evaluates EXPR in a page (the first one, or the first whose URL holds PART) -> its value
-  ipad open URL                opens URL in Safari there (Safari comes to the front)
-  ipad launch BUNDLE_ID        brings an app to the front (com.egorloy.chats: the Chats app)
-  ipad cdp [--port 9222]       a DevTools endpoint as ios_webkit_debug_proxy gave over the cable (GET /json, WebSocket),
+  {cmd}                         reachable or not (Wi-Fi or USB), locked or not
+  {cmd} shot [FILE]             a screenshot (PNG at the screen's resolution), prints its path (default
+                               /tmp/{cmd}-shot-<time>.png)
+  {cmd} tabs                    the inspectable pages: app, URL, title (Safari's only while Safari is in front)
+  {cmd} js EXPR [--url PART]    evaluates EXPR in a page (the first one, or the first whose URL holds PART) -> its value
+  {cmd} open URL                opens URL in Safari there (Safari comes to the front)
+  {cmd} launch BUNDLE_ID        brings an app to the front (com.egorloy.chats: the Chats app, on the iPad)
+  {cmd} cdp [--port 9222]       a DevTools endpoint as ios_webkit_debug_proxy gave over the cable (GET /json, WebSocket),
                                left running in the background; one serves every chat
 
-The iPad is his work tool and he tests on it (Egor 2026-11-11: «любая LLM могла делать с iPad все то же самое, что
-она может делать по шнуру ... без шнура у всех чатов»): looking (status, shot, tabs, js that reads) needs no ask;
-open, launch and js that clicks change what he sees, so only when the task needs them. Builds of the Chats app reach
-it by themselves (chats-app apple/pad-sync.sh). Over pymobiledevice3: usbmuxd's Wi-Fi link for the web inspector,
-Apple's own CoreDevice tunnel (`--native`, no root) for the screenshot; devicectl for open and launch. Needs the iPad
-on the home network, awake enough to answer, Safari's Advanced > Web Inspector on. IPAD_UDID picks another device.
-Exit: 0 done, 1 the iPad did not answer or the step failed (one line why), 2 usage.
+Both are his work devices and he tests on them (Egor 2026-11-11, the iPad: «без шнура у всех чатов»; 2026-11-12, the
+iPhone too: «чтобы у них такая возможность была»): looking (status, shot, tabs, js that reads) needs no ask; open,
+launch and js that clicks change what he sees, so only when the task needs them. Builds of the Chats app reach the
+iPad by themselves (chats-app apple/pad-sync.sh). Over pymobiledevice3: usbmuxd's Wi-Fi link for the web inspector,
+Apple's own CoreDevice tunnel (`--native`, no root) for the screenshot (black while its screen is off); devicectl for open
+and launch, which need the device unlocked (devicectl mounts its developer disk image then). Needs the device on the
+home network, awake enough to answer, Safari's Advanced > Web Inspector on. {env} picks another device.
+Exit: 0 done, 1 the device did not answer or the step failed (one line why), 2 usage.
 """
 import asyncio
 import json
@@ -27,6 +30,10 @@ import sys
 import time
 
 PMD = shutil.which("pymobiledevice3")
+CMD = "iphone" if (os.environ.get("IOS_TOOL") or os.path.basename(sys.argv[0])) == "iphone" else "ipad"
+KIND = {"ipad": "iPad", "iphone": "iPhone"}[CMD]  # usbmuxd's DeviceClass
+UDID_ENV = CMD.upper() + "_UDID"
+HELP = __doc__.strip().format(cmd=CMD, env=UDID_ENV)
 
 
 def venv_python():
@@ -43,7 +50,7 @@ def venv_python():
 
 
 def die(why, code=1):
-    print("ipad: " + why, file=sys.stderr)
+    print(CMD + ": " + why, file=sys.stderr)
     sys.exit(code)
 
 
@@ -63,8 +70,17 @@ def last_error(text):
     return (errs or lines or ["no output"])[-1][:300]
 
 
+def ctl_error(text):
+    """devicectl's failure in one line; a developer disk image it could not mount (the device locked) says what helps."""
+    why = last_error(text)
+    if "disk image" in (text or "").lower():
+        why += " (unlock the %s: devicectl mounts its developer disk image then)" % KIND
+    return why
+
+
 def device():
-    """-> (udid, name, link) of the iPad usbmuxd knows (Network over Wi-Fi, USB on the cable), else (None, why, None)."""
+    """-> (udid, name, link) of the iPad or iPhone usbmuxd knows (Network over Wi-Fi, USB on the cable), else (None,
+    why, None)."""
     rc, out, err = run([PMD, "usbmux", "list"], 20)
     if rc:
         return None, "usbmuxd: " + last_error(err or out), None
@@ -72,11 +88,11 @@ def device():
         devs = json.loads(out)
     except ValueError:
         return None, "usbmuxd gave no list", None
-    want = os.environ.get("IPAD_UDID")
+    want = os.environ.get(UDID_ENV)
     for d in sorted(devs, key=lambda d: d.get("ConnectionType") != "USB"):  # the cable first when both
-        if (want and d.get("UniqueDeviceID") == want) or (not want and d.get("DeviceClass") == "iPad"):
+        if (want and d.get("UniqueDeviceID") == want) or (not want and d.get("DeviceClass") == KIND):
             return d["UniqueDeviceID"], d.get("DeviceName", ""), "USB" if d.get("ConnectionType") == "USB" else "Wi-Fi"
-    return None, "no iPad on the network or the cable (is it on the home Wi-Fi and awake?)", None
+    return None, "no %s on the network or the cable (is it on the home Wi-Fi and awake?)" % KIND, None
 
 
 def need_device():
@@ -97,7 +113,7 @@ def status():
 
 def shot(path):
     udid, _, _ = need_device()
-    path = os.path.abspath(path or "/tmp/ipad-shot-%s.png" % time.strftime("%Y%m%d-%H%M%S"))
+    path = os.path.abspath(path or "/tmp/%s-shot-%s.png" % (CMD, time.strftime("%Y%m%d-%H%M%S")))
     rc, out, err = run([PMD, "developer", "dvt", "screenshot", path, "--udid", udid, "--native"], 90)
     if rc or not os.path.exists(path):
         die("no screenshot: " + last_error(err or out))
@@ -124,7 +140,8 @@ async def tabs_async(udid):
     try:
         found = await pages(wi)
         if not found:
-            print("no inspectable page (Safari's show while it is in front; the Chats app's web views are not inspectable)")
+            print("no inspectable page (Safari's show while it is in front; an app's web views only if it marks them"
+                  " inspectable)")
         for app, page in found:
             print("%s\t%s\t%s" % (app.name, getattr(page, "web_url", ""), getattr(page, "web_title", "")))
     finally:
@@ -151,7 +168,7 @@ def open_url(url):
     rc, out, err = run(["xcrun", "devicectl", "device", "process", "launch", "--device", udid, "--payload-url", url,
                         "com.apple.mobilesafari"], 60)
     if rc:
-        die("Safari did not open it: " + last_error(err or out))
+        die("Safari did not open it: " + ctl_error(err or out))
     print("opened in Safari: " + url)
 
 
@@ -159,7 +176,7 @@ def launch(bundle):
     udid, _, _ = need_device()
     rc, out, err = run(["xcrun", "devicectl", "device", "process", "launch", "--device", udid, bundle], 60)
     if rc:
-        die("did not launch %s: %s" % (bundle, last_error(err or out)))
+        die("did not launch %s: %s" % (bundle, ctl_error(err or out)))
     print("in front: " + bundle)
 
 
@@ -191,7 +208,7 @@ def cdp(port):
 
 def main(argv):
     if argv[:1] in (["-h"], ["--help"]):
-        print(__doc__.strip())
+        print(HELP)
         return 0
     if not PMD:
         die("pymobiledevice3 is not installed (pipx install pymobiledevice3)")
@@ -207,7 +224,7 @@ def main(argv):
         except ImportError:
             if not py:
                 die("pymobiledevice3's own python is not found")
-            os.execv(py, [py, os.path.realpath(__file__)] + argv)
+            os.execve(py, [py, os.path.realpath(__file__)] + argv, dict(os.environ, IOS_TOOL=CMD))
         udid, _, _ = need_device()
         if cmd == "tabs" and not rest:
             asyncio.run(tabs_async(udid))
@@ -217,10 +234,10 @@ def main(argv):
                 i = rest.index("--url")
                 part, rest = (rest[i + 1] if i + 1 < len(rest) else ""), rest[:i] + rest[i + 2:]
             if len(rest) != 1:
-                die("usage: ipad js EXPR [--url PART]", 2)
+                die("usage: %s js EXPR [--url PART]" % CMD, 2)
             asyncio.run(js_async(udid, rest[0], part))
         else:
-            die("usage: ipad tabs | ipad js EXPR [--url PART]", 2)
+            die("usage: {0} tabs | {0} js EXPR [--url PART]".format(CMD), 2)
     elif cmd == "open" and len(rest) == 1:
         open_url(rest[0])
     elif cmd == "launch" and len(rest) == 1:
@@ -228,7 +245,7 @@ def main(argv):
     elif cmd == "cdp" and (not rest or (len(rest) == 2 and rest[0] == "--port" and rest[1].isdigit())):
         cdp(int(rest[1]) if rest else 9222)
     else:
-        print(__doc__.strip(), file=sys.stderr)
+        print(HELP, file=sys.stderr)
         return 2
     return 0
 
