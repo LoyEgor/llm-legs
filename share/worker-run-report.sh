@@ -86,7 +86,13 @@ escalate_lines() { # directory vendor
 }
 
 resume_line() { # directory vendor
-  resume_context_line "$2" "$(jq -r '.account // empty' "$1/meta.json" 2>/dev/null)" "$(session_id "$1")"
+  resume_context_line "$2" "$(jq -r '.account // empty' "$1/meta.json" 2>/dev/null)" "$(session_id "$1")" "${1##*/}"
+}
+
+# The last line of a finished run's report, where the follow-up is decided; nothing when it may resume.
+report_next() { # directory
+  [ -f "$1/exit_code" ] || return 0
+  resume_line "$1" "$(jq -r '.vendor' "$1/meta.json" 2>/dev/null)"
 }
 
 terminal_report() {
@@ -96,7 +102,6 @@ terminal_report() {
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   status=$(terminal_status "$directory" "$vendor" "$code")
   printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
-  resume_line "$directory" "$vendor"
   reroute_lines "$directory"
   workdir_escape_line "$directory"
   memguard_lines "$directory"
@@ -111,6 +116,7 @@ terminal_report() {
     printf 'ERR-TAIL:\n'
     tail -n 40 "$directory/err" 2>/dev/null
   fi
+  report_next "$directory"
 }
 
 run_state_terminal() { # directory
@@ -161,9 +167,15 @@ outcome_with_knobs() { # directory command...
 
 report_run() {
   [ "$#" -eq 1 ] || usage
-  local directory vendor account code status cost s5_rate pid
+  local directory
   directory=$(run_path "$1")
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
+  report_body "$directory"
+  report_next "$directory"
+}
+
+report_body() { # directory
+  local directory="$1" vendor account code status cost s5_rate pid
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   account=$(jq -r '.account' "$directory/meta.json")
   printf 'ACCOUNT: %s (%s)\n' "$account" "$vendor"
@@ -176,7 +188,6 @@ report_run() {
     [[ "$code" =~ ^[0-9]+$ ]] || code=unknown
     status=$(terminal_status "$directory" "$vendor" "$code")
     printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
-    resume_line "$directory" "$vendor"
     memguard_lines "$directory"
     outcome_with_knobs "$directory" print_outcome "$directory" "$vendor" "$code"
     ended_orphans_line "$directory"
@@ -221,11 +232,53 @@ report_run() {
   run_files "$directory"
   unnamed_line "$directory"
   printf 'RESULT:\n'
-  if [ -n "$(run_result_text "$directory" "$vendor" | head -c 1)" ]; then
-    run_result_text "$directory" "$vendor" | tail -n 400
+  result_text "$directory" "$vendor"
+}
+
+result_text() { # directory vendor
+  if [ -n "$(run_result_text "$1" "$2" | head -c 1)" ]; then
+    run_result_text "$1" "$2" | tail -n 400
   else
-    last_messages "$directory"
+    last_messages "$1"
   fi
+}
+
+# The material for a fresh worker's brief once a session is too full to resume, never a brief itself:
+# a RESUME brief is a delta written for a worker that remembers, and a fresh one fed the old report
+# would not know the task (Egor 2026-11-11). The chat rewrites it; nothing here launches.
+handoff_run() {
+  [ "$#" -eq 1 ] || usage
+  local directory="$1" vendor previous
+  valid_run_id "$1" && [ -r "$(run_path "$1")/meta.json" ] || directory=$(session_run "$1") ||
+    fail "unknown run or session: $1"
+  directory=$(run_path "$directory")
+  vendor=$(jq -r '.vendor' "$directory/meta.json")
+  printf 'HANDOFF: rewrite this into ONE self-contained brief for a FRESH worker (the task, what is done, what is left); never send it as is or as a RESUME.\n'
+  jq -r '"RUN: \(input_filename | split("/") | .[-2])",
+         "WORKDIR: \(.workdir // "?")",
+         "RAN ON: \(.account // "?") (\(.vendor // "?")) \(.model // "?")\(if (.effort // "") != "" then "·" + .effort else "" end)",
+         (.add_dirs[]? | "ADD-DIR: \(.)")' "$directory/meta.json"
+  printf '\n## Files it changed\n'
+  run_files "$directory" | grep -E '^RUN-FILE(S|S-RULE)?: '
+  printf '\n## Previous brief (verbatim)\n'
+  cat "$directory/brief" 2>/dev/null
+  previous=$(sed -n '1s/^RESUME \([^[:space:]:]\{1,\}\):.*/\1/p' "$directory/brief" 2>/dev/null)
+  [ -z "$previous" ] || printf '(a RESUME delta: the task before it is in `worker-run handoff %s`)\n' "$previous"
+  if [ -s "$directory/inbox" ]; then
+    printf '\n## Notes it received mid-run\n'
+    inbox_lines "$directory"
+  fi
+  printf '\n## Its result\n'
+  result_text "$directory" "$vendor"
+}
+
+# The newest run that holds a session; fails when none does.
+session_run() { # session -> run id
+  local entry
+  entry=$(refuse_live_matches "$1" "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" worker-session | tail -n1)
+  [ -n "$entry" ] || return 1
+  entry=${entry%/worker-session}
+  printf '%s' "${entry##*/}"
 }
 
 # A run ended before its final answer (the deadline, a kill) still said where it stood: without its

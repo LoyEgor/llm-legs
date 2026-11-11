@@ -17,6 +17,7 @@ usage() {
     '       worker-run wait <run-id> [--max <sec>] [--report]' \
     '       worker-run stop <run-id>' \
     '       worker-run report <run-id>' \
+    '       worker-run handoff <run-id|session-id>' \
     '       worker-run say [<run-id>] <text>' \
     '       worker-run transcript <run-id>...' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
@@ -170,6 +171,7 @@ case "${1:-}" in
   wait) shift; wait_run "$@"; exit $? ;;
   stop) shift; stop_command "$@"; exit $? ;;
   report) shift; report_run "$@"; exit $? ;;
+  handoff) shift; handoff_run "$@"; exit $? ;;
   transcript) shift; transcript_run "$@"; exit $? ;;
   claim) shift; claim_run "$@"; exit $? ;;
   say) shift; say_run "$@"; exit $? ;;

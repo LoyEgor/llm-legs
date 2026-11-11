@@ -46,6 +46,10 @@ launch_attempt() { # directory
       printf '\n'
     done
     cat "$directory/brief" || return 1
+    if [ -s "$directory/image-refs" ]; then
+      printf '\n'
+      cat "$directory/image-refs" || return 1
+    fi
     if [ -s "$directory/fix-rule" ]; then
       printf '\n'
       cat "$directory/fix-rule" || return 1
@@ -448,7 +452,7 @@ refuse_busy_worktree() { # workdir
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
-  local round_source='' candidate='' rule='' image=''
+  local round_source='' candidate='' rule='' image='' image_refs='' image_note=''
   local -a text_rounds=() brief_images=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
   local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' commit_rule='' chat_fast=false fast_role='' grok_asked_model='' model_id='' slug_account=''
@@ -709,25 +713,40 @@ start_run() {
   # anyway, and meta.json is read by everything downstream as the state the answer may rest on.
   web_search_state=$(web_search_state "$vendor" "$web_search")
   case "$web_search_state" in on) web_search=true ;; *) web_search=false ;; esac
+  # Codex alone takes an image flag. Elsewhere the paths ride in the brief and their folders are
+  # granted like --add-dir (2026-11-11: an `auto` launch with --image died on claudeb, the right step
+  # known); a grok resume keeps the folders it was created with and gets the paths only.
+  if [ "$vendor" != codex ] && [ "${#images[@]}" -gt 0 ]; then
+    image_refs=$'Visual references: read these files.\n'
+    for value in "${!images[@]}"; do
+      [ -r "${images[$value]}" ] || fail "image is not readable: ${images[$value]}"
+      [[ "${images[$value]}" = /* ]] || images[$value]="$PWD/${images[$value]}"
+      image_refs+="- ${images[$value]}"$'\n'
+      [ "$vendor" != grok ] || [ -z "$resume" ] || continue
+      image=$(cd "${images[$value]%/*}" && pwd -P) || continue
+      case "$image/" in "$workdir/"*) continue ;; esac
+      for entry in ${add_dirs[@]+"${add_dirs[@]}"}; do
+        entry=$(cd "$entry" 2>/dev/null && pwd -P) || continue
+        case "$image/" in "$entry/"*) continue 2 ;; esac
+      done
+      add_dirs+=("$image")
+    done
+    image_note="IMAGE: $vendor takes no image flag: the ${#images[@]} path(s) ride in the brief under \"Visual references\", their folders granted like --add-dir"
+  fi
   case "$vendor" in
-    claudeb)
-      [ "${#images[@]}" -eq 0 ] || fail 'claudeb does not support --image'
-      ;;
     codex)
       [ -z "$resume" ] || [ "${#add_dirs[@]}" -eq 0 ] || fail 'codex resume does not support --add-dir'
       ;;
     gemini)
-      [ "${#images[@]}" -eq 0 ] || fail 'gemini does not support --image'
       # agy has no stdin mode — the brief travels on argv, and past the kernel's
       # per-argument ceiling execve fails with a bare E2BIG long after start.
       # 128 for the RUN-TOKEN line launch_attempt appends, whose run id is not known yet.
-      [ "$(($(wc -c <"$brief" | tr -d '[:space:]') + ${#fix_rule} + ${#BRIEF_PREAMBLE} + 128))" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
+      [ "$(($(wc -c <"$brief" | tr -d '[:space:]') + ${#fix_rule} + ${#image_refs} + ${#BRIEF_PREAMBLE} + 128))" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
       ;;
     grok)
       # 1.0.70 --add-dir "Can't be combined with -r/-c: a resumed session keeps the folders it was
       # created with".
       [ -z "$resume" ] || [ "${#add_dirs[@]}" -eq 0 ] || fail 'grok resume does not support --add-dir'
-      [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --image'
       ;;
   esac
   if [ "$light_offrow" = true ]; then
@@ -1039,6 +1058,7 @@ start_run() {
     fail 'could not write the run title'
   grep -q '^MD-GUARD' "$brief" || md_guard_text >"$directory/md-guard" || fail 'could not write the md guard'
   [ -z "$fix_rule" ] || printf '%s\n' "$fix_rule" >"$directory/fix-rule" || fail 'could not write the fix rule'
+  [ -z "$image_refs" ] || printf '%s' "$image_refs" >"$directory/image-refs" || fail 'could not write the image references'
   [ "$vendor" != grok ] || [ "$role" != research ] ||
     printf '%s\n' "$GROK_RESEARCH_FENCE" >"$directory/research-fence" || fail 'could not write the research fence'
   [ "$vendor" != claudeb ] || [ "$role" = research ] ||
@@ -1203,6 +1223,7 @@ exit "$rc"'
   for value in "${brief_images[@]}"; do
     [ -f "$value" ] && [ -r "$value" ] || printf 'IMAGE-MISSING: %s — the brief names it, it is not readable, the worker will not see it\n' "$value"
   done
+  [ -z "$image_note" ] || printf '%s\n' "$image_note"
   printf 'NEXT: worker-run wait %s as a background Bash; a mid-run note: worker-run say %s "<text>"\n' "$run_id" "$run_id"
 }
 

@@ -135,9 +135,11 @@ assert test "$(tail -n1 "$WORKER_RUN_DIR/prelaunch.jsonl" | jq -c '[.outcome, .r
 # Warm, but at 151k near compaction.
 touch "$claude_transcript"
 refused_resume claudeb claude-cold 'its context is ~151k, near compaction'
+# The refusal names the same next step as a full run's report, by the session when no run holds it.
+assert grep -qF 'A follow-up goes to a FRESH worker: a self-contained brief, start from: worker-run handoff claude-cold' "$WORK/start.err"
 # A finished run's report says so before a RESUME brief is written, by the same cap.
-resume_verdict() { CLAUDEB_PROFILES_ROOT="$CLAUDEB_PROFILES_ROOT" bash -c 'source "$1/share/worker-run-vendors.sh"; resume_context_line claudeb resumeacct "$2"' _ "$ROOT" "$1"; }
-assert test "$(resume_verdict claude-cold)" = 'RESUME: no — context ~151k, near compaction; a follow-up needs a fresh, self-contained brief'
+resume_verdict() { CLAUDEB_PROFILES_ROOT="$CLAUDEB_PROFILES_ROOT" bash -c 'source "$1/share/worker-run-vendors.sh"; resume_context_line claudeb resumeacct "$2" run-x' _ "$ROOT" "$1"; }
+assert test "$(resume_verdict claude-cold)" = 'NEXT: a follow-up goes to a FRESH worker (context ~151k, near compaction): a self-contained brief, start from: worker-run handoff run-x'
 
 claude_small="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/claude-small.jsonl"
 printf '%s\n' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":90000,"cache_creation_input_tokens":500}}}' >"$claude_small"
@@ -146,14 +148,48 @@ touch -d "$(date -u -v-50M +%Y-%m-%dT%H:%M:%SZ)" "$claude_small"
 assert test -z "$(resume_verdict claude-small)"
 claude_near="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/claude-near.jsonl"
 printf '%s\n' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":125000}}}' >"$claude_near"
-assert test "$(resume_verdict claude-near)" = 'RESUME: last — context ~125k, one short follow-up at most'
+assert test "$(resume_verdict claude-near)" = 'NEXT: one short RESUME follow-up at most (context ~125k); anything larger goes to a FRESH worker: worker-run handoff run-x'
 assert test -z "$(resume_verdict claude-missing)"
+# The NEXT line is the LAST line of every finished-run report, where the follow-up is decided, and a
+# resumable session adds no line at all (2026-11-11: a header line was skipped, a RESUME written).
+clear_stub
+export STUB_SESSION=claude-full
+start_ok claudeb --account resumeacct
+assert await_exit
+claude_full="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/claude-full.jsonl"
+printf '%s\n' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":90000}}}' >"$claude_full"
+assert test "$("$RUNNER" report "$RUN_ID" | tail -n1)" = 'claudeb result'
+assert test "$("$RUNNER" wait "$RUN_ID" --report | grep -c -e '^NEXT: ' -e '^RESUME: ')" -eq 0
+printf '%s\n' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":160000}}}' >"$claude_full"
+full_next="NEXT: a follow-up goes to a FRESH worker (context ~160k, near compaction): a self-contained brief, start from: worker-run handoff $RUN_ID"
+for report_form in "report $RUN_ID" "wait $RUN_ID --report" "wait $RUN_ID --max 0"; do
+  # shellcheck disable=SC2086
+  report_out=$("$RUNNER" $report_form)
+  assert test "$(tail -n1 <<<"$report_out")" = "$full_next"
+  assert test "$(grep -c -e '^NEXT: ' -e '^RESUME: ' <<<"$report_out")" -eq 1
+done
+# `handoff` is the material for that fresh brief, by run or session id, and launches nothing.
+: >"$CALL_LOG"
+handoff_out=$("$RUNNER" handoff "$RUN_ID")
+assert test "$(head -n1 <<<"$handoff_out")" = 'HANDOFF: rewrite this into ONE self-contained brief for a FRESH worker (the task, what is done, what is left); never send it as is or as a RESUME.'
+assert grep -qxF "WORKDIR: $(cd "$WORK/workdir" && pwd -P)" <<<"$handoff_out"
+assert grep -qx 'RAN ON: resumeacct (claudeb) .*' <<<"$handoff_out"
+assert test "$(sed -n '/^## Previous brief (verbatim)$/,/^## /p' <<<"$handoff_out" | sed '1d;$d')" = "$(<"$WORK/brief")"
+assert test "$(sed -n '/^## Its result$/,$p' <<<"$handoff_out" | sed 1d)" = 'claudeb result'
+assert grep -qx '## Files it changed' <<<"$handoff_out"
+assert test "$("$RUNNER" handoff claude-full | sed -n 2p)" = "RUN: $RUN_ID"
+rc=0
+"$RUNNER" handoff claude-nowhere >/dev/null 2>"$WORK/handoff.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -qF 'unknown run or session: claude-nowhere' "$WORK/handoff.err"
+assert test ! -s "$CALL_LOG"
 clear_stub
 start_ok claudeb --account resumeacct --resume claude-small
 assert test "$(grep -c 'refused' "$WORK/start.err")" -eq 0
 assert await_exit
 touch -d "$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ)" "$claude_small"
 refused_resume claudeb claude-small 'idle 1h[0-9]*m, past its ~1h cache'
+assert grep -qF 'start from: worker-run handoff ' "$WORK/start.err"
 
 clear_stub
 start_ok claudeb --account resumeacct --resume claude-missing
@@ -308,6 +344,23 @@ assert grep -q '^ARG=--add-dir$' "$CALL_LOG"
 assert grep -q '^ARG=-i$' "$CALL_LOG"
 assert grep -q '^ARG=web_search=live$' "$CALL_LOG"
 assert_launched_brief "$STUB_DIR/codex.stdin"
+
+# claudeb takes no image flag: the paths ride in the launched brief and their folder is granted like
+# --add-dir, once; one inside the workdir needs no grant. A launch, not a refusal (2026-11-11).
+clear_stub
+mkdir -p "$WORK/pics"
+printf 'img\n' >"$WORK/pics/a.png"
+printf 'img\n' >"$WORK/pics/b.png"
+printf 'img\n' >"$WORK/workdir/in.png"
+start_ok claudeb --account options --image "$WORK/pics/a.png" --image "$WORK/pics/b.png" --image "$WORK/workdir/in.png"
+assert grep -qxF 'IMAGE: claudeb takes no image flag: the 3 path(s) ride in the brief under "Visual references", their folders granted like --add-dir' "$WORK/start.out"
+assert await_exit
+assert_launched_brief "$STUB_DIR/claudeb.stdin"
+assert test "$(sed -n '/^Visual references: read these files\.$/,/^$/p' "$STUB_DIR/claudeb.stdin")" = \
+  "$(printf 'Visual references: read these files.\n- %s\n- %s\n- %s' "$WORK/pics/a.png" "$WORK/pics/b.png" "$WORK/workdir/in.png")"
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$WORK/pics" && pwd -P)" '[$d]')"
+assert test "$(grep -cx 'ARG=--add-dir' "$CALL_LOG")" -eq 1
+assert test "$(grep -cx 'ARG=-i' "$CALL_LOG")" -eq 0
 
 # Relative --image/--add-dir are pinned to the caller's cwd: the detached
 # supervisor cds to workdir before the CLI resolves them.

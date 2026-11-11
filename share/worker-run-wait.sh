@@ -389,8 +389,9 @@ wait_sleep() { # directory seconds: back early once exit_code appears; fails wit
 }
 
 wait_report() { # directory
-  report_run "${1##*/}"
+  report_body "$1"
   workdir_escape_line "$1"
+  report_next "$1"
 }
 
 # The one-call delegation: the account pick, the start and a `wait --report`, so a chat spends one

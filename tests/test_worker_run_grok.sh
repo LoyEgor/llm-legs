@@ -197,11 +197,17 @@ assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$WO
 assert grep -qx 'ARG=--add-dir' "$CALL_LOG"
 assert grep -qxF "ARG=$(printf '%q' "$WORK/extra")" "$CALL_LOG"
 
-# No image attaches, and a resumed session keeps the folders it was created with (1.0.70 --add-dir
-# "Can't be combined with -r/-c"): both are refused where a caller can still read the refusal
-# instead of in a CLI error nobody sees.
-for grok_flag in "--image $WORK/image.png|grok does not support --image" \
-  "--resume grok-resumed-1 --add-dir $WORK/extra|grok resume does not support --add-dir"; do
+# No image flag: the path rides in the launched brief, its folder granted like --add-dir.
+clear_stub
+start_ok grok --image "$WORK/image.png"
+assert grep -q '^IMAGE: grok takes no image flag' "$WORK/start.out"
+assert await_exit
+assert grep -qxF -- "- $WORK/image.png" "$RUN_DIR/brief.launch"
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$WORK" && pwd -P)" '[$d]')"
+
+# A resumed session keeps the folders it was created with (1.0.70 --add-dir "Can't be combined with
+# -r/-c"): refused where a caller can still read the refusal instead of in a CLI error nobody sees.
+for grok_flag in "--resume grok-resumed-1 --add-dir $WORK/extra|grok resume does not support --add-dir"; do
   clear_stub
   rc=0
   # shellcheck disable=SC2086

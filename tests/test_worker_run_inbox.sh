@@ -130,7 +130,7 @@ mkdir -p "$CLAUDEB_PROFILES_ROOT/picked/projects/fixture"
 printf '%s\n' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":125000}}}' \
   >"$CLAUDEB_PROFILES_ROOT/picked/projects/fixture/inbox-near.jsonl"
 said=$(WORKER_RUN_SAY_WAIT_S=0 "$RUNNER" say "$RUN_ID" 'near full')
-assert test "$said" = $'queued: the worker reads it at its next tool call\nCONTEXT: ~125k, nearly full — send no more mid-run notes; plan a fresh worker for the follow-up'
+assert test "$said" = $'queued: the worker reads it at its next tool call\nCONTEXT: ~125k, nearly full — send no more mid-run notes; a follow-up goes to a FRESH worker: worker-run handoff '"$RUN_ID"
 assert grep -q 'near full' "$RUN_DIR/inbox"
 rm -f "$RUN_DIR/session" "$CLAUDEB_PROFILES_ROOT/picked/projects/fixture/inbox-near.jsonl"
 tool_call_done 1

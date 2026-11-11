@@ -241,23 +241,26 @@ session_context_level() { # vendor account session
   printf '%s %s' "$(context_level "$tokens")" "$(((tokens + 500) / 1000))"
 }
 
-# A finished run's RESUME line, only when a resume is refused or close to it.
-resume_context_line() { # vendor account session
+# A finished run's NEXT line, only when a resume is refused or close to it, printed LAST by every
+# report: that is where the follow-up is decided. As a header line it was skipped by a reader of the
+# tail and a RESUME brief written anyway (2026-11-11). The fresh worker's brief is the chat's to write
+# (a RESUME brief is a delta for a worker that remembers); `handoff` hands it the material.
+resume_context_line() { # vendor account session run-id
   local level
-  level=$(session_context_level "$@")
+  level=$(session_context_level "$1" "$2" "$3")
   case "$level" in
-    no\ *) printf 'RESUME: no — context ~%sk, near compaction; a follow-up needs a fresh, self-contained brief\n' "${level#* }" ;;
-    last\ *) printf 'RESUME: last — context ~%sk, one short follow-up at most\n' "${level#* }" ;;
+    no\ *) printf 'NEXT: a follow-up goes to a FRESH worker (context ~%sk, near compaction): a self-contained brief, start from: worker-run handoff %s\n' "${level#* }" "$4" ;;
+    last\ *) printf 'NEXT: one short RESUME follow-up at most (context ~%sk); anything larger goes to a FRESH worker: worker-run handoff %s\n' "${level#* }" "$4" ;;
   esac
   return 0
 }
 
 # `say` to a live worker filling up: the note is delivered all the same, this only warns.
-say_context_line() { # vendor account session
+say_context_line() { # vendor account session run-id
   local level
-  level=$(session_context_level "$@")
+  level=$(session_context_level "$1" "$2" "$3")
   case "$level" in
-    no\ *|last\ *) printf 'CONTEXT: ~%sk, nearly full — send no more mid-run notes; plan a fresh worker for the follow-up\n' "${level#* }" ;;
+    no\ *|last\ *) printf 'CONTEXT: ~%sk, nearly full — send no more mid-run notes; a follow-up goes to a FRESH worker: worker-run handoff %s\n' "${level#* }" "$4" ;;
   esac
   return 0
 }
@@ -292,7 +295,7 @@ refuse_stale_resume() {
     return 0
   fi
   RESUME_REFUSED_TOKENS=$tokens outcome_line RESUME_REFUSED
-  fail "RESUME $resume refused: $why. Start a fresh worker instead: read what the session left (\`worker-run report <its run>\`: the result and any queued messages) and write a brief with what it found, what is left and the same --workdir. Nothing was launched and no account was spent."
+  fail "RESUME $resume refused: $why. A follow-up goes to a FRESH worker: a self-contained brief, start from: worker-run handoff $(session_run "$resume" || printf '%s' "$resume") (its brief, result, notes and files to rewrite into what is left, same --workdir). Nothing was launched and no account was spent."
 }
 
 # A claudeb worker registers as `<the chat that launched it> · worker` (session store, ListAgents,
