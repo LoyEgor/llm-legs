@@ -9,11 +9,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HELPER="$ROOT/share/chat_tmux.py"
 WORK="$(mktemp -d /tmp/chat-tmux-test.XXXXXX)"
 export CHAT_TMUX_SOCKET="$WORK/s/t.sock"
+# A viewer that leaves runs closed() through the hook: no test reaches the live app or asks the real Terminal.
+export CHAT_TMUX_APP="http://127.0.0.1:9" CHAT_TMUX_PGREP="$WORK/pgrep" CHAT_TMUX_CLOSE_GRACE=0.2
+printf '#!/bin/sh\nexit 1\n' >"$WORK/pgrep"; chmod +x "$WORK/pgrep"
 OUTER="$WORK/outer.sock"
 TMUX_BIN=$(command -v tmux) || { printf 'SKIP: no tmux\n'; exit 0; }
 t() { "$TMUX_BIN" -S "$CHAT_TMUX_SOCKET" "$@"; }
 outer() { "$TMUX_BIN" -S "$OUTER" "$@"; }
 cleanup() {
+  [ -n "${app_pid:-}" ] && kill "$app_pid" 2>/dev/null
   outer kill-server 2>/dev/null
   t kill-server 2>/dev/null
   rm -rf "$WORK"
@@ -165,6 +169,51 @@ asserts=$((asserts + 1))
 assert grep -q '^scr ' <(helper ls)
 assert [ "$(helper mirror)" = off ] && assert [ ! -e "$WORK/s/mirror" ]
 assert [ "$(helper unview scr)" = 0 ]
+# A window he closes on the Mac ends its chat (Egor 2026-11-11): closed() asks the app (a stub) for the chat on the
+# session's pane and closes it, forced; not while another viewer looks, not within HIDDEN_FOR of unview (the apps
+# hide windows), not when Terminal itself is gone (pgrep stub), and the hook runs it when a viewer's client goes.
+cat >"$WORK/app.py" <<'APP'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        body = json.dumps({"chats": [{"sid": "abc12345", "tty": open(sys.argv[2]).read().strip()}]}).encode()
+        self.send_response(200); self.end_headers(); self.wfile.write(body)
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        with open(sys.argv[3], "a") as f: f.write("%s %s\n" % (self.path, self.rfile.read(n).decode()))
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+s = HTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write(str(s.server_port))
+s.serve_forever()
+APP
+t display -p -t =scr: '#{pane_tty}' >"$WORK/app.tty"
+python3 -B "$WORK/app.py" "$WORK/app.port" "$WORK/app.tty" "$WORK/app.posts" >/dev/null 2>&1 &
+app_pid=$!
+has_port() { [ -s "$WORK/app.port" ]; }
+until_ok has_port || fail "the stub app did not start"
+export CHAT_TMUX_APP="http://127.0.0.1:$(cat "$WORK/app.port")"
+t set-option -t =scr: @hidden 1   # mirror off just hid it
+assert [ "$(helper closed scr)" = kept ]   # pgrep: no Terminal
+printf '#!/bin/sh\nexit 0\n' >"$WORK/pgrep"
+t set-option -t =scr: @hidden "$(date +%s)"
+assert [ "$(helper closed scr)" = hidden ]
+t set-option -t =scr: @hidden 1
+assert [ "$(helper closed scr)" = closed ]
+assert grep -qxF '/api/chat/abc12345/close {"force": true}' "$WORK/app.posts"
+assert [ "$(helper closed nosuch)" = gone ]
+: >"$WORK/app.posts"
+helper hook   # the hook now carries this stub app's address
+outer -f "$WORK/outer.conf" new-session -d -x 90 -y 40 "env -u TMUX python3 -B $HELPER attach scr"
+until_ok seen "1 90x40" || fail "scr not attached for the hook"
+assert [ "$(helper closed scr)" = viewed ]
+outer kill-server   # his red button: the viewer's client goes
+posted() { grep -qxF '/api/chat/abc12345/close {"force": true}' "$WORK/app.posts"; }
+until_ok posted || fail "the hook closed nothing: $(cat "$WORK/app.posts")"
+asserts=$((asserts + 1))
+kill "$app_pid"; app_pid=
+export CHAT_TMUX_APP="http://127.0.0.1:9"
 unset CHAT_TMUX_OSASCRIPT CHAT_TMUX_OPEN
 
 # End: by tty, by name; the server stays for the next chat.

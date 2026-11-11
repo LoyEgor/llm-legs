@@ -22,9 +22,12 @@ CLI (the first word picks; a target is a pane id %N, a tty /dev/ttysN or a sessi
   chat_tmux.py view TARGET                                      -> its chat on the Mac: "front" (a viewer's tab raised)
                                                                    or "opened" (a new Terminal window attached)
   chat_tmux.py unview TARGET                                    -> its viewers detached, their windows closed: "<n>"
+  chat_tmux.py closed SESSION                                   -> a viewer left it (the hook): its chat ends unless hidden
+  chat_tmux.py hook                                             -> sets that hook on the running server
   chat_tmux.py mirror [on|off]                                  -> "on"|"off" (with on/off: "<state> <windows>")
 """
 
+import json
 import os
 import re
 import secrets
@@ -32,6 +35,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONF = os.path.join(HERE, "chats.tmux.conf")
@@ -151,6 +157,7 @@ def start(line, name=None, cwd=None):
     # The server keeps the argv of the client that started it: started by a new-session, it would show this chat's
     # --session-id for good, and `pgrep -f -- '--session-id <sid>'` (night-run's liveness) would never see it end.
     tmux("start-server")
+    hook()
     out = tmux("new-session", "-d", "-s", pick, "-c", cwd or os.path.expanduser("~"), "-P", "-F",
                "#{pane_id} #{pane_tty}", command)
     pane, _, tty = out.strip().partition(" ")
@@ -249,7 +256,7 @@ def close_ended(windows):
 
 
 def attach_argv(session):
-    """The command a Terminal window runs to look at a chat; closing it only detaches."""
+    """The command a Terminal window runs to look at a chat; closing it ends the chat (closed())."""
     return argv("attach-session", "-t", "=" + session)
 
 
@@ -296,8 +303,9 @@ OPEN = os.environ.get("CHAT_TMUX_OPEN") or "/usr/bin/open"
 def view(word):
     """Its chat on the Mac (Open on Mac, the menubar, the `chats` picker): the Terminal tab of a client already on
     `word`'s session comes to the front, else a new Terminal window attaches to it -> "front" | "opened". Closing
-    that window only detaches: the chat runs on."""
+    that window ends the chat (closed(), the hook)."""
     session = tmux("display-message", "-p", "-t", target(word), "#{session_name}").strip()
+    hook()
     for tty in tmux("list-clients", "-t", "=" + session, "-F", "#{client_tty}").split():
         try:
             done = subprocess.run([OSASCRIPT, "-e", FRONT_TAB, tty], capture_output=True, timeout=10)
@@ -332,6 +340,66 @@ def mirrored():
     return os.path.exists(MIRROR)
 
 
+# A window he closes on the Mac ends its chat (Egor 2026-11-11: «красная кнопка — значит прям удалить»); hiding and
+# showing windows is the apps' (unview, mirror off), which mark the session first. Terminal quitting or crashing
+# takes every viewer at once and ends no chat: closed() waits CLOSE_GRACE and asks whether Terminal still runs.
+HIDDEN = "@hidden"  # session option: when unview last detached its viewers (epoch s)
+HIDDEN_FOR = 15
+CLOSE_GRACE = float(os.environ.get("CHAT_TMUX_CLOSE_GRACE") or 3)
+APP = os.environ.get("CHAT_TMUX_APP") or "http://127.0.0.1:4791"
+PGREP = os.environ.get("CHAT_TMUX_PGREP") or "/usr/bin/pgrep"
+
+
+def hook():
+    """The server runs `closed` for a session each time a client leaves it (set again on every start and view: the
+    live server predates the hook). Its socket and stubs ride in the command, as the server's env has none. The
+    session is #{session_name}: a client that died (the window closed) leaves #{hook_session_name} empty."""
+    pinned = " ".join("%s=%s" % (k, shlex.quote(os.environ[k])) for k in
+                      ("CHAT_TMUX_APP", "CHAT_TMUX_PGREP", "CHAT_TMUX_CLOSE_GRACE") if os.environ.get(k))
+    line = "%s CHAT_TMUX_SOCKET=%s %s %s closed '#{session_name}'" % (
+        pinned, shlex.quote(SOCKET), shlex.quote(sys.executable), shlex.quote(os.path.abspath(__file__)))
+    tmux("set-hook", "-g", "client-detached", "run-shell -b %s" % shlex.quote(line.strip()))
+
+
+def closed(session):
+    """A client left `session` -> what became of its chat: "gone" (the session ended first: the app's close, a
+    move), "hidden" (unview's), "viewed" (another viewer on it), "kept" (Terminal itself went), "unknown" (no live
+    chat the app knows on its pane), else the app's close answer: "closed" or "refused <code>". The close is the
+    app's End with force: a working chat's turn is interrupted, then /exit, then the session and its window go."""
+    def state():
+        hidden = tmux("show-options", "-qv", "-t", "=" + session + ":", HIDDEN).strip()
+        if hidden.isdigit() and time.time() - int(hidden) < HIDDEN_FOR:
+            return "hidden"
+        return "viewed" if tmux("list-clients", "-t", "=" + session, "-F", "#{client_tty}").split() else None
+    try:
+        seen = state()
+        if seen:
+            return seen
+        time.sleep(CLOSE_GRACE)
+        if subprocess.run([PGREP, "-qx", "Terminal"]).returncode != 0:
+            return "kept"
+        seen = state()
+        if seen:
+            return seen
+        tty = tmux("display-message", "-p", "-t", "=" + session + ":", "#{pane_tty}").strip()
+    except TmuxError:
+        return "gone"
+    try:
+        with urllib.request.urlopen(APP + "/api/chats", timeout=10) as answer:
+            rows = json.load(answer).get("chats") or []
+        sid = next((r.get("sid") for r in rows if r.get("tty") == tty and r.get("sid")), None)
+        if not sid:
+            return "unknown"
+        ask = urllib.request.Request(APP + "/api/chat/%s/close" % sid, data=b'{"force": true}', method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(ask, timeout=120) as answer:
+            return "closed" if answer.status == 200 else "refused %d" % answer.status
+    except urllib.error.HTTPError as error:
+        return "refused %d" % error.code
+    except (OSError, ValueError):
+        return "unknown"
+
+
 def unview(word):
     """`word`'s session loses its viewers: each tmux client on it detaches, and a one-tab Terminal window it ran in
     closes once its shell has ended (close_ended; a tab whose shell runs on stays). The chat runs on -> clients."""
@@ -340,6 +408,7 @@ def unview(word):
     if not ttys:
         return 0
     windows = viewer_windows(ttys)
+    tmux("set-option", "-t", "=" + session + ":", HIDDEN, str(int(time.time())))  # closed() leaves this chat running
     tmux("detach-client", "-s", "=" + session)
     if windows:
         close_ended(windows)
@@ -425,6 +494,10 @@ def main(args):
             print(view(rest[0]))
         elif verb == "unview":
             print(unview(rest[0]))
+        elif verb == "closed":
+            print(closed(rest[0]))
+        elif verb == "hook":
+            hook()
         elif verb == "mirror":
             if rest and rest[0] not in ("on", "off"):
                 raise TmuxError("mirror on|off")
