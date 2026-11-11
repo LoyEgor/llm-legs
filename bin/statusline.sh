@@ -2495,7 +2495,8 @@ if [ -n "$session_id" ]; then
   work_text=''
   { IFS= read -r -d '' work_text < "$work_cache"; } 2>/dev/null
   if [[ "$work_text" = *[![:space:]]* ]]; then rest_mdep "$work_cache"; else rest_cdep "$work_cache"; fi
-  if [[ "$work_mtime" =~ ^[0-9]+$ ]] && [ "$((now - work_mtime))" -le 15 ]; then
+  # 25 s: two 10 s refreshes plus a slow probe; past it the probe is presumed dead.
+  if [[ "$work_mtime" =~ ^[0-9]+$ ]] && [ "$((now - work_mtime))" -le 25 ]; then
     w_agents=() w_cmds=()
     while IFS= read -r work_line || [ -n "$work_line" ]; do
       case "$work_line" in
