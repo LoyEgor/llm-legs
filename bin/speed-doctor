@@ -1449,7 +1449,7 @@ def moved_opportunities(component_om, days, now, covered=WINDOW_D):
     for day, acc in days.items():
         for key, (_, us) in (acc.get("hook_cpu_us") or {}).items():
             ms.setdefault(key, {})[day] = us / 1000.0
-    total = sum(sum(v.values()) for k, v in ms.items() if not k.startswith(H.STOP_PART))
+    total = sum(sum(v.values()) for k, v in ms.items() if not k.startswith(H.DISPATCH_PARTS))
     memo = {}
     for key in sorted(k for k, v in ms.items() if max(v.values()) >= HOT_CPU_MS_DAY):
         since = hook_changed_day(key, memo)

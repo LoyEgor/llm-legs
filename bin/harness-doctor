@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
 import fix_audit
-from hook_runs import (EDIT_TOOLS, STOP_PART, SYNC_EVENTS, TOOL_EVENTS, base_home, call_slots, hook_batches,
+from hook_runs import (DISPATCH_PARTS, EDIT_TOOLS, SYNC_EVENTS, TOOL_EVENTS, base_home, call_slots, hook_batches,
                        hook_key, hook_script, join_calls, journal_runs, matches, run_row, settings_hooks,
                        settings_path, span_without, state_dir)
 import ledger_contract
@@ -2120,12 +2120,12 @@ def band_at(ticks, t):
 
 
 def hook_cpu(state, t, key, cpu_us):
-    """Per-key CPU; stop.d/<name> parts are kept apart from the total, the dispatcher's own row already holds them."""
+    """Per-key CPU; stop.d/ and away.d/ parts are kept apart from the total, the dispatcher's own row already holds them."""
     if not str(cpu_us).isdigit():
         return
     acc = speed_day(state, t)
     items = [acc.setdefault("hook_cpu_us", {}).setdefault(key, [0, 0])]
-    if not key.startswith(STOP_PART):
+    if not key.startswith(DISPATCH_PARTS):
         items.append(acc.setdefault("hook_cpu_us_total", [0, 0]))
     for item in items:
         item[0] += 1

@@ -37,7 +37,9 @@ local function notify()
   for _, fn in ipairs(listeners) do pcall(fn) end
 end
 
--- fn() runs on every change of M.away() or M.enabled(): the menubar's ☾ follows it at once.
+-- fn() runs on every change of M.away() or M.enabled(): the menubar's ☾ follows it at once. The Mac side of the one
+-- away trigger (share/presence.sh): a new consumer (a background download to unload, ...) is a Presence.subscribe call
+-- that reads M.away(), never a watcher of its own; chats subscribe in claude-setup hooks/away.d/.
 function M.subscribe(fn)
   listeners[#listeners + 1] = fn
 end

@@ -20,7 +20,9 @@ UNBLOCKING_EVENTS = ("Stop", "SubagentStop", "SessionEnd")
 STOP_EVENTS = ("Stop", "SubagentStop")
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 OTHER_TOOL = "(other)"
-STOP_PART = "stop.d/"
+# A dispatcher's drop-in runs are timed as `<dir>/<name>` parts (claude-setup stop-dispatch.sh, away-dispatch.sh):
+# no settings key, and inside their dispatcher's own row.
+DISPATCH_PARTS = ("stop.d/", "away.d/")
 RUNS_V = 2
 BATCH_SPAN_S = 1.0
 PRE_JOIN_S = (-0.05, 0.5)
@@ -191,7 +193,7 @@ def call_slots(hooks, calls):
 
 def blocking_slots(slots):
     """The slots of the keys whose runs block a model: a settings hook that is not async (`hook_slots`), on some event
-    but Stop and SessionEnd. A detached child (`<mode>-bg`, `__<mode>`) or a stop.d part is no settings key, so it is
+    but Stop and SessionEnd. A detached child (`<mode>-bg`, `__<mode>`) or a stop.d/away.d part is no settings key, so it is
     never one; a new hook is one the day its settings entry sources hook-time.sh."""
     return {key: slot for key, slot in slots.items() if any(event not in UNBLOCKING_EVENTS for event, _ in slot)}
 
@@ -209,7 +211,7 @@ def family_runs(runs, calls, lo, hi, family):
     """The runs of one family's keys (`family_slots`) ending in [lo, hi), by their end: the runs `blocking_runs`
     batches, with no owner to find."""
     keys = family_slots(calls)[family]
-    return sorted((r for r in runs if lo <= r[0] < hi and r[1] in keys and not r[1].startswith(STOP_PART)),
+    return sorted((r for r in runs if lo <= r[0] < hi and r[1] in keys and not r[1].startswith(DISPATCH_PARTS)),
                   key=lambda r: r[0])
 
 
@@ -218,7 +220,7 @@ def hook_batches(runs, slots, now):
     of the batch's first run, no key twice, and share at least one (event, tool) they could all run for."""
     by_ppid = {}
     for run in runs:
-        if run[1] in slots and run[0] <= now and not run[1].startswith(STOP_PART):
+        if run[1] in slots and run[0] <= now and not run[1].startswith(DISPATCH_PARTS):
             by_ppid.setdefault(run[5], []).append(run)
     batches = []
     for ppid, items in by_ppid.items():
