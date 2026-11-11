@@ -212,6 +212,8 @@ outer kill-server   # his red button: the viewer's client goes
 posted() { grep -qxF '/api/chat/abc12345/close {"force": true}' "$WORK/app.posts"; }
 until_ok posted || fail "the hook closed nothing: $(cat "$WORK/app.posts")"
 asserts=$((asserts + 1))
+sleep 1   # the hook's command has ended: its answer must not cover a pane in view mode (a blank window, keys taken)
+assert [ -z "$(t list-panes -a -F '#{pane_in_mode}' | grep -v '^0$')" ]
 kill "$app_pid"; app_pid=
 export CHAT_TMUX_APP="http://127.0.0.1:9"
 unset CHAT_TMUX_OSASCRIPT CHAT_TMUX_OPEN

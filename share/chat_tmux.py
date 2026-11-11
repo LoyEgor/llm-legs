@@ -356,7 +356,9 @@ def hook():
     session is #{session_name}: a client that died (the window closed) leaves #{hook_session_name} empty."""
     pinned = " ".join("%s=%s" % (k, shlex.quote(os.environ[k])) for k in
                       ("CHAT_TMUX_APP", "CHAT_TMUX_PGREP", "CHAT_TMUX_CLOSE_GRACE") if os.environ.get(k))
-    line = "%s CHAT_TMUX_SOCKET=%s %s %s closed '#{session_name}'" % (
+    # Its answer goes nowhere: run-shell shows a command's output (and a failing exit) in view mode over the current
+    # pane, which blanked a live chat's window and took his keys.
+    line = "%s CHAT_TMUX_SOCKET=%s %s %s closed '#{session_name}' >/dev/null 2>&1 || true" % (
         pinned, shlex.quote(SOCKET), shlex.quote(sys.executable), shlex.quote(os.path.abspath(__file__)))
     tmux("set-hook", "-g", "client-detached", "run-shell -b %s" % shlex.quote(line.strip()))
 
