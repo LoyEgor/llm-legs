@@ -478,7 +478,8 @@ routing-math paragraph the rules above replace.
   its own naming its switch state (`on`, `workers off · reviewers off`, `workers off`,
   `reviewers off`, `paused` for a parked vendor the plain table omits), and under that header
   every account keeps its row. Chats never pass the flag, because those rows would cost every
-  chat context while routing nothing.
+  chat context while routing nothing. The menubar starts it on a store change at most once per
+  300 s (llm-limits.lua routingStoreMinS).
 - Advisory warnings (≥85%) live in hooks and never block below a wall.
 - Data hygiene is unchanged: `effective_pct` / stale / expired semantics per
   `docs/shared-invariants.md` row y; a bucket past its reset reads as 0%.

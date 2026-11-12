@@ -2573,6 +2573,9 @@ watchEnv._G = watchEnv
 local watchChunk, watchError = loadfile(root .. "/hammerspoon/llm-limits.lua", "t", watchEnv)
 assert(watchChunk, watchError)
 local watchModule = watchChunk()
+-- The blocks below pin the re-render throttle and one launch per store state; the routing window
+-- (M.routingStoreMinS, one store-driven launch per 300 s) is off here and has its own block after them.
+watchModule.routingStoreMinS = 0
 
 assert(watchModule.shouldRerenderOnStoreChange(10, 0) == true, "first store change must re-render")
 assert(watchModule.shouldRerenderOnStoreChange(11, 10) == false, "sub-throttle store change must be suppressed")
@@ -2665,6 +2668,43 @@ do
   watchClock.now = 5006; watchCallbacks[watchModule.cachePath]()
   assert(#watchTasks == launched + 2, "a new inode in the same second launched no routing refresh")
   settleTasks()
+  watchHs.timer, watchHs.fs = nil, nil
+end
+
+-- The routing window: store changes launch worker-pick --menu at most once per routingStoreMinS; the changes
+-- inside the window arm one trailing timer that launches once at its end.
+do
+  local size = 200
+  watchHs.fs = { attributes = function() return { ino = 9, modification = 6000, size = size } end }
+  local function settleTasks()
+    local seen = 0
+    while seen < #watchTasks do
+      seen = #watchTasks
+      watchTasks[seen].callback(0, routingText)
+    end
+  end
+  settleTasks()
+  local routingTimers = {}
+  watchHs.timer = { doAfter = function(seconds, fn)
+    local timer = { seconds = seconds, fn = fn }
+    function timer:stop() self.stopped = true end
+    if seconds > 2 then table.insert(routingTimers, timer) end
+    return timer
+  end }
+  watchModule.routingStoreMinS = 300
+  local launched = #watchTasks
+  watchClock.now = 6000; watchCallbacks[watchModule.cachePath]()
+  assert(#watchTasks == launched + 1, "a store change past the routing window launched no refresh")
+  settleTasks()
+  size = 201; watchClock.now = 6010; watchCallbacks[watchModule.cachePath]()
+  size = 202; watchClock.now = 6020; watchCallbacks[watchModule.cachePath]()
+  assert(#watchTasks == launched + 1, "a store change inside the routing window launched worker-pick at once")
+  assert(#routingTimers == 1 and routingTimers[1].seconds == 290,
+    "store changes inside the routing window armed no single trailing launch at its end")
+  watchClock.now = 6300; routingTimers[1].fn()
+  assert(#watchTasks == launched + 2, "the routing window's trailing launch never ran")
+  settleTasks()
+  watchModule.routingStoreMinS = 0
   watchHs.timer, watchHs.fs = nil, nil
 end
 

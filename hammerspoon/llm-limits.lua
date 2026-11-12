@@ -3907,10 +3907,32 @@ local function storeKey()
   return string.format("%s:%s:%s", attrs.ino or "", attrs.modification or "", attrs.size or "")
 end
 
+-- A run starts ~300-650 processes and chats move the store every 30-60 s (2026-11-12: 100-130 launches an hour,
+-- ~10 process starts/s in Hammerspoon's coalition), so a store change routes again at most every
+-- ROUTING_STORE_MIN_S; one inside the window runs once at its end. The submenu dims rows older than the store, and
+-- a click that changes routing still refreshes at once (M.refreshRouting). Fields, not locals: the main chunk is at
+-- Lua's 200-local limit.
+M.routingStoreMinS, M.routingStoreAt = 300, -math.huge
+
 local function refreshRoutingIfStoreMoved()
   local key = storeKey()
   if key and key == lastRoutingStoreKey then return end
+  local wait = M.routingStoreAt + M.routingStoreMinS - os.time()
+  if wait > 0 and hs.timer and hs.timer.doAfter then
+    if not M.routingStoreTimer then
+      M.routingStoreTimer = hs.timer.doAfter(wait, function()
+        M.routingStoreTimer = nil
+        if awayNow() then
+          routingStaleWhileAway = true
+          return
+        end
+        refreshRoutingIfStoreMoved()
+      end)
+    end
+    return
+  end
   lastRoutingStoreKey = key
+  M.routingStoreAt = os.time()
   M.refreshRouting()
 end
 
@@ -3964,6 +3986,7 @@ if hs.pathwatcher then
   M.workerModelWatcher = hs.pathwatcher.new(M.workerModelPath, onWorkerModelChanged)
   if M.workerModelWatcher then M.workerModelWatcher:start() end
   lastRoutingStoreKey = storeKey()
+  M.routingStoreAt = os.time()
   M.refreshRouting()
 end
 

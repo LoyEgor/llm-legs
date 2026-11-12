@@ -2096,6 +2096,21 @@ function M.lagTick()
 end
 M.lagTimer = hs.timer.doEvery(LAG_EVERY_S, M.lagTick)
 
+-- While Egor is away (presence.lua) no click waits on the main thread: the probe and its 1 Hz wakeup stand still.
+-- The Auto menu hands Presence in (M.presence) and reports its changes, as for llm-limits. Back, the first tick
+-- only seeds, so the away span is never journaled as lag.
+function M.presenceChanged()
+  local presence, timer = M.presence, M.lagTimer
+  local away = presence and presence.away and presence.away() or false
+  if not (timer and timer.stop and timer.start) then return end
+  if away then
+    timer:stop()
+  elseif not (timer.running and timer:running()) then
+    lagLast, lagUp = nil, nil
+    timer:start()
+  end
+end
+
 -- Counts the red problems only: a blind collector or a watch reads DIM in its summary, never in the title.
 function M.title()
   local problems, failed = 0, false
