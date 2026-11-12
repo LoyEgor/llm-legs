@@ -11,6 +11,7 @@ write_cache=1
 # the only path that may issue paid model calls, and only for vendors whose 5h window expired.
 refresh=0
 refresh_account=''
+refresh_specs=()
 start_windows=0
 gemini_remove=0
 codex_remove=0
@@ -25,7 +26,7 @@ while [ $# -gt 0 ]; do
     --sort=*) sort_key=${1#--sort=}; sort_given=1 ;;
     --no-write) write_cache=0 ;;
     --refresh) refresh=1 ;;
-    --refresh-account) shift; [ $# -gt 0 ] || { usage; exit 2; }; refresh=1; refresh_account=$1 ;;
+    --refresh-account) shift; [ $# -gt 0 ] || { usage; exit 2; }; refresh=1; refresh_specs+=("$1") ;;
     --start-windows) start_windows=1 ;;
     --gemini-remove) gemini_remove=1 ;;
     --codex-remove) codex_remove=1 ;;
@@ -37,24 +38,40 @@ if [ "$start_windows" -eq 1 ] && [ "$refresh" -eq 0 ]; then
   usage
   exit 2
 fi
-case "$refresh_account" in
-  ''|claude|codex|gemini|grok|gemini/?*|claude/?*|codex/?*|grok/?*) ;;
-  *) usage; exit 2 ;;
-esac
-case "$refresh_account" in claude/*,*|*/,*|*,|*,,*) usage; exit 2 ;; esac
 refresh_target_has() {
   case ",$1," in *",$2,"*) return 0 ;; esac
   return 1
 }
-# A bare vendor name refreshes every account of that vendor and touches no other vendor. It is
-# free by construction: --start-windows (the only paid path) stays a single-account request.
-refresh_vendor=''
-case "$refresh_account" in
-  claude|codex|gemini|grok) refresh_vendor=$refresh_account ;;
-esac
+# --refresh-account repeats, one per vendor, so bin/llm-refresh's tick refreshes every due vendor in
+# ONE collect (it ran one per vendor plus a passive one: 5 collects, ~300 processes each). A bare
+# vendor name refreshes every account of that vendor and touches no other vendor. It is free by
+# construction: --start-windows (the only paid path) stays a single-account request.
+# refresh_vendor holds the bare names, space-led and -ended; refresh_account every spec, so an
+# empty one still means "no targeted refresh".
+refresh_vendor=' '
+for refresh_spec in ${refresh_specs[@]+"${refresh_specs[@]}"}; do
+  case "$refresh_spec" in
+    claude|codex|gemini|grok|gemini/?*|claude/?*|codex/?*|grok/?*) ;;
+    *) usage; exit 2 ;;
+  esac
+  case "$refresh_spec" in claude/*,*|*/,*|*,|*,,*) usage; exit 2 ;; esac
+  case " $refresh_account " in *" ${refresh_spec%%/*} "*|*" ${refresh_spec%%/*}/"*) usage; exit 2 ;; esac
+  case "$refresh_spec" in claude|codex|gemini|grok) refresh_vendor+="$refresh_spec " ;; esac
+  refresh_account+="${refresh_account:+ }$refresh_spec"
+done
+unset refresh_spec
+refresh_vendor_has() { case "$refresh_vendor" in *" $1 "*) return 0 ;; esac; return 1; }
+# The vendor's own spec off the list into REFRESH_TARGET_R, '' when none names it: `codex/a,b` -> `a,b`.
+refresh_target_r() {
+  local spec
+  REFRESH_TARGET_R=''
+  for spec in ${refresh_specs[@]+"${refresh_specs[@]}"}; do
+    case "$spec" in "$1"/*) REFRESH_TARGET_R=${spec#*/}; return ;; esac
+  done
+}
 if [ -n "$refresh_account" ] && [ "$start_windows" -eq 1 ]; then
   case "$refresh_account" in
-    claude/?*) ;;
+    claude/?*) case "$refresh_account" in *' '*) usage; exit 2 ;; esac ;;
     *) usage; exit 2 ;;
   esac
 fi
@@ -533,13 +550,15 @@ paused_vendors_json=$(printf '%s' "$paused_vendors" | jq -Rc 'split(" ") | map(s
 
 # --refresh-account names a vendor deliberately, so a parked one is refused rather than quietly
 # skipped: a silent success would leave the caller reading a parked vendor's old numbers as fresh.
-refresh_account_vendor=${refresh_account%%/*}
-if [ -n "$refresh_account_vendor" ] && vendor_paused "$refresh_account_vendor"; then
-  printf '%s is paused (%s_paused=on in ~/.claude/worker-model)\n' \
-    "$(pause_config_vendor "$refresh_account_vendor")" \
-    "$(pause_config_vendor "$refresh_account_vendor")" >&2
-  exit 2
-fi
+for refresh_spec in ${refresh_specs[@]+"${refresh_specs[@]}"}; do
+  refresh_account_vendor=${refresh_spec%%/*}
+  if vendor_paused "$refresh_account_vendor"; then
+    printf '%s is paused (%s_paused=on in ~/.claude/worker-model)\n' \
+      "$(pause_config_vendor "$refresh_account_vendor")" \
+      "$(pause_config_vendor "$refresh_account_vendor")" >&2
+    exit 2
+  fi
+done
 
 codex_pool_dir=$(worker_pool_dir codex)
 gemini_pool_dir=$(worker_pool_dir gemini)
@@ -943,10 +962,8 @@ refresh_gemini_quota() {
   fi
 }
 
-gemini_refresh_target=''
-case "$refresh_account" in
-  gemini/*) gemini_refresh_target=${refresh_account#gemini/} ;;
-esac
+refresh_target_r gemini
+gemini_refresh_target=$REFRESH_TARGET_R
 while IFS= read -r gemini_account; do
   [ -n "$gemini_account" ] || continue
   if ! grep -qxF "$gemini_account" < <(printf '%s\n' "$gemini_refresh_accounts_list"); then
@@ -955,7 +972,7 @@ while IFS= read -r gemini_account; do
   fi
 done < <(printf '%s\n' "${gemini_refresh_target//,/$'\n'}")
 if [ "$refresh" -eq 1 ] && ! vendor_paused gemini &&
-   { [ -z "$refresh_account" ] || [ -n "$gemini_refresh_target" ] || [ "$refresh_vendor" = gemini ]; }; then
+   { [ -z "$refresh_account" ] || [ -n "$gemini_refresh_target" ] || refresh_vendor_has gemini; }; then
   if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" != 0 ]; then
     gemini_refresh_pids=()
     while IFS= read -r gemini_account; do
@@ -968,7 +985,7 @@ if [ "$refresh" -eq 1 ] && ! vendor_paused gemini &&
     for gemini_refresh_pid in ${gemini_refresh_pids[@]+"${gemini_refresh_pids[@]}"}; do
       wait "$gemini_refresh_pid" || true
     done
-  elif [ -n "$gemini_refresh_target" ] || [ "$refresh_vendor" = gemini ]; then
+  elif [ -n "$gemini_refresh_target" ] || refresh_vendor_has gemini; then
     while IFS= read -r gemini_account; do
       [ -n "$gemini_account" ] || continue
       [ -z "$gemini_refresh_target" ] || refresh_target_has "$gemini_refresh_target" "$gemini_account" || continue
@@ -1036,13 +1053,14 @@ claude_refresh_attempted=0
 claude_refresh_succeeded=0
 claude_refresh_run_start=0
 claude_refresh_target=''
-case "$refresh_account" in claude/*) claude_refresh_target=${refresh_account#claude/} ;; esac
+refresh_target_r claude
+claude_refresh_target=$REFRESH_TARGET_R
 # Action-path bounds only: the detached collect-on-open path has no --refresh, so these
 # never constrain it. Generous defaults favor a complete, honest refresh.
 claude_sw_timeout=${LLM_LIMITS_CLAUDE_SW_TIMEOUT:-1200}
 claude_refresh_timeout=${LLM_LIMITS_CLAUDE_REFRESH_TIMEOUT:-300}
 if [ "$refresh" -eq 1 ] && ! vendor_paused claude &&
-   { [ -z "$refresh_account" ] || [ -n "$claude_refresh_target" ] || [ "$refresh_vendor" = claude ]; }; then
+   { [ -z "$refresh_account" ] || [ -n "$claude_refresh_target" ] || refresh_vendor_has claude; }; then
   if [ -d "$claudeb_root/limits" ]; then
     claude_refresh_attempted=1
     claude_refresh_run_start=$(date +%s)
@@ -1096,7 +1114,7 @@ if [ "$refresh" -eq 1 ] && ! vendor_paused claude &&
       claude_refresh_error='claudeb not found'
       echo "llm-limits.sh: claudeb not found; cannot refresh claude accounts" >&2
     fi
-  elif [ -n "$claude_refresh_target" ] || [ "$refresh_vendor" = claude ]; then
+  elif [ -n "$claude_refresh_target" ] || refresh_vendor_has claude; then
     claude_refresh_attempted=1
     claude_refresh_error='no claudeb store'
     echo "llm-limits.sh: no claudeb store; cannot refresh claude account" >&2
@@ -1490,13 +1508,14 @@ select_codex_event() {
 }
 
 codex_refresh_target=''
-case "$refresh_account" in codex/*) codex_refresh_target=${refresh_account#codex/} ;; esac
+refresh_target_r codex
+codex_refresh_target=$REFRESH_TARGET_R
 if [ "$refresh" -eq 1 ] && ! vendor_paused codex &&
-   { [ -z "$refresh_account" ] || [ -n "$codex_refresh_target" ] || [ "$refresh_vendor" = codex ]; }; then
+   { [ -z "$refresh_account" ] || [ -n "$codex_refresh_target" ] || refresh_vendor_has codex; }; then
   if [ "${LLM_LIMITS_CODEX_REFRESH:-1}" != 0 ]; then
     codex_refresh_attempted=1
     refresh_codex_quota "$codex_refresh_target" || true
-  elif [ -n "$codex_refresh_target" ] || [ "$refresh_vendor" = codex ]; then
+  elif [ -n "$codex_refresh_target" ] || refresh_vendor_has codex; then
     codex_refresh_attempted=1
     codex_refresh_error='refresh disabled'
     printf 'llm-limits.sh: Codex%s refresh is disabled\n' \
@@ -1693,7 +1712,7 @@ refresh_grok_quota() {
   # all-vendor collection stays a plain read.
   if [ -n "$target" ]; then
     grok_touch_expired "${target_names[@]}"
-  elif [ "$refresh_vendor" = grok ]; then
+  elif refresh_vendor_has grok; then
     touch_names=()
     while IFS= read -r account; do [ -z "$account" ] || touch_names+=("$account"); done < <(grok_account_names)
     [ "${#touch_names[@]}" -eq 0 ] || grok_touch_expired "${touch_names[@]}"
@@ -1779,7 +1798,8 @@ refresh_grok_quota() {
 }
 
 grok_refresh_target=''
-case "$refresh_account" in grok/*) grok_refresh_target=${refresh_account#grok/} ;; esac
+refresh_target_r grok
+grok_refresh_target=$REFRESH_TARGET_R
 # A name off the roster resolves to a directory with no auth.json, which the helper answers as a
 # definite `needs_login` verdict — and that would write a phantom account into the store and the
 # menu, asking Egor to log into an account that does not exist.
@@ -1787,11 +1807,11 @@ while IFS= read -r grok_account; do
   [ -z "$grok_account" ] || account_roster_refuse llm-limits.sh grok "$grok_account" || exit 2
 done < <(printf '%s\n' "${grok_refresh_target//,/$'\n'}")
 if [ "$refresh" -eq 1 ] && ! vendor_paused grok &&
-   { [ -z "$refresh_account" ] || [ -n "$grok_refresh_target" ] || [ "$refresh_vendor" = grok ]; }; then
+   { [ -z "$refresh_account" ] || [ -n "$grok_refresh_target" ] || refresh_vendor_has grok; }; then
   if [ "${LLM_LIMITS_GROK_REFRESH:-1}" != 0 ]; then
     grok_refresh_attempted=1
     refresh_grok_quota "$grok_refresh_target" || true
-  elif [ -n "$grok_refresh_target" ] || [ "$refresh_vendor" = grok ]; then
+  elif [ -n "$grok_refresh_target" ] || refresh_vendor_has grok; then
     grok_refresh_attempted=1
     grok_refresh_error='refresh disabled'
     printf 'llm-limits.sh: Grok%s refresh is disabled\n' \

@@ -349,6 +349,46 @@ assert test -z "$(find "$CLAIMS" -type f -print -quit)"
 clear_claims
 run_case claude_pool
 
+# A launch pick (--claim) whose row is over WORKER_PICK_FRESH_S old refreshes that account alone and
+# asks again before claiming (Egor 2026-11-12: another Mac spends the same accounts). Here the
+# refresh finds session walled, so the launch goes to dry with no claim left on session.
+REFRESH_STUB="$WORK/bin/limits-refresh" REFRESH_LOG="$WORK/limits-refresh.log"
+cat >"$REFRESH_STUB" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$REFRESH_LOG"
+[ "${REFRESH_WALL:-}" = 1 ] || exit 1
+jq '(.vendors.claude.accounts[] | select(.account == "session")) |=
+  (.five_hour = {used_pct:100,as_of:2000000000} | .weekly.as_of = 2000000000)' \
+  "$LLM_LIMITS_FILE" >"$LLM_LIMITS_FILE.next" && mv "$LLM_LIMITS_FILE.next" "$LLM_LIMITS_FILE"
+EOF
+chmod +x "$REFRESH_STUB"
+pick_refresh_case() { # session's as_of, then the query's arguments
+  local as_of=$1
+  shift
+  clear_claims
+  : >"$REFRESH_LOG"
+  load_case claude_pool "(.vendors.claude.accounts[] | select(.account == \"session\") | .five_hour, .weekly) += {as_of:$as_of}"
+  WORKER_PICK_LIMITS_REFRESH=$REFRESH_STUB REFRESH_LOG=$REFRESH_LOG query --account claudeb "$@"
+}
+REFRESH_WALL=1 pick_refresh_case 1999999700 --claim
+assert test "$query_rc" -eq 0
+assert test "$query_out" = dry
+assert test "$(cat "$REFRESH_LOG")" = '--refresh-account claude/session'
+assert test "$(find "$CLAIMS" -type f | sed "s|^$CLAIMS/||")" = claudeb/dry
+# A row read inside the window, a query that launches nothing, and a refresh that fails: no second ask.
+REFRESH_WALL=1 pick_refresh_case 1999999900 --claim
+assert test "$query_out" = session
+assert test ! -s "$REFRESH_LOG"
+REFRESH_WALL=1 pick_refresh_case 1999999700
+assert test "$query_out" = session
+assert test ! -s "$REFRESH_LOG"
+pick_refresh_case 1999999700 --claim
+assert test "$query_out" = session
+assert test "$(wc -l <"$REFRESH_LOG" | tr -d ' ')" -eq 1
+assert test -f "$CLAIMS/claudeb/session"
+clear_claims
+run_case claude_pool
+
 # The five-hour deferral, the one soft rule in the contract: an account this deep into its
 # five-hour window walls after the first task, so weekly headroom does not make it the answer.
 # The `5h!` tag is what keeps that visible in the line the answer is read from.

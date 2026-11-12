@@ -34,6 +34,7 @@ usage() {
   printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image|light|computer|browser] [--model <id>] [--fable] [--claim] | --list [--role workers|reviewers|chat|research|image|light|computer|browser] [--model <id>] | --role browser | --menu | --all]\n' >&2
   exit 2
 }
+worker_pick_argv=("$@")  # the pick-time refresh below runs the same query again
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --account)
@@ -153,6 +154,7 @@ worker_pick_share="$(worker_pick_root)/share"
 . "$worker_pick_share/worker-claims.sh"
 . "$worker_pick_share/worker-walls.sh"
 . "$worker_pick_share/chat-account.sh"
+. "$worker_pick_share/run-bounded.sh"
 
 # A `--fable` query reads the fable bucket. A chat on Fable reads the general weekly one like any chat, and its fable
 # bucket only walls it (Egor 2026-11-10: the Fable limit is a part of the weekly one, a chat's account is chosen by
@@ -173,6 +175,17 @@ elif [ "${BASH_VERSINFO[0]}" -ge 5 ]; then now=$EPOCHSECONDS
 else now=$(date +%s); fi
 REVIEWERS_TOKEN_HORIZON_S=1920
 nl=$'\n'
+
+# Whether a store row was read over WORKER_PICK_FRESH_S ago. 120 s: a one-account refresh takes ~1-4 s
+# (quota reads measured 0.6 s codex, 0.55 s grok, 2.5 s agy, plus the collect), so a burst of launches
+# shares one. A row with no measured bucket reads fresh: there is nothing to compare.
+pick_row_stale() { # store-vendor account
+  local fresh=${WORKER_PICK_FRESH_S:-120}
+  [[ $fresh =~ ^[0-9]+$ ]] || fresh=120
+  jq -e --arg v "$1" --arg a "$2" --argjson now "$now" --argjson fresh "$fresh" "$LIMITS_VIEW_JQ"'
+    first(.vendors[$v].accounts[]? | select((.account // "main") == $a) | limits_account_as_of | min // empty) |
+    $now - . > $fresh' "$LIMITS_FILE" >/dev/null 2>&1
+}
 
 # One read: every later lookup is a line of this text. The pin writer runs only after these
 # lookups, so a snapshot here is the file they all would have read.
@@ -549,11 +562,7 @@ summary=$(jq -r \
   def gr_auth: (.auth.status? // "ok");
   def gr_auth_ok: .auth_needed != true and (gr_auth | IN("ok", "expired"));
   def gemini_group: ((.group // "") | ascii_downcase | contains("gemini"));
-  def account_as_of:
-    [.five_hour?, .weekly?, .fable?, (.families[]? | .five_hour?, .weekly?) |
-      select(type == "object" and (.used_pct | type) == "number") |
-      (.as_of? | epoch)] |
-    map(select(. != null));
+  def account_as_of: limits_account_as_of;
   # One row of the DATA line: the name a reader can find the account by, and the oldest of the
   # measured buckets on it (shared-invariants row v) as the age of that row.
   def aged_row($vendor):
@@ -1142,6 +1151,18 @@ if [ -n "$query_vendor" ]; then
     exit 3
   fi
   if [ -n "$query_answer" ]; then
+    # A launch pick reads its account at most WORKER_PICK_FRESH_S old (Egor 2026-11-12: another Mac
+    # spends the same accounts): an older row is refreshed alone and the query asked once more, before
+    # any claim. A refresh that fails or times out keeps the answer; the run's wall reroute covers the rest.
+    if [ "$query_claim" = true ] && [ -z "${WORKER_PICK_REFRESHED:-}" ] &&
+      [ "${WORKER_PICK_LIMITS_REFRESH:-}" != off ] &&
+      pick_row_stale "${query_vendor/#claudeb/claude}" "$query_answer"; then
+      run_bounded "${WORKER_PICK_REFRESH_TIMEOUT:-60}" \
+        "${WORKER_PICK_LIMITS_REFRESH:-$(worker_pick_root)/llm-limits.sh}" \
+        --refresh-account "${query_vendor/#claudeb/claude}/$query_answer" >/dev/null 2>&1 || :
+      export WORKER_PICK_REFRESHED=1
+      exec "$BASH" "${BASH_SOURCE[0]}" ${worker_pick_argv[@]+"${worker_pick_argv[@]}"}
+    fi
     # The claim is recorded only once the answer is settled, so a refused or empty query leaves
     # no account marked as taken.
     if [ "$query_claim" = true ]; then

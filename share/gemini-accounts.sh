@@ -19,7 +19,7 @@ gemini_removal_marker_r() {
   GEMINI_MARKER_R=${gemini_accounts_cache_dir:-${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$gemini_base_home/.llm-limits-gemini}}/$1.json.removed
 }
 
-gemini_main_removed() { [ -e "$(gemini_removal_marker main)" ]; }
+gemini_main_removed() { gemini_removal_marker_r main; [ -e "$GEMINI_MARKER_R" ]; }
 
 # geminib's rule for a profile name; a directory that fails it is not an account — macOS grows
 # `Library/` under any HOME a process is pointed at, and that once became a "login needed" row.

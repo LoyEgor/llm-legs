@@ -176,8 +176,9 @@ wall — a claimed account is still the answer when nothing else is selectable.
 `worker_claims_fresh` and `worker_claims_prune` over one empty marker file per claim, whose mtime
 is the entire state. A claim nobody renews simply ages out; nothing releases it explicitly.
 
-`--claim` is valid only with `--account`, and only a caller that is about to launch passes it.
-`worker-run` and `light-research` are those callers; `worker-run` also records a brief-named account. The image launchers (`codex-image`, `gemini-image --route cli`, `grok-image`) pick
+`--claim` is valid only with `--account`. A `--claim` answer whose row is older than `WORKER_PICK_FRESH_S` (120)
+is refreshed alone (`llm-limits.sh --refresh-account`, cap 60 s) and the query asked once more; a failed refresh keeps
+the answer. `worker-run` and `light-research` are those callers; `worker-run` also records a brief-named account. The image launchers (`codex-image`, `gemini-image --route cli`, `grok-image`) pick
 without `--claim`, validate the profile they would launch, then call `worker_claims_record` themselves
 so a missing account directory does not burn the TTL. The human table
 **never** claims: it reports a decision, it does not take one. A query that cannot read the claims

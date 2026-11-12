@@ -103,6 +103,12 @@ def limits_store_epoch:
               (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60)) end)
      end)
   else null end;
+# The read times of the measured buckets of an account row; the oldest is the age of the row (row v).
+def limits_account_as_of:
+  [.five_hour?, .weekly?, .fable?, (.families[]? | .five_hour?, .weekly?) |
+    select(type == "object" and (.used_pct | type) == "number") |
+    (.as_of? | limits_store_epoch)] |
+  map(select(. != null));
 def limits_store_eff($b; $now):
   ($b // {}) as $bucket | (($bucket.resets_at // null) | limits_store_epoch) as $reset |
   if (($bucket.used_pct // null) | type) != "number" then null

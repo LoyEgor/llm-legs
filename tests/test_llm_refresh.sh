@@ -19,25 +19,34 @@ cat >"$STUB" <<'EOF'
 #!/usr/bin/env bash
 set -u
 hang() { sleep 120 & printf '%s %s\n' "$$" "$!" >>"$STUB_HANG_PIDS"; wait; }
+# One line per call, whatever it targets: a tick makes exactly one.
+printf '%s\n' "${*:-<bare>}" >>"${STUB_CALLS:-/dev/null}"
+# Stands in for the real merge, which every collect runs, targeted or not: what revive left in the
+# claudeb snapshot reaches the store only here, never before.
+if [ -s "${CB_SNAPSHOT:-/dev/null}" ]; then
+  tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
+  jq --argjson now "$LLM_REFRESH_NOW" --slurpfile pending <(jq -Rn '[inputs]' <"$CB_SNAPSHOT") '
+    .vendors.claude.accounts |= map(if (.account | IN($pending[0][])) then
+      .refresh_error={cause:"HTTP 429 rate limit",at:$now} else . end)' \
+    "$LLM_LIMITS_CACHE" >"$tmp" && mv -f "$tmp" "$LLM_LIMITS_CACHE"
+fi
 if [ "$#" -eq 0 ]; then
   printf '<bare>\n' >>"$STUB_LOG"
   [ -z "${STUB_PASSIVE_HANG:-}" ] || hang
   [ ! -e "${STUB_HANG_MARK:-/nonexistent}" ] || hang
-  # Stands in for the real merge: what revive left in the claudeb snapshot reaches the store
-  # only here, never before.
-  if [ -s "${CB_SNAPSHOT:-/dev/null}" ]; then
-    tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
-    jq --argjson now "$LLM_REFRESH_NOW" --slurpfile pending <(jq -Rn '[inputs]' <"$CB_SNAPSHOT") '
-      .vendors.claude.accounts |= map(if (.account | IN($pending[0][])) then
-        .refresh_error={cause:"HTTP 429 rate limit",at:$now} else . end)' \
-      "$LLM_LIMITS_CACHE" >"$tmp" && mv -f "$tmp" "$LLM_LIMITS_CACHE"
-  fi
   exit "${STUB_PASSIVE_RC:-0}"
 fi
-[ "${1:-}" = --refresh-account ] || exit 2
-target=${2:-}
-printf '%s\n' "$*" >>"$STUB_LOG"
-[ "${STUB_HANG_TARGET:-}" != "$target" ] || hang
+# The real collector takes one --refresh-account per vendor; each is logged as its own line, so a
+# target is asserted the same whichever vendors shared its call.
+targets=()
+while [ "$#" -gt 0 ]; do
+  [ "$1" = --refresh-account ] && [ "$#" -ge 2 ] || exit 2
+  targets+=("$2")
+  printf -- '--refresh-account %s\n' "$2" >>"$STUB_LOG"
+  shift 2
+done
+for target in "${targets[@]}"; do [ "${STUB_HANG_TARGET:-}" != "$target" ] || hang; done
+for target in "${targets[@]}"; do
 vendor=${target%%/*}
 account=${target#*/}
 if [ "${STUB_DEAD_TARGET:-}" = "$target" ]; then
@@ -46,14 +55,14 @@ if [ "${STUB_DEAD_TARGET:-}" = "$target" ]; then
     .vendors[$vendor].accounts |= map(if .account == $account then
       .auth={status:"failed"} | .five_hour.as_of=$now | .weekly.as_of=$now else . end)' \
     "$LLM_LIMITS_CACHE" >"$tmp" && mv -f "$tmp" "$LLM_LIMITS_CACHE"
-  exit 0
+  continue
 fi
 if [ "${STUB_PUSHBACK_TARGET:-}" = "$target" ]; then
   tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
   jq --arg vendor "$vendor" --argjson now "$LLM_REFRESH_NOW" \
     '.vendors[$vendor].refresh_error={cause:"HTTP 429 rate limit",at:$now}' \
     "$LLM_LIMITS_CACHE" >"$tmp" && mv -f "$tmp" "$LLM_LIMITS_CACHE"
-  exit 0
+  continue
 fi
 if [ "${STUB_STDERR_TARGET:-}" = "$target" ]; then
   printf '%s\n' "${STUB_STDERR_TEXT:-}" >&2
@@ -69,6 +78,7 @@ if [ "${STUB_REFRESH_SUCCEED:-1}" = 1 ]; then
     .vendors[$vendor] |= del(.refresh_error)' "$LLM_LIMITS_CACHE" >"$tmp" && \
     mv -f "$tmp" "$LLM_LIMITS_CACHE"
 fi
+done
 EOF
 chmod +x "$STUB"
 
@@ -263,7 +273,8 @@ run_refresh() {
   env HOME="$dir/home" WORKER_PICK_CONFIG_FILE="$dir/home/.claude/worker-model" \
     LLM_REFRESH_COLLECTOR="$STUB" LLM_LIMITS_CACHE="$dir/store.json" \
     LLM_REFRESH_STATE="$dir/state.json" LLM_REFRESH_JOURNAL="$dir/journal.jsonl" \
-    LLM_REFRESH_NOW="$now" STUB_LOG="$dir/calls.log" SPEED_DOCTOR_DIR="$dir/speed-doctor" \
+    LLM_REFRESH_NOW="$now" STUB_LOG="$dir/calls.log" STUB_CALLS="$dir/collector-calls.log" \
+    SPEED_DOCTOR_DIR="$dir/speed-doctor" WORKER_SLOTS_DIR="$dir/home/.cache/doctors/worker-slots" \
     LLM_LIMITS_REFRESH_OPENCODE_GO="$OC_STUB" OC_LOG="$dir/opencode.log" \
     OC_STUB_RESULT="${OC_STUB_RESULT:-clear}" \
     LLM_LIMITS_REFRESH_CLAUDEB="${CB_BIN:-$CB_STUB}" CB_LOG="$dir/claudeb.log" \
@@ -309,6 +320,39 @@ jq -e --argjson now "$NOW" '
   (.opencode | .interval_min == 45 and .last_attempt_epoch == $now)' \
   "$case_dir/state.json" >/dev/null || fail 'first run did not create default state'
 [ "$(grep -c '^<bare>$' "$case_dir/calls.log")" -eq 1 ] || fail 'first run did not share one passive collect'
+pass
+
+# Work not done (docs/speed-doctor-design.md): a collect is ~300 processes, and a tick with every
+# vendor stale ran five (the passive one, one after the Claude revives, one per probed vendor). One
+# call carries every vendor's accounts; the revive's snapshot folds into the same collect.
+case_dir="$WORK/one-collect"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 7200 7200 7200
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW" 30
+CB_TOKEN_FRESH=alpha run_refresh "$case_dir" "$NOW" || fail 'one-collect run failed'
+[ "$(wc -l <"$case_dir/collector-calls.log" | tr -d ' ')" -eq 1 ] || \
+  fail "a tick with four stale vendors made more than one collect: $(cat "$case_dir/collector-calls.log")"
+[ "$(cat "$case_dir/collector-calls.log")" = \
+  '--refresh-account codex/beta --refresh-account gemini/gamma --refresh-account grok/gr' ] || \
+  fail "the one collect did not carry every stale vendor: $(cat "$case_dir/collector-calls.log")"
+jq -eRn '[inputs | fromjson | select(.vendor != "opencode") | [.vendor, .step, .outcome]] ==
+  [["claude",1,"refreshed"],["codex",1,"refreshed"],["gemini",1,"refreshed"],["grok",1,"refreshed"]]' \
+  "$case_dir/journal.jsonl" >/dev/null || fail "the one collect did not refresh every vendor: $(cat "$case_dir/journal.jsonl")"
+pass
+
+# Sharing the collect, a vendor still answers only for its own lines: the collector names the
+# vendor in each, so grok's 429 loosens grok and leaves codex's rung where it was.
+case_dir="$WORK/one-collect-pushback"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 60 7200 60 7200
+write_state "$case_dir/state.json" 30 30 30 "$NOW" "$((NOW - 1000))" 30
+jq '.vendors.codex.last_attempt_epoch=0 | .vendors.grok.last_attempt_epoch=0' "$case_dir/state.json" \
+  >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+STUB_STDERR_TARGET=grok/gr STUB_STDERR_TEXT='llm-limits.sh: Grok account gr live quota query failed: 429 Too Many Requests' \
+  run_refresh "$case_dir" "$NOW" || fail 'shared-collect pushback run failed'
+[ "$(wc -l <"$case_dir/collector-calls.log" | tr -d ' ')" -eq 1 ] || fail 'codex and grok did not share one collect'
+jq -e '.grok.interval_min == 45 and .codex.interval_min == 30' "$case_dir/state.json" >/dev/null || \
+  fail "one vendor's 429 in the shared collect moved the wrong rung: $(jq -c '[.codex.interval_min, .grok.interval_min]' "$case_dir/state.json")"
 pass
 
 case_dir="$WORK/stale-lock"
@@ -1417,25 +1461,46 @@ for vendor in codex gemini grok; do
 done
 pass
 
-# Egor away (presence.lua's fresh mark): Gemini waits GEMINI_AWAY_MIN, Claude keeps its rung; a mark
-# nobody rewrote for minutes (a stopped Hammerspoon) reads as present.
-away_case() { # <name> <mark written s ago> <last attempt s ago>
+# Egor away (presence.lua's fresh mark): Gemini waits GEMINI_AWAY_MIN; while something consumes
+# (a Claude chat or worker not idle, a worker slot held) Claude keeps its rung, and with nothing
+# consuming every vendor waits AWAY_IDLE_MIN. A mark nobody rewrote for minutes (a stopped
+# Hammerspoon) reads as present.
+away_case() { # <name> <mark written s ago> <last attempt s ago> [busy|idle|slot|dead]
   case_dir="$WORK/$1"
-  mkdir -p "$case_dir/home" "$case_dir/speed-doctor/presence"
+  mkdir -p "$case_dir/home/.claude/sessions" "$case_dir/speed-doctor/presence"
   write_store "$case_dir/store.json" "$NOW" 7200 7200 7200
-  write_state "$case_dir/state.json" 15 15 15 "$((NOW - $3))" "$NOW"
+  write_state "$case_dir/state.json" 15 15 15 "$((NOW - $3))" "$NOW" 15
   printf '%s\t%s\n' "$((NOW - 7200))" "$((NOW - $2))" >"$case_dir/speed-doctor/presence/away"
+  case ${4:-} in
+    busy|idle) printf '{"pid":%s,"sessionId":"s","kind":"interactive","status":"%s"}\n' "$$" "$4" \
+      >"$case_dir/home/.claude/sessions/$$.json" ;;
+    dead) printf '{"pid":999999,"sessionId":"s","status":"busy"}\n' >"$case_dir/home/.claude/sessions/999999.json" ;;
+    slot) mkdir -p "$case_dir/home/.cache/doctors/worker-slots/1"
+      printf '%s\n' "$$" >"$case_dir/home/.cache/doctors/worker-slots/1/pid" ;;
+  esac
   run_refresh "$case_dir" "$NOW" || fail "$1 run failed"
 }
 gemini_probed() { grep -q -- '^--refresh-account gemini/' "$case_dir/calls.log"; }
-away_case away 30 1800
-! gemini_probed && jq -e --argjson now "$NOW" '.gemini.last_attempt_epoch == $now - 1800 and
-  .gemini.interval_min == 15 and .claude.last_attempt_epoch == $now' "$case_dir/state.json" >/dev/null || \
-  fail "an away Gemini was probed within the hour, or Claude lost its tick: $(cat "$case_dir/state.json")"
-away_case away-hour 30 3700
+claude_ticked() { jq -e --argjson now "$NOW" '.claude.last_attempt_epoch == $now' "$case_dir/state.json" >/dev/null; }
+away_case away 30 1800 busy
+! gemini_probed && claude_ticked && jq -e --argjson now "$NOW" '.gemini.last_attempt_epoch == $now - 1800 and
+  .gemini.interval_min == 15' "$case_dir/state.json" >/dev/null || \
+  fail "an away Gemini was probed within the hour, or Claude lost its tick while a chat worked: $(cat "$case_dir/state.json")"
+away_case away-slot 30 1800 slot
+claude_ticked || fail 'Claude lost its away tick while a worker run held a slot'
+for consumer in '' idle dead; do
+  away_case "away-idle${consumer:+-$consumer}" 30 1800 "$consumer"
+  ! claude_ticked && ! gemini_probed && ! grep -q -- '^--refresh-account \(codex\|grok\)/' "$case_dir/calls.log" &&
+    jq -e --argjson now "$NOW" 'all(.claude, .codex, .gemini, .grok; .last_attempt_epoch == $now - 1800)' \
+      "$case_dir/state.json" >/dev/null || \
+    fail "away with nothing consuming (${consumer:-no record}), a vendor ticked inside the hour: $(cat "$case_dir/state.json")"
+done
+away_case away-idle-hour 30 3700
+claude_ticked && gemini_probed || fail 'away and idle, a vendor went unrefreshed past the hour'
+away_case away-hour 30 3700 busy
 gemini_probed || fail 'an away Gemini went unprobed past the hour'
 away_case away-mark-stale 600 1800
-gemini_probed || fail 'a mark nobody rewrote for 10 min still slowed Gemini'
+gemini_probed && claude_ticked || fail 'a mark nobody rewrote for 10 min still slowed the tick'
 pass
 
 [ "$(plutil -extract ProcessType raw "$(dirname "$0")/../launchd/com.llm-refresh.plist")" = Standard ] || \

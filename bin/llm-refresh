@@ -59,8 +59,30 @@ OPENCODE_TIGHTEN_WITHIN_S=3600
 
 # While Egor is away (share/presence.sh) Gemini's tick waits at least this long: its probe launches
 # agy once per account and nobody reads the menu. presence.lua kicks a tick the moment he is back.
-# Claude keeps its rung — his call: those polls cost nothing.
+# Away with nothing consuming (no Claude chat or worker not idle, no worker slot held) every vendor
+# waits as long (Egor 2026-11-12): no pick reads the rows, and a pick refreshes its own account.
 GEMINI_AWAY_MIN=60
+AWAY_IDLE_MIN=60
+
+# Status 0 while something spends quota: a live Claude Code process whose session record is not
+# idle (chats and Claude workers write ~/.claude/sessions/<pid>.json; claudeb links every profile's
+# sessions there), or a live worker-run slot holder (every vendor's run holds one,
+# share/worker-run-lifecycle.sh). Builtins only.
+consumers_live() {
+  local file record pid
+  for file in "$HOME"/.claude/sessions/*.json; do
+    record=''
+    { IFS= read -r -d '' record <"$file"; } 2>/dev/null
+    [[ $record =~ \"pid\":([0-9]+) ]] || continue
+    pid=${BASH_REMATCH[1]}
+    [[ $record =~ \"status\":\"idle\" ]] && continue
+    kill -0 "$pid" 2>/dev/null && return 0
+  done
+  for file in "${WORKER_SLOTS_DIR:-${DOCTORS_DIR:-$HOME/.cache/doctors}/worker-slots}"/*/pid; do
+    { read -r pid <"$file"; } 2>/dev/null && [[ $pid =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null && return 0
+  done
+  return 1
+}
 
 # Claim, break, and release semantics live in share/store-lock.sh (sourced below); only the
 # single-attempt acquire is this daemon's own — a tick that finds the lock held simply skips.
@@ -379,25 +401,39 @@ gemini_login_needed_json() {
     printf '[]\n'
 }
 
-# One collector call for all of a vendor's listed accounts (a JSON array): each call is a full
-# collector run, minutes under load, so one per account pushed the tick past its ceiling. It
-# updates the tick's own locals (tried, pushback, pushback_note, wall_note, target_rc) through
-# bash's dynamic scope.
-collector_probe() {
-  local vendor=$1 accounts=$2 account refresh_log rc=0 errors signals stderr_hit
-  [ -z "$timed_out_note" ] || return 0
+# A tick is ONE collector call: every due vendor's listed accounts (a JSON array each) ride it as
+# one --refresh-account apiece. Each call is a full collect (~300 processes, minutes under load);
+# a tick used to run one passive collect plus one per probed vendor and one after the Claude
+# revives, up to 5. collector_target queues a vendor's accounts and counts them as tried; the
+# tick's locals (tried, targeted, collect_targets) move through bash's dynamic scope.
+collector_target() {
+  local vendor=$1 accounts=$2
   json_filled "$accounts" || return 0
   tried=$(jq -c --argjson accounts "$accounts" '. + $accounts' < <(printf '%s\n' "$tried"))
-  refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
-  tick_tmp=$refresh_log
+  targeted=$accounts
   # An expired grok token is refreshable work: the collector's targeted refresh rotates it
   # through the vendor CLI before polling (row ak), so the tick only asks for the re-poll.
-  run_collector --refresh-account "$vendor/$(jq -r 'join(",")' < <(printf '%s\n' "$accounts"))" \
-    >/dev/null 2>>"$refresh_log" || rc=$?
+  collect_targets+=(--refresh-account "$vendor/$(jq -r 'join(",")' < <(printf '%s\n' "$accounts"))")
+}
+
+# The collect's stderr lines this vendor's refresh wrote, plus those no vendor's refresh owns: the
+# collector names the vendor in every line its refreshes write (`llm-limits.sh: Codex account …`,
+# `llm-limits.sh: Gemini/<name> …`, `llm-limits.sh: Grok …`), so one vendor's 429 never loosens another.
+vendor_signals() { # vendor log
+  awk -v v="llm-limits.sh: $1" '{ l = tolower($0) }
+    l ~ /^llm-limits\.sh: (claude|codex|gemini|grok)[ \/]/ && index(l, v) != 1 { next }
+    { print }' "$2" 2>/dev/null
+}
+
+# What the collect said about a vendor's targeted accounts: pushback, a wall, its exit code. It
+# updates the tick's own locals (pushback, pushback_note, wall_note, target_rc) the same way.
+collector_verdict() {
+  local vendor=$1 accounts=$2 account errors signals stderr_hit
+  json_filled "$accounts" || return 0
   errors=$(while IFS= read -r account; do
     recorded_errors "$vendor" "$account" "$now"
   done < <(jq -r '.[]' < <(printf '%s\n' "$accounts")))
-  signals=$({ cat "$refresh_log"; printf '%s\n' "$errors"; })
+  signals=$({ vendor_signals "$vendor" "$collect_log"; printf '%s\n' "$errors"; })
   stderr_hit=$(pushback_hit < <(printf '%s\n' "$signals"))
   if [ -n "$stderr_hit" ]; then
     pushback=1
@@ -405,10 +441,13 @@ collector_probe() {
   elif [ -z "$wall_note" ]; then
     wall_note=$(wall_hit < <(printf '%s\n' "$signals"))
   fi
-  if [ "$rc" -ne 0 ]; then target_rc=$rc; fi
-  rm -f "$refresh_log"
-  tick_tmp=''
+  if [ "$collect_rc" -ne 0 ]; then target_rc=$collect_rc; fi
 }
+
+# The per-vendor locals the probe pass leaves for the verdict pass, kept as tick_<vendor>_<name>.
+TICK_VENDOR_VARS='stale blocked reserved tried probed session_account step claude_note probe_verdicts rechecked wall_note target_rc targeted'
+tick_vendor_save() { local var; for var in $TICK_VENDOR_VARS; do printf -v "tick_${1}_$var" '%s' "${!var}"; done; }
+tick_vendor_load() { local var ref; for var in $TICK_VENDOR_VARS; do ref="tick_${1}_$var"; printf -v "$var" '%s' "${!ref}"; done; }
 
 # OpenCode is the inverted vendor. The other four refresh by reading a free usage endpoint; the Go
 # plan publishes none, so its only probe is a real completion — free while the account is walled,
@@ -627,7 +666,9 @@ run_tick() {
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
   local opencode_result lock_lost=0 reserved='[]' timed_out_note=''
   local direct expired probed session_account claude_touched dead
-  local pushback_note wall_note stderr_hit signals rechecked cleared
+  local pushback_note wall_note stderr_hit signals rechecked cleared probe targeted
+  local probe_pass=() collect_targets=() collect_rc=0 collect_log='' passive_ran=0 opencode_due=0
+  local away away_idle
 
   command -v jq >/dev/null 2>&1 || { echo 'llm-refresh: jq is required' >&2; return 3; }
   [ -x "$collector" ] || { echo "llm-refresh: collector is not executable: $collector" >&2; return 3; }
@@ -640,11 +681,18 @@ run_tick() {
   state=$(state_read)
   state_fields
 
+  away=0 away_idle=0
+  if presence_away "$now"; then
+    away=1
+    consumers_live || away_idle=1
+  fi
   for vendor in claude codex gemini grok opencode; do
     ! vendor_paused "$vendor" || continue
     interval=state_interval_$vendor; interval=${!interval-}
     last=state_last_$vendor; last=${!last-}
-    if [ "$vendor" = gemini ] && [ "$interval" -lt "$GEMINI_AWAY_MIN" ] && presence_away "$now"; then
+    if [ "$away_idle" = 1 ] && [ "$interval" -lt "$AWAY_IDLE_MIN" ]; then
+      interval=$AWAY_IDLE_MIN
+    elif [ "$vendor" = gemini ] && [ "$away" = 1 ] && [ "$interval" -lt "$GEMINI_AWAY_MIN" ]; then
       interval=$GEMINI_AWAY_MIN
     fi
     if cadence_due "$interval" "$last" "$now"; then
@@ -652,8 +700,12 @@ run_tick() {
     fi
   done
 
-  if [ "${#due[@]}" -gt 0 ]; then
+  # The stale lists come off the store as the tick finds it, and the tick's one collect at the end
+  # folds every probe and every local reading in; statusline merges and the last tick keep it a few
+  # minutes old at most. Only a store with no lists to give is collected first.
+  if [ "${#due[@]}" -gt 0 ] && ! store_readable; then
     run_collector >/dev/null 2>&1 || passive_rc=$?
+    passive_ran=1
   fi
   # A timed-out tick persists no state: it is no completed tick, and every vendor stays due.
   if [ -n "$timed_out_note" ]; then
@@ -664,48 +716,17 @@ run_tick() {
     return 0
   fi
 
-  # The loop's stdin is /dev/null: it used to be the pipe that listed the due vendors, never the caller's.
+  # Pass 1, the probes that need no collect: Claude revives, and the accounts every other vendor
+  # queues for the one collect. The loop's stdin is /dev/null: it used to be the pipe that listed
+  # the due vendors, never the caller's.
   for vendor in ${due[@]+"${due[@]}"}; do
     interval=state_interval_$vendor; interval=${!interval-}
-    clean=state_clean_$vendor; clean=${!clean-}
     if [ "$vendor" = opencode ]; then
-      # No clean window here: this vendor's cadence is read off the stated reset, not off a quiet
-      # stretch, so the field the other three walk is left where it stands.
-      # The probe is a real completion against a gateway that can be slow or wedged, and every other
-      # vendor's next tick queues behind this lock; nothing the probe touches is shared, so the lock
-      # is handed back for its duration. Losing the re-acquire costs this tick opencode's state write —
-      # the journal line is an append and lands either way — and the next heartbeat repeats it.
-      # The vendors done before it reach the file first, as in the Claude session handback; with
-      # none done the file stays untouched, as a timed-out tick leaves it.
-      [ "$state" = "$(state_read)" ] || state_persist "$state" || return 5
-      refresh_lock_release
-      opencode_result=$(opencode_tick "$interval") || return 5
-      if refresh_lock_acquire "$lock_dir"; then
-        state=$(state_read)
-        state_fields
-      else
-        lock_lost=1
-      fi
-      # Run in a subshell, opencode_tick hands its collect's timeout back only through its result.
-      timed_out_note=$(jq -r '.timed_out // empty' < <(printf '%s\n' "$opencode_result"))
-      if [ -n "$timed_out_note" ]; then
-        journal_attempt "$vendor" 1 "$(jq -c '.tried' < <(printf '%s\n' "$opencode_result"))" timed-out \
-          "step 1: $timed_out_note" "$interval" || return 5
-        return 0
-      fi
-      next_interval=$(jq -r '.interval' < <(printf '%s\n' "$opencode_result"))
-      state=$(jq -c --arg vendor "$vendor" --argjson interval "$next_interval" \
-        --argjson now "$now" \
-        '.[$vendor].interval_min=$interval | .[$vendor].last_attempt_epoch=$now' < <(printf '%s\n' "$state"))
-      journal_attempt "$vendor" "$(jq -r '.step' < <(printf '%s\n' "$opencode_result"))" \
-        "$(jq -c '.tried' < <(printf '%s\n' "$opencode_result"))" "$(jq -r '.outcome' < <(printf '%s\n' "$opencode_result"))" \
-        "$(jq -r '.detail' < <(printf '%s\n' "$opencode_result"))" "$next_interval" || return 5
-      [ "$lock_lost" -eq 0 ] || return 0
+      opencode_due=1
       continue
     fi
     { read -r stale; read -r blocked; } < <(account_lists_json "$vendor" "$interval")
     reserved='[]'
-    dead='[]'
     if [ "$vendor" = claude ]; then
       reserved=$(reserved_accounts "$stale")
       stale=$(drop_reserved "$stale")
@@ -713,22 +734,19 @@ run_tick() {
     tried='[]'
     probed='[]'
     session_account=''
-    outcome=fresh-passive
-    detail='passive collect made all accounts fresh'
     step=0
-    pushback=0
     target_rc=0
     claude_note=''
     probe_verdicts=''
-    pushback_note=''
     wall_note=''
     rechecked='[]'
+    targeted='[]'
     if [ "$vendor" = gemini ]; then
       rechecked=$(gemini_login_needed_json "$login_recheck")
       probe=$(jq -c --argjson stale "$stale" '. + ($stale - .)' < <(printf '%s\n' "$rechecked"))
       if json_filled "$probe"; then
         step=1
-        collector_probe "$vendor" "$probe" || return 5
+        collector_target "$vendor" "$probe"
       fi
     fi
 
@@ -823,31 +841,75 @@ run_tick() {
           elif [ "$probed" = '[]' ]; then
             claude_note='no stale Claude account could be selected'
           fi
-          if [ "$step" -eq 1 ]; then
-            # revive writes the claudeb snapshot; only a collect folds it into the merged
-            # store the post-state below is read from — and it replaces revive's own announce.
-            run_collector >/dev/null 2>&1 || true
-            blocked=$(blocked_accounts_json "$vendor" "$interval")
-          fi
-          while IFS="$(printf '\t')" read -r account rc stderr_pushback stderr_hit; do
-            [ -n "$account" ] || continue
-            if [ "$rc" -eq 4 ]; then
-              claude_note="$account needs a human login; no automated path can refresh it"
-            elif [ "$rc" -ne 0 ]; then
-              [ "$stderr_pushback" -eq 1 ] || \
-                stderr_hit=$(recorded_errors "$vendor" "$account" "$now" | pushback_hit)
-              if [ -n "$stderr_hit" ]; then
-                pushback=1
-                [ -n "$pushback_note" ] || pushback_note=$stderr_hit
-              fi
-            fi
-          done < <(printf '%s\n' "$probe_verdicts")
         fi
       elif [ "$vendor" != gemini ]; then
         step=1
-        collector_probe "$vendor" "$stale" || return 5
+        collector_target "$vendor" "$stale"
       fi
+    fi
+    tick_vendor_save "$vendor"
+    probe_pass+=("$vendor")
+    # Without the lock the vendors behind this one belong to whoever owns it now.
+    [ "$lock_lost" -eq 0 ] || break
+  done </dev/null
 
+  # The one collect: every queued account, the revives' claudeb snapshots folded into the merged
+  # store (it also replaces revive's own announce), every local reading. A store collected first
+  # because it was unreadable gave no lists to probe, so there is nothing left to fold.
+  if [ "${#probe_pass[@]}" -gt 0 ] && [ "$passive_ran" -eq 0 ]; then
+    collect_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
+    tick_tmp=$collect_log
+    run_collector ${collect_targets[@]+"${collect_targets[@]}"} >/dev/null 2>"$collect_log" || collect_rc=$?
+    # A target the collector refuses (an account gone from the roster since the store last listed
+    # it) refuses the whole call: the store still gets this tick's collect, the targets their error.
+    if [ "$collect_rc" -eq 2 ] && [ "${#collect_targets[@]}" -gt 0 ]; then
+      run_collector >/dev/null 2>&1 || true
+    fi
+    passive_rc=$collect_rc
+  fi
+  if [ -n "$timed_out_note" ]; then
+    for vendor in ${probe_pass[@]+"${probe_pass[@]}"}; do
+      tick_vendor_load "$vendor"
+      interval=state_interval_$vendor
+      journal_attempt "$vendor" "$step" "$tried" timed-out "step $step: $timed_out_note" "${!interval-}" || return 5
+    done
+    if [ "$opencode_due" -eq 1 ] && [ "$lock_lost" -eq 0 ]; then
+      journal_attempt opencode 0 '[]' timed-out "step 0: $timed_out_note" "${state_interval_opencode-}" || return 5
+    fi
+    rm -f "$collect_log"
+    tick_tmp=''
+    return 0
+  fi
+
+  # Pass 2: each vendor's verdict off the collected store, in the order pass 1 left them.
+  for vendor in ${probe_pass[@]+"${probe_pass[@]}"}; do
+    interval=state_interval_$vendor; interval=${!interval-}
+    clean=state_clean_$vendor; clean=${!clean-}
+    tick_vendor_load "$vendor"
+    dead='[]'
+    outcome=fresh-passive
+    detail='passive collect made all accounts fresh'
+    pushback=0
+    pushback_note=''
+    collector_verdict "$vendor" "$targeted"
+    if [ "$vendor" = claude ] && [ "$step" -eq 1 ]; then
+      blocked=$(blocked_accounts_json "$vendor" "$interval")
+      while IFS="$(printf '\t')" read -r account rc stderr_pushback stderr_hit; do
+        [ -n "$account" ] || continue
+        if [ "$rc" -eq 4 ]; then
+          claude_note="$account needs a human login; no automated path can refresh it"
+        elif [ "$rc" -ne 0 ]; then
+          [ "$stderr_pushback" -eq 1 ] || \
+            stderr_hit=$(recorded_errors "$vendor" "$account" "$now" | pushback_hit)
+          if [ -n "$stderr_hit" ]; then
+            pushback=1
+            [ -n "$pushback_note" ] || pushback_note=$stderr_hit
+          fi
+        fi
+      done < <(printf '%s\n' "$probe_verdicts")
+    fi
+
+    if json_filled "$stale"; then
       { read -r post_stale; read -r _; read -r blocked_now; } < <(account_lists_json "$vendor" "$interval")
       [ "$vendor" != claude ] || post_stale=$(drop_reserved "$post_stale")
       # A probe that finds an account auth-dead takes it off the stale list too; it stays
@@ -926,11 +988,6 @@ run_tick() {
     if json_filled "$blocked"; then
       detail="${detail:+$detail; }unrefreshable: $(jq -r 'join(",")' < <(printf '%s\n' "$blocked"))"
     fi
-    if [ -n "$timed_out_note" ]; then
-      journal_attempt "$vendor" "$step" "$tried" timed-out "step $step: $timed_out_note" "$interval" || return 5
-      return 0
-    fi
-
     next_interval=$interval
     new_clean=$clean
     if [ "$outcome" = pushback ]; then
@@ -948,11 +1005,49 @@ run_tick() {
        .[$vendor].last_attempt_epoch=$now |
        .[$vendor].clean_since_epoch=$clean' < <(printf '%s\n' "$state"))
     journal_attempt "$vendor" "$step" "$tried" "$outcome" "$detail" "$next_interval" || return 5
-    # Without the lock the next vendor's refresh would race whoever owns it now.
-    [ "$lock_lost" -eq 0 ] || return 0
   done </dev/null
-
+  [ -z "$collect_log" ] || rm -f "$collect_log"
+  tick_tmp=''
+  # Without the lock the next vendor's refresh would race whoever owns it now.
   [ "$lock_lost" -eq 0 ] || return 0
+
+  if [ "$opencode_due" -eq 1 ]; then
+    vendor=opencode
+    interval=${state_interval_opencode-}
+    # No clean window here: this vendor's cadence is read off the stated reset, not off a quiet
+    # stretch, so the field the other three walk is left where it stands.
+    # The probe is a real completion against a gateway that can be slow or wedged, and every other
+    # vendor's next tick queues behind this lock; nothing the probe touches is shared, so the lock
+    # is handed back for its duration. Losing the re-acquire costs this tick opencode's state write —
+    # the journal line is an append and lands either way — and the next heartbeat repeats it.
+    # The vendors done before it reach the file first, as in the Claude session handback; with
+    # none done the file stays untouched, as a timed-out tick leaves it.
+    [ "$state" = "$(state_read)" ] || state_persist "$state" || return 5
+    refresh_lock_release
+    opencode_result=$(opencode_tick "$interval") || return 5
+    if refresh_lock_acquire "$lock_dir"; then
+      state=$(state_read)
+      state_fields
+    else
+      lock_lost=1
+    fi
+    # Run in a subshell, opencode_tick hands its collect's timeout back only through its result.
+    timed_out_note=$(jq -r '.timed_out // empty' < <(printf '%s\n' "$opencode_result"))
+    if [ -n "$timed_out_note" ]; then
+      journal_attempt "$vendor" 1 "$(jq -c '.tried' < <(printf '%s\n' "$opencode_result"))" timed-out \
+        "step 1: $timed_out_note" "$interval" || return 5
+      return 0
+    fi
+    next_interval=$(jq -r '.interval' < <(printf '%s\n' "$opencode_result"))
+    state=$(jq -c --arg vendor "$vendor" --argjson interval "$next_interval" \
+      --argjson now "$now" \
+      '.[$vendor].interval_min=$interval | .[$vendor].last_attempt_epoch=$now' < <(printf '%s\n' "$state"))
+    journal_attempt "$vendor" "$(jq -r '.step' < <(printf '%s\n' "$opencode_result"))" \
+      "$(jq -c '.tried' < <(printf '%s\n' "$opencode_result"))" "$(jq -r '.outcome' < <(printf '%s\n' "$opencode_result"))" \
+      "$(jq -r '.detail' < <(printf '%s\n' "$opencode_result"))" "$next_interval" || return 5
+    [ "$lock_lost" -eq 0 ] || return 0
+  fi
+
   state_persist "$state" || return 5
   if [ -r "$journal_file" ] && [ "$(wc -l <"$journal_file")" -gt 4000 ]; then
     state_tmp=$(mktemp "${journal_file}.tmp.XXXXXX") || return 5

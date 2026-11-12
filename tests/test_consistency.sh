@@ -1462,7 +1462,8 @@ assert doc_has '`120`s (`120000`ms) floor'
 assert grep -Fq 'def data_as_of:' "$LLMLIMITS"
 assert grep -Fq 'select(type == "object" and (.used_pct | type) == "number")' "$LLMLIMITS"
 assert grep -Fq 'map(set_data_age)' "$LLMLIMITS"
-assert grep -Fq 'select(type == "object" and (.used_pct | type) == "number")' "$WORKERPICK"
+assert grep -Fq 'select(type == "object" and (.used_pct | type) == "number")' "$LIMITSVIEW"
+assert grep -Fq 'def account_as_of: limits_account_as_of;' "$WORKERPICK"
 
 assert doc_has 'Account data age'
 assert doc_has 'Absent and null-valued windows do not participate'
@@ -2530,7 +2531,7 @@ assert eq "$gemini_named_marker" '/fixture-home/.llm-limits-gemini/work.json.rem
 # Both readers reach it through the shared resolver rather than spelling it.
 assert grep -Fq 'gemini_legacy_removed=$(gemini_removal_marker main)' "$LLMLIMITS"
 assert grep -Fq 'gemini_account_marker() { gemini_removal_marker "$1"; }' "$LLMLIMITS"
-assert grep -Fq 'gemini_main_removed() { [ -e "$(gemini_removal_marker main)" ]; }' "$GEMINI_ACCOUNTS"
+assert grep -Fq 'gemini_main_removed() { gemini_removal_marker_r main; [ -e "$GEMINI_MARKER_R" ]; }' "$GEMINI_ACCOUNTS"
 assert grep -Fq 'marker=$(gemini_removal_marker "$name")' "$GEMINIB"
 
 for gemini_marker_reader in "$LLMLIMITS" "$GEMINIB"; do

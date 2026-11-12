@@ -148,8 +148,47 @@ mkdir -p "$WORK/lone/bin"
 cp "$SCRIPT" "$WORK/lone/bin/geminib"
 assert_eq "$(bash "$WORK/lone/bin/geminib" families 2>"$WORK/err" | cut -f2 | tr '\n' ,)" 'flash38,flash37,flash36,pro,'
 
+# --- --union: every profile's own list; a fresh one is read from its cache, a stale or missing one fetched ---
+UNION_CACHE="$WORK/union-cache"
+mkdir -p "$UNION_CACHE" "$GEMINIB_PROFILES_DIR/argon1" "$GEMINIB_PROFILES_DIR/stale1" "$GEMINIB_PROFILES_DIR/missing1"
+export AGY_BIN="$WORK/bin/agy-models"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$AGY_CALLS"\n[ "$1" = models ] || exit 9\ncat "$AGY_MODELS_OUT"\n' >"$AGY_BIN"
+chmod +x "$AGY_BIN"
+cp "$ROOT/tests/fixtures/agy-models.txt" "$AGY_MODELS_OUT"
+union_list() { # name stamp [extra family json]
+  jq --argjson s "$2" --argjson extra "${3:-[]}" '.fetched_at = $s | .attempted_at = $s | .families = $extra + .families' \
+    "$ROOT/tests/fixtures/geminib-models.json" >"$UNION_CACHE/models-$1.json"
+}
+union_list main "$(date +%s)"
+union_list argon1 "$(date +%s)" '[{"family":"gemini-4.0-argon","slug":"argon","agy_prefix":"gemini-4.0-argon","label":"Gemini 4 Argon"}]'
+union_list stale1 "$(($(date +%s) - 90000))"
+: >"$AGY_CALLS"
+union=$(GEMINIB_CACHE_DIR="$UNION_CACHE" bash "$SCRIPT" families --union 2>"$WORK/err")
+assert_eq "$(calls)" 2
+assert_eq "$(head -n1 <<<"$union")" "gemini-4.0-argon${TAB}argon${TAB}gemini-4.0-argon${TAB}Gemini 4 Argon${TAB}argon1"
+assert_eq "$(grep -c "${TAB}argon1,main,missing1,stale1\$" <<<"$union")" 4
+assert jq -e '(.fetched_at | type) == "number" and (.families | length) == 4' "$UNION_CACHE/models-missing1.json" >/dev/null
+# Work not done (docs/speed-doctor-design.md): a fresh list costs no process of its own. Read one by one,
+# each profile forked ~9 (its jq, date, awk, cat among them), and the worker-run suites' 76-profile
+# roster made 37 calls 26k process starts, the per-user limit (2026-11-12).
+RUNS_BIN="$WORK/runs-bin"
+mkdir -p "$RUNS_BIN"
+for tool in jq date awk cat sort; do
+  printf '#!/bin/sh\nprintf x >>"%s"\nexec %s "$@"\n' "$WORK/tool-runs" "$(command -v "$tool")" >"$RUNS_BIN/$tool"
+  chmod +x "$RUNS_BIN/$tool"
+done
+union_runs() { : >"$WORK/tool-runs"; GEMINIB_CACHE_DIR="$UNION_CACHE" PATH="$RUNS_BIN:$PATH" bash "$SCRIPT" families --union >/dev/null 2>&1; wc -c <"$WORK/tool-runs" | tr -d ' '; }
+runs_four=$(union_runs)
+for extra in 1 2 3 4 5 6; do
+  mkdir -p "$GEMINIB_PROFILES_DIR/extra$extra"
+  union_list "extra$extra" "$(date +%s)"
+done
+runs_ten=$(union_runs)
+assert test "$((runs_ten - runs_four))" -le 1
+assert_eq "$(calls)" 2
+
 # --- Usage ---
 assert_eq "$(bash "$SCRIPT" families --bogus 2>&1 >/dev/null; printf 'rc=%s' "$?")" "usage: geminib families [--json] [--refresh] [--account <profile>] [--union]
 rc=2"
 
-printf 'PASS: %s asserts; geminib families (fresh fetch from agy models with effort rows folded and non-Gemini rows dropped, TSV and --json, --refresh, newest version first with the newest pro owning `pro`, the 24 h TTL both sides, the stale cache with a stderr note and a stamped attempt, a failing or empty agy never trusted, the built-in list with no cache or an unreadable one, the capacity chain following the list)\n' "$asserts"
+printf 'PASS: %s asserts; geminib families (fresh fetch from agy models with effort rows folded and non-Gemini rows dropped, TSV and --json, --refresh, newest version first with the newest pro owning `pro`, the 24 h TTL both sides, the stale cache with a stderr note and a stamped attempt, a failing or empty agy never trusted, the built-in list with no cache or an unreadable one, the capacity chain following the list, --union fetching only stale lists and reading fresh ones at no process each)\n' "$asserts"
