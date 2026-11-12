@@ -342,6 +342,15 @@ arm_tick() { # now avail swap
   fi
 }
 
+# Away from the Mac (presence.lua's presence/away, rewritten within 180 s; read here, since nothing memlogd runs lives
+# on /Volumes/Work): a calm full tick only feeds what he would look at (the Chats app's load bars and rows, the menu),
+# so none runs; pressure and armed ticks run as ever (Egor 2026-11-12: «если это не защита… можно пересмотреть»).
+away_now() { # now
+  local since='' written=''
+  { IFS=$'\t' read -r since written < "${MEMLOGD_PRESENCE_DIR:-$HOME/.cache/speed-doctor/presence}/away"; } 2>/dev/null || return 1
+  [[ $written =~ ^[0-9]+$ ]] && [ $(($1 - written)) -le 180 ]
+}
+
 # Due once per wall-clock slot of `every` s (0: every tick); a backwards clock jump is due at once.
 full_due() { # now every
   [ "$2" -le 0 ] || [ -z "$full_at" ] || [ "$1" -lt "$full_at" ] || [ $(($1 / $2)) -ne $((full_at / $2)) ]
@@ -468,7 +477,7 @@ run_loop() {
       full=1
     elif [ "$armed_until" -gt 0 ]; then
       ! full_due "$now" "$armed_full_interval" || full=1
-    else
+    elif ! away_now "$now"; then
       ! full_due "$now" "$full_interval" || full=1
     fi
     if [ "$full" = 1 ]; then

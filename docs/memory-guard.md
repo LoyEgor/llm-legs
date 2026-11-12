@@ -238,8 +238,9 @@ granted Full Disk Access. Every Harness doctor write run redeploys a landed edit
 ## Cadence
 
 Each tick probes (vm_stat, swap): every 10 s calm, 2 s armed. A full tick (ps, chat-load, guard) runs on each 1 s
-incident tick, on any probe under 4096 MB, once per 15 s slot armed, and once a minute calm (chats.json goes stale at
-120 s; sparks are per minute). Armed means avail < 6144 MB, or swap +512 MB, or avail −2048 MB within 60 s; it holds
+incident tick, on any probe under 4096 MB, once per 15 s slot armed, and once a minute calm while Egor is at the Mac (chats.json goes stale
+at 120 s; sparks are per minute); calm and away (presence/away, fresh within 180 s) none: those ticks only feed
+what he looks at, the guard rides the pressure and armed ticks. Armed means avail < 6144 MB, or swap +512 MB, or avail −2048 MB within 60 s; it holds
 120 s and writes `ARMED`/`CALM`/`probe` lines. The replay `tests/fixtures/memlogd-bursts-2026-11-11.txt` armed 61 s
 and 97 s before the two bursts' first incident ticks (2026-11-12: calm CPU −57 %).
 

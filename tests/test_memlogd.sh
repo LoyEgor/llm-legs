@@ -321,7 +321,8 @@ run_memlogd() {
     WORKER_RUN_DIR="$EMPTY_REGISTRY/runs" WORKER_STATS_DIR="$EMPTY_REGISTRY/stats" \
     CHAT_LOAD_SESSIONS="$EMPTY_REGISTRY/sessions" CHAT_NAME_ROOTS="$WORK/transcripts" \
     CHAT_NAMES_CACHE="$WORK/chat-names.json" CHAT_LOAD_REPORT_BUS="$FAKE_BIN/report-bus" GUARD_SCOPE='' \
-    HARNESS_HOLDS_DIR="$EMPTY_REGISTRY/holds" XPC_SERVICE_NAME=0 "$@" bash "$SCRIPT" run
+    HARNESS_HOLDS_DIR="$EMPTY_REGISTRY/holds" MEMLOGD_PRESENCE_DIR="$EMPTY_REGISTRY/presence" XPC_SERVICE_NAME=0 \
+    "$@" bash "$SCRIPT" run
 }
 
 # The suite is allowed to run across midnight: a case writes under the day it started, and a
@@ -366,6 +367,28 @@ assert test "$(grep -c ' probe avail_mb=' "$calm_log")" -eq 11
 assert grep -q '^1999999985 probe avail_mb=9800 swap_used_mb=1024$' "$calm_log"
 assert test "$(cat "$NODE_TICK")" -eq 2
 assert_fails grep -q '^ARMED ' "$calm_log"
+
+# --- away from the Mac and calm: no full tick at all (they only feed what he would look at) ---------
+# The same 13 calm probes with a fresh presence/away mark: 13 probe lines, ps never asked. A mark not rewritten for
+# over 180 s reads as present: full ticks per minute again.
+AWAY_DIR="$WORK/calm-away" AWAY_MARKS="$WORK/away-marks"
+mkdir -p "$AWAY_MARKS"
+printf '1999999000\t2000000000\n' >"$AWAY_MARKS/away"
+probes '9200 9800 9300 9700 9200 9800 9300 9700 9200 9800 9300 9700 9200' 1024
+nodes '3,1500'
+assert run_memlogd "$AWAY_DIR" MEMLOGD_MAX_TICKS=13 MEMLOGD_FULL_INTERVAL=60 MEMLOGD_ARMED_FULL_INTERVAL=15 \
+  EPOCH_FILE="$WORK/calm-epochs" EPOCH_TICK="$WORK/calm-away-epoch-tick" MEMLOGD_PRESENCE_DIR="$AWAY_MARKS"
+away_log=$(log_file "$AWAY_DIR")
+assert test "$(grep -c ' quiet avail_mb=' "$away_log")" -eq 0
+assert test "$(grep -c ' probe avail_mb=' "$away_log")" -eq 13
+assert test "$(cat "$NODE_TICK")" -eq 0
+STALE_DIR="$WORK/calm-away-stale"
+printf '1999999000\t1999999700\n' >"$AWAY_MARKS/away"
+probes '9200 9800 9300 9700 9200 9800 9300 9700 9200 9800 9300 9700 9200' 1024
+nodes '3,1500'
+assert run_memlogd "$STALE_DIR" MEMLOGD_MAX_TICKS=13 MEMLOGD_FULL_INTERVAL=60 MEMLOGD_ARMED_FULL_INTERVAL=15 \
+  EPOCH_FILE="$WORK/calm-epochs" EPOCH_TICK="$WORK/calm-stale-epoch-tick" MEMLOGD_PRESENCE_DIR="$AWAY_MARKS"
+assert test "$(grep -c ' quiet avail_mb=' "$(log_file "$STALE_DIR")")" -eq 2
 
 # --- armed: low available arms once, full ticks per 15 s slot -------------------------------------
 # 16 probes 2 s apart over slots starting at ...010, ...025 and ...040: three full ticks.
