@@ -310,10 +310,14 @@ CHAT_LOAD_FOOTPRINT="$WORK/footprint.json"
 printf '{}' >"$CHAT_LOAD_FOOTPRINT"
 export CHAT_LOAD_FOOTPRINT
 run_memlogd() {
-  local dir="$1" seams=''; shift
+  local dir="$1" seams='' clock=''; shift
   case " $* " in *' DAY_FILE='*|*' EPOCH_FILE='*|*' FRAME_STAMP='*|*' JQ_FAILS='*|*' VANISH_FILE='*) seams="$SEAM_BIN:" ;; esac
+  # The daemon's clock is bash's own unless MEMLOGD_CLOCK names a date to ask: the fake one, for a fake day or epoch.
+  case " $* " in *' DAY_FILE='*|*' EPOCH_FILE='*) clock=date ;; esac
   run_day=$(date +%F)
-  env PATH="$seams$PATH" MEMLOGD_PROBE_FORKS=0 MEMLOGD_DIR="$dir" MEMLOGD_SYNC=0 MEMLOGD_QUIET_INTERVAL=0 MEMLOGD_INCIDENT_INTERVAL=0 \
+  # Every tick a full one unless a case sets the cadence: the cases below test what a full tick does.
+  env PATH="$seams$PATH" MEMLOGD_CLOCK="$clock" MEMLOGD_PROBE_FORKS=0 MEMLOGD_DIR="$dir" MEMLOGD_SYNC=0 MEMLOGD_QUIET_INTERVAL=0 MEMLOGD_INCIDENT_INTERVAL=0 \
+    MEMLOGD_ARMED_INTERVAL=0 MEMLOGD_FULL_INTERVAL=0 MEMLOGD_ARMED_FULL_INTERVAL=0 \
     WORKER_RUN_DIR="$EMPTY_REGISTRY/runs" WORKER_STATS_DIR="$EMPTY_REGISTRY/stats" \
     CHAT_LOAD_SESSIONS="$EMPTY_REGISTRY/sessions" CHAT_NAME_ROOTS="$WORK/transcripts" \
     CHAT_NAMES_CACHE="$WORK/chat-names.json" CHAT_LOAD_REPORT_BUS="$FAKE_BIN/report-bus" GUARD_SCOPE='' \
@@ -344,6 +348,92 @@ assert test "$(wc -l <"$quiet_log")" -eq 2
 assert grep -qE '^[0-9]{10} quiet avail_mb=8192 swap_used_mb=1024 node_count=3 node_rss_mb=1500$' \
   "$quiet_log"
 assert_fails grep -q 'INCIDENT' "$quiet_log"
+
+# --- cadence: calm probes cheaply, ps and chat-load once per wall-clock minute --------------------
+# 13 probes 5 s apart across one minute boundary: 2 full ticks (one per minute slot), 11 probe lines,
+# and ps asked twice, where every tick used to run both (13 and 13). Swings under arm_drop_mb never arm.
+CALM_DIR="$WORK/calm"
+printf '%s ' {1999999980..2000000040..5} >"$WORK/calm-epochs"
+probes '9200 9800 9300 9700 9200 9800 9300 9700 9200 9800 9300 9700 9200' 1024
+nodes '3,1500'
+assert run_memlogd "$CALM_DIR" MEMLOGD_MAX_TICKS=13 MEMLOGD_FULL_INTERVAL=60 MEMLOGD_ARMED_FULL_INTERVAL=15 \
+  EPOCH_FILE="$WORK/calm-epochs" EPOCH_TICK="$WORK/calm-epoch-tick"
+calm_log=$(log_file "$CALM_DIR")
+assert test "$(grep -c ' quiet avail_mb=' "$calm_log")" -eq 2
+assert grep -q '^1999999980 quiet avail_mb=9200 swap_used_mb=1024 node_count=3 node_rss_mb=1500$' "$calm_log"
+assert grep -q '^2000000040 quiet avail_mb=9200 ' "$calm_log"
+assert test "$(grep -c ' probe avail_mb=' "$calm_log")" -eq 11
+assert grep -q '^1999999985 probe avail_mb=9800 swap_used_mb=1024$' "$calm_log"
+assert test "$(cat "$NODE_TICK")" -eq 2
+assert_fails grep -q '^ARMED ' "$calm_log"
+
+# --- armed: low available arms once, full ticks per 15 s slot -------------------------------------
+# 16 probes 2 s apart over slots starting at ...010, ...025 and ...040: three full ticks.
+ARMED_DIR="$WORK/armed"
+printf '%s ' {2000000010..2000000040..2} >"$WORK/armed-epochs"
+probes 5000 1024
+nodes '3,1500'
+assert run_memlogd "$ARMED_DIR" MEMLOGD_MAX_TICKS=16 MEMLOGD_FULL_INTERVAL=60 MEMLOGD_ARMED_FULL_INTERVAL=15 \
+  EPOCH_FILE="$WORK/armed-epochs" EPOCH_TICK="$WORK/armed-epoch-tick"
+armed_log=$(log_file "$ARMED_DIR")
+assert test "$(grep -c '^ARMED ' "$armed_log")" -eq 1
+assert grep -q '^ARMED 2000000010 reason=low avail_mb=5000 swap_used_mb=1024$' "$armed_log"
+assert test "$(grep -c ' quiet avail_mb=' "$armed_log")" -eq 3
+assert grep -q '^2000000026 quiet avail_mb=5000 ' "$armed_log"
+assert test "$(cat "$NODE_TICK")" -eq 3
+assert_fails grep -qE '^CALM |INCIDENT' "$armed_log"
+
+# --- a probe that sees pressure runs the full tick on the spot, whatever the slot -------------------
+PROBE_PRESSURE_DIR="$WORK/probe-pressure"
+printf '1999999980 1999999985 1999999990' >"$WORK/pressure-epochs"
+probes '9000 9000 2000' 1024
+nodes '3,1500'
+assert run_memlogd "$PROBE_PRESSURE_DIR" MEMLOGD_MAX_TICKS=3 MEMLOGD_FULL_INTERVAL=60 MEMLOGD_ARMED_FULL_INTERVAL=15 \
+  EPOCH_FILE="$WORK/pressure-epochs" EPOCH_TICK="$WORK/pressure-epoch-tick"
+pressure_log=$(log_file "$PROBE_PRESSURE_DIR")
+assert grep -q '^1999999985 probe avail_mb=9000 ' "$pressure_log"
+assert grep -qE '^INCIDENT 1999999990 avail_mb=2000 ' "$pressure_log"
+assert grep -q '^1999999990 incident avail_mb=2000 swap_used_mb=1024 node_count=3 node_rss_mb=1500$' "$pressure_log"
+assert test "$(cat "$NODE_TICK")" -eq 2
+
+# --- swap growth and a steep drop arm too; the hold runs out into CALM -----------------------------
+ARM_SIGNS_DIR="$WORK/arm-signs"
+printf '2000000000 2000000005 2000000010 2000000135 2000000140' >"$WORK/signs-epochs"
+probes '9000 9000 9000 9000 6900' '1000 1600 1600 1600 1600'
+assert run_memlogd "$ARM_SIGNS_DIR" MEMLOGD_MAX_TICKS=5 MEMLOGD_FULL_INTERVAL=60 MEMLOGD_ARMED_FULL_INTERVAL=15 \
+  EPOCH_FILE="$WORK/signs-epochs" EPOCH_TICK="$WORK/signs-epoch-tick"
+signs_log=$(log_file "$ARM_SIGNS_DIR")
+assert grep -q '^ARMED 2000000005 reason=swap avail_mb=9000 swap_used_mb=1600$' "$signs_log"
+assert grep -q '^CALM 2000000135 avail_mb=9000 swap_used_mb=1600$' "$signs_log"
+assert grep -q '^ARMED 2000000140 reason=drop avail_mb=6900 swap_used_mb=1600$' "$signs_log"
+
+# --- the 2026-11-11 bursts replayed through arm_tick: armed the probe before every incident entry --
+# A tick under 4096 MB after one at or over it is an entry; the tick before it must be armed, and the
+# armed stretch before each burst's first entry at least 30 s long (replayed: 61 s and 97 s).
+REPLAY="$WORK/replay"
+bash -c '. "$1"; current_file="$2.markers"; last=""
+  while read -r burst t a s; do
+    case $burst in "#"*) continue ;; esac
+    [ "$burst" = "$last" ] || { armed_until=0 arm_t=() arm_a=() arm_s=(); last=$burst; }
+    arm_tick "$t" "$a" "$s"
+    printf "%s %s %s %s\n" "$burst" "$t" "$a" "$((armed_until > 0))"
+  done <"$3"' _ "$SCRIPT" "$REPLAY" "$ROOT/tests/fixtures/memlogd-bursts-2026-11-11.txt" >"$REPLAY"
+replay_verdict=$(awk '
+  $1 != burst { burst = $1; above = 1; armed = 0; since = 0; first[burst] = 0 }
+  {
+    if ($3 < 4096 && above) {
+      entries[burst]++
+      if (armed) ready[burst]++
+      if (!first[burst]) first[burst] = armed ? $2 - since : -1
+    }
+    above = $3 >= 4096
+    if ($4 && !armed) since = $2
+    armed = $4
+  }
+  END { for (b in entries) printf "%s %d/%d %d\n", b, ready[b], entries[b], (first[b] >= 30) }' "$REPLAY" | sort)
+assert test "$(printf '%s\n' "$replay_verdict" | awk '{ split($2, n, "/"); if (n[1] == n[2] && n[2] > 0 && $3 == 1) ok++ } END { print ok + 0 }')" -eq 2
+assert grep -q '^night ' <<<"$replay_verdict"
+assert grep -q '^evening ' <<<"$replay_verdict"
 
 # --- machine sampler: its own day file, swap-in rate from deltas, the probe once a minute ---------
 MACHINE_DIR="$WORK/machine"

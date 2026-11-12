@@ -1,6 +1,6 @@
 # Memory guard (decision record)
 
-`bin/memlogd` does not only log. Every tick it runs `bin/chat-load` (deployed beside the daemon
+`bin/memlogd` does not only log. Every full tick (see Cadence) it runs `bin/chat-load` (deployed beside the daemon
 copy in `~/.local/libexec/`), which attributes every process to the chat that launched it, writes the
 per-chat load snapshot the llm-limits menu shows, and under memory pressure acts on one rule with no
 knobs. A forced reboot is the one outcome this exists to prevent; lag and heavy swapping are fine.
@@ -181,7 +181,7 @@ guard.
 
 ## The menu snapshot
 
-`~/Library/Logs/memlogd/chats.json`, rewritten every tick and read by `appendChats` in
+`~/Library/Logs/memlogd/chats.json`, rewritten every full tick and read by `appendChats` in
 `hammerspoon/llm-limits.lua`. Title `Chats/other  <cores>/<cores> cores · <GB>/<GB> GB`; inside,
 the CPU and memory split (CPU from the delta of each process's cumulative CPU time between ticks;
 `Mem <chats> chats + <other> other = <sum> GB · RAM <used> of <total> · swap <swap>`: chats and other
@@ -235,11 +235,13 @@ the lock library beside itself; without it every guard notice went to `lost.log`
 LaunchAgent's Python /Volumes/Work, and every process that Python starts, even with memlogd itself
 granted Full Disk Access. Every Harness doctor write run redeploys a landed edit of any of them (`harness-doctor --redeploy`).
 
-## Agent process environment
+## Cadence
 
-Workers and review cells run with `NX_PARALLEL=1` and `NX_DAEMON=false` in their own environment
-and nowhere wider (`supervise()` in `bin/worker-run`, `run_streamed` in review-bench): prevention,
-so one agent's fan-out does not become the job the guard has to cut.
+Each tick probes (vm_stat, swap): every 10 s calm, 2 s armed. A full tick (ps, chat-load, guard) runs on each 1 s
+incident tick, on any probe under 4096 MB, once per 15 s slot armed, and once a minute calm (chats.json goes stale at
+120 s; sparks are per minute). Armed means avail < 6144 MB, or swap +512 MB, or avail −2048 MB within 60 s; it holds
+120 s and writes `ARMED`/`CALM`/`probe` lines. The replay `tests/fixtures/memlogd-bursts-2026-11-11.txt` armed 61 s
+and 97 s before the two bursts' first incident ticks (2026-11-12: calm CPU −57 %).
 
 ## Tests
 

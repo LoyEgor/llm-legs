@@ -5,7 +5,7 @@
 # keep running while that volume is unmounted. harness-doctor reruns install-agent once an edit of
 # this file or any file it deploys beside the copy (chat-load, chat_names.py, machine_probe.py,
 # limit_hit.py, report-bus, report_frame.py, store-lock.sh, limiter-hold.sh, limit-hit.sh) lands in main.
-# Besides logging, this daemon ACTS: every tick runs chat-load, deployed beside this copy, which
+# Besides logging, this daemon ACTS: every full tick runs chat-load, deployed beside this copy, which
 # keeps the per-chat load snapshot for the menubar and, when the machine is nearly out of RAM,
 # SIGKILLs the fattest job a chat launched (`docs/memory-guard.md` is the decision record).
 # launchd's PATH finds macOS bash 3.2, which has no sleep builtin: every tick would fork a `sleep`.
@@ -32,8 +32,28 @@ repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 
 log_dir="${MEMLOGD_DIR:-$HOME/Library/Logs/memlogd}"
 frames="$log_dir/frames"
-quiet_interval="${MEMLOGD_QUIET_INTERVAL:-15}"
+# Every tick probes (vm_stat, swap: no python, no ps), every quiet_interval s while calm and every
+# armed_interval s while armed. The full tick (ps, chat-load and its guard) runs on every incident tick,
+# on any probe that sees pressure, once per wall-clock armed_full_interval slot while armed and once per
+# wall-clock full_interval slot while calm: the menu calls chats.json stale at 120 s and its sparks
+# bucket CPU per minute. 2026-11-11: 15 s full ticks cost 21-40 CPU-min a day, almost all of it calm.
+# A probe is 5 forks (vm_stat, df, sysctl, available_mb's awk), ~18 ms CPU (a full tick ~200 ms), so
+# calm probes every 10 s, not 5.
+quiet_interval="${MEMLOGD_QUIET_INTERVAL:-10}"
+armed_interval="${MEMLOGD_ARMED_INTERVAL:-2}"
+full_interval="${MEMLOGD_FULL_INTERVAL:-60}"
+armed_full_interval="${MEMLOGD_ARMED_FULL_INTERVAL:-15}"
 incident_interval="${MEMLOGD_INCIDENT_INTERVAL:-1}"
+# Armed is danger short of an incident (arm_reason): available under arm_avail_mb, swap used up
+# arm_swap_mb or available down arm_drop_mb within arm_window s; it holds arm_hold s past the last
+# sign. Replayed over the 2026-11-09..11 day logs: armed 61 s before the 02:32 burst's first incident
+# tick, 47 s before 02:44's, 97 s before 17:42's (tests/fixtures/memlogd-bursts-2026-11-11.txt), and
+# 29 % of the non-incident time on those busy days; a 30 s window missed 02:32 (a 2.2 GB drop over 31 s).
+arm_avail_mb=6144
+arm_swap_mb=512
+arm_drop_mb=2048
+arm_window=60
+arm_hold=120
 enter_avail_mb="${MEMLOGD_ENTER_AVAIL_MB:-4096}"
 exit_avail_mb="${MEMLOGD_EXIT_AVAIL_MB:-5120}"
 # Under this much room for swap to grow into, available RAM is counted the swap way (available_mb).
@@ -69,6 +89,12 @@ machine_at=""
 probe_at=""
 prev_swapins=""
 prev_swapins_at=""
+full_at=""
+armed_until=0
+danger=""
+arm_t=()
+arm_a=()
+arm_s=()
 ncpu=-1
 boot_id=-1
 
@@ -106,25 +132,37 @@ available_mb() { # vm_text [room]
     }' <<<"$1"
 }
 
-# "<used MB> <room MB>": room is the free swap plus the free disk of the swap volume, all swap can still
-# grow into. Once it is gone the kernel's low-swap jetsam kills system services while vm_stat still
-# shows gigabytes available (2026-10-20, 14 GB free on the disk). -1 is a failed probe.
+# Sets `swap` (used MB) and `room` (MB): room is the free swap plus the free disk of the swap volume, all
+# swap can still grow into. Once it is gone the kernel's low-swap jetsam kills system services while
+# vm_stat still shows gigabytes available (2026-10-20, 14 GB free on the disk). -1 is a failed probe.
+# Parsed in bash into globals: it runs every probe, and awk plus a $(...) were 3 of its 5 forks.
 swap_probe() {
-  local disk
-  disk=$(df -m /System/Volumes/VM 2>/dev/null | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print $4 }')
-  sysctl -n vm.swapusage 2>/dev/null | awk -v disk="${disk:--1}" '
-    function mb(value, unit, number) {
-      unit = substr(value, length(value), 1)
-      number = value + 0
-      if (unit == "G") number *= 1024
-      else if (unit == "K") number /= 1024
-      return int(number)
-    }
-    { for (i = 1; i < NF - 1; i++) if ($i == "used") used = $(i + 2); else if ($i == "free") free = $(i + 2) }
-    END {
-      if (used == "") { print "-1 -1"; exit }
-      printf "%d %d\n", mb(used), (free == "" || disk < 0) ? -1 : mb(free) + disk
-    }'
+  local text disk="" used free mb
+  text=$(df -m /System/Volumes/VM 2>/dev/null) || :
+  { read -r _ && read -r _ _ _ disk _; } <<<"$text" || :
+  [[ "$disk" =~ ^[0-9]+$ ]] || disk=-1
+  text=$(sysctl -n vm.swapusage 2>/dev/null) || text=""
+  swap=-1 room=-1
+  [[ "$text" =~ used\ =\ ([^ ]+) ]] || return 0
+  used=${BASH_REMATCH[1]}
+  swap_mb "$used"
+  swap=$mb
+  [[ "$text" =~ free\ =\ ([^ ]+) ]] && [ "$disk" -ge 0 ] || return 0
+  free=${BASH_REMATCH[1]}
+  swap_mb "$free"
+  [ "$mb" -lt 0 ] || room=$((mb + disk))
+}
+
+# "2977.31M" -> mb=2977 (G x1024, K /1024, truncated), -1 when it is no size.
+swap_mb() {
+  [[ "$1" =~ ^([0-9]+)(\.([0-9]*))?([KMG]?)$ ]] || { mb=-1; return 0; }
+  local frac="${BASH_REMATCH[3]}000" milli
+  milli=$((10#${BASH_REMATCH[1]} * 1000 + 10#${frac:0:3}))
+  case ${BASH_REMATCH[4]} in
+    G) mb=$((milli * 1024 / 1000)) ;;
+    K) mb=$((milli / 1024000)) ;;
+    *) mb=$((milli / 1000)) ;;
+  esac
 }
 
 # A ps that failed or said nothing is unknown, not zero node processes: the jump test compares this
@@ -269,6 +307,46 @@ pressure() { [ "$1" -ge 0 ] && [ "$1" -lt "$enter_avail_mb" ]; }
 # breaks mid-incident cannot latch the dumps forever.
 recovered() { [ "$1" -lt 0 ] || [ "$1" -ge "$exit_avail_mb" ]; }
 
+# The sign of danger this probe shows, into `danger` (a global: a $(...) would fork every probe), empty
+# when calm: low, swap (used swap above the lowest of the last arm_window s by arm_swap_mb) or drop
+# (available under the highest of them by arm_drop_mb). A failed probe (-1) shows no sign.
+arm_reason() { # now avail swap
+  local now="$1" avail="$2" swap="$3" i top=-1 floor=-1 keep_t=() keep_a=() keep_s=()
+  for i in "${!arm_t[@]}"; do
+    [ "${arm_t[i]}" -le "$now" ] && [ $((now - arm_t[i])) -le "$arm_window" ] || continue
+    keep_t+=("${arm_t[i]}") keep_a+=("${arm_a[i]}") keep_s+=("${arm_s[i]}")
+    [ "${arm_a[i]}" -le "$top" ] || top=${arm_a[i]}
+    [ "${arm_s[i]}" -lt 0 ] || { [ "$floor" -ge 0 ] && [ "${arm_s[i]}" -ge "$floor" ]; } || floor=${arm_s[i]}
+  done
+  arm_t=("${keep_t[@]}" "$now") arm_a=("${keep_a[@]}" "$avail") arm_s=("${keep_s[@]}" "$swap")
+  danger=""
+  if [ "$avail" -ge 0 ] && [ "$avail" -lt "$arm_avail_mb" ]; then
+    danger=low
+  elif [ "$swap" -ge 0 ] && [ "$floor" -ge 0 ] && [ $((swap - floor)) -ge "$arm_swap_mb" ]; then
+    danger=swap
+  elif [ "$avail" -ge 0 ] && [ "$top" -ge 0 ] && [ $((top - avail)) -ge "$arm_drop_mb" ]; then
+    danger=drop
+  fi
+}
+
+# Arms on a sign (an ARMED line), stays armed arm_hold s past the last one, then a CALM line. A
+# backwards clock jump that leaves the hold further away than arm_hold ends it.
+arm_tick() { # now avail swap
+  arm_reason "$@"
+  if [ -n "$danger" ]; then
+    [ "$armed_until" -gt 0 ] || append "ARMED $1 reason=$danger avail_mb=$2 swap_used_mb=$3"
+    armed_until=$(($1 + arm_hold))
+  elif [ "$armed_until" -gt 0 ] && { [ "$1" -ge "$armed_until" ] || [ $((armed_until - $1)) -gt "$arm_hold" ]; }; then
+    armed_until=0
+    append "CALM $1 avail_mb=$2 swap_used_mb=$3"
+  fi
+}
+
+# Due once per wall-clock slot of `every` s (0: every tick); a backwards clock jump is due at once.
+full_due() { # now every
+  [ "$2" -le 0 ] || [ -z "$full_at" ] || [ "$1" -lt "$full_at" ] || [ $(($1 / $2)) -ne $((full_at / $2)) ]
+}
+
 rotate() {
   local cutoff file base live="" gone=0 kills=0 incidents=0 n
   rotate_files "$@"
@@ -344,9 +422,20 @@ acquire_lock() {
   trap 'exit 129' HUP INT TERM
 }
 
+# Sets now and day off bash's own clock, no fork a probe; MEMLOGD_CLOCK names a date(1) to ask instead
+# (the tests' fake days and epochs), and bash 3.2, which has no %()T, asks date.
+clock() {
+  if [ -z "${MEMLOGD_CLOCK:-}" ] && printf -v now '%(%s)T' -1 2>/dev/null && printf -v day '%(%F)T' "$now" 2>/dev/null; then
+    return 0
+  fi
+  now=$("${MEMLOGD_CLOCK:-date}" +%s)
+  day=$("${MEMLOGD_CLOCK:-date}" +%F)
+}
+
 run_loop() {
   local today day now avail measure swap room counts node_count node_rss stamp jump_file vm_text
-  local state=quiet recover_since=0 ticks=0 interval
+  local state=quiet recover_since=0 ticks=0 interval full
+  node_count=-1 node_rss=-1
   enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
   mkdir -p "$log_dir" || return 1
   boot_facts
@@ -355,8 +444,7 @@ run_loop() {
   rotate
   current_file=$(log_path "$today")
   while :; do
-    now=$(date +%s)
-    day=$(date +%F)
+    clock
     if [ "$day" != "$today" ]; then
       today=$day
       mkdir -p "$log_dir"
@@ -368,15 +456,28 @@ run_loop() {
       fi
     fi
     vm_text=$(vm_stat 2>/dev/null) || vm_text=""
-    read -r swap room <<<"$(swap_probe)"
+    swap_probe
     read -r avail measure <<<"$(available_mb "$vm_text" "$room")"
-    counts=$(node_stats)
-    node_count=${counts% *}
-    node_rss=${counts#* }
+    arm_tick "$now" "$avail" "$swap"
     # Before the state machine, and independent of it: the guard answers to its own two thresholds,
     # not to whether this tick opened an incident, so a change to the incident window cannot quietly
-    # move when the machine defends itself.
-    chat_load_tick "$now" "$avail" "$swap" "$room" "$measure"
+    # move when the machine defends itself. Its 2048 MB lies under pressure(), so every tick it could
+    # fire on is a full one.
+    full=0
+    if [ "$state" = incident ] || pressure "$avail"; then
+      full=1
+    elif [ "$armed_until" -gt 0 ]; then
+      ! full_due "$now" "$armed_full_interval" || full=1
+    else
+      ! full_due "$now" "$full_interval" || full=1
+    fi
+    if [ "$full" = 1 ]; then
+      full_at=$now
+      counts=$(node_stats)
+      node_count=${counts% *}
+      node_rss=${counts#* }
+      chat_load_tick "$now" "$avail" "$swap" "$room" "$measure"
+    fi
 
     if [ "$state" = quiet ] && pressure "$avail"; then
       state=incident
@@ -428,10 +529,15 @@ run_loop() {
         recover_since=0
       fi
       interval=$incident_interval
+    elif [ "$full" = 0 ]; then
+      append "$now probe avail_mb=$avail swap_used_mb=$swap"
+      interval=$quiet_interval
+      [ "$armed_until" -eq 0 ] || interval=$armed_interval
     else
       append "$now quiet avail_mb=$avail swap_used_mb=$swap node_count=$node_count node_rss_mb=$node_rss"
       # A failed probe on either side is unknown, the same rule pressure() applies: a -1 tick must
-      # not read as an 8-node, gigabyte-wide rise once the next healthy tick lands.
+      # not read as an 8-node, gigabyte-wide rise once the next healthy tick lands. The previous
+      # full tick is the baseline, a minute back while calm.
       if [ -n "$prev_node_count" ] && [ "$node_count" -ge 0 ] && [ "$node_rss" -ge 0 ] && \
          [ "$prev_node_count" -ge 0 ] && [ "$prev_node_rss" -ge 0 ]; then
         if [ $((node_count - prev_node_count)) -ge "$jump_nodes" ] || \
@@ -445,9 +551,12 @@ run_loop() {
         fi
       fi
       interval=$quiet_interval
+      [ "$armed_until" -eq 0 ] || interval=$armed_interval
     fi
-    prev_node_count=$node_count
-    prev_node_rss=$node_rss
+    if [ "$full" = 1 ]; then
+      prev_node_count=$node_count
+      prev_node_rss=$node_rss
+    fi
     machine_tick "$now" "$swap" "$vm_text" "$room"
 
     ticks=$((ticks + 1))
