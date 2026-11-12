@@ -172,15 +172,23 @@ worker_pool_shielded_json() {
 }
 
 worker_pool_marker_epoch() {
-  local vendor="$1" kind="$2" account="$3" dir file epoch
+  worker_pool_marker_epoch_r "$@" || return 1
+  printf '%s\n' "$WORKER_POOL_EPOCH_R"
+}
+
+# The same answer in WORKER_POOL_EPOCH_R, no fork: the collector asks it per account per vendor on
+# every collect. The read loop is `tr -d '\r\n'`: every line of the file, CR and LF dropped.
+worker_pool_marker_epoch_r() {
+  local vendor="$1" kind="$2" account="$3" file line epoch=''
+  WORKER_POOL_EPOCH_R=''
   case "$kind" in shielded|shield-override) ;; *) return 1 ;; esac
   worker_pool_valid_name "$account" || return 1
-  dir=$(worker_pool_dir "$vendor") || return 1
-  file="$dir/$kind/$account"
+  worker_pool_dir_r "$vendor" || return 1
+  file="$WORKER_POOL_DIR_R/$kind/$account"
   [ -f "$file" ] && [ -r "$file" ] || return 1
-  epoch=$(tr -d '\r\n' <"$file") || return 1
+  { while IFS= read -r line || [ -n "$line" ]; do epoch+=${line//$'\r'/}; done <"$file"; } 2>/dev/null || return 1
   case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s\n' "$epoch"
+  WORKER_POOL_EPOCH_R=$epoch
 }
 
 worker_pool_marker_set() {
@@ -188,7 +196,8 @@ worker_pool_marker_set() {
   case "$kind" in shielded|shield-override) ;; *) return 1 ;; esac
   worker_pool_valid_name "$account" || return 1
   case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
-  dir=$(worker_pool_dir "$vendor") || return 1
+  worker_pool_dir_r "$vendor" || return 1
+  dir=$WORKER_POOL_DIR_R
   marker="$dir/$kind/$account"
   mkdir -p -- "$dir/$kind" || return 1
   tmp="$dir/.$kind.$account.tmp.$$"
@@ -202,7 +211,8 @@ worker_pool_marker_clear() {
   local vendor="$1" kind="$2" account="$3" dir
   case "$kind" in shielded|shield-override) ;; *) return 1 ;; esac
   worker_pool_valid_name "$account" || return 1
-  dir=$(worker_pool_dir "$vendor") || return 1
+  worker_pool_dir_r "$vendor" || return 1
+  dir=$WORKER_POOL_DIR_R
   [ -e "$dir/$kind/$account" ] || [ -L "$dir/$kind/$account" ] || return 0
   rm -f -- "$dir/$kind/$account"
 }
@@ -213,7 +223,8 @@ worker_pool_shield_clear() { worker_pool_marker_clear "$1" shielded "$2"; }
 worker_pool_shield_active() {
   local vendor="$1" account="$2" dir
   worker_pool_valid_name "$account" || return 1
-  dir=$(worker_pool_dir "$vendor") || return 1
+  worker_pool_dir_r "$vendor" || return 1
+  dir=$WORKER_POOL_DIR_R
   [ -e "$dir/shielded/$account" ]
 }
 
@@ -228,10 +239,10 @@ worker_pool_shield_override() {
 }
 
 worker_pool_override_current() {
-  local vendor="$1" account="$2" current="$3" stored
+  local vendor="$1" account="$2" current="$3"
   case "$current" in ''|*[!0-9]*) return 1 ;; esac
-  stored=$(worker_pool_marker_epoch "$vendor" shield-override "$account") || return 1
-  [ "$stored" = "$current" ]
+  worker_pool_marker_epoch_r "$vendor" shield-override "$account" || return 1
+  [ "$WORKER_POOL_EPOCH_R" = "$current" ]
 }
 
 worker_pool_override_clear() { worker_pool_marker_clear "$1" shield-override "$2"; }

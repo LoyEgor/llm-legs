@@ -4,15 +4,19 @@
 # because that is the path the menubar's `--gemini-remove` writes; a second spelling leaves a
 # removal only one of the two tools can see.
 gemini_removal_marker() {
+  gemini_removal_marker_r "$1"
+  printf '%s\n' "$GEMINI_MARKER_R"
+}
+
+# The same path in GEMINI_MARKER_R, no fork: the collector asks it per account on every collect.
+gemini_removal_marker_r() {
   local main_cache
   if [ "$1" = main ]; then
     main_cache="${gemini_main_cache:-${LLM_LIMITS_GEMINI_CACHE:-$gemini_base_home/.llm-limits-gemini.json}}"
-    printf '%s\n' "${LLM_LIMITS_GEMINI_REMOVED:-$main_cache.removed}"
+    GEMINI_MARKER_R=${LLM_LIMITS_GEMINI_REMOVED:-$main_cache.removed}
     return
   fi
-  printf '%s/%s.json.removed\n' \
-    "${gemini_accounts_cache_dir:-${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$gemini_base_home/.llm-limits-gemini}}" \
-    "$1"
+  GEMINI_MARKER_R=${gemini_accounts_cache_dir:-${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$gemini_base_home/.llm-limits-gemini}}/$1.json.removed
 }
 
 gemini_main_removed() { [ -e "$(gemini_removal_marker main)" ]; }
@@ -35,11 +39,17 @@ gemini_account_names() {
 }
 
 gemini_account_home() {
+  gemini_account_home_r "$1" || return 1
+  printf '%s\n' "$GEMINI_HOME_R"
+}
+
+gemini_account_home_r() { # name -> GEMINI_HOME_R, no fork
+  GEMINI_HOME_R=''
   [ -n "$1" ] || return 1
   if [ "$1" = main ]; then
-    printf '%s\n' "$gemini_base_home"
+    GEMINI_HOME_R=$gemini_base_home
   else
-    printf '%s\n' "$gemini_profiles_dir/$1"
+    GEMINI_HOME_R=$gemini_profiles_dir/$1
   fi
 }
 

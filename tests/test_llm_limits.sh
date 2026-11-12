@@ -536,6 +536,23 @@ jq -e '.vendors.gemini | .current_account == "work" and
   <<<"$no_main_off" >/dev/null || fail "an excluded Gemini account kept the current mark"
 rm -f "$GEMINI_NO_MAIN_PROFILES/.geminib/disabled"
 
+# Work not done (docs/speed-doctor-design.md): every collect walks every Gemini account, ~1.2k
+# collects a day, so a cached account costs two jq runs (its cache read, its row), not one per field.
+JQ_COUNT_BIN="$WORK/jq-count-bin"
+mkdir -p "$JQ_COUNT_BIN"
+printf '#!/bin/sh\nprintf x >>"%s"\nexec %s "$@"\n' "$WORK/jq-runs" "$(command -v jq)" >"$JQ_COUNT_BIN/jq"
+chmod +x "$JQ_COUNT_BIN/jq"
+gemini_jq_runs() { : >"$WORK/jq-runs"; PATH="$JQ_COUNT_BIN:$PATH" gemini_no_main --json >/dev/null; wc -c <"$WORK/jq-runs" | tr -d ' '; }
+jq_runs_two=$(gemini_jq_runs)
+mkdir -p "$GEMINI_NO_MAIN_PROFILES/extra1" "$GEMINI_NO_MAIN_PROFILES/extra2"
+gemini_account_snapshot extra1 0.9 0.9
+gemini_account_snapshot extra2 0.9 0.9
+jq_runs_four=$(gemini_jq_runs)
+rm -rf "$GEMINI_NO_MAIN_PROFILES/extra1" "$GEMINI_NO_MAIN_PROFILES/extra2"
+rm -f "$GEMINI_NO_MAIN_CACHE/extra1.json" "$GEMINI_NO_MAIN_CACHE/extra2.json"
+[ "$((jq_runs_four - jq_runs_two))" -le 4 ] \
+  || fail "two more cached Gemini accounts cost $((jq_runs_four - jq_runs_two)) jq runs, over 2 each"
+
 # One account left is still an account row, never the flat legacy shape main used to own.
 GEMINI_SOLE_PROFILES="$WORK/gemini-sole-profiles"
 mkdir -p "$GEMINI_SOLE_PROFILES/com"

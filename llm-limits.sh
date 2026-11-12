@@ -135,6 +135,17 @@ epoch_iso() {
   tz_colon "$(date -r "$1" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date -d "@$1" '+%Y-%m-%dT%H:%M:%S%z')"
 }
 
+# epoch_iso into a variable, no fork where printf can read the epoch: the per-account loops ask it.
+epoch_iso_to() { # var epoch
+  local text
+  if [ "${BASH_VERSINFO[0]}" -ge 5 ] && [[ "$2" =~ ^[1-9][0-9]{0,11}$ ]]; then
+    printf -v text '%(%Y-%m-%dT%H:%M:%S%z)T' "$2"
+    printf -v "$1" '%s:%s' "${text%??}" "${text#"${text%??}"}"
+    return
+  fi
+  printf -v "$1" '%s' "$(epoch_iso "$2")"
+}
+
 format_reset_time() {
   date -r "$1" '+%H:%M' 2>/dev/null || date -d "@$1" '+%H:%M' 2>/dev/null || printf 'unknown'
 }
@@ -209,6 +220,22 @@ claude_stale_cause() {
 
 file_mtime() {
   stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null
+}
+
+# The stat loadable is loaded disabled, as bin/worker-run does: enabled, it would answer every
+# `stat -f` here and in the sourced libraries with its own syntax. -L is lstat, as stat(1) is.
+stat_builtin=''
+enable -f "${BASH%/bin/*}/lib/bash/stat" stat 2>/dev/null && enable -n stat && stat_builtin=1
+file_mtime_to() { # var path: file_mtime's answer, no fork where the loadable is there; '' when unreadable
+  if [ -n "$stat_builtin" ]; then
+    local -A st=()
+    enable stat
+    stat -L -A st "$2" 2>/dev/null
+    enable -n stat
+    printf -v "$1" '%s' "${st[mtime]-}"
+    return
+  fi
+  printf -v "$1" '%s' "$(file_mtime "$2")"
 }
 
 claude_subscription_type() {
@@ -490,11 +517,17 @@ codex_legacy_removed=$(codex_removal_marker main)
 # The store spells Claude `claude` and the worker-model file spells it `claudeb`.
 pause_config_vendor() { case "$1" in claude) printf 'claudeb' ;; *) printf '%s' "$1" ;; esac; }
 paused_vendors=' '
+# Primed once and dropped after: five keys off one read of the file, not an awk per key.
+worker_model_file_r
+worker_model_prime_pins "$WORKER_MODEL_R"
 for pause_vendor in claude codex gemini grok opencode; do
-  [ "$(worker_model_pinned_account "$(pause_config_vendor "$pause_vendor")_paused" 2>/dev/null || true)" = on ] \
-    || continue
+  pause_key=$pause_vendor
+  [ "$pause_key" != claude ] || pause_key=claudeb
+  worker_model_pinned_account_r "${pause_key}_paused" 2>/dev/null || WORKER_MODEL_R=''
+  [ "$WORKER_MODEL_R" = on ] || continue
   paused_vendors="$paused_vendors$pause_vendor "
 done
+unset _WM_PIN_FILE _WM_PIN_TEXT
 vendor_paused() { case "$paused_vendors" in *" $1 "*) return 0 ;; esac; return 1; }
 paused_vendors_json=$(printf '%s' "$paused_vendors" | jq -Rc 'split(" ") | map(select(length > 0))')
 
@@ -577,7 +610,8 @@ reconcile_vendor_shields() {
   local vendor="$1" payload="$2" pool_vendor="$1" dir rows name reset main should marker kind
   local -a accounts=()
   [ "$pool_vendor" != claude ] || pool_vendor=claudeb
-  dir=$(worker_pool_dir "$pool_vendor") || return 1
+  worker_pool_dir_r "$pool_vendor" || return 1
+  dir=$WORKER_POOL_DIR_R
   rows=$(jq -r --arg vendor "$vendor" --argjson now "$now_epoch" \
     --argjson floor "$WORKER_POOL_SHIELD_PER_DAY" "$iso_def$LIMITS_VIEW_JQ"'
     (.accounts // [])[] |
@@ -628,7 +662,8 @@ reconcile_vendor_shields() {
 apply_vendor_shield_state() {
   local vendor="$1" payload="$2" pool_vendor="$1" dir pool_out shielded
   [ "$pool_vendor" != claude ] || pool_vendor=claudeb
-  dir=$(worker_pool_dir "$pool_vendor") || return 1
+  worker_pool_dir_r "$pool_vendor" || return 1
+  dir=$WORKER_POOL_DIR_R
   pool_out=$(worker_pool_disabled_json "$dir") || return 1
   shielded=$(worker_pool_shielded_json "$dir") || return 1
   jq -c --arg vendor "$vendor" --argjson pool_out "$pool_out" --argjson shielded "$shielded" '
@@ -658,12 +693,13 @@ account_priority_names() {
   esac
 }
 
-account_profile_dir() {
+account_profile_dir_r() { # vendor name -> ACCOUNT_DIR_R, no fork
+  ACCOUNT_DIR_R=''
   case "$1" in
-    claude) printf '%s/%s\n' "$claude_profiles_root" "$2" ;;
-    codex) if [ "$2" = main ]; then printf '%s/.codex\n' "$HOME"; else printf '%s/%s\n' "$codex_profiles_dir" "$2"; fi ;;
-    gemini) gemini_account_home "$2" ;;
-    grok) if [ "$2" = main ]; then printf '%s/.grok\n' "$HOME"; else printf '%s/%s\n' "$grok_profiles_dir" "$2"; fi ;;
+    claude) ACCOUNT_DIR_R=$claude_profiles_root/$2 ;;
+    codex) if [ "$2" = main ]; then ACCOUNT_DIR_R=$HOME/.codex; else ACCOUNT_DIR_R=$codex_profiles_dir/$2; fi ;;
+    gemini) gemini_account_home_r "$2" && ACCOUNT_DIR_R=$GEMINI_HOME_R ;;
+    grok) if [ "$2" = main ]; then ACCOUNT_DIR_R=$HOME/.grok; else ACCOUNT_DIR_R=$grok_profiles_dir/$2; fi ;;
   esac
 }
 
@@ -688,7 +724,8 @@ account_order() {
         continue
       fi
       names+=("$name")
-      dirs+=("$(account_profile_dir "$vendor" "$name")")
+      account_profile_dir_r "$vendor" "$name"
+      dirs+=("$ACCOUNT_DIR_R")
     done
     # One stat for every directory: a directory it cannot read prints no line and sorts last.
     [ "${#dirs[@]}" -eq 0 ] ||
@@ -714,8 +751,13 @@ account_order_json() {
 }
 
 gemini_account_cache() {
-  if [ "$1" = main ]; then printf '%s\n' "$gemini_main_cache"
-  else printf '%s/%s.json\n' "$gemini_accounts_cache_dir" "$1"
+  gemini_account_cache_r "$1"
+  printf '%s\n' "$GEMINI_CACHE_R"
+}
+
+gemini_account_cache_r() { # name -> GEMINI_CACHE_R, no fork
+  if [ "$1" = main ]; then GEMINI_CACHE_R=$gemini_main_cache
+  else GEMINI_CACHE_R=$gemini_accounts_cache_dir/$1.json
   fi
 }
 
@@ -1080,26 +1122,28 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     # Snapshots without a valid five_hour bucket (e.g. auth-only after a failed probe) must
     # stay visible as unknown values, never vanish from the account list.
     # Header-origin week = never measured (shared-invariants n): render unknown, not a number.
-    claude_data=$(jq -c 'select(type == "object")
-      | if (.seven_day.origin? == "headers") then del(.seven_day) else . end' "$claude_file" 2>/dev/null || true)
-    mtime=$(file_mtime "$claude_file" || true)
+    # One jq for the snapshot and the six facts the row is built from, a line each: the per-bucket
+    # 0/1 a numeric used_percentage, the reset its digits only (int_or_empty), as seven jq runs read them.
+    claude_data='' has_five=0 has_week=0 has_fable=0
+    five_reset_epoch='' week_reset_epoch='' fable_reset_epoch=''
+    { IFS= read -r claude_data; IFS= read -r has_five; IFS= read -r five_reset_epoch
+      IFS= read -r has_week; IFS= read -r week_reset_epoch
+      IFS= read -r has_fable; IFS= read -r fable_reset_epoch; } < <(jq -r '
+      def has($bucket): if (try ((.[$bucket].used_percentage | type) == "number") catch false) then 1 else 0 end;
+      def reset($bucket): try ([.[$bucket].resets_at // empty | tostring | select(test("^[0-9]+$"))] | .[0] // "") catch "";
+      select(type == "object")
+      | if (.seven_day.origin? == "headers") then del(.seven_day) else . end
+      | tojson, has("five_hour"), reset("five_hour"), has("seven_day"), reset("seven_day"),
+        has("fable"), reset("fable")' "$claude_file" 2>/dev/null)
+    file_mtime_to mtime "$claude_file"
     [ -n "$claude_data" ] && [ -n "$mtime" ] || continue
-    has_five=0
-    if jq -e '(.five_hour.used_percentage | type) == "number"' < <(printf '%s\n' "$claude_data") >/dev/null; then has_five=1; fi
     stale=$((now_epoch - mtime)); [ "$stale" -ge 0 ] || stale=0
     five_reset=''
-    five_reset_epoch=$(int_or_empty "$(jq -r '.five_hour.resets_at // empty' < <(printf '%s\n' "$claude_data"))")
-    [ -z "$five_reset_epoch" ] || five_reset=$(epoch_iso "$five_reset_epoch")
-    has_week=0
+    [ -z "$five_reset_epoch" ] || epoch_iso_to five_reset "$five_reset_epoch"
     week_reset=''
-    if jq -e '(.seven_day.used_percentage | type) == "number"' < <(printf '%s\n' "$claude_data") >/dev/null; then has_week=1; fi
-    week_reset_epoch=$(int_or_empty "$(jq -r '.seven_day.resets_at // empty' < <(printf '%s\n' "$claude_data"))")
-    [ -z "$week_reset_epoch" ] || week_reset=$(epoch_iso "$week_reset_epoch")
-    has_fable=0
+    [ -z "$week_reset_epoch" ] || epoch_iso_to week_reset "$week_reset_epoch"
     fable_reset=''
-    if jq -e '(.fable.used_percentage | type) == "number"' < <(printf '%s\n' "$claude_data") >/dev/null; then has_fable=1; fi
-    fable_reset_epoch=$(int_or_empty "$(jq -r '.fable.resets_at // empty' < <(printf '%s\n' "$claude_data"))")
-    [ -z "$fable_reset_epoch" ] || fable_reset=$(epoch_iso "$fable_reset_epoch")
+    [ -z "$fable_reset_epoch" ] || epoch_iso_to fable_reset "$fable_reset_epoch"
     account_json=$(jq -cn --argjson d "$claude_data" --arg account "$account" --argjson enabled "$enabled" \
       --argjson has_five "$has_five" --argjson has_week "$has_week" --argjson has_fable "$has_fable" \
       --arg five_reset "$five_reset" --argjson mtime "$mtime" --argjson now "$now_epoch" \
@@ -1152,7 +1196,7 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
           reset_credits_stale:(([$now - $credits_asof, 0] | max) > $thrw)}
        else {} end) +
       (if ($d.reset_credits_expires_at | type) == "string" then
-         {reset_credits_expires_at:$d.reset_credits_expires_at} else {} end)' < <(printf '%s\n' "$claude_data"))
+         {reset_credits_expires_at:$d.reset_credits_expires_at} else {} end)' </dev/null)
     accounts_lines+="$account_json"$'\n'
   done
   accounts=$(jq -sc '.' < <(printf '%s\n' "$accounts_lines"))
@@ -1823,8 +1867,10 @@ grok=$(jq -cn --argjson payload "$grok_payload" --argjson now "$now_epoch" \
 
 gemini_account_lines=''
 while IFS= read -r gemini_account; do
-  gemini_cache=$(gemini_account_cache "$gemini_account")
-  gemini_removed_marker=$(gemini_account_marker "$gemini_account")
+  gemini_account_cache_r "$gemini_account"
+  gemini_cache=$GEMINI_CACHE_R
+  gemini_removal_marker_r "$gemini_account"
+  gemini_removed_marker=$GEMINI_MARKER_R
   gemini_enabled=true
   if worker_pool_is_disabled "$gemini_pool_dir" "$gemini_account"; then gemini_enabled=false; fi
   gemini_auth=''
@@ -1832,14 +1878,20 @@ while IFS= read -r gemini_account; do
   gemini_data=''
   gemini_mtime=$now_epoch
   if [ -r "$gemini_cache" ]; then
-    gemini_auth=$(jq -r 'if .auth_needed == true then "1" else "" end' "$gemini_cache" 2>/dev/null || true)
-    gemini_auth_checked=$(int_or_empty "$(jq -r '.auth_checked_at // empty' "$gemini_cache" 2>/dev/null || true)")
-    gemini_labels=$(jq -c '[.families[]? | select((.label | type) == "string" and (.slug | type) == "string")
-      | {key:.label, value:.slug}] | from_entries' \
-      "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}/models-$gemini_account.json" 2>/dev/null) || gemini_labels='{}'
-    gemini_data=$(jq -c --argjson labels "$gemini_labels" "$gemini_group_jq"'
+    gemini_models="${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}/models-$gemini_account.json"
+    gemini_models_text=''
+    [ ! -r "$gemini_models" ] || IFS= read -r -d '' gemini_models_text <"$gemini_models"
+    # One jq for the cache's three answers, a line each; each one is empty where its own filter
+    # fails, as when they were four jq runs: the labels read {} from an unparseable model list, the
+    # checked line keeps digits only (int_or_empty).
+    { IFS= read -r gemini_auth; IFS= read -r gemini_auth_checked; IFS= read -r gemini_data; } < <(
+      jq -r --arg models "$gemini_models_text" "$gemini_group_jq"'
       def window($w): gemini_window($w);
-      gemini_primary($labels) as $group |
+      (try ($models | fromjson | [.families[]? | select((.label | type) == "string" and (.slug | type) == "string")
+        | {key:.label, value:.slug}] | from_entries) catch {}) as $labels |
+      (try (if .auth_needed == true then "1" else "" end) catch ""),
+      (try ([.auth_checked_at // empty | tostring | select(test("^[0-9]+$"))] | .[0] // "") catch ""),
+      (try ([gemini_primary($labels) as $group |
       ($group | window("5h")) as $five |
       ($group | window("weekly")) as $week |
       select($group != null) |
@@ -1848,15 +1900,16 @@ while IFS= read -r gemini_account; do
                     (.displayName | type) == "string" and ($labels[.displayName] | type) == "string" and
                     (window("5h") != null or window("weekly") != null))
                   | {key:$labels[.displayName], value:{group:.displayName,five:window("5h"),week:window("weekly")}}]
-                 | from_entries)}
-    ' "$gemini_cache" 2>/dev/null || true)
-    gemini_mtime=$(file_mtime "$gemini_cache" 2>/dev/null || true)
+                 | from_entries)}] | if length > 0 then (.[0] | tojson) else "" end) catch "")
+    ' "$gemini_cache" 2>/dev/null)
+    file_mtime_to gemini_mtime "$gemini_cache"
     [ -n "$gemini_mtime" ] || gemini_mtime=$now_epoch
   fi
   if [ -n "$gemini_data" ]; then
     stale=$((now_epoch - gemini_mtime)); [ "$stale" -ge 0 ] || stale=0
+    epoch_iso_to gemini_as_of "$gemini_mtime"
     gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" --argjson d "$gemini_data" \
-      --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" \
+      --arg as_of "$gemini_as_of" --argjson as_of_epoch "$gemini_mtime" \
       --argjson stale "$stale" --arg auth "$gemini_auth" --arg checked "$gemini_auth_checked" \
       --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" '
       def used($remaining):
@@ -1877,8 +1930,9 @@ while IFS= read -r gemini_account; do
       | if $auth == "1" then . + {auth_needed:true,status:"login needed"} +
           (if $checked == "" then {} else {auth_checked_at:($checked | tonumber)} end) else . end')
   elif [ "$gemini_auth" = 1 ]; then
+    epoch_iso_to gemini_as_of "$gemini_mtime"
     gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
-      --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" \
+      --arg as_of "$gemini_as_of" --argjson as_of_epoch "$gemini_mtime" \
       --arg checked "$gemini_auth_checked" \
       '{account:$account,enabled:$enabled,auth_needed:true,
         status:"login needed",source:"agy-print-usage",as_of:$as_of,as_of_epoch:$as_of_epoch} +
@@ -1893,13 +1947,19 @@ while IFS= read -r gemini_account; do
     # Only NAMED accounts reach this: a removed one is a profile whose creds went bad, so valid
     # creds again (owner re-logged in via agy) self-clear it. main never reaches it — its removal
     # is deliberate, and a self-clear would undo `geminib remove main` on the very next collect.
-    if printf '%s' "$gemini_account_json" | jq -e '.auth_needed != true and
-        ((.five_hour | type) == "object" or (.weekly | type) == "object")' >/dev/null 2>&1; then
+    # One jq for the verdict and the removed row: an empty answer means the creds are valid again.
+    # A failed jq keeps the marker and drops the row, as the removed-row jq failing did.
+    if ! gemini_removed_json=$(jq -rcn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
+      --arg row "$gemini_account_json" '
+      if (try ($row | fromjson | .auth_needed != true and
+                ((.five_hour | type) == "object" or (.weekly | type) == "object")) catch false)
+      then "" else {account:$account,enabled:$enabled,removed:true,
+                    status:"removed",source:"agy-print-usage"} end'); then
+      gemini_account_json=''
+    elif [ -z "$gemini_removed_json" ]; then
       rm -f "$gemini_removed_marker"
     else
-      gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
-        '{account:$account,enabled:$enabled,removed:true,
-          status:"removed",source:"agy-print-usage"}')
+      gemini_account_json=$gemini_removed_json
     fi
   fi
   [ -n "$gemini_account_json" ] || continue

@@ -907,8 +907,11 @@ assert grep -Eq '^[[:space:]]*\. "\$(\(resolve_root\)|geminib_root)/share/gemini
 assert grep -Fq '. "$script_dir/share/gemini-accounts.sh"' "$LLMLIMITS"
 assert grep -q '^gemini_account_names()' "$GEMINI_ACCOUNTS"
 assert grep -q '^gemini_account_home()' "$GEMINI_ACCOUNTS"
-assert grep -Fq 'printf '\''%s\n'\'' "$gemini_base_home"' "$GEMINI_ACCOUNTS"
-assert grep -Fq 'printf '\''%s\n'\'' "$gemini_profiles_dir/$1"' "$GEMINI_ACCOUNTS"
+# The mapping lives in the no-fork reader; the printing one only hands its answer on.
+assert grep -q '^gemini_account_home_r()' "$GEMINI_ACCOUNTS"
+assert grep -Fq 'gemini_account_home_r "$1" || return 1' "$GEMINI_ACCOUNTS"
+assert grep -Fq 'GEMINI_HOME_R=$gemini_base_home' "$GEMINI_ACCOUNTS"
+assert grep -Fq 'GEMINI_HOME_R=$gemini_profiles_dir/$1' "$GEMINI_ACCOUNTS"
 assert doc_has 'Gemini profile discovery and HOME mapping'
 
 # Review keeps Sol; implementation runs Astra independently (Egor, 2026-09-05).
