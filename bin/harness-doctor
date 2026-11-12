@@ -7232,15 +7232,32 @@ def main():
             sightings.record()
         except Exception as exc:
             print("harness-doctor: sightings: %s" % error_line(exc), file=sys.stderr)
-        exec_speed()
+        exec_speed(document)
     return 1 if document["status"] == "error" else 0
 
 
-def exec_speed():
+AGENT_LABEL = "com.egor.harness-doctor"
+# The LaunchAgent's runs hand over to Speed at most hourly: Speed reads days of journals (8.9 CPU-s a run, 219 runs
+# a day, the 2026-11-11 CPU audit) and every input it reads moves every 5 min (Harness's own files, the statusline
+# journal), so no input key ever skips it. Its section rides in Harness's document between its runs. Half a
+# StartInterval of slack keeps the hour from slipping to 65 min. Any other caller (menu Refresh, night, hand) runs it.
+SPEED_AGENT_EVERY_S = 3600 - 150
+
+
+def speed_due(document):
+    if os.environ.get("XPC_SERVICE_NAME") != AGENT_LABEL or not isinstance(document, dict):
+        return True
+    speed = document.get("speed") or {}
+    at = speed.get("as_of_s")
+    return speed.get("status") == "error" or not isinstance(at, (int, float)) or \
+        document.get("as_of_s", 0) - at >= SPEED_AGENT_EVERY_S
+
+
+def exec_speed(document=None):
     """Speed reads what this run derived, so it follows each successful run at this run's own priority: never
     taskpolicy -b, whose throttled I/O held an attended run's Speed 50 min at load 129 (2026-10-04).
     A fixture Harness directory with no SPEED_DOCTOR_DIR of its own never reaches the live Speed store."""
-    if os.environ.get("HARNESS_DOCTOR_DIR") and not os.environ.get("SPEED_DOCTOR_DIR"):
+    if os.environ.get("HARNESS_DOCTOR_DIR") and not os.environ.get("SPEED_DOCTOR_DIR") or not speed_due(document):
         return
     script = os.environ.get("SPEED_DOCTOR_CMD") or os.path.join(ROOT_DIR, "bin", "speed-doctor")
     sys.stdout.flush()

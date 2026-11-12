@@ -78,7 +78,7 @@ schema in its shared-invariants row: C1 transcript rows (Harness's incremental p
 worker-run, C4 night-run, C5 suites, C6 machine sampler (memlogd), C7 CPU attribution, C8 presence, C9 media, C10
 background journals, C11 chat start. Media "interactive" is derived at read time from A ∪ B, never from `[ -t 0 ]`.
 
-**Cost.** `bin/speed-doctor` reads only derived files and the new journals by offset, ≤ 2 s; Harness execs it after each successful run (no own `StartInterval`), at the run's own priority, never `taskpolicy -b` (it starved Speed for 50 min). The exec keeps Harness's pid, so the System doctor tags both runs' disk counters `speed-doctor`. It is a consumer in P and reports its own cost as `cost.collector_cpu_min_day`. A first run backfills 28 days through Harness's C1 reader, newest first, resumable; a day enters the window only once every transcript that could hold it is read. Short coverage lowers confidence, never empties the selection (Egor).
+**Cost.** `bin/speed-doctor` reads only derived files and the new journals by offset, ≤ 2 s; Harness execs it after each successful run, the LaunchAgent's at most hourly (`SPEED_AGENT_EVERY_S`; its inputs move every 5 min, so no input key skips it; Refresh, night and hand runs always; 2026-11-12: 66→7 CPU-s/h) (no own `StartInterval`), at the run's own priority, never `taskpolicy -b` (it starved Speed for 50 min). It is a consumer in P and reports its own cost as `cost.collector_cpu_min_day`. A first run backfills 28 days through Harness's C1 reader, newest first, resumable; a day enters the window only once every transcript that could hold it is read. Short coverage lowers confidence, never empties the selection (Egor).
 
 ## 3. Judging, proof, selection
 
