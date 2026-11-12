@@ -155,6 +155,7 @@ _FRAME = [0]
 def _libproc():
     lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
     lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
     lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
     lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
     lib.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
@@ -208,6 +209,20 @@ def all_pids():
     pids = (ctypes.c_int * (max(count, 0) + 512))()
     count = lib.proc_listallpids(pids, ctypes.sizeof(pids))
     return set(pids[:max(count, 0)])
+
+
+def child_pids(pid):
+    """The pids of one process's children (proc_listchildpids: one call, where `ps -A` reads every process), [] when
+    it has none or is gone."""
+    fixture = _fixture("SYSTEM_DOCTOR_PROCS")
+    if fixture is not None:
+        return sorted(int(p) for p, found in (fixture.get("procs") or {}).items() if found and found[0] == pid)
+    lib = _lib()
+    if lib is None:
+        return []
+    kids = (ctypes.c_int * 2048)()
+    count = lib.proc_listchildpids(pid, kids, ctypes.sizeof(kids))
+    return list(kids[:max(count, 0)])
 
 
 def proc_info(pid):
@@ -396,6 +411,21 @@ def _tick_s():
             pass
         _TICK_S.append(base.numer / base.denom / 1e9 if base.denom else 1e-9)
     return _TICK_S[0]
+
+
+def proc_cpu(pid):
+    """CPU seconds (user + system) one own process has used so far, or None once it is gone."""
+    fixture = _fixture("SYSTEM_DOCTOR_RUSAGE")
+    if fixture is not None:
+        found = fixture.get(str(pid))
+        return found[5] if found and len(found) > 5 else None
+    lib = _lib()
+    if lib is None:
+        return None
+    usage = _RusageV2()
+    if lib.proc_pid_rusage(pid, 2, ctypes.byref(usage)) != 0:
+        return None
+    return (usage.values[0] + usage.values[1]) * _tick_s()
 
 
 def proc_rusage(pid):
