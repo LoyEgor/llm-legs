@@ -190,6 +190,23 @@ def capture(pane, history=0):
     return tmux("capture-pane", "-p", "-t", pane, *(["-S", str(-history)] if history else []))
 
 
+# Claude Code's own children, not a chat's work: a working turn's sleep guard and the hooks' helpers (the Chats app's
+# OWN_KID, chats-app share/pages/app.py, is the same rule). RULE: its prompt box's frame (the app's RULE_RE).
+OWN_KID = re.compile(r"^(\S*/)?caffeinate\s|/\.claude[^/\s]*/hooks/|/claude-setup/hooks/")
+RULE = re.compile(r"^\s*─{8,}(?: .+ ─+)?\s*$")
+
+
+def prompt_box(screen):
+    """The text in a Claude Code screen's prompt box ('' when empty), or None when the screen shows none (a question
+    or a menu on it): the chats-app input_box rule."""
+    lines = (screen or "").splitlines()
+    rules = [k for k, line in enumerate(lines) if RULE.match(line)]
+    for low, high in zip(reversed(rules[:-1]), reversed(rules[1:])):
+        if high - low < 40 and re.match(r"^\s*❯", lines[low + 1]):
+            return re.sub(r"^❯\s*", "", " ".join(line.strip() for line in lines[low + 1:high])).strip()
+    return None
+
+
 def end(word):
     """The session `word` (a name, or a pane's / tty's session) ends. Only after its chat exited: a live claude
     killed by SIGHUP never runs /exit. Its viewers' windows close rather than stay on "[exited]" (close_ended)."""

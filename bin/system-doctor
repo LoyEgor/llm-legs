@@ -1289,6 +1289,8 @@ def launch_due(now, start=detach, say=notify):
             due.append(name)
     if logstores_due(launched.get("logstores"), now) or logstores_retry(launched.get("logstores"), now):
         due.append("logstores")
+    if logstores_due(launched.get("chatrefresh"), now):
+        due.append("chatrefresh")
     latest = recent[-1] if recent else {}
     free = (latest.get("free_gib") or {}) if now - (latest.get("t") or 0) <= TICK_STALE_S else {}
     low = {name: gib for name, gib in free.items() if gib < LIMITS["free_gib"]}
@@ -1918,6 +1920,23 @@ def harvest(now=None, budget_s=None, max_lines=None):
 
 def log_sweep_command():
     return os.environ.get("SYSTEM_DOCTOR_LOG_SWEEP") or os.path.join(ROOT_DIR, "bin", "log-sweep")
+
+
+def chatrefresh(now=None):
+    """Daily beside logstores: bin/chat-refresh --night restarts in place each idle chat older than a day holding 400 MB
+    or more (Claude Code grows with age; a restart gives it back and takes the current CLI); one row in
+    chatrefresh/<day>.jsonl with its lines."""
+    began = time.time()
+    command = os.environ.get("SYSTEM_DOCTOR_CHAT_REFRESH") or os.path.join(ROOT_DIR, "bin", "chat-refresh")
+    try:
+        done = subprocess.run([command, "--night"], capture_output=True, text=True, timeout=1800)
+        lines, error = done.stdout.splitlines(), done.stderr.strip()[-300:] if done.returncode else ""
+    except (OSError, subprocess.SubprocessError) as failure:
+        lines, error = [], str(failure)[:300]
+    row = {"t": round(began if now is None else now, 1), "lines": lines, "error": error,
+           "wall_s": round(time.time() - began, 1)}
+    append_row("chatrefresh", row)
+    return row
 
 
 SWEEP_KEYS = ("units", "bytes", "errors", "skipped_open", "wall_s")
@@ -3969,7 +3988,7 @@ def main(argv=None):
     parser.add_argument("command", nargs="?", default="judge",
                         choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent", "check",
                                  "census", "dumpstate", "harvest", "logstores", "freespace", "tidy", "explain",
-                                 "end-orphans"))
+                                 "end-orphans", "chatrefresh"))
     parser.add_argument("cause", nargs="?", help="check: the cause (a script's basename) whose fix to prove")
     parser.add_argument("--server", action="append", default=[],
                         help="end-orphans: an orphan server as the menu names it, pid@started (repeatable)")
@@ -4063,7 +4082,8 @@ def main(argv=None):
 
 
 RECORD = True
-COLLECTORS = {"census": census, "dumpstate": dumpstate, "harvest": harvest, "logstores": logstores, "freespace": freespace}
+COLLECTORS = {"census": census, "dumpstate": dumpstate, "harvest": harvest, "logstores": logstores, "freespace": freespace,
+              "chatrefresh": chatrefresh}
 
 if __name__ == "__main__":
     started = time.time()

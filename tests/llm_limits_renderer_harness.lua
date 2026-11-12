@@ -24,6 +24,7 @@ local harnessMenuText = nil
 local holdFake = { files = nil }
 -- The memlogd chats snapshot the fake io.open serves; nil is the file being absent.
 local chatsFake = { snapshot = nil }
+local notifyFake = { sent = {} }
 -- What the fake hs.timer.secondsSinceEpoch returns; nil keeps the menu journal silent.
 local harnessClock = nil
 
@@ -135,6 +136,9 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
     workerModel, fsAttributes, interfaceStyle, doctorSnapshot, llmDoctor)
   local mock = {
     alert = { show = alertFn or function() end },
+    notify = { new = function(spec)
+      return { send = function() table.insert(notifyFake.sent, spec) end }
+    end },
     application = {
       applicationsForBundleID = function(id)
         if id == "com.google.Chrome" then return { chromeFake.real } end
@@ -3949,7 +3953,8 @@ do
   for _, item in ipairs(mod.menuItems()) do
     if titleText(item):match("^Chats") then chats = item end
   end
-  assert(chats and #chats.menu == 2, "the Chats row is missing")
+  -- Its two rows, then a separator and Refresh chats.
+  assert(chats and #chats.menu == 4, "the Chats row is missing")
   mod.chatTmuxCmd = "/fixture/share/chat_tmux.py"
   chats.menu[1].fn()
   assert(#tasks == 1 and tasks[1].path == "/bin/ps" and table.concat(tasks[1].args, " ") == "-o tty= -p 4242",
@@ -3979,6 +3984,32 @@ do
     "a tmux chat's click did not ask for its view")
   tasks[8].callback(0, "opened\n", "")
   assert(#selected == 2 and #tasks == 8, "a tmux chat's view was followed by a tab search or a copy")
+  chatsFake.snapshot = nil
+end
+
+-- Refresh chats, the Chats submenu's last item, runs bin/chat-refresh --all and holds no rule of its own: the
+-- CLI's last line comes back as one notification.
+do
+  local tasks = {}
+  chatsFake.snapshot = { as_of = os.time(), title = "Chats", rows = {
+    { text = "idle        Live chat", session = "live-9", pid = 4249 },
+  } }
+  local mod = loadModule({ schema = 1, vendors = {} }, driveTasks(tasks))
+  mod.chatRefreshCmd = "/fixture/bin/chat-refresh"
+  local chats
+  for _, item in ipairs(mod.menuItems()) do
+    if titleText(item):match("^Chats") then chats = item end
+  end
+  local refresh = chats.menu[#chats.menu]
+  assert(titleText(refresh) == "Refresh chats" and chats.menu[#chats.menu - 1].title == "-",
+    "the Chats submenu does not end with Refresh chats")
+  notifyFake.sent = {}
+  refresh.fn()
+  assert(#tasks == 1 and tasks[1].path == "/fixture/bin/chat-refresh" and table.concat(tasks[1].args, " ") == "--all",
+    "Refresh chats did not run chat-refresh --all")
+  tasks[1].callback(0, "aaaaaaaa One  refreshed 530 -> 190 MB\nbbbbbbbb Two  skipped busy\nrefreshed 1, skipped 1, 340 MB freed\n", "")
+  assert(#notifyFake.sent == 1 and notifyFake.sent[1].informativeText == "refreshed 1, skipped 1, 340 MB freed",
+    "Refresh chats did not notify chat-refresh's summary line")
   chatsFake.snapshot = nil
 end
 

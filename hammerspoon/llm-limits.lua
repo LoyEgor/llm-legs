@@ -2310,6 +2310,25 @@ function M.chatItem(row)
   return item
 end
 
+-- bin/chat-refresh --all restarts each chat at rest in its own pane (the CLI decides which); its summary line, the
+-- last it prints, comes back as one notification. A field of M: the main chunk is at Lua's 200-local limit.
+function M.refreshChats()
+  local path = M.chatRefreshCmd or (repoRoot and repoRoot .. "/bin/chat-refresh")
+  if not path then return end
+  local task
+  task = hs.task.new(path, function(_, stdout, stderr)
+    task = nil
+    local last
+    for line in (stdout or ""):gmatch("[^\r\n]+") do last = line end
+    hs.notify.new({ title = "Chats", informativeText = last or (stderr or ""):match("[^\r\n]+")
+      or "chat-refresh: no answer" }):send()
+  end, { "--all" })
+  if not task or not task:start() then
+    task = nil
+    hs.alert.show("could not start chat-refresh", 3)
+  end
+end
+
 local function appendChats(menu)
   local snapshot = readChats()
   if not snapshot then
@@ -2326,6 +2345,8 @@ local function appendChats(menu)
   end
   local failure = tostring(snapshot.error or "")
   if failure ~= "" then items[#items + 1] = { title = infoTitle(failure, true), disabled = true } end
+  items[#items + 1] = { title = "-" }
+  items[#items + 1] = { title = infoTitle("Refresh chats"), fn = M.refreshChats }
   local stale = os.time() - (tonumber(snapshot.as_of) or 0) > 120
   local alarm = snapshot.alarm == true or failure ~= ""
   local title = (alarm and "⚠ " or "") .. tostring(snapshot.title or "Chats") .. (stale and " · stale" or "")

@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Restart idle chats in place: the same session resumed in the same tmux pane, on the same account and model.
+
+A Claude Code process grows with age (~190 MB fresh, 530 MB after 2.7 days); a restart gives the memory back and
+moves the chat onto the current CLI. Only a chat at rest is touched: a pane of the chats' tmux (closing a Terminal
+tab ends its chat), status idle, an empty prompt box, nothing running under its CLI but Claude Code's own helpers,
+no `worker-run wait`. Anything else is skipped with one word.
+
+  chat-refresh SESSION...     those chats (an id or its first 8+ characters)
+  chat-refresh --all          every live chat
+  chat-refresh --night        every live chat older than 24 h with a footprint of 400 MB or more
+  ... --dry-run               prints what it would do and touches nothing
+
+One line per chat (refreshed with its footprint before -> SETTLE s after, or skipped and why), then a summary line.
+"""
+
+import fcntl
+import glob
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "share"))
+import chat_names  # noqa: E402
+import chat_resume  # noqa: E402
+import chat_tmux  # noqa: E402
+import machine_probe  # noqa: E402
+
+# Where claudeb and claudegpt are taken from for the resume line (a test's fakes), as bin/chats takes them.
+LAUNCHERS = os.environ.get("CHAT_REFRESH_BIN") or HERE
+NIGHT_AGE_S = 24 * 3600
+NIGHT_MB = 400
+EXIT_WAIT_S = 15  # for /exit to end the chat (the Chats app's close waits 8)
+START_WAIT_S = 30  # for the resumed chat to register
+SETTLE_S = float(os.environ.get("CHAT_REFRESH_SETTLE") or 8)  # the footprint after a restart is read this late
+WORKER_WAIT = re.compile(r"\bworker-run\s+wait\b")
+CARRIED = re.compile(r"(?:^|\s)(--(?:model|effort))[= ](\S+)")
+
+
+def ps_table():
+    """pid -> (ppid, tty, start as ps prints it, command), one ps (C locale, UTC: the registry's procStart form)."""
+    out = subprocess.run(["/bin/ps", "-A", "-ww", "-o", "pid=,ppid=,tty=,lstart=,command="], capture_output=True,
+                         text=True, env=dict(os.environ, LC_ALL="C", TZ="UTC"), timeout=20).stdout
+    table = {}
+    for line in out.splitlines():
+        parts = line.split(None, 8)
+        if len(parts) >= 8 and parts[0].isdigit() and parts[1].isdigit():
+            table[int(parts[0])] = (int(parts[1]), parts[2], " ".join(parts[3:8]), parts[8] if len(parts) > 8 else "")
+    return table
+
+
+def registry():
+    """pid -> the session record of every interactive CLI chat whose process is the one that wrote it."""
+    found = {}
+    for path in chat_names.session_store_files():
+        try:
+            record = json.loads(path.read_text())
+            pid = int(record["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if record.get("sessionId") and record.get("kind", "interactive") == "interactive" \
+                and record.get("entrypoint", "cli") == "cli":
+            found[pid] = record
+    return found
+
+
+def live(table, records):
+    """The records whose pid still runs the process that wrote them (procStart equals its start; `Nov  9` pads)."""
+    return {pid: r for pid, r in records.items()
+            if pid in table and " ".join(str(r.get("procStart") or "").split()) == table[pid][2]}
+
+
+def descendants(table, pid):
+    kids = {}
+    for child, row in table.items():
+        kids.setdefault(row[0], []).append(child)
+    out, todo = [], list(kids.get(pid, ()))
+    while todo:
+        child = todo.pop()
+        out.append(child)
+        todo.extend(kids.get(child, ()))
+    return out
+
+
+def held(table, pid):
+    """Why the chat's process tree holds it, or None: a worker it waits on, else any child but Claude Code's own."""
+    tree = descendants(table, pid)
+    if any(WORKER_WAIT.search(table[p][3]) for p in tree):
+        return "worker"
+    if any(table[p][0] == pid and not chat_tmux.OWN_KID.search(table[p][3]) for p in tree):
+        return "tasks"
+    return None
+
+
+def footprint_mb(pid):
+    found = machine_probe.proc_rusage(pid)
+    return round(found[0] / 1048576) if found else None
+
+
+def account(pid):
+    """The claudeb profile the chat runs under (its CLAUDE_CONFIG_DIR), None for ~/.claude itself."""
+    config = (machine_probe.proc_env(pid) or {}).get("CLAUDE_CONFIG_DIR") or ""
+    profiles = os.path.realpath(chat_resume.profiles_home())
+    config = os.path.realpath(config) if config else ""
+    return os.path.basename(config) if os.path.dirname(config) == profiles else None
+
+
+def resume_line(record, pid, command):
+    """The chat's resume line (chat_resume, the Chats app's reopen path): its account, gateway and model kept."""
+    sid = record["sessionId"]
+    carried = dict(CARRIED.findall(command))
+    argv = chat_resume.resume_argv(sid, account(pid), carried.get("--model"))
+    if chat_resume.UNKNOWN_ACCOUNT in argv:
+        return None
+    if argv[0] in ("claudeb", "claudegpt"):
+        argv[0] = os.path.join(LAUNCHERS, argv[0])
+    if not chat_resume.is_gateway_chat(sid, carried.get("--model")):
+        for flag, value in carried.items():
+            argv += [flag, value]
+    argv += ["--permission-mode", "bypassPermissions"]  # bin/chats' reopen: a resume restores the mode it left
+    return chat_resume.resume_line([shlex.quote(word) for word in argv], record.get("cwd") or None)
+
+
+def judge(pid, record, table, panes, night, twice, now):
+    """(why it is skipped, or None; its pane; its footprint MB)."""
+    tty = "/dev/" + table[pid][1]
+    pane = panes.get(tty)
+    mb = footprint_mb(pid)
+    if not pane:
+        return "terminal", None, mb
+    if pane["pid"] == pid:  # the chat is the pane's own process: no shell to type its resume into
+        return "noshell", pane, mb
+    if twice:
+        return "twice", pane, mb
+    status = str(record.get("status") or "unknown")
+    if status != "idle":
+        return status.split()[0], pane, mb
+    why = held(table, pid)
+    if why:
+        return why, pane, mb
+    if night and now - (record.get("startedAt") or now * 1000) / 1000 < NIGHT_AGE_S:
+        return "young", pane, mb
+    if night and (mb or 0) < NIGHT_MB:
+        return "light", pane, mb
+    if not chat_names.transcript_path(record["sessionId"]):  # nothing said yet: --resume would find no chat
+        return "empty", pane, mb
+    try:
+        box = chat_tmux.prompt_box(chat_tmux.capture(pane["pane"]))
+    except chat_tmux.TmuxError:
+        box = None
+    if box is None:
+        return "asking", pane, mb
+    if box:
+        return "draft", pane, mb
+    return None, pane, mb
+
+
+def wait_for(probe, seconds):
+    end = time.monotonic() + seconds
+    while True:
+        got = probe()
+        if got or time.monotonic() >= end:
+            return got
+        time.sleep(0.25)
+
+
+def shell_alone(pane_pid):
+    """The pane is back at its shell: nothing runs under it (the chat and any launcher wrapping it ended)."""
+    return subprocess.run(["/usr/bin/pgrep", "-P", str(pane_pid)], stdout=subprocess.DEVNULL).returncode == 1
+
+
+def restarted(sid, old):
+    table = ps_table()
+    return next((pid for pid, r in live(table, registry()).items() if r["sessionId"] == sid and pid != old), None)
+
+
+def restart(pid, record, pane, line):
+    """/exit, the pane back at its shell, then the resume line typed there -> the new pid, or why it failed."""
+    try:
+        chat_tmux.paste(pane["pane"], "/exit")
+        if not wait_for(lambda: shell_alone(pane["pid"]), EXIT_WAIT_S):
+            return "stuck"  # never type the line into a chat still running: it would go as a message
+        chat_tmux.paste(pane["pane"], line)
+    except chat_tmux.TmuxError:
+        return "tmux"
+    return wait_for(lambda: restarted(record["sessionId"], pid), START_WAIT_S) or "nostart"
+
+
+def label(record):
+    sid = record["sessionId"]
+    try:
+        name = chat_names.chat_name(sid) or ""
+    except Exception:
+        name = ""
+    return ("%s %s" % (sid[:8], name)).strip()
+
+
+def main(argv):
+    dry = "--dry-run" in argv
+    words = [a for a in argv if a != "--dry-run"]
+    every, night = words == ["--all"], words == ["--night"]
+    if not words or not (every or night) and any(w.startswith("-") for w in words):
+        print(__doc__.split("\n\n", 2)[2].strip(), file=sys.stderr)
+        return 2
+    if not dry:  # one run types into the panes at a time (the menu's click, the nightly pass)
+        lock_path = os.path.join(os.path.dirname(chat_tmux.SOCKET), "refresh.lock")
+        os.makedirs(os.path.dirname(lock_path), mode=0o700, exist_ok=True)
+        lock = open(lock_path, "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("chat-refresh: another run is refreshing chats")
+            return 1
+    now = time.time()
+    table = ps_table()
+    chats = live(table, registry())
+    sids = [r["sessionId"] for r in chats.values()]
+    picked, missing = [], []
+    if every or night:
+        picked = sorted(chats.items(), key=lambda kv: kv[1].get("startedAt") or 0)
+    else:
+        for word in words:
+            hits = [(pid, r) for pid, r in chats.items() if len(word) >= 8 and r["sessionId"].startswith(word)]
+            picked += hits
+            if not hits:
+                missing.append(word)
+    panes = chat_tmux.panes()
+    skipped, would, pending = len(missing), 0, []
+    for word in missing:
+        print("%s  skipped closed" % word[:8])
+    for pid, record in picked:
+        why, pane, mb = judge(pid, record, table, panes, night, sids.count(record["sessionId"]) > 1, now)
+        line = None if why else resume_line(record, pid, table[pid][3])
+        if not why and not line:
+            why = "account"
+        if why:
+            skipped += 1
+            print("%s  skipped %s" % (label(record), why))
+        elif dry:
+            would += 1
+            print("%s  would refresh %s MB: %s" % (label(record), mb, line))
+        else:
+            got = restart(pid, record, pane, line)
+            if isinstance(got, str):
+                skipped += 1
+                print("%s  failed %s" % (label(record), got))
+            else:
+                pending.append((record, mb, got))
+    if pending:
+        time.sleep(SETTLE_S)
+    freed = 0
+    for record, before, new in pending:
+        after = footprint_mb(new)
+        if before is not None and after is not None:
+            freed += before - after
+        print("%s  refreshed %s -> %s MB" % (label(record), before, after))
+    if dry:
+        print("would refresh %d, skipped %d" % (would, skipped))
+    else:
+        print("refreshed %d, skipped %d%s" % (len(pending), skipped, ", %d MB freed" % freed if pending else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
