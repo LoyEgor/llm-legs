@@ -61,7 +61,7 @@ add() {
   [ -n "$top" ] && ! excluded "$top" || return 3
   [ -n "$main" ] && [ -d "$main/.git" ] || main=$top
   umask 077
-  mkdir -p "$cache_dir" 2>/dev/null || return 3
+  [ -d "$cache_dir" ] || mkdir -p "$cache_dir" 2>/dev/null || return 3
   lines=$(wc -l < "$journal" 2>/dev/null) || lines=0
   # Past 350 lines every append takes the lock the trim holds, so the trim's rewrite cannot drop a
   # line appended between its read and its rename.

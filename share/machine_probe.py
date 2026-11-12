@@ -17,7 +17,7 @@ import limit_hit
 
 COMMANDS = {"ps": "/bin/ps", "vm_stat": "/usr/bin/vm_stat", "sysctl": "/usr/sbin/sysctl", "ioreg": "/usr/sbin/ioreg",
             "df": "/bin/df", "last": "/usr/bin/last", "du": "/usr/bin/du", "diskutil": "/usr/sbin/diskutil",
-            "launchctl": "/bin/launchctl", "log": "/usr/bin/log"}
+            "launchctl": "/bin/launchctl", "log": "/usr/bin/log", "lsof": "/usr/sbin/lsof"}
 
 
 def command(name):
@@ -316,17 +316,63 @@ def coalition_usage(ids):
     return out
 
 
-def _argv(pid):
+def _procargs(pid, size=65536):
+    """(argv, env strings) of one own process off KERN_PROCARGS2, or None. argv is argc strings after the exec path,
+    empty ones kept; a process that rewrote its title (next-server, setproctitle) leaves its title and then empty
+    strings there, and `ps -E`, which stops at the first empty string, shows no environment for it although every
+    variable is still in the buffer: env is every non-empty string after argv (Apple's `key=value` tail included)."""
     libc = ctypes.CDLL(None, use_errno=True)
     mib = (ctypes.c_int * 3)(1, 49, pid)
-    size = ctypes.c_size_t(65536)
+    size = ctypes.c_size_t(size)
     buffer = ctypes.create_string_buffer(size.value)
     if libc.sysctl(mib, 3, buffer, ctypes.byref(size), None, ctypes.c_size_t(0)) != 0:
-        return []
+        return None
     raw = buffer.raw[:size.value]
     argc = int.from_bytes(raw[:4], "little")
-    args = raw[4:].partition(b"\0")[2].lstrip(b"\0").split(b"\0")[:argc]
-    return [part.decode(errors="replace") for part in args]
+    parts = raw[4:].partition(b"\0")[2].lstrip(b"\0").split(b"\0")
+    return parts[:argc], [part for part in parts[argc:] if part]
+
+
+def _argv(pid):
+    found = _procargs(pid)
+    return [part.decode(errors="replace") for part in found[0]] if found else []
+
+
+def proc_env(pid):
+    """{name: value} of the environment one own process started with, or None (another user's, gone, or an Apple
+    binary the kernel hides it for: /bin/sleep shows none, /bin/bash does)."""
+    fixture = _fixture("SYSTEM_DOCTOR_PROCS")
+    if fixture is not None:
+        found = (fixture.get("env") or {}).get(str(pid))
+        return dict(found) if isinstance(found, dict) else None
+    found = _procargs(pid, 1 << 18)
+    if not found:
+        return None
+    env = {}
+    for part in found[1]:
+        name, sign, value = part.decode(errors="replace").partition("=")
+        if sign and name and name not in env:
+            env[name] = value
+    return env or None
+
+
+def env_holders(name, value):
+    """`h <pid>` for each own process whose environment sets name=value, `o <pid>` for each setting name otherwise."""
+    lines = []
+    for pid in sorted(all_pids()):
+        found = proc_env(pid) if pid > 1 else None
+        if found and name in found:
+            lines.append("%s %d" % ("h" if found[name] == value else "o", pid))
+    return lines
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) == 4 and sys.argv[1] == "env-holders":
+        for line in env_holders(sys.argv[2], sys.argv[3]):
+            print(line)
+    else:
+        sys.exit("usage: machine_probe.py env-holders NAME VALUE")
 
 
 class _Timebase(ctypes.Structure):

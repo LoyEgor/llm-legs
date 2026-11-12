@@ -65,6 +65,7 @@ COLLECT = {"storm_s": 2000, "storm_min": 2, "storm_kernel": 0.50, "census_s": 60
            "census_every_s": 30 * 60, "dumpstate_every_s": 3600, "harvest_every_s": 6 * 3600, "harvest_back_s": 11 * 3600,
            "loop_runs_h": 60, "loop_heavy_runs_h": 360, "loop_dt_s": 1800, "job_exits_day": 3, "job_exits_heavy_day": 24,
            "freespace_every_s": 3600, "windows_row": 300, "windows_limit": 1000, "windows_heavy": 5000,
+           "orphan_server_s": 6 * 3600, "orphan_end_grace_s": 5,
            "job_cpu_day": 864, "job_writes_day": 1 << 30, "job_heavy": 5, "job_covered_s": 12 * 3600}
 LOGS = {"sweep_timeout_s": 1800, "compare_min_s": 20 * 3600, "keep_scan_days": 14, "growth_min_days": 5,
         "stale_s": 36 * 3600, "retry_s": 3 * 3600}
@@ -1475,7 +1476,7 @@ def parse_dumpstate(text):
 
 def worker_pids():
     """Supervisor pids of worker runs still open: a detached supervisor under launchd is on purpose."""
-    folder = os.environ.get("WORKER_RUN_DIR") or os.path.join(HOME, ".cache", "claude-worker-runs")
+    folder = worker_run_dir()
     pids = set()
     try:
         entries = list(os.scandir(folder))
@@ -1516,6 +1517,170 @@ def orphan_census(job_pids, now):
         slot[2] += entry[4] in supervisors
     rows = [[tag, n, age, sup, "own"] for tag, (n, age, sup) in found.items()]
     return {"count": sum(r[1] for r in rows), "supervisors": sum(r[3] for r in rows), "top": top_rows(rows)}
+
+
+def listeners():
+    """{pid: [port, ...]} of this uid's TCP listeners."""
+    out, pid = {}, None
+    for line in machine_probe.run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-u", str(os.getuid()), "-Fpn"],
+                                  timeout=20).splitlines():
+        if line[:1] == "p":
+            pid = int(line[1:]) if line[1:].isdigit() else None
+        elif line[:1] == "n" and pid:
+            port = line.rpartition(":")[2]
+            if port.isdigit() and int(port) not in out.setdefault(pid, []):
+                out[pid].append(int(port))
+    return out
+
+
+def process_table():
+    """{pid: (ppid, uid, tty, start epoch)} of every process, one `ps`."""
+    out = {}
+    for line in machine_probe.run("ps", ["-A", "-o", "pid=,ppid=,uid=,tty=,lstart="]).splitlines():
+        parts = line.split(None, 4)
+        if len(parts) == 5 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit():
+            born = start_epoch("@" + " ".join(parts[4].split()))
+            out[int(parts[0])] = (int(parts[1]), int(parts[2]), parts[3], born)
+    return out
+
+
+def worker_run_dir():
+    return os.environ.get("WORKER_RUN_DIR") or os.path.join(HOME, ".cache", "claude-worker-runs")
+
+
+def server_chat(pids, table):
+    """(chat label, its chat alive) of whoever started a server: CLAUDE_CODE_SESSION_ID, else WORKER_RUN_ID's run
+    launcher, off the start environment of its tree (machine_probe.proc_env reads it past a rewritten title), else of
+    a process sharing its session or process group (an Apple binary's own environment is hidden); (None, None)."""
+    def found_in(candidates):
+        for pid in candidates:
+            env = machine_probe.proc_env(pid) or {}
+            if env.get("CLAUDE_CODE_SESSION_ID"):
+                return env["CLAUDE_CODE_SESSION_ID"]
+            run = env.get("WORKER_RUN_ID")
+            if run and re.fullmatch(r"[\w.-]+", run):
+                try:
+                    with open(os.path.join(worker_run_dir(), run, "launcher")) as handle:
+                        launcher = handle.read().strip()
+                except OSError:
+                    launcher = ""
+                if launcher:
+                    return launcher
+        return None
+
+    session = found_in(pids)
+    if session is None:
+        groups = set()
+        for pid in pids:
+            with contextlib.suppress(OSError):
+                groups |= {("s", os.getsid(pid)), ("g", os.getpgid(pid))}
+        mates = []
+        for pid, entry in table.items():
+            if pid in pids or entry[1] != os.getuid():
+                continue
+            with contextlib.suppress(OSError):
+                if ("s", os.getsid(pid)) in groups or ("g", os.getpgid(pid)) in groups:
+                    mates.append(pid)
+        session = found_in(mates)
+    if session is None:
+        return None, None
+    try:
+        import chat_names
+        launchers = chat_names.worker_run_launchers()
+        live = (chat_names.fold_session(session, launchers) or session) in chat_names.live_sessions()
+        return chat_names.chat_label(session, launchers=launchers), live
+    except Exception as error:  # a half-written store names nothing; the row still shows
+        print("system-doctor server_chat: %s: %s" % (type(error).__name__, error), file=sys.stderr)
+        return session[:8], None
+
+
+def orphan_servers(job_pids, now):
+    """Servers that outlived whoever started them: own TCP listeners whose ancestry reaches launchd through no launchd
+    job (`launchctl list` pids and the dumpstate's), no open worker supervisor and no process holding a terminal (a
+    tmux pane, a Terminal tab), started orphan_server_s ago or more. One row per tree right below launchd, with its
+    ports, footprint, age, the listener's working directory and owner, and the chat that started it."""
+    found = listeners()
+    if not found:
+        return []
+    table = process_table()
+    jobs = set(job_pids) | {int(m) for m in re.findall(r"^(\d+)\t", machine_probe.run("launchctl", ["list"]), re.M)}
+    supervisors, uid, kids, roots = worker_pids(), os.getuid(), {}, {}
+    for pid, entry in table.items():
+        kids.setdefault(entry[0], []).append(pid)
+    for pid, ports in sorted(found.items()):
+        chain, at = [], pid
+        while at in table and at > 1 and len(chain) < 64:
+            chain.append(at)
+            at = table[at][0]
+        if at != 1 or not chain or table[chain[-1]][1] != uid or chain[-1] in supervisors:
+            continue
+        if any(p in jobs or table[p][2] not in ("??", "-") for p in chain):
+            continue
+        root = chain[-1]
+        born = table[root][3]
+        if born is None or now - born < COLLECT["orphan_server_s"]:
+            continue
+        slot = roots.setdefault(root, {"pid": root, "started": int(born), "ports": [], "listener": pid})
+        slot["ports"] += [p for p in ports if p not in slot["ports"]]
+    rows = []
+    for root, slot in roots.items():
+        tree, queue = [], [root]
+        while queue:
+            pid = queue.pop()
+            tree.append(pid)
+            queue += kids.get(pid, [])
+        listener = slot.pop("listener")
+        info = machine_probe.proc_info(listener)
+        exe, rest = exe_and_rest(info[3] if info else "")
+        cwd = machine_probe.proc_cwd(listener)
+        chat, live = server_chat(sorted(tree, key=lambda p: (p != listener, p)), table)
+        footprint = sum((machine_probe.proc_rusage(pid) or (0,))[0] for pid in tree)
+        rows.append(dict(slot, pids=sorted(tree), name=clip(describe(exe, rest, own_roots())[0] if exe else str(listener), 60),
+                         mb=round(footprint / (1 << 20)), age_h=round((now - slot["started"]) / HOUR_S, 1),
+                         cwd=cwd, owner=log_stores.owner_words(cwd) if cwd else None, chat=chat, chat_live=live))
+    return sorted(rows, key=lambda r: -r["mb"])
+
+
+def server_key(row):
+    return "%d@%d" % (row["pid"], row["started"])
+
+
+def end_orphan_servers(keys, now=None):
+    """Ends the orphan servers Egor picked (`pid@started`, as the menu shows them): each still an orphan server now
+    (a fresh census, launchd jobs from `launchctl list`), its whole tree TERMed and KILLed after the grace
+    (share/processes.sh pids_end). Lines of what was ended and what was not; latest.json drops the ended rows."""
+    now = time.time() if now is None else now
+    current = {server_key(r): r for r in orphan_servers((), now)}
+    lines, ended = [], []
+    for key in keys:
+        row = current.get(key)
+        if row is None:
+            lines.append("not ended %s: gone, or no longer an orphan server" % key)
+            continue
+        subprocess.run(["bash", "-c", '. "$0" && pids_end "$1" "${@:2}"', os.path.join(ROOT_DIR, "share", "processes.sh"),
+                        str(COLLECT["orphan_end_grace_s"])] + [str(p) for p in row["pids"]], check=False)
+        ended.append(key)
+        lines.append("ended %s :%s %s (%d MB)" % (row["name"], ",".join(map(str, row["ports"])), row.get("cwd") or "", row["mb"]))
+    path = os.path.join(state_dir(), "latest.json")
+    doc = read_json(path)
+    if ended and isinstance(doc, dict) and isinstance(doc.get("orphan_servers"), dict):
+        items = doc["orphan_servers"].get("items") or []
+        doc["orphan_servers"]["items"] = [r for r in items if server_key(r) not in ended]
+        write_json(path, doc, indent=1)
+    return lines
+
+
+def servers_view(launches):
+    """The newest dumpstate's orphan servers whose root still runs, started when the row says."""
+    last = next((r for r in reversed(launches) if "servers" in r), None)
+    if last is None:
+        return None
+    items = []
+    for row in last["servers"]:
+        info = machine_probe.proc_info(row["pid"])
+        if info and info[2] and abs(info[2] - row["started"]) < 2:
+            items.append(row)
+    return {"as_of": iso_time(last["t"]), "items": items}
 
 
 def window_rows():
@@ -1562,7 +1727,9 @@ def dumpstate(now=None):
         slot["runs"] += runs
         slot["bad"] = max(slot["bad"], int(bad))
         slot["exit"] = entry["exit"] if bad or slot["exit"] is None else slot["exit"]
-    orphans = steps("orphans", orphan_census, {e["pid"] for e in services.values() if e["pid"]}, now)
+    job_pids = {e["pid"] for e in services.values() if e["pid"]}
+    orphans = steps("orphans", orphan_census, job_pids, now)
+    servers = steps("servers", orphan_servers, job_pids, now)
     windows = steps("windows", window_rows)
     usage = steps("coalitions", machine_probe.coalition_usage, [e["coalition"] for e in services.values() if e["coalition"]])
     costs = []
@@ -1575,7 +1742,7 @@ def dumpstate(now=None):
                 costs.append([entry["label"], entry["name"], entry["owner"]] + spent)
     moved = sorted(jobs.values(), key=lambda j: (-j["bad"], -j["runs"], j["label"]))
     row = {"t": round(now, 1), "dt": round(now - previous["t"], 1) if isinstance(previous.get("t"), (int, float)) else None,
-           "services": len(services), "reloaded": reloaded, "jobs": moved[:80], "orphans": orphans, "windows": windows,
+           "services": len(services), "reloaded": reloaded, "jobs": moved[:80], "orphans": orphans, "servers": servers, "windows": windows,
            "costs": sorted(costs, key=lambda c: (-c[3], c[0]))[:80],
            "self": {"wall_s": round(time.time() - began, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
                     "steps": steps.out}}
@@ -3610,7 +3777,7 @@ def document(now, started, persist=True):
         "status": status, "problem_count": count, "problems": judge.problems,
         "blind_spots": judge.ledger.get("blind_spots") or [], "blind": judge.blind, "measures": measures,
         "days": series, "causes": causes, "nightly": nightly_summary(night, crashed), "costs": costs, "collectors": collectors,
-        "cohort": cohort, "background": programs, "log_stores": logstores_view(logs),
+        "cohort": cohort, "background": programs, "log_stores": logstores_view(logs), "orphan_servers": servers_view(launches),
         "limits": LIMITS, "self": {"collector_s": round(time.time() - started, 3), "error": None},
     }
 
@@ -3797,8 +3964,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="system-doctor", description=__doc__.split("\n")[0])
     parser.add_argument("command", nargs="?", default="judge",
                         choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent", "check",
-                                 "census", "dumpstate", "harvest", "logstores", "freespace", "tidy", "explain"))
+                                 "census", "dumpstate", "harvest", "logstores", "freespace", "tidy", "explain",
+                                 "end-orphans"))
     parser.add_argument("cause", nargs="?", help="check: the cause (a script's basename) whose fix to prove")
+    parser.add_argument("--server", action="append", default=[],
+                        help="end-orphans: an orphan server as the menu names it, pid@started (repeatable)")
     parser.add_argument("--json", action="store_true", help="judge: print the document and write nothing")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
     parser.add_argument("--rule", help="check: the rule the fix answers (default: the cause's ledger row)")
@@ -3846,6 +4016,13 @@ def main(argv=None):
         if not args.quiet:
             print(json.dumps({k: v for k, v in row.items() if not isinstance(v, list) or len(v) <= TOP}, ensure_ascii=False))
         return 0
+    if args.command == "end-orphans":
+        if not args.server:
+            parser.error("end-orphans needs --server pid@started")
+        lines = end_orphan_servers(args.server)
+        if not args.quiet:
+            print("\n".join(lines))
+        return 0 if all(line.startswith("ended ") for line in lines) else 1
     if args.command == "tidy":
         with single("tidy") as mine:
             rows = tidy(dry_run=args.dry_run) if mine else []

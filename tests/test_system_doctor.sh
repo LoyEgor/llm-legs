@@ -24,7 +24,7 @@ printf -- '--\n' >"$WORK/repos/hammerspoon/init.lua"
 git -C "$WORK/repos/llm-legs" init -q && git -C "$WORK/repos/hammerspoon" init -q
 printf '%s\n' "$WORK/repos/llm-legs" "$WORK/repos/hammerspoon" >"$WORK/sweep-repos"
 export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" SYSTEM_DOCTOR_REPOS_DIR="$WORK/repos"
-for name in ps vm_stat sysctl ioreg df last diskutil launchctl log; do
+for name in ps vm_stat sysctl ioreg df last diskutil launchctl log lsof; do
   printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"$SYSTEM_DOCTOR_FIX/%s.calls"\ncase " $* " in *" -S "*) cat "$SYSTEM_DOCTOR_FIX/%s-children" ;; *) cat "$SYSTEM_DOCTOR_FIX/%s" 2>/dev/null ;; esac\n' \
     "$name" "$name" "$name" >"$WORK/bin/$name"
   chmod +x "$WORK/bin/$name"
@@ -1918,6 +1918,61 @@ finally:
     child.wait()
 check(seen[-2:] == ["", "--flag"] and not any("PROBE_SECRET" in word for word in seen),
       "an empty argument shifts _argv into the environment: %r" % seen)
+
+# ---- orphan servers: real listeners started with nohup in a subshell whose parent dies, as a chat's Bash call does
+saved = {k: os.environ.get(k) for k in ("SYSTEM_DOCTOR_PS", "SYSTEM_DOCTOR_LSOF", "SYSTEM_DOCTOR_PROCS", "SYSTEM_DOCTOR_RUSAGE")}
+os.environ.update(SYSTEM_DOCTOR_PS="/bin/ps", SYSTEM_DOCTOR_LSOF="/usr/sbin/lsof")
+os.environ.pop("SYSTEM_DOCTOR_PROCS")
+os.environ.pop("SYSTEM_DOCTOR_RUSAGE")
+session = "0f0f0f0f-1111-2222-3333-444444444444"
+servers = {}
+try:
+    for name in ("served", "jobbed"):
+        place = os.path.join(work, name)
+        os.makedirs(place)
+        # A session of its own, as a Claude Code Bash call has: no terminal for the server to inherit.
+        subprocess.Popen(["bash", "-c", '(CLAUDE_CODE_SESSION_ID=%s nohup python3 -m http.server 0 --bind 127.0.0.1 '
+                          '>/dev/null 2>&1 & echo $! >pid)' % session], cwd=place, start_new_session=True).wait()
+        servers[name] = int(open(os.path.join(place, "pid")).read())
+    for _ in range(200):
+        if set(servers.values()) <= set(m.listeners()):
+            break
+        time.sleep(0.05)
+    put("launchctl", "PID\tStatus\tLabel\n%d\t0\tcom.test.server-job\n" % servers["jobbed"])
+    later = time.time() + 7 * 3600
+    table = m.process_table()
+    rows = {r["pid"]: r for r in m.orphan_servers((), later)}
+    served = rows.get(servers["served"]) or {}
+    check(table[servers["served"]][0] == 1 and served.get("cwd") == os.path.join(work, "served") and served.get("ports")
+          and served.get("pids") == [servers["served"]] and served.get("mb", 0) >= 1 and served.get("chat") == session[:8]
+          and served.get("chat_live") is False and served.get("age_h", 0) >= 6,
+          "a nohup'd server whose parent died is listed with its port, MB, age, cwd and the chat its env names: %s" % served)
+    check(servers["jobbed"] not in rows, "a launch agent's own job is no orphan server: %s" % sorted(rows))
+    check(servers["served"] not in {r["pid"] for r in m.orphan_servers((), time.time())},
+          "a server younger than orphan_server_s is not listed")
+    key = m.server_key(served)
+    m.write_json(os.path.join(work, "state", "latest.json"), {"orphan_servers": {"items": [served, {"pid": 1, "started": 1}]}})
+    lines = m.end_orphan_servers([key, "%d@1" % servers["jobbed"]], later)
+    gone = False
+    for _ in range(100):
+        try:
+            os.kill(servers["served"], 0)
+        except OSError:
+            gone = True
+            break
+        time.sleep(0.05)
+    left = m.read_json(os.path.join(work, "state", "latest.json"))["orphan_servers"]["items"]
+    check(gone and lines[0].startswith("ended ") and lines[1].startswith("not ended ") and left == [{"pid": 1, "started": 1}],
+          "end-orphans ends a picked server that is still one, refuses any other, drops it from latest.json: %s" % lines)
+    check(m.main(["end-orphans", "--quiet", "--server", "%d@1" % servers["jobbed"]]) == 1, "end-orphans exits 1 when one was not ended")
+finally:
+    for pid in servers.values():
+        with contextlib.suppress(OSError):
+            os.kill(pid, 9)
+    for key_name, value in saved.items():
+        if value is not None:
+            os.environ[key_name] = value
+    put("launchctl", "")
 
 print("OK: PASS: %d system doctor checks" % asserts)
 PY

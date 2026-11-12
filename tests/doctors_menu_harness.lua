@@ -1464,6 +1464,9 @@ do
     collectors = { footprints = { rss_total = 12 * 2 ^ 30, io_top = {}, rss_top = {
       { "claude", 3 * 2 ^ 30, 4, "third-party" }, { "Google Chrome Helper (Renderer)", 2 ^ 30, 5, "third-party" },
       { "Google Chrome", 2 ^ 30, 1, "third-party" } } } },
+    orphan_servers = { as_of = iso(now), items = {
+      { pid = 4242, started = 1794000000, pids = { 4242, 4243 }, ports = { 3710, 3711 }, mb = 307, age_h = 41.6,
+        name = "next-server (v16.3.8)", cwd = "/tmp/r15s", owner = "tmp/r15s", chat = "Parallax", chat_live = false } } },
     nightly = { as_of_s = now - 3600, reports = { crash = 4, fault = 1 }, unclean_reboots_7d = 0, smart = "Verified",
       processes = { { "crash", "Google Chrome", 3, "third-party" }, { "crash", "bash", 1, "own" } }, caches = {} },
     log_stores = { total_gb = 20, growth_gb_day_7d = 0.4,
@@ -1514,6 +1517,23 @@ do
     and rowMatching(processor, "^ +0%.50 cores +Chrome$"), "Processor: starts by human cause name, CPU by process")
   check(rowMatching(memory, "^ +3 GB +Claude ×4$") and rowMatching(memory, "^ +2 GB +Chrome ×6$"),
     "Memory: resident memory by human name with its process count")
+  -- Its own function: the main chunk is at Lua's 200-local limit.
+  ;(function()
+    local stray = rowMatching(memory, "^stray servers +0%.3 GB$")
+    local server = stray and stray.menu and stray.menu[3]
+    check(stray and text(stray.menu[1].title) == "End all  0.3 GB" and stray.menu[2].title == "-" and server
+      and text(server.title):match("^ +0%.3 GB +41 h  :3710 :3711  tmp/r15s  ← Parallax$")
+      and sameColor(colorAt(server.title, utf8.len(text(server.title))), palette.DIM),
+      "Memory: servers that outlived their starter, one row each with ports, age, place and chat (DIM: chat gone)")
+    local before, asked = #tasks, #dialogs
+    answer = "End"
+    if server then server.fn() end
+    answer = "Cancel"
+    check(#dialogs == asked + 1 and #tasks == before + 1 and tasks[#tasks].path == "/fixture/bin/system-doctor"
+      and table.concat(tasks[#tasks].args, " ") == "end-orphans --server 4242@1794000000",
+      "a server ends only on his click, after a confirmation, through system-doctor end-orphans")
+    if #tasks > before then tasks[#tasks]:finish(0, "ended next-server\n") end
+  end)()
   local writes = first[3].menu
   check(rowMatching(writes, "^root samples  3 × 10 min$") and rowMatching(writes, "^ +60 GB/d +kernel_task  swap$")
     and rowMatching(writes, "^ +15 GB/d +Python  ~/%.cache/x$") and not rowMatching(writes, "tiny")

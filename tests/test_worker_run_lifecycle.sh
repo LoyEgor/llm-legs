@@ -441,6 +441,19 @@ child() { until pgrep -P "$@" >/dev/null; do sleep 0.01; done; pgrep -P "$@"; }
   child "$!" -f '^bash -c sleep 3006' >"$STUB_DIR/orphan-nested.pid"; printf '%s\n' "$!" >"$STUB_DIR/orphan-parent.pid" )
 ( WORKER_RUN_ID=claudeb-1-1-other bash -c 'sleep 3003; :' </dev/null >/dev/null 2>&1 & printf '%s\n' "$!" >"$STUB_DIR/orphan-other.pid" )
 ( env -u WORKER_RUN_ID bash -c 'sleep 3004; :' </dev/null >/dev/null 2>&1 & printf '%s\n' "$!" >"$STUB_DIR/orphan-none.pid" )
+# A server that rewrites its title as next-server does (libuv: the title, then zeros over the argument area), so
+# `ps -E` shows it no environment although WORKER_RUN_ID is still in it.
+( python3 -c 'import ctypes, time
+libc = ctypes.CDLL(None)
+libc._NSGetArgc.restype = ctypes.POINTER(ctypes.c_int)
+libc._NSGetArgv.restype = ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))
+argc, argv = libc._NSGetArgc()[0], libc._NSGetArgv()[0]
+end = argv[argc - 1] + len(ctypes.string_at(argv[argc - 1])) + 1
+ctypes.memset(argv[0], 0, end - argv[0])
+ctypes.memmove(argv[0], b"renamed-server (v1)", 19)
+time.sleep(3008)' padding-for-the-title </dev/null >/dev/null 2>&1 & pid=$!
+  for tick in $(seq 1 300); do case "$(ps -o command= -p "$pid")" in renamed-server*) break ;; esac; sleep 0.01; done
+  printf '%s\n' "$pid" >"$STUB_DIR/orphan-renamed.pid" )
 ( env -u WORKER_RUN_ID bash -c "sleep 3005; : WORKER_RUN_ID=$WORKER_RUN_ID" </dev/null >/dev/null 2>&1 &
   printf '%s\n' "$!" >"$STUB_DIR/orphan-named.pid" )
 for name in run stopped parent; do child "$(cat "$STUB_DIR/orphan-$name.pid")" -x sleep >"$STUB_DIR/orphan-$name.kid"; done
@@ -452,6 +465,7 @@ assert await_done
 rm -f "$STUB_DIR/relay_hook"
 ended=()
 for name in run stopped parent; do ended+=("$(cat "$STUB_DIR/orphan-$name.pid")" "$(cat "$STUB_DIR/orphan-$name.kid")"); done
+ended+=("$(cat "$STUB_DIR/orphan-renamed.pid")")
 assert test "$(awk '{ print $1 }' "$STUB_DIR/orphan-ps" | sort -u)" = 1
 assert test "$(awk '$2 ~ /^T/' "$STUB_DIR/orphan-ps" | wc -l | tr -d ' ')" = 1
 for pid in "${ended[@]}"; do assert gone "$pid"; done
@@ -460,9 +474,9 @@ assert jq -e --argjson ended "$(printf '%s\n' "${ended[@]}" | jq -s .)" --argjso
   '.orphans_ended | (map(.pid) | sort) == ($ended | sort) and all(.age_s | type == "number")
   and ([.[] | select(.pid == $run or .pid == $kid) | .command] | sort) == ["bash -c sleep 3001; :", "sleep 3001"]' \
   "$RUN_DIR/meta.json" >/dev/null
-assert jq -se --arg run "$RUN_ID" 'map(select(.run == $run)) | length == 1 and (.[0].orphans | length) == 6' \
+assert jq -se --arg run "$RUN_ID" 'map(select(.run == $run)) | length == 1 and (.[0].orphans | length) == 7' \
   "$CLAUDEB_DIR/worker-stats/runs.jsonl" >/dev/null
-assert grep -qx 'ENDED: 6 processes the run left running outside its tree, ended with it, so whatever they were still doing did not finish: bash -c WORKER_RUN_ID=claudeb-1-1-nested bash -c "sleep 3006; :" & sleep 3007; : · bash -c sleep 3001; : · bash -c sleep 3002; :' \
+assert grep -qx 'ENDED: 7 processes the run left running outside its tree, ended with it, so whatever they were still doing did not finish: bash -c WORKER_RUN_ID=claudeb-1-1-nested bash -c "sleep 3006; :" & sleep 3007; : · bash -c sleep 3001; : · bash -c sleep 3002; :' \
   <<<"$("$RUNNER" report "$RUN_ID")"
 orphan_cleanup
 trap 'rm -rf "$WORK"' EXIT

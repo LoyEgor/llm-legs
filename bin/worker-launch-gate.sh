@@ -49,9 +49,12 @@ span_live() {
 SCREEN_RE="(${VENDOR_BINS})([[:space:]]|\$)|worker-run|review-bench|light-research|REVIEW_BENCH_DOOR|${OWNED_LEGS}|${OWNED_IMAGE}|chatgpt-web|gemini-web|(^|[[:space:]])(at|batch|crontab)([[:space:]]|\$)|[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|run|wait)([[:space:]]|\$)"
 # Quotes and backslashes go, and separators become blanks (in the payload, `\\` pairs first, an escaped
 # quote goes, a bare one is a string's edge and the whitespace escapes are blanks). Bash 3.2's ${x//…/}
-# is cubic — a 7 KB payload took 128 s — so past 256 bytes one sed does it.
+# is cubic — a 7 KB payload took 128 s — so past 256 bytes one sed does it; bash 5's is cheaper than
+# that sed's process start up to ~8 KB (0.6 ms at 3.7 KB, 35 ms at 37 KB), so there the cap is 4 KB.
+UNQUOTE_CAP=256
+[ "${BASH_VERSINFO[0]:-3}" -lt 5 ] || UNQUOTE_CAP=4096
 unquote() { # text [json] -> UNQUOTED
-  if [ "${#1}" -lt 256 ]; then
+  if [ "${#1}" -lt "$UNQUOTE_CAP" ]; then
     UNQUOTED=$1
     if [ -n "${2:-}" ]; then
       UNQUOTED=${UNQUOTED//'\\'/} UNQUOTED=${UNQUOTED//'\"'/} UNQUOTED=${UNQUOTED//'"'/ }

@@ -1140,6 +1140,50 @@ function M.reviewDisk()
     "Disk review chat opened")
 end
 
+-- Servers that outlived whoever started them (system-doctor's hourly census, `orphan_servers`): ended only on his
+-- click, the doctor re-checking each is still an orphan before its tree gets TERM, then KILL.
+function M.endOrphanServers(servers)
+  if running(fixTasks.orphans) or #servers == 0 then return end
+  local mb, args = 0, { "end-orphans" }
+  for _, server in ipairs(servers) do
+    mb = mb + (tonumber(server.mb) or 0)
+    args[#args + 1] = "--server"
+    args[#args + 1] = string.format("%d@%d", server.pid, server.started)
+  end
+  local what = #servers == 1 and tostring(servers[1].name or servers[1].pid) or (#servers .. " servers")
+  if hs.dialog.blockAlert("End " .. what .. "?", amount(mb / 1024) .. " GB. Its process tree gets TERM, then KILL after 5 s.",
+      "Cancel", "End") ~= "End" then
+    return
+  end
+  launch("orphans", M.systemDoctorCmd or (repoRoot and repoRoot .. "/bin/system-doctor"), args, "Ending servers",
+    "Servers ended")
+end
+
+local function orphanServersRow(document)
+  local servers, total = {}, 0
+  for _, server in ipairs(list(list(document.orphan_servers).items)) do
+    if type(server) == "table" and tonumber(server.pid) and tonumber(server.started) then
+      servers[#servers + 1] = server
+      total = total + (tonumber(server.mb) or 0)
+    end
+  end
+  if #servers == 0 then return nil end
+  if running(fixTasks.orphans) then return dim("stray servers — ending…") end
+  local menu = { row({ { "End all  " }, { amount(total / 1024) .. " GB" } }), { title = "-" } }
+  menu[1].fn, menu[1].disabled = function() M.endOrphanServers(servers) end, nil
+  for _, server in ipairs(servers) do
+    local ports = {}
+    for _, port in ipairs(list(server.ports)) do ports[#ports + 1] = ":" .. tostring(port) end
+    local line = row({ { padded(amount((tonumber(server.mb) or 0) / 1024), 5) }, { " GB  " },
+      { padded(string.format("%d h", math.floor(tonumber(server.age_h) or 0)), 5), style.DIM }, { "  " },
+      { table.concat(ports, " ") .. "  " .. tostring(server.owner or server.cwd or server.name) },
+      server.chat and { "  ← " .. tostring(server.chat), server.chat_live ~= true and style.DIM or nil } or { "" } })
+    line.fn, line.disabled = function() M.endOrphanServers({ server }) end, nil
+    menu[#menu + 1] = line
+  end
+  return measureRow("stray servers", total / 1024, "GB", nil, nil, nil, menu)
+end
+
 local function diskByHand(logs)
   local gb, emergency = tonumber(list(logs.emergency).gb), nil
   if running(fixTasks.emergency) then
@@ -1306,6 +1350,8 @@ local function systemSections(document, now, moved, incoming)
       measureRow("processes", tonumber(footprints.rss_total) and footprints.rss_total / 2 ^ 30, "GB", nil, nil, now),
       { title = "-" },
     }
+    local stray = orphanServersRow(document)
+    if stray then table.insert(rows, #rows, stray) end
     for _, item in ipairs(byName(list(footprints.rss_top), function(r) return human(r[1]) end, function(r) return r[2] end,
         function(r) return r[3] end)) do
       rows[#rows + 1] = listRow(amount(item.value / 2 ^ 30), "GB", item.name .. (item.count > 1 and " ×" .. item.count or ""))

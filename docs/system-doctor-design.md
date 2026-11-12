@@ -152,6 +152,12 @@ collector-runs row (`trigger background:<name>`) and keeps its own `self` wall/C
   first snapshot counts none), last exit as `exit N`/`signal N`, summed per label with unique parts (UUIDs, hex,
   long numbers) stripped; owner `own` (program under an own root), `apple`, `third-party`. Plus the orphan census:
   own-uid processes with ppid 1 that are no job and no own app, worker supervisors (open `worker-run` pids) apart.
+  And `servers` (ended on Egor's click only, never automatically): own TCP listeners (`lsof`) whose ancestry reaches
+  launchd through no job, no open worker supervisor and no process holding a terminal, rooted ≥ 6 h ago
+  (`orphan_server_s`); one row per tree with ports, footprint MB, age, cwd, owner and the chat its start environment
+  names (`CLAUDE_CODE_SESSION_ID`, else the `WORKER_RUN_ID` run's launcher, read off KERN_PROCARGS2 so a rewritten
+  title hides nothing). Memory's `stray servers` row ends one or all via `system-doctor end-orphans --server
+  pid@started`, which re-runs the census and refuses anything no longer an orphan server.
   And `costs`: each service's resource coalition (launchd gives every job one; `machine_probe.coalition_usage`,
   unprivileged) as deltas of CPU s, processes started and bytes written, every run and child included; rows with
   ≥ 1 cpu-s or ≥ 10 MB, a changed coalition id counting none.
