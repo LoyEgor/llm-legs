@@ -2025,7 +2025,8 @@ function M.llmDoctorEntry()
     status = state }
 end
 
-local HARNESS_STALE_S = 1800
+-- Two of the LaunchAgent's hourly judgments missed (bin/harness-doctor AGENT_JUDGE_EVERY_S).
+local HARNESS_STALE_S = 2 * 3600
 
 local function harnessDoctorDir()
   if M.harnessDoctorDir then return M.harnessDoctorDir end
@@ -2160,8 +2161,8 @@ local function readHarnessMenu()
   return document
 end
 
--- The LaunchAgent (com.egor.harness-doctor) runs the collector every 5 minutes; the menu only
--- runs it on Refresh.
+-- The LaunchAgent (com.egor.harness-doctor) logs every 5 minutes and judges hourly; the menu judges on
+-- Refresh and on the Doctors menu's Updated row.
 local function runHarnessDoctor()
   local path = M.harnessDoctorCmd or (repoRoot and repoRoot .. "/bin/harness-doctor")
   if not path then return end

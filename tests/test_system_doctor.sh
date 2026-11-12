@@ -401,6 +401,15 @@ judge = m.Judge(failed_at + 60, None)
 m.judge_nightly(judge, {"as_of_s": failed_at - 3600, "reports": []})
 check(judge.blind == ["nightly"], "the documents judged while the nightly pass is broken read it blind: %s" % judge.blind)
 m.write_json(launched_path, {k: v for k, v in m.read_json(launched_path, {}).items() if k != "nightly_failed"})
+latest_path = os.path.join(work, "state", "latest.json")
+latest_saved = open(latest_path).read() if os.path.exists(latest_path) else None
+m.write_json(latest_path, {"as_of_s": 1800000000})
+check([m.judge_due(1800000000 + s) for s in (600, 3569, 3570)] == [False, False, True],
+      "the agent's minute runs judge hourly (Egor 2026-11-12: the doctors are for the night and for logging)")
+if latest_saved is None:
+    os.remove(latest_path)
+else:
+    open(latest_path, "w").write(latest_saved)
 
 # ---- the judge: each rule at its limit fires, just under it does not
 def tick_row(t, **values):

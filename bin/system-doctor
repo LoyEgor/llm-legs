@@ -118,7 +118,11 @@ CRASH_SIGNALS = {4, 5, 6, 8, 10, 11, 12}
 MIN_TICKS = 3
 TICK_GAP_S = 600
 TICK_STALE_S = 600
-JUDGE_EVERY_S = 600
+# The agent's tick, collectors and nightly pass log; the document is judging (Egor 2026-11-12: the doctors are for
+# the night, nobody watches the menu between). Hourly, not nightly: the spawn and kernel rules judge the last hour
+# and sightings.py keeps each judgment's problems for the night; rollup() also needs a judgment each day. The menu's
+# Updated row, Refresh and the night judge at once.
+JUDGE_EVERY_S = 3600
 NIGHTLY_HOUR = 4
 NIGHTLY_STALE_S = 36 * HOUR_S
 COVER_MIN_S = HOUR_S

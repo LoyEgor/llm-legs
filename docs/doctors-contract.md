@@ -356,7 +356,7 @@ Harness doctor:
   `hook_grows_size`, `hook_grows_repos`, `statusline`, `menu_build`, `fastpath`, `unjournaled`.
   The number of collector runs in the last 24 h that judged the problem is the doctor's own key
   `runs_red`.
-- Own key `speed` (design `docs/speed-doctor-design.md`): `bin/speed-doctor`, run after each Harness run (the LaunchAgent's: at most hourly),
+- Own key `speed` (design `docs/speed-doctor-design.md`): `bin/speed-doctor`, run after each Harness run (the LaunchAgent's: once a day after 04:00),
   writes it and lays its block at the top of `menu.txt`. Its problems carry `"speed": true` and group `Speed`:
   `regression:<metric>|<ident>|<band>` counts, `opportunity:<component>` is `watch`. A rule whose component
   Speed judges against a baseline is `watch` with `judged_by`, its own state kept as `was_state`, so no rule

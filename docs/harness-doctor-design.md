@@ -3,7 +3,8 @@
 Status: built 2026-09-28. `bin/harness-doctor` is the collector, `M.harnessDoctorEntry` in
 `hammerspoon/llm-limits.lua` is the renderer (shown under the Automation menu's `Doctors` entry by
 `hammerspoon/doctors.lua`), and `launchd/com.egor.harness-doctor.plist` runs it
-every 5 minutes. Tests: `tests/test_harness_doctor.sh` and the Harness case in
+every 5 minutes: it judges hourly (`AGENT_JUDGE_EVERY_S`) and only logs between (`log-state.json`, folded by the
+next judgment), so the 1 h rules keep their sightings. Tests: `tests/test_harness_doctor.sh` and the Harness case in
 `tests/llm_limits_renderer_harness.lua`.
 
 Egor's brief (2026-09-28): one menubar block for everything that is **not** the model and makes a

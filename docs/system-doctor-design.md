@@ -55,7 +55,7 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
   DEPLOYS.
   - It runs `agent` every 60 s with ProcessType Standard, Nice 10 and LowPriorityIO. It never uses
     `taskpolicy -b`, which starved a research run for 40 min.
-  - Each run is one tick, then the nightly pass when due, then the document every 10 min.
+  - Each run is one tick, then the nightly pass when due, then the document every 60 min (`JUDGE_EVERY_S`).
 - **Tick** (~2.1 s wall, mostly the births window; ~0.1 cpu-s) writes `ticks/<day>.jsonl` and
   `tick-state.json`.
   - **Births/s:** the PID delta between two `ps` probes ~2 s apart (wrapping at `PID_WRAP`).

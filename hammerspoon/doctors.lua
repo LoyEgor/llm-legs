@@ -9,7 +9,7 @@ local M = { cacheSeconds = 2 }
 local FIX_BUSY_S = 12 * 3600
 local NIGHT_REFRESH_S = 60
 local UPDATER_STALE_S = 2 * 86400
-local SYSTEM_STALE_S = 3600
+local SYSTEM_STALE_S = 2 * 3600 -- two of the agent's hourly judgments missed (bin/system-doctor JUDGE_EVERY_S)
 local ROW_CELLS = 64
 local LAG_EVERY_S, LAG_MIN_S = 1, 0.05
 local VERDICTS = { "fixed", "ruled-out", "weather", "blind-spot", "handoff" }
@@ -169,16 +169,22 @@ local function readJson(path, format)
     if not format then return limits.readJsonTable(path) end
     local handle = io.open(path)
     if not handle then return nil end
-    local rows = {}
+    local rows, asOf = {}, nil
     for line in handle:lines() do
       if format == "header" and not line:match("^[TH]\t") then break end
+      -- menu.txt's T line carries the judgment's time, which the H header leaves out.
+      asOf = asOf or format == "header" and tonumber(line:match("^T\t%d+\t(%d+)\t")) or nil
       -- A line that is no whole object is skipped before hs.json.decode: LuaSkin logs every failed
       -- decode to the console as an ERROR, pcall or not.
       local payload = format == "header" and line:match("^H\t(.*)") or format == "days" and line:match("^{.*}$")
       if payload then
         local valid, row = pcall(hs.json.decode, payload)
         if valid and type(row) == "table" then
-          if format == "header" then handle:close() return row end
+          if format == "header" then
+            handle:close()
+            row.as_of_s = row.as_of_s or asOf
+            return row
+          end
           rows[#rows + 1] = row
         end
       end
@@ -410,7 +416,7 @@ local function refreshDoctor(key, args, title, documentPath)
     style.busyChanged()
     if code ~= 0 then
       hs.alert.show(name .. " failed: " .. (lastLine(stderr) or lastLine(stdout) or ("exit " .. tostring(code))), 5)
-    else
+    elseif title then
       hs.alert.show(title(readJson(documentPath())), 2.5)
     end
   end, args)
@@ -432,6 +438,23 @@ end
 local function refreshRows(items, key, refresh)
   items[#items + 1] = { title = "-" }
   items[#items + 1] = running(refreshTasks[key]) and dim("refreshing…") or { title = infoTitle("Refresh"), fn = refresh }
+end
+
+-- Updated (Egor 2026-11-12): the doctors judge hourly in the background (bin/harness-doctor AGENT_JUDGE_EVERY_S,
+-- bin/system-doctor JUDGE_EVERY_S) and Speed once a day; the row dates the oldest of the three judgments the menu
+-- shows, and a click judges Harness (which execs Speed off its LaunchAgent) and System now, quietly: the section
+-- rebuilds when both end (busySource), a failure alerts.
+local UPDATED = { "harness", "system" }
+
+function M.updateNow()
+  for _, key in ipairs(UPDATED) do refreshDoctor(key, { "--quiet" }) end
+end
+
+local function updating()
+  for _, key in ipairs(UPDATED) do
+    if running(refreshTasks[key]) then return true end
+  end
+  return false
 end
 
 local function blindSpotsRow(document)
@@ -1950,6 +1973,22 @@ local function redDays(now, counts)
   return shown, loud
 end
 
+local function updatedItem(now)
+  if updating() then return dim("Updating…") end
+  local harness = doctorDocument({ key = "harness", env = "HARNESS_DOCTOR" }) or {}
+  local system = readJson(systemPath()) or {}
+  local oldest
+  for _, at in ipairs({ harness.as_of_s or false, type(harness.speed) == "table" and harness.speed.as_of_s or false,
+      system.as_of_s or false }) do
+    at = tonumber(at)
+    if not at then oldest = nil break end
+    oldest = math.min(oldest or at, at)
+  end
+  local stamp = not oldest and "–" or os.date("%Y-%m-%d", oldest) == os.date("%Y-%m-%d", now) and os.date("%H:%M", oldest)
+    or os.date("%b ", oldest) .. tonumber(os.date("%d", oldest)) .. os.date(" %H:%M", oldest)
+  return { title = infoTitle("Updated " .. stamp), fn = M.updateNow }
+end
+
 local function compute()
   local now = os.time()
   local entries, speed, spend, machine, tools = {}, nil, nil, nil, nil
@@ -2042,6 +2081,9 @@ local function compute()
   entries[#entries + 1] = tools
   if now - night.at >= NIGHT_REFRESH_S then M.refreshNight() end
   if night.text then entries[#entries + 1] = nightEntry() end
+  local updated = updatedItem(now)
+  updated.problems = 0
+  entries[#entries + 1] = updated
   entries[#entries + 1] = { title = "-", problems = 0 }
   for _, item in ipairs({ nightItem("Land night branches now", M.cleanupNow),
       nightItem("Run everything now", M.runEverything) }) do

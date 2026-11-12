@@ -7040,6 +7040,7 @@ def collect(write, now):
     if write:
         os.makedirs(folder, exist_ok=True)
     state, cold_digest = load_state(folder)
+    merge_log_state(state)
     use_memo(os.path.join(folder, LANDED_FILE), write)
     ledger, ledger_raw = load_ledger()
     faults = ledger_faults(ledger) + (ledger_contract.faults(json.loads(ledger_raw)) if ledger is not None and ledger_raw else [])
@@ -7230,6 +7231,8 @@ def collect(write, now):
     apply_speed(document, speed, None if ledger is None else judging)
     speed_flush(state, now, write)
     if write:
+        # Seeded first: a run dying between the two writes loses one batch of log runs, never counts it twice.
+        seed_log_state(state)
         save_state(folder, state, now, cold_digest)
         if sample and not trim_samples:
             with open(os.path.join(folder, "samples.jsonl"), "a") as handle:
@@ -7285,6 +7288,10 @@ def main():
             redeploy(periodic=True)
         except Exception as exc:
             print("harness-doctor: redeploy: %s" % error_line(exc), file=sys.stderr)
+        if not judge_due(now):
+            log_run(now)
+            collector_runs.record("harness", started, "log")
+            return 0
         document = guarded_collect(True, now)
     collector_runs.record("harness", started)
     if not args.quiet or document["status"] == "error":
@@ -7301,20 +7308,103 @@ def main():
 
 
 AGENT_LABEL = "com.egor.harness-doctor"
-# The LaunchAgent's runs hand over to Speed at most hourly: Speed reads days of journals (8.9 CPU-s a run, 219 runs
-# a day, the 2026-11-11 CPU audit) and every input it reads moves every 5 min (Harness's own files, the statusline
-# journal), so no input key ever skips it. Its section rides in Harness's document between its runs. Half a
-# StartInterval of slack keeps the hour from slipping to 65 min. Any other caller (menu Refresh, night, hand) runs it.
-SPEED_AGENT_EVERY_S = 3600 - 150
+# Cadence (Egor 2026-11-12: the doctors are for the night and for logging; nobody watches the menu between).
+# The LaunchAgent runs every 300 s but judges at most hourly: the runs between only log what no later run can rebuild
+# (log_run). Hourly, not nightly, because the hook, floor and cut rules judge the last hour and sightings.py keeps
+# what each judgment saw for the night: a judgment skipped is an hour the night never sees. Half a StartInterval of
+# slack keeps the hour from slipping to 65 min. Speed (8.9 CPU-s a run, only derived files and journals kept for
+# days) follows the agent's first judgment after SPEED_HOUR each day. Any other caller (the menu's Updated row and
+# Refresh, the night, a hand run) judges and runs Speed at once.
+AGENT_JUDGE_EVERY_S = 3600 - 150
+SPEED_HOUR = 4
+
+
+def agent_run():
+    return os.environ.get("XPC_SERVICE_NAME") == AGENT_LABEL
+
+
+def judge_due(now):
+    """True outside the LaunchAgent; under it, once the last published judgment (menu.txt's T line) is
+    AGENT_JUDGE_EVERY_S old or unreadable."""
+    if not agent_run():
+        return True
+    try:
+        with open(os.path.join(state_dir(), "menu.txt")) as handle:
+            at = int(handle.readline().split("\t")[2])
+    except (OSError, ValueError, IndexError):
+        return True
+    return now - at >= AGENT_JUDGE_EVERY_S
+
+
+LOG_STATE_FILE = "log-state.json"
+
+
+def log_run(now):
+    """The LaunchAgent's run between judgments: the load sample (samples.jsonl) and the process census across its
+    sleep (Speed's label CPU and forks), both read off the live machine and lost unless taken now. Transcripts,
+    journals and the rest are read by offset at the next judgment. Its state is log-state.json: the CPU ticks and
+    process table the next sample counts from (seeded by each judgment) and the census since the last judgment,
+    which collect folds in (merge_log_state); state.json (2.4 MB) is left alone."""
+    path = os.path.join(state_dir(), LOG_STATE_FILE)
+    mini = read_json(path, None)
+    if not isinstance(mini, dict):  # no judgment seeded it yet: its baseline from the state, once
+        state = read_json(os.path.join(state_dir(), "state.json"), {})
+        mini = {"ticks": state.get("ticks"), "speed": {k: v for k, v in speed_state(state).items() if k in ("ps", "ps_t")}}
+    speed_state(mini).setdefault("days", {}).setdefault(local_day(now), {})
+    burst = []
+    sample = take_sample(mini, now, burst=burst)
+    speed_census(mini, burst, now, launchd_labels() if burst else [])
+    if sample:
+        with open(os.path.join(state_dir(), "samples.jsonl"), "a") as handle:
+            handle.write(json.dumps(sample, separators=(",", ":")) + "\n")
+    write_json(path, mini)
+
+
+def merge_log_state(state):
+    """Folds the log runs' log-state.json into the state: their newer ticks and process table, and each day's census
+    added to the day's accumulator. The judgment rewrites the file to the bare seed before it saves the state."""
+    mini = read_json(os.path.join(state_dir(), LOG_STATE_FILE), None)
+    if not isinstance(mini, dict):
+        return
+    ticks = mini.get("ticks")
+    if isinstance(ticks, list) and len(ticks) == 2 and ticks[0] > (state.get("ticks") or [0])[0]:
+        state["ticks"] = ticks
+    logged, speed = speed_state(mini), speed_state(state)
+    if (logged.get("ps_t") or 0) > (speed.get("ps_t") or 0):
+        speed["ps"], speed["ps_t"] = logged.get("ps") or {}, logged["ps_t"]
+    for day, part in sorted((logged.get("days") or {}).items()):
+        acc = speed_day(state, day_start(day))
+        for key, digits in (("census", 0), ("label_cpu_s", 2)):
+            into = acc.setdefault(key, {})
+            for label, value in (part.get(key) or {}).items():
+                into[label] = round(into.get(label, 0) + value, digits) if digits else into.get(label, 0) + value
+        if part.get("census_s"):
+            acc["census_s"] = round(acc.get("census_s", 0) + part["census_s"], 3)
+
+
+def seed_log_state(state):
+    speed = speed_state(state)
+    write_json(os.path.join(state_dir(), LOG_STATE_FILE),
+               {"ticks": state.get("ticks"), "speed": {"ps": speed.get("ps") or {}, "ps_t": speed.get("ps_t")}})
+
+
+def speed_start(now):
+    """The latest local SPEED_HOUR:00 at or before now."""
+    day = time.localtime(now)
+    at = time.mktime((day.tm_year, day.tm_mon, day.tm_mday, SPEED_HOUR, 0, 0, 0, 0, -1))
+    if at > now:
+        day = time.localtime(now - 86400)
+        at = time.mktime((day.tm_year, day.tm_mon, day.tm_mday, SPEED_HOUR, 0, 0, 0, 0, -1))
+    return at
 
 
 def speed_due(document):
-    if os.environ.get("XPC_SERVICE_NAME") != AGENT_LABEL or not isinstance(document, dict):
+    if not agent_run() or not isinstance(document, dict):
         return True
     speed = document.get("speed") or {}
     at = speed.get("as_of_s")
     return speed.get("status") == "error" or not isinstance(at, (int, float)) or \
-        document.get("as_of_s", 0) - at >= SPEED_AGENT_EVERY_S
+        at < speed_start(document.get("as_of_s", 0))
 
 
 def exec_speed(document=None):

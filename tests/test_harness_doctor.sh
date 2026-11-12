@@ -2940,6 +2940,54 @@ print(module.at_epoch("2026-01-01T00:00:00Z"), module.at_epoch(None))
 EOF
 )" "the wrapper's fallback interpreter reads a ledger's Z stamps, so ruled_at and fixes[].at judge the same on every python3"
 fi
+# The LaunchAgent judges hourly and only logs between (Egor 2026-11-12: the doctors are for the night and for logging).
+# Through env: a bash prefix assignment of XPC_SERVICE_NAME reaches the exec'd script as 0 on macOS.
+agent_run() {
+  HARNESS_DOCTOR_DIR="$WORK/agent" HARNESS_DOCTOR_NOW=$1 HARNESS_DOCTOR_FAKE_SAMPLE=$(sample 0.5 1 false) \
+    env XPC_SERVICE_NAME=com.egor.harness-doctor "$DOCTOR" --quiet || fail "the agent's run at $1 failed"
+  printf '%s %s %s\n' "$(head -1 "$WORK/agent/menu.txt" | cut -f3)" "$(wc -l < "$WORK/agent/samples.jsonl" | tr -d ' ')" \
+    "$(jq -sr '.[-1].trigger' "$DOCTORS_DIR/collector-runs.jsonl")"
+}
+assert_eq "$T 1 fixture" "$(agent_run "$T")" "the agent's first run judges"
+judged_state=$(cksum < "$WORK/agent/state.json")
+assert_eq "$T 2 fixture:log" "$(agent_run $((T + 300)))" \
+  "an agent run inside the hour appends its sample, journals a log run and leaves the judgment standing"
+assert_eq "$judged_state true" "$(cksum < "$WORK/agent/state.json") $(jq 'has("ticks") or has("speed")' "$WORK/agent/log-state.json")" \
+  "a log run keeps its state in log-state.json and leaves state.json alone"
+assert_eq "$((T + 3600)) 3 fixture" "$(agent_run $((T + 3600)))" "an hour on, the agent judges again"
+assert_eq '[[9,20],{"a":3,"b":1},2.5,{"a":1.75},{"k|x":4},9]' "$(HARNESS_DOCTOR_DIR="$WORK/merge" python3 - "$DOCTOR" "$T" <<'EOF'
+import importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(module)
+os.makedirs(os.environ["HARNESS_DOCTOR_DIR"])
+day = module.local_day(int(sys.argv[2]))
+module.write_json(os.path.join(module.state_dir(), module.LOG_STATE_FILE), {"ticks": [9, 20], "speed": {
+    "ps": {"k|x": 4}, "ps_t": 9, "days": {day: {"census": {"a": 1, "b": 1}, "census_s": 0.5, "label_cpu_s": {"a": 0.5}}}}})
+state = {"ticks": [5, 10], "speed": {"ps": {"old": 1}, "ps_t": 5,
+                                     "days": {day: {"census": {"a": 2}, "census_s": 2.0, "label_cpu_s": {"a": 1.25}}}}}
+module.merge_log_state(state)
+acc = state["speed"]["days"][day]
+print(json.dumps([state["ticks"], acc["census"], acc["census_s"], acc["label_cpu_s"], state["speed"]["ps"],
+                  state["speed"]["ps_t"]], separators=(",", ":")))
+EOF
+)" "a judgment folds the log runs' census into the day and takes their newer ticks and process table"
+assert_eq '[false,true,false,true,true,true]' "$(python3 - "$DOCTOR" "$T" <<'EOF'
+import importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(module)
+t, day = int(sys.argv[2]), int(sys.argv[2]) // 86400 * 86400
+def due(at, speed, agent=True):
+    os.environ.pop("XPC_SERVICE_NAME", None)
+    if agent:
+        os.environ["XPC_SERVICE_NAME"] = module.AGENT_LABEL
+    return module.speed_due({"as_of_s": at, "speed": speed})
+print(json.dumps([due(t, {"as_of_s": t - 3600}), due(t, {"as_of_s": day + 3 * 3600}),
+                  due(day + 3 * 3600, {"as_of_s": day - 19 * 3600}), due(t, {"as_of_s": t - 3600, "status": "error"}),
+                  due(t, {}), due(t, {"as_of_s": t - 60}, agent=False)], separators=(",", ":")))
+EOF
+)" "the agent runs Speed once a day, at its first judgment after 04:00 (an errored or missing one at once); other callers always"
 fi
 
 suite_shard_pass "$asserts"

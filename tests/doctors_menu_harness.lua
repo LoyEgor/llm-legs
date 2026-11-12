@@ -374,8 +374,10 @@ for index = 1, 7 do
   check(not span(title, VALUE_AT - 3, USUAL_AT):match("[%a%%/]"),
     "summary rows carry no unit, Lost time's min/day lives inside its menu: " .. text(title))
 end
-check(#trendItems == 11 and trendItems[9].title == "-" and text(trendItems[10].title) == "Land night branches now"
-  and text(trendItems[11].title) == "Run everything now", "top level: eight summaries, Tools after System, then the actions")
+check(#trendItems == 12 and text(trendItems[9].title) == "Updated " .. os.date("%H:%M", now) and trendItems[9].fn
+  and trendItems[10].title == "-" and text(trendItems[11].title) == "Land night branches now"
+  and text(trendItems[12].title) == "Run everything now",
+  "top level: eight summaries, Tools after System, Updated, then the actions")
 check(span(trendItems[5].title, 1, 9) == "Lost time" and span(trendItems[6].title, 1, 5) == "Spend"
   and sameColor(colorAt(trendItems[6].title, 1), palette.GREEN),
   "the time row reads Lost time; Spend beside it, GREEN while an audit is due: Spend only watches")
@@ -744,7 +746,7 @@ local doctors = loadDoctors()
 local title = doctors.title()
 check(title == "Doctors", "all ok: " .. text(title))
 local items = doctors.menuItems()
-check(#items == 11 and text(items[1].title) == summary("LLM", 0) and text(items[2].title) == summary("Harness", 0)
+check(#items == 12 and text(items[1].title) == summary("LLM", 0) and text(items[2].title) == summary("Harness", 0)
   and text(items[3].title) == summary("Updater", 0) and text(items[4].title) == summary("Code", nil)
   and sameColor(colorAt(items[4].title, 1), palette.DIM) and sameColor(colorAt(items[4].title, VALUE_AT), palette.DIM)
   and text(items[7].title) == summary("System", 0) and sameColor(colorAt(items[7].title, 1), palette.GREEN)
@@ -1072,7 +1074,7 @@ tasks = {}
 doctors = loadDoctors()
 items = doctors.menuItems()
 local nightTask = tasks[1]
-check(#items == 11 and nightTask and nightTask.path == "/fixture/bin/night-run"
+check(#items == 12 and nightTask and nightTask.path == "/fixture/bin/night-run"
   and table.concat(nightTask.args, " ") == "latest --menu", "the Night row reads bin/night-run latest --menu")
 doctors.menuItems()
 check(#tasks == 1, "a second build started a second night-run")
@@ -1084,7 +1086,7 @@ nightTask:finish(0, "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you\t1\
   .. "cleanup p1 · needs you · step 10 needs his word\t1\tstep 10 needs his word\n")
 items = doctors.menuItems()
 local nightRow = items[9]
-check(#items == 12 and text(nightRow.title) == "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you"
+check(#items == 13 and text(nightRow.title) == "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you"
   and red(nightRow.title) and not nightRow.disabled and allMenlo({ nightRow }),
   "a red night: " .. (nightRow and text(nightRow.title) or "missing"))
 local jobs = nightRow.menu or {}
@@ -1202,10 +1204,61 @@ doctors.runEverything()
 check(#dialogs == dialogCount and #tasks == 2, "a running night asked or started again")
 doctors.refreshNight()
 tasks[#tasks]:finish(4, "", "night-run: cannot read\n")
-check(#doctors.menuItems() == 12, "a failed night-run keeps the last good row")
+check(#doctors.menuItems() == 13, "a failed night-run keeps the last good row")
 doctors.refreshNight()
 tasks[#tasks]:finish(0, "")
-check(#doctors.menuItems() == 11, "an empty night-run hides the row")
+check(#doctors.menuItems() == 12, "an empty night-run hides the row")
+
+-- Updated (Egor 2026-11-12): the oldest of the Harness, Speed and System judgments, dated when not today; a click
+-- judges Harness and System now with no alert, the row reads Updating… until both end, a failure alerts.
+do
+  local saved = {}
+  for _, path in ipairs({ "/harness-doctor/menu.txt", "/system-doctor/latest.json" }) do
+    local handle = io.open(dir .. path)
+    saved[path] = handle and handle:read("a")
+    if handle then handle:close() end
+  end
+  write("/harness-doctor/menu.txt", "T\t0\t" .. now .. "\tHarness doctor: ok\nH\t"
+    .. hs.json.encode({ status = "ok", problems = {}, speed = { status = "ok", as_of_s = now } }) .. "\n")
+  local old = now - 2 * 86400
+  write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s = old, status = "ok",
+    problem_count = 0, problems = {}, blind_spots = {} })
+  local updated = loadDoctors()
+  updated.harnessDoctorCmd = "/fixture/bin/harness-doctor"
+  local function updatedRow()
+    for _, item in ipairs(updated.menuItems()) do
+      if item.title ~= "-" and (text(item.title):match("^Updated ") or text(item.title) == "Updating…") then return item end
+    end
+    return { title = "missing" }
+  end
+  local row = updatedRow()
+  check(text(row.title) == "Updated " .. os.date("%b ", old) .. tonumber(os.date("%d", old)) .. os.date(" %H:%M", old)
+    and row.fn, "Updated dates the oldest judgment, with its day when not today: " .. text(row.title))
+  tasks, alerts = {}, {}
+  if row.fn then
+    row.fn()
+    check(#tasks == 2 and tasks[1].path == "/fixture/bin/harness-doctor" and tasks[2].path == "/fixture/bin/system-doctor"
+      and table.concat(tasks[1].args, " ") == "--quiet" and table.concat(tasks[2].args, " ") == "--quiet"
+      and tasks[1].env.DOCTOR_TRIGGER == "menu", "a click on Updated judges Harness and System, tagged menu")
+    row = updatedRow()
+    check(text(row.title) == "Updating…" and row.disabled and not row.fn, "Updating… while the judgments run")
+    write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s = now, status = "ok",
+      problem_count = 0, problems = {}, blind_spots = {} })
+    tasks[1]:finish(0)
+    check(text(updatedRow().title) == "Updating…", "Updating… until both judgments end")
+    tasks[2]:finish(0)
+    row = updatedRow()
+    check(text(row.title) == "Updated " .. os.date("%H:%M", now) and row.fn and #alerts == 0,
+      "both done: today's time and no alert: " .. text(row.title) .. " " .. tostring(alerts[1]))
+    if row.fn then row.fn() end
+    if #tasks == 4 then
+      tasks[3]:finish(1, "", "boom\n")
+      tasks[4]:finish(0)
+    end
+    check(alerts[#alerts] == "Harness doctor failed: boom", "a failed judgment alerts its last line: " .. tostring(alerts[#alerts]))
+  end
+  for path, body in pairs(saved) do write(path, body) end
+end
 
 -- Land night branches now: bin/night-run start --cleanup behind the same Cancel-first confirmation; off while a night runs.
 doctors.refreshNight()
