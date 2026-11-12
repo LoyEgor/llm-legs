@@ -285,6 +285,8 @@ over all of it and at 18:26 over the runs from 18:00:
     tool_uses, mode, entrypoint and toplevel; plus the watched file hashes, the hooks snapshot,
     the versions, first-red and first-watch times with each rule family's first evaluation (a
     rule first seen after an upgrade claims no cause), the birth time and CPU ticks;
+  - `state-cold.json`: cursors of transcripts untouched since local midnight and Speed's closed day,
+    rewritten only when they change; `state.json` names its digest;
   - `events/YYYY-MM-DD.jsonl`, kept 22 days;
   - `days/YYYY-MM-DD.json` summaries (`"v": 2`), kept 60 days, which feed §2.2 and the Waits
     `wait s 7 d` column: a histogram per waiter (`bash:<project>`, `edit`, `read`,

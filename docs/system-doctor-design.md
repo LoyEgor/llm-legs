@@ -246,6 +246,8 @@ new. Writers stay free: no format or location standard, we only measure and clea
 - **Collector** `logstores`, daily after 04:00 (or after 36 h), detached like the others: `bin/log-sweep` (every
   `sweep` store, any kind), then every log store's bytes, files, units and oldest unit, and what lies past its
   criterion plus slack (2 days, 1 unit, 25 %, 2× the tail). Rows in `logstores/<day>.jsonl` (90 days).
+  The walk reuses a `node_modules` tree's last count (`logstores-trees.json`) until its or its `.pnpm`'s inode or
+  mtime moves, or 7 days pass.
 - **Fallback** for unregistered writers: one `du -k -x` per top scan root, deep enough to reach 3 levels below every
   root inside it. A directory 1–3 levels below its root that no store unit or ignore entry covers is judged on its
   residual (its size minus covered, nested-root and already-reported parts below it), and each root's own loose files

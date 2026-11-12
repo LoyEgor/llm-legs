@@ -352,11 +352,24 @@ def short_path(path):
     return path
 
 
-def write_json(path, value):
+def write_json(path, value, text=None):
     tmp = "%s.tmp.%d" % (path, os.getpid())
     with open(tmp, "w") as handle:
-        handle.write(json.dumps(value, separators=(",", ":")))
+        handle.write(json.dumps(value, separators=(",", ":")) if text is None else text)
     os.replace(tmp, path)
+
+
+def write_json_changed(path, value):
+    """write_json unless the file already holds exactly this document: an SSD write saved, a read paid."""
+    text = json.dumps(value, separators=(",", ":"))
+    try:
+        with open(path) as handle:
+            if handle.read() == text:
+                return False
+    except OSError:
+        pass
+    write_json(path, None, text)
+    return True
 
 
 def iso_epoch(text):
@@ -2096,7 +2109,7 @@ def speed_flush(state, now, write):
     for day in sorted(days):
         if write:
             os.makedirs(os.path.join(state_dir(), "speed-days"), exist_ok=True)
-            write_json(os.path.join(state_dir(), "speed-days", day + ".json"), days[day])
+            write_json_changed(os.path.join(state_dir(), "speed-days", day + ".json"), days[day])
         if day < local_day(now - 86400):
             del days[day]
 
@@ -6580,7 +6593,8 @@ def read_holds():
 
 def stuck_queues(now):
     """bin/chat-load's verdict, the one the Chats/other menu shows: a queue no held job left for its
-    queue_stuck_s; a stale snapshot judges nothing."""
+    queue_stuck_s; a stale snapshot judges nothing. 600 s stays above bin/memlogd's away_full_interval (300 s), the
+    slowest a calm memlogd rewrites chats.json, so a stuck queue is still judged while Egor is away."""
     chats = read_json(os.path.join(memlogd_dir(), "chats.json"), {})
     if not isinstance(chats, dict) or now - (chats.get("as_of") or 0) > 600:
         return set(), None
@@ -6969,13 +6983,63 @@ class Phases:
         self.mark = now
 
 
+STATE_COLD_FILE = "state-cold.json"
+
+
+def state_cold_parts(state, now):
+    """What of the state has settled: the cursors of transcripts untouched since before today's local midnight and
+    Speed's closed day. They live in state-cold.json, rewritten only when they change (a resumed or swept transcript,
+    the midnight move), so a 5-min run rewrites only the hot rest (the 2026-11-12 disk audit: state.json was 4.6 MB a
+    run, 2.0 MB of it settled transcript cursors, the agent ~75 MB/h of SSD writes)."""
+    today = local_day(now)
+    midnight_ns = day_start(today) * 1e9
+    files = state.get("files") or {}
+    days = (state.get("speed") or {}).get("days") or {}
+    return {"files": {p: files[p] for p in sorted(files) if (files[p].get("mtime") or 0) < midnight_ns},
+            "speed_days": {d: days[d] for d in sorted(days) if d < today}}
+
+
+def load_state(folder):
+    """state.json joined with its cold part; (state, the cold part's digest). A cold part gone missing drops every
+    cursor, the rebuild a lost state.json takes, so no transcript is read again from a cursor that is not there."""
+    state = read_json(os.path.join(folder, "state.json"), {})
+    digest = state.pop("cold", None)
+    if digest:
+        cold = read_json(os.path.join(folder, STATE_COLD_FILE), None)
+        if not isinstance(cold, dict) or not isinstance(cold.get("files"), dict):
+            state.pop("files", None)
+            return state, None
+        files = state.setdefault("files", {})
+        for path, rec in cold["files"].items():
+            files.setdefault(path, rec)
+        days = speed_state(state).setdefault("days", {})
+        for day, value in (cold.get("speed_days") or {}).items():
+            days.setdefault(day, value)
+    return state, digest
+
+
+def save_state(folder, state, now, digest):
+    """state.json without its cold part, which is written first and only when its digest moved."""
+    cold = state_cold_parts(state, now)
+    text = json.dumps(cold, separators=(",", ":"))
+    fresh = hashlib.sha1(text.encode()).hexdigest()[:16]
+    cold_path = os.path.join(folder, STATE_COLD_FILE)
+    if fresh != digest or not os.path.exists(cold_path):
+        write_json(cold_path, None, text)
+    hot = dict(state, cold=fresh, files={p: r for p, r in (state.get("files") or {}).items() if p not in cold["files"]})
+    if cold["speed_days"]:
+        speed = speed_state(state)
+        hot["speed"] = dict(speed, days={d: v for d, v in speed.get("days", {}).items() if d not in cold["speed_days"]})
+    write_json(os.path.join(folder, "state.json"), hot)
+
+
 def collect(write, now):
     started, cpu_start, phase = time.monotonic(), cpu_s(), Phases()
     WRITING[0] = write
     folder = state_dir()
     if write:
         os.makedirs(folder, exist_ok=True)
-    state = read_json(os.path.join(folder, "state.json"), {})
+    state, cold_digest = load_state(folder)
     use_memo(os.path.join(folder, LANDED_FILE), write)
     ledger, ledger_raw = load_ledger()
     faults = ledger_faults(ledger) + (ledger_contract.faults(json.loads(ledger_raw)) if ledger is not None and ledger_raw else [])
@@ -7166,7 +7230,7 @@ def collect(write, now):
     apply_speed(document, speed, None if ledger is None else judging)
     speed_flush(state, now, write)
     if write:
-        write_json(os.path.join(folder, "state.json"), state)
+        save_state(folder, state, now, cold_digest)
         if sample and not trim_samples:
             with open(os.path.join(folder, "samples.jsonl"), "a") as handle:
                 handle.write(json.dumps(sample, separators=(",", ":")) + "\n")

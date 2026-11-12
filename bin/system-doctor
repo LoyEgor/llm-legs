@@ -2302,8 +2302,10 @@ def logstores(now=None):
         return row
     row["sweep"] = steps("sweep", run_log_sweep)
     stores, claims, sessions, kept = [], {}, {}, {}
+    trees = os.path.join(state_dir(), "logstores-trees.json")
+    memo = log_stores.memo_load(trees, now)
     for entry in log_stores.logs(registry):
-        rows = steps("store:" + entry["name"], log_stores.measure, entry)
+        rows = steps("store:" + entry["name"], log_stores.measure, entry, None, memo)
         claims.update((r["path"], r["bytes"]) for r in rows)
         if log_stores.bounded(entry):
             kept.update((r["path"], r["bytes"]) for r in rows)
@@ -2314,9 +2316,11 @@ def logstores(now=None):
     apps = []
     for entry in registry.get("stores") or ():
         if entry.get("kind") == "app" and log_stores.criterion(entry)[0]:
-            rows = steps("app:" + entry["name"], log_stores.measure, entry)
+            rows = steps("app:" + entry["name"], log_stores.measure, entry, None, memo)
             apps.append(dict(log_stores.summary(entry, rows, now), writer=entry.get("writer"), owner=entry.get("owner")))
     row["apps"] = apps
+    with contextlib.suppress(OSError):
+        log_stores.memo_save(trees, memo)
     groups = {}
     for store in stores:
         for group, size in store["parts"].items():

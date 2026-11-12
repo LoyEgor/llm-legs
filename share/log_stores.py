@@ -140,12 +140,32 @@ def units(entry):
     return outermost(kept)
 
 
-def unit_stats(path, settled=None):
+# Trees an install writes whole and nothing edits in place: 94 % of the files of /Volumes/Work/tmp (the 2026-11-12 disk
+# audit: 80 checkouts there, ~97k of each one's ~103k files in node_modules; the daily pass walked 6.9 M files in 29
+# min). A measuring walk given a memo counts such a tree again only when its own or its .pnpm's inode or mtime moved
+# (an install adds or removes a package there) or its count is STABLE_MEMO_DAYS old; until then its bytes, files and
+# newest are the last count's. bin/log-sweep never passes a memo: what it deletes is judged on a full walk.
+STABLE_TREES = ("node_modules",)
+STABLE_MEMO_DAYS = 7
+
+
+def stable_sig(path, info):
+    try:
+        inner = os.lstat(os.path.join(path, ".pnpm")).st_mtime_ns
+    except OSError:
+        inner = 0
+    return [info.st_ino, info.st_mtime_ns, inner]
+
+
+def unit_stats(path, settled=None, memo=None):
     """{path, bytes (allocated, as du), size (a file's length), files, newest (the newest mtime of the unit and
     everything inside it), denied (a directory macOS will not list, an app's data its privacy guard keeps, or one
     holding a non-empty directory of another owner we may not write, a tool once run as root: never swept)};
     symlinks are counted, never followed. With settled, the walk stops at the first mtime at or after it: newest is
-    then only known to be that late, bytes, files and denied cover what was walked (a keep test needs no more)."""
+    then only known to be that late, bytes, files and denied cover what was walked (a keep test needs no more).
+    With memo ({"old": {path: count}, "new": {}, "now": epoch}, no settled), a STABLE_TREES directory inside the unit
+    whose signature matches a count younger than STABLE_MEMO_DAYS is taken from it, unwalked; every count used or made
+    lands in memo["new"]."""
     try:
         info = os.lstat(path)
     except OSError:
@@ -157,14 +177,18 @@ def unit_stats(path, settled=None):
         return row
     if settled is not None and row["newest"] >= settled:
         return row
-    stack, uid = [(path, info.st_uid)], os.getuid()
+    memo = memo if settled is None else None
+    stack, uid = [(path, info.st_uid, None)], os.getuid()
     while stack:
-        top, owner = stack.pop()
+        top, owner, count = stack.pop()
         try:
             with os.scandir(top) as entries:
                 for item in entries:
-                    if owner != uid and not row.get("denied"):
-                        row["denied"] = not os.access(top, os.W_OK)
+                    if owner != uid and not (row.get("denied") and (count is None or count.get("denied"))):
+                        if not os.access(top, os.W_OK):
+                            row["denied"] = True
+                            if count is not None:
+                                count["denied"] = True
                     try:
                         info = item.stat(follow_symlinks=False)
                     except OSError:
@@ -173,25 +197,65 @@ def unit_stats(path, settled=None):
                     row["newest"] = max(row["newest"], info.st_mtime)
                     if settled is not None and row["newest"] >= settled:
                         return row
+                    if count is not None:
+                        count["bytes"] += info.st_blocks * 512
+                        count["newest"] = max(count["newest"], info.st_mtime)
                     if stat.S_ISDIR(info.st_mode):
-                        stack.append((item.path, info.st_uid))
+                        inner = count
+                        if memo is not None and count is None and item.name in STABLE_TREES:
+                            sig = stable_sig(item.path, info)
+                            old = memo["old"].get(item.path)
+                            if old and old.get("sig") == sig and memo["now"] - old.get("at", 0) < STABLE_MEMO_DAYS * 86400:
+                                memo["new"][item.path] = old
+                                row["bytes"] += old["bytes"]
+                                row["files"] += old["files"]
+                                row["newest"] = max(row["newest"], old["newest"])
+                                continue
+                            inner = memo["new"][item.path] = {"sig": sig, "at": memo["now"], "bytes": 0, "files": 0,
+                                                              "newest": info.st_mtime}
+                        stack.append((item.path, info.st_uid, inner))
                     else:
                         row["files"] += 1
+                        if count is not None:
+                            count["files"] += 1
         except PermissionError:
             row["denied"] = row.get("denied") or top == path
+            if count is not None:
+                count["denied"] = True
         except OSError:
+            if count is not None:
+                count["denied"] = True
             continue
     return row
 
 
-def measure(entry, settled=None):
+def memo_load(path, now):
+    """A measuring pass's memo for unit_stats: the counts kept at path (a missing or broken file: none)."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            old = json.load(handle)
+    except (OSError, ValueError):
+        old = {}
+    return {"old": old if isinstance(old, dict) else {}, "new": {}, "now": now}
+
+
+def memo_save(path, memo):
+    """The counts this pass used or made, a denied one left out; a tree no unit holds any more drops out."""
+    kept = {p: c for p, c in memo["new"].items() if not c.get("denied")}
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(kept, handle, separators=(",", ":"))
+    os.replace(tmp, path)
+
+
+def measure(entry, settled=None, memo=None):
     """unit_stats of every unit; a store's `also` paths (each relative to its unit: the blob directory beside a Chromium
     IndexedDB leveldb) count, age, deny and go with their unit, listed in its `also`, removed after it."""
-    rows = [row for row in (unit_stats(path, settled) for path in units(entry)) if row]
+    rows = [row for row in (unit_stats(path, settled, memo) for path in units(entry)) if row]
     for row in rows if entry.get("also") else ():
         row["also"] = []
         for rel in entry["also"]:
-            found = unit_stats(os.path.normpath(os.path.join(row["path"], rel)), settled)
+            found = unit_stats(os.path.normpath(os.path.join(row["path"], rel)), settled, memo)
             if found:
                 row["also"].append(found["path"])
                 row["bytes"] += found["bytes"]
