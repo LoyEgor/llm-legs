@@ -266,8 +266,8 @@ State files are stored at:
 
 `worker-tag-hook.sh` prefixes a fork's `fork · <model> · <account>` tag, seeded by
 `worker-spawn-hook.sh`, onto the fork's later Bash activity descriptions. It exits
-silently for any `hook_event_name` other than PreToolUse (its rewrite payload hardcodes
-`hookEventName: "PreToolUse"`, so a mis-registration must be a no-op).
+silently for any `hook_event_name` other than PreToolUse. Unwired while forks are off
+(`CLAUDE_CODE_FORK_SUBAGENT=0`); re-add it to PreToolUse `Bash` when forks return.
 
 `limits-triage-nudge.sh` (PostToolUse matcher `Bash`) scans Bash tool output for a limit-shaped
 pattern (`no available accounts`, `API Error: 503/529`, `usage limit`, `overloaded`,

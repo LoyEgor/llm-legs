@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # What ~/.claude/worker-model may hold, and who writes a chat pin. Two modes, `write` / `bash`
 # (PreToolUse), deny a write to ~/.claude/worker-model — through Edit/Write and through a shell
 # redirect alike, since a door on one of them is a door around the other — that stores a model, an

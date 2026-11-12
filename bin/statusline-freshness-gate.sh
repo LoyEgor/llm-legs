@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Always exits 0 — a nonzero exit here would block the triggering tool call.
 {
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh

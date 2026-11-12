@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Writes this chat's place journal (bin/statusline-place): one declared line per event that says
 # where the chat's changes go. The statusline shows the last line's tree; nothing here decides it.
 {
