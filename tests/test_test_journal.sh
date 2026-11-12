@@ -57,6 +57,14 @@ probe
 probe
 assert_eq test_twin "$(sed -n 3p "$STATUSLINE_CACHE_DIR/test-history.jsonl" | jq -r .label)"
 assert_eq '[]' "$(jq -sc 'map(select(has("ok")))' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# One late 10 s refresh: a cache 20 s old (under the render's 25 s stale line) still journals what ended.
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'
+  shell_line 10 01:01; printf '11 10 01:00 bash tests/test_late.sh\n'; } > "$WORK/snap"
+probe
+touch -t "$(date -r "$((probe_now - 20))" +%Y%m%d%H%M.%S)" "$STATUSLINE_CACHE_DIR/work-th"
+printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n' > "$WORK/snap"
+probe
+assert_eq test_late "$(jq -r 'select(.label == "test_late") | .label' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
 # A run-suites run's outcome is its suites' .status codes once it is gone: every one 0 is ok, any
 # plain failure is not, and a run short of its total, killed or with its logs gone has none. One whose
 # pointer predates the process (still queued for a slot, or a killed runner's pid reused) is no run.

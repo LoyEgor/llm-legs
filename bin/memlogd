@@ -43,6 +43,10 @@ quiet_interval="${MEMLOGD_QUIET_INTERVAL:-10}"
 armed_interval="${MEMLOGD_ARMED_INTERVAL:-2}"
 full_interval="${MEMLOGD_FULL_INTERVAL:-60}"
 armed_full_interval="${MEMLOGD_ARMED_FULL_INTERVAL:-15}"
+# Away and calm, one full tick per wall-clock slot of this: chat-load's sample is the only writer of chats.json, and
+# bin/harness-doctor stuck_queues judges nothing from one older than 600 s, so a queue stuck at night stays
+# reported only while this is under that window.
+away_full_interval="${MEMLOGD_AWAY_FULL_INTERVAL:-300}"
 incident_interval="${MEMLOGD_INCIDENT_INTERVAL:-1}"
 # Armed is danger short of an incident (arm_reason): available under arm_avail_mb, swap used up
 # arm_swap_mb or available down arm_drop_mb within arm_window s; it holds arm_hold s past the last
@@ -343,8 +347,9 @@ arm_tick() { # now avail swap
 }
 
 # Away from the Mac (presence.lua's presence/away, rewritten within 180 s; read here, since nothing memlogd runs lives
-# on /Volumes/Work): a calm full tick only feeds what he would look at (the Chats app's load bars and rows, the menu),
-# so none runs; pressure and armed ticks run as ever (Egor 2026-11-12: «если это не защита… можно пересмотреть»).
+# on /Volumes/Work): a calm full tick mostly feeds what he would look at (the Chats app's load bars and rows, the menu),
+# so it runs per away_full_interval slot, not per minute; pressure and armed ticks run as ever (Egor 2026-11-12:
+# «если это не защита… можно пересмотреть»).
 away_now() { # now
   local since='' written=''
   { IFS=$'\t' read -r since written < "${MEMLOGD_PRESENCE_DIR:-$HOME/.cache/speed-doctor/presence}/away"; } 2>/dev/null || return 1
@@ -479,6 +484,8 @@ run_loop() {
       ! full_due "$now" "$armed_full_interval" || full=1
     elif ! away_now "$now"; then
       ! full_due "$now" "$full_interval" || full=1
+    else
+      ! full_due "$now" "$away_full_interval" || full=1
     fi
     if [ "$full" = 1 ]; then
       full_at=$now

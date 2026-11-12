@@ -355,6 +355,18 @@ static void timing_row(const char *base, const char *sid, size_t sid_n, char kin
   if (fd >= 0) put(fd, row, (size_t)n);
 }
 
+/* The script's `[[ $work != *[![:space:]]* ]]` on work-<sid>: missing or ASCII whitespace only. A NUL leaves it to
+ * the script (unsure); any other byte is a record, so an unseen chat with one renders in full. */
+static int work_blank(const char *cache, const char *session) {
+  buf b;
+  if (unsure) return 0;
+  slurp(path3(cache, "/work-", session), &b, FILE_MAX);
+  if (unsure) return 0;
+  for (size_t i = 0; i < b.n; i++)
+    if (!is_space((unsigned char)b.p[i])) return 0;
+  return 1;
+}
+
 /* Returns when this render is not a replay this program can stand behind. */
 static void replay(const buf *in) {
   const char *from, *to, *sid, *sid_end, *tp, *tp_end;
@@ -372,7 +384,7 @@ static void replay(const buf *in) {
   long long now = (long long)started.tv_sec;
   buf out;
 
-  if ((away(now) || unseen(sid, sid_n, now)) && !unsure && has_tp) {
+  if ((away(now) || (unseen(sid, sid_n, now) && work_blank(cache, session))) && !unsure && has_tp) {
     char *transcript = strndup(tp, (size_t)(tp_end - tp)), *render = path3(cache, "/render-", session);
     struct stat st;
     if (stat(render, &st) == 0 && st.st_size > 0 && !newer(transcript, render) && !unsure) {

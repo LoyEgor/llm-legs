@@ -383,11 +383,11 @@ payload-derived cache only moves with the transcript. A full render while away r
 when unchanged. presence.lua drops the mark within 2 s of his return, so the freeze ends at the next refresh;
 a moved transcript, a stale mark or a payload without `transcript_path` renders in full.
 
-The same freeze holds for a chat nobody sees (`presence_unseen`, Egor 2026-11-11: seven chats rendered every 3 s
-while he looked at one or none). The Chats app's server keeps `presence/unseen` — `<written epoch>\n`, then one
+The same freeze holds for a chat nobody sees (`presence_unseen`). The Chats app's server keeps `presence/unseen` — `<written epoch>\n`, then one
 session id a line for each live chat in a tmux pane with no viewer that no page or app shows — rewritten every
 10 s and as a page opens or closes; a file not rewritten for `PRESENCE_MARK_FRESH_S` or of another shape names
-nobody, so a stopped server never freezes a line.
+nobody, so a stopped server never freezes a line. An unseen chat replays only while its work-<sid> cache
+is blank; a record there renders in full, so the work probe still journals what ends.
 
 ## Rest replay (bounded freeze, `STATUSLINE_REST_S`, default 15 s, 0 off)
 

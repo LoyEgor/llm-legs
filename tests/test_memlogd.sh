@@ -368,20 +368,27 @@ assert grep -q '^1999999985 probe avail_mb=9800 swap_used_mb=1024$' "$calm_log"
 assert test "$(cat "$NODE_TICK")" -eq 2
 assert_fails grep -q '^ARMED ' "$calm_log"
 
-# --- away from the Mac and calm: no full tick at all (they only feed what he would look at) ---------
-# The same 13 calm probes with a fresh presence/away mark: 13 probe lines, ps never asked. A mark not rewritten for
-# over 180 s reads as present: full ticks per minute again.
+# --- away from the Mac and calm: one full tick per 300 s slot, not per minute ------------------------
+# chat-load's sample is chats.json's only writer and harness-doctor's stuck_queues drops one older than 600 s, so a
+# calm full tick still runs per away_full_interval (300 s) slot. 15 probes 30 s apart over ...980..2000000400 with
+# a fresh presence/away mark: full ticks at the start, ...100 and ...400 (3 slots), ps asked 3 times, where the
+# per-minute cadence would ask 8. A mark not rewritten for over 180 s reads as present: full ticks per minute again.
 AWAY_DIR="$WORK/calm-away" AWAY_MARKS="$WORK/away-marks"
 mkdir -p "$AWAY_MARKS"
-printf '1999999000\t2000000000\n' >"$AWAY_MARKS/away"
-probes '9200 9800 9300 9700 9200 9800 9300 9700 9200 9800 9300 9700 9200' 1024
+printf '1999999000\t2000000300\n' >"$AWAY_MARKS/away"
+printf '%s ' {1999999980..2000000400..30} >"$WORK/away-epochs"
+probes 9200 1024
 nodes '3,1500'
-assert run_memlogd "$AWAY_DIR" MEMLOGD_MAX_TICKS=13 MEMLOGD_FULL_INTERVAL=60 MEMLOGD_ARMED_FULL_INTERVAL=15 \
-  EPOCH_FILE="$WORK/calm-epochs" EPOCH_TICK="$WORK/calm-away-epoch-tick" MEMLOGD_PRESENCE_DIR="$AWAY_MARKS"
+assert run_memlogd "$AWAY_DIR" MEMLOGD_MAX_TICKS=15 MEMLOGD_FULL_INTERVAL=60 MEMLOGD_ARMED_FULL_INTERVAL=15 \
+  EPOCH_FILE="$WORK/away-epochs" EPOCH_TICK="$WORK/calm-away-epoch-tick" MEMLOGD_PRESENCE_DIR="$AWAY_MARKS"
 away_log=$(log_file "$AWAY_DIR")
-assert test "$(grep -c ' quiet avail_mb=' "$away_log")" -eq 0
-assert test "$(grep -c ' probe avail_mb=' "$away_log")" -eq 13
-assert test "$(cat "$NODE_TICK")" -eq 0
+assert test "$(grep -c ' quiet avail_mb=' "$away_log")" -eq 3
+assert grep -q '^2000000100 quiet avail_mb=9200 ' "$away_log"
+assert grep -q '^2000000400 quiet avail_mb=9200 ' "$away_log"
+assert test "$(grep -c ' probe avail_mb=' "$away_log")" -eq 12
+assert test "$(cat "$NODE_TICK")" -eq 3
+assert grep -q '^away_full_interval="${MEMLOGD_AWAY_FULL_INTERVAL:-300}"$' "$ROOT/bin/memlogd"
+assert grep -q '"as_of") or 0) > 600:$' "$ROOT/bin/harness-doctor"
 STALE_DIR="$WORK/calm-away-stale"
 printf '1999999000\t1999999700\n' >"$AWAY_MARKS/away"
 probes '9200 9800 9300 9700 9200 9800 9300 9700 9200 9800 9300 9700 9200' 1024
@@ -1258,6 +1265,35 @@ PY
 assert grep -qx 'kill calls 0' <<<"$hand_out"
 assert grep -qE "^WOULD KILL [0-9]{10} chat=chat-hand job_pgid=$HAND_ROOT footprint_mb=[0-9]+ avail_mb=2000 " <<<"$hand_out"
 for pid in $HAND_ROOT $HAND_KIDS; do assert alive "$pid"; done
+
+# A server that rewrites its title as next-server does (the title, then zeros over the argument area) keeps its
+# chat: procargs reads every non-empty string after argv, as machine_probe's split_procargs does, never stopping at
+# the first empty one (`ps -E` shows such a server no environment).
+session_env chat-renamed ''
+"${GROUP_ENV[@]}" "$FIXTURE_PY" -c 'import ctypes, time
+libc = ctypes.CDLL(None)
+libc._NSGetArgc.restype = ctypes.POINTER(ctypes.c_int)
+libc._NSGetArgv.restype = ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))
+argc, argv = libc._NSGetArgc()[0], libc._NSGetArgv()[0]
+end = argv[argc - 1] + len(ctypes.string_at(argv[argc - 1])) + 1
+ctypes.memset(argv[0], 0, end - argv[0])
+ctypes.memmove(argv[0], b"renamed-server (v1)", 19)
+time.sleep(300)' padding-for-the-title >/dev/null 2>&1 &
+RENAMED_PID=$!
+disown
+TREE_PIDS+=("$RENAMED_PID")
+for tick in $(seq 1 300); do case "$(/bin/ps -o command= -p "$RENAMED_PID")" in renamed-server*) break ;; esac; sleep 0.01; done
+renamed_out=$(python3 - "$ROOT/bin/chat-load" "$RENAMED_PID" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("chat_load", sys.argv[1])
+chat_load = importlib.util.module_from_spec(importlib.util.spec_from_loader("chat_load", loader))
+loader.exec_module(chat_load)
+print(chat_load.procargs(int(sys.argv[2]))[1][1])
+PY
+)
+assert grep -qE '^renamed-server' <<<"$(/bin/ps -o command= -p "$RENAMED_PID")"
+assert test "$renamed_out" = chat-renamed
+kill -KILL "$RENAMED_PID" 2>/dev/null || :
 
 # The memory row adds up: footprints count compressed and swapped pages at their uncompressed size and
 # sum past RAM used, so a chat holding more than RAM used must not squeeze unattributed memory to 0.0.

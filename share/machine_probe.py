@@ -327,7 +327,11 @@ def _procargs(pid, size=65536):
     buffer = ctypes.create_string_buffer(size.value)
     if libc.sysctl(mib, 3, buffer, ctypes.byref(size), None, ctypes.c_size_t(0)) != 0:
         return None
-    raw = buffer.raw[:size.value]
+    return split_procargs(buffer.raw[:size.value])
+
+
+def split_procargs(raw):
+    """(argv, env strings) of one KERN_PROCARGS2 buffer, as _procargs reads it (bin/chat-load reads its own buffer)."""
     argc = int.from_bytes(raw[:4], "little")
     parts = raw[4:].partition(b"\0")[2].lstrip(b"\0").split(b"\0")
     return parts[:argc], [part for part in parts[argc:] if part]

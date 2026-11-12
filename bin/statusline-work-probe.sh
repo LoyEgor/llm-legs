@@ -547,7 +547,8 @@ old_mtime=""
 if [[ "$old_cache" = *$'main\ttests\t'* || "$old_cache" = *$'run\t'* ]]; then
   old_mtime=$(file_mtime "$cache_file")
 fi
-if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
+# 25 s: the render's stale line (bin/statusline.sh, work lines), so one late 10 s refresh loses no end.
+if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 25 ]; then
   finished=$({ printf 'OLD\n'; printf '%s' "$old_cache"; printf 'NEW\n%s\n' "$new_cache"; } | awk -F'\t' '
     $0 == "OLD" || $0 == "NEW" { side = $0; next }
     side == "NEW" && $11 != "" { npid[$11] = 1 }

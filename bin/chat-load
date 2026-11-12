@@ -13,7 +13,6 @@ import json
 import os
 import re
 import signal
-import struct
 import subprocess
 import sys
 import time
@@ -124,18 +123,11 @@ def procargs(pid, keys=ENV_KEYS):
     if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
         return None
     raw = buf.raw[:size.value]
-    argc = struct.unpack("i", raw[:4])[0]
-    pos = raw.find(b"\0", 4)
-    if pos < 0:
+    if raw.find(b"\0", 4) < 0:
         return None
-    while pos < len(raw) and raw[pos] == 0:
-        pos += 1
-    strings = raw[pos:].split(b"\0")
-    argv, env = strings[:argc], []
-    for entry in strings[argc:]:
-        if not entry:
-            break
-        env.append(entry)
+    # Every non-empty string after argv: a server that rewrote its title (next-server) zeroes its argument area,
+    # and a read stopping at the first empty string lost its chat (as `ps -E` does).
+    argv, env = shared_module("machine_probe").split_procargs(raw)
     found = [""] * len(keys)
     for entry in env:
         for index, key in enumerate(keys):

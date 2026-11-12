@@ -68,9 +68,13 @@ statusline_sid='' statusline_transcript=''
 # chat (presence_unseen: a tmux pane no viewer, page or app shows), a chat whose transcript has not moved
 # since its last full render repeats that render — no jq, no git, no probe. presence.lua drops the away mark
 # within seconds of his return, the Chats app's server rewrites the unseen list as a page opens a chat, and
-# the next refresh renders in full.
-statusline_away=0
-if [ -n "$statusline_sid" ] && { presence_away "$EPOCHSECONDS" || presence_unseen "$statusline_sid" "$EPOCHSECONDS"; }; then
+# the next refresh renders in full. An unseen chat replays only while its work cache is blank: a record there
+# (a suite, a worker-run wait) renders in full, whose work probe journals what ends (test-history, running_tests).
+statusline_away=0 statusline_work=''
+if [ -n "$statusline_sid" ] && { presence_away "$EPOCHSECONDS" ||
+  { presence_unseen "$statusline_sid" "$EPOCHSECONDS" &&
+    { { IFS= read -r -d '' statusline_work <"$statusline_cache_dir/work-$statusline_sid"; } 2>/dev/null
+      [[ "$statusline_work" != *[![:space:]]* ]]; }; }; }; then
   statusline_away=1
   away_render="$statusline_cache_dir/render-$statusline_sid"
   away_out=''
