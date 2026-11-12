@@ -456,6 +456,42 @@ rm -f "$CUT"
 recent --days 1
 assert test "$RC" -eq 0
 assert test "$(cached_rows "$HOTC" '"обрезано \ud83d"')" = 0
+# A caller that imports the file and lists every few seconds (the chats app's server) writes the
+# cache once per SAVE_GAP: a row changed meanwhile is listed fresh and stays stale on disk until
+# then (it rewrote the whole hot file every 3 s, 13.6 GB a day).
+GAPPED="$CORPUS/13131313-1313-1313-1313-131313131313.jsonl"
+OUT=$(python3 - "$SCRIPT" "$WORK/projects" "$WORK/cache.json" "$HOTC" "$GAPPED" <<'EOF' 2>&1
+import importlib.machinery, importlib.util, json, os, sys
+script, root, cache, hot, rich = sys.argv[1:]
+loader = importlib.machinery.SourceFileLoader("chat_find", script)
+tool = sys.modules["chat_find"] = importlib.util.module_from_spec(importlib.util.spec_from_loader("chat_find", loader))
+loader.exec_module(tool)
+def say(text, ts):  # his message, then the reply: the reply is the chat's last
+    with open(rich, "a") as handle:
+        handle.write(json.dumps({"type": "assistant", "cwd": "/tmp/proj", "timestamp": ts,
+                                 "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}) + "\n")
+def listed(text):
+    return any(r.get("text") == text for r in tool.recent_rows(root=root, cache=cache))
+sig = lambda: (os.stat(hot).st_ino, os.stat(hot).st_mtime_ns)
+say("первая в процессе", "2026-02-13T10:00:00.000Z")
+print("first listed", listed("первая в процессе"))
+first = sig()
+say("вторая в процессе", "2026-02-13T11:00:00.000Z")
+print("second listed", listed("вторая в процессе"))
+print("second wrote", sig() != first)
+tool.SAVE_GAP = 0
+print("past the gap listed", listed("вторая в процессе"))
+print("past the gap wrote", sig() != first)
+EOF
+)
+assert has 'first listed True'
+assert has 'second listed True'
+assert has 'second wrote False'
+assert has 'past the gap listed True'
+assert has 'past the gap wrote True'
+rm -f "$GAPPED"
+recent --days 1
+assert test "$(cached_rows "$HOTC" '"вторая в процессе"')" = 0
 
 # --- a name is read once: a listing reads only what a transcript appended -------
 # A week of his chats is 3.8 GB, and every listing used to match all of it for the names. After

@@ -45,6 +45,12 @@ CACHE_VERSION = 5
 # records with the offset they were read to.
 PRIVATE = ("key", "names", "named")
 HOT_DAYS = 7
+# A caller that imports this file lists every few seconds (the chats app's server: every 3 s while
+# a chat talks) and rewrote the whole hot cache (470 KB) on each listing: 13.6 GB a day of disk
+# writes (2026-11-12). One process writes a cache at most every SAVE_GAP s; a row left stale on
+# disk is measured again by the next listing, as any changed one is. A run of the CLI writes once.
+SAVE_GAP = 60
+SAVED = {}  # hot cache file -> time.monotonic() of this process's last write of the pair
 # A transcript can end with megabytes of tool output after the last word spoken,
 # so the backward scan grows until it finds speech instead of trusting one window.
 TAIL_WINDOWS = (512 * 1024, 4 * 1024 * 1024, 32 * 1024 * 1024)
@@ -418,13 +424,19 @@ def context_tokens(usage):
     return total or None
 
 
-@lru_cache(maxsize=None)
 def last_facts(path):
     """Everything known about a chat's end, read backward from it."""
     try:
-        size = os.path.getsize(path)
+        info = os.stat(path)
     except OSError:
         return None
+    return facts_at(path, info.st_size, info.st_mtime_ns)
+
+
+# Keyed by the file's size and mtime, not its path alone: a caller that imports this file (the
+# chats app's server) lives on while transcripts grow, and kept each one's first answer for good.
+@lru_cache(maxsize=8192)
+def facts_at(path, size, mtime):
     for window in TAIL_WINDOWS:
         facts = tail_speech(path, size, window)
         # Widening once more when the model is missing was measured and dropped:
@@ -576,14 +588,15 @@ def scan_recent(root, days, cache_path, agents=False, limit=None, only=None):
             cold = load_cache(cold_path)
             seen = {**cold, **seen}
         new_cold = {path: row for path, row in seen.items() if path not in new_hot}
-        for target, before, after in ((hot_path, hot, new_hot), (cold_path, cold, new_cold)):
+        due = hot_path not in SAVED or time.monotonic() - SAVED[hot_path] >= SAVE_GAP
+        for target, before, after in ((hot_path, hot, new_hot), (cold_path, cold, new_cold)) if due else ():
             # Chats get purged (the trash sweep) and whole projects get deleted; a
             # stat each is cheap next to the transcript reads this cache exists to
             # avoid, and without it the file only ever grows.
             after = {path: row for path, row in after.items()
                      if path in walked or os.path.exists(path)}
-            if after != before:
-                save_cache(target, after)
+            if after != before and save_cache(target, after):
+                SAVED[hot_path] = time.monotonic()
     return rows
 
 
