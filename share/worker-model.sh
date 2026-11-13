@@ -36,7 +36,7 @@ claudeb fable low low,medium,high xhigh,max yes
 claudeb sonnet high low,medium,high,xhigh max no request
 claudeb haiku high low,medium,high,xhigh max yes request
 codex astra low low,medium,high xhigh no
-codex sol medium medium,high low,xhigh yes
+codex sol xhigh medium,high,xhigh low yes
 codex luna medium low,medium,high - no request
 codex terra medium low,medium,high - no request
 TABLE

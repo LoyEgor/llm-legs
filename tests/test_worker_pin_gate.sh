@@ -236,9 +236,9 @@ assert allowed "$(write_event "$PIN_FILE" 'claudeb_effort=low')"
 assert allowed "$(edit_event "$PIN_FILE" 'worker=auto' 'claudeb_effort=low')"
 assert allowed "$(bash_event "sed -i '' 's/^claudeb_effort=.*/claudeb_effort=low/' $PIN_FILE")"
 printf 'codex_model=gpt-5.6-sol\n' >>"$PIN_FILE"
-assert contains "$(edit_event "$PIN_FILE" 'codex_effort=high' 'codex_effort=max')" 'medium|high|low|xhigh'
+assert contains "$(edit_event "$PIN_FILE" 'codex_effort=high' 'codex_effort=max')" 'medium|high|xhigh|low'
 assert contains "$(write_event "$PIN_FILE" 'codex_effort=max')" 'low|medium|high|xhigh'
-assert contains "$(write_event "$PIN_FILE" $'codex_model=gpt-5.6-sol\ncodex_effort=max')" 'medium|high|low|xhigh'
+assert contains "$(write_event "$PIN_FILE" $'codex_model=gpt-5.6-sol\ncodex_effort=max')" 'medium|high|xhigh|low'
 assert allowed "$(write_event "$PIN_FILE" $'codex_model=gpt-5.6-sol\ncodex_effort=low')"
 assert denied "$(bash_event "printf 'codex_effort=max\n' >> $PIN_FILE")"
 assert denied "$(write_event "$PIN_FILE" 'codex_effort=max')"

@@ -26,7 +26,7 @@ model_effort_tests() {
   local spec vendor model effort
   set_config
   export PICK_RC=0 PICK_ACCOUNT=picked
-  for spec in codex:astra:low codex:sol:medium claudeb:opus:high claudeb:fable:low gemini:flash38:high grok:auto:high grok:grok-4.6:high; do
+  for spec in codex:astra:low codex:sol:xhigh claudeb:opus:high claudeb:fable:low gemini:flash38:high grok:auto:high grok:grok-4.6:high; do
     vendor=${spec%%:*}; model=${spec#*:}; effort=${model##*:}; model=${model%:*}
     clear_stub
     start_ok "$vendor" --model "$model" --account "$([ "$vendor" = gemini ] && printf main || printf com)"
