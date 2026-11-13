@@ -234,6 +234,7 @@ Overrides for tests or alternate installs:
 Canonical sources for the multi-account Claude Code tooling; installed via symlinks:
 
 - `bin/claudeb` → `~/.local/bin/claudeb` — account prober/launcher (OAuth auto-refresh, `--start-windows`, headless passthrough for worker agents).
+- `bin/claude-relogin` — `<account> [--dry-run]`: logs a logged-out Claude account (`auth_needed`) back in with no password, started by the heartbeat (`bin/llm-refresh`): `claude auth login`, the account's Chrome profile, a Computer Use run of `share/briefs/claude-cli-login.md` that clicks Authorize. One attempt per 6 h; refused, `claudeb profile <name>` + /login stays the fallback. Log: `~/Library/Logs/claude-relogin.log`.
 - `bin/statusline.sh` → `~/.claude/statusline.sh` — Claude Code statusline; also writes per-account limit snapshots on real usage.
 
 Snapshot store and schema live in `~/.claude-profiles/` (documented in its README).
