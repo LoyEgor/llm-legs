@@ -57,6 +57,33 @@ assert_eq "" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisi
 assert_contains "Egor's word spent. No fresh fee-files.json prices this file." \
   "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')"
 assert_eq deny "$(top_dec top-one "$CLAUDE_MD" xy)"
+echo "== bloat gate: his yes stands until the write: any later turn answers, only a refusal cancels"
+words_store() { bash -c '. "$1"; words_dir "$2"' _ "$HOME/.claude/hooks/lib/words.sh" "$1"; }
+# A turn without a yes leaves the question standing for a later one.
+assert_eq deny "$(top_dec top-wait "$CLAUDE_MD" xy)"
+egor_says top-wait 'покажи сначала текст'
+egor_says top-wait 'ок'
+assert_eq pass "$(top_dec top-wait "$CLAUDE_MD" xy)"
+# A plain negation beside a yes is still his yes; a refusal word alone calls the question off.
+assert_eq deny "$(top_dec top-neg "$CLAUDE_MD" xy)"
+egor_says top-neg 'не уверен, но ок, добавляй'
+assert_eq pass "$(top_dec top-neg "$CLAUDE_MD" xy)"
+assert_eq deny "$(top_dec top-stop "$CLAUDE_MD" xy)"
+egor_says top-stop 'нет'
+egor_says top-stop 'ок'
+assert_eq deny "$(top_dec top-stop "$CLAUDE_MD" xy)"
+# The model registers its question itself as it proposes the line, no denial first.
+CLAUDE_CODE_SESSION_ID=top-ask "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/bin/md-ask" "$CLAUDE_MD" >/dev/null
+egor_says top-ask 'да'
+assert_eq pass "$(top_dec top-ask "$CLAUDE_MD" xy)"
+# No clock erases the yes: only the write it was for does, and the question goes with it.
+assert_eq deny "$(top_dec top-late "$CLAUDE_MD" xy)"
+egor_says top-late 'ок'
+touch -t "$(date -v-2H +%Y%m%d%H%M 2>/dev/null || date -d '-2 hours' +%Y%m%d%H%M)" "$(words_store top-late)/grant.md-grow"
+assert_eq pass "$(top_dec top-late "$CLAUDE_MD" xy)"
+assert_fails test -e "$(words_store top-late)/ask.md-grow"
+egor_says top-late 'ок'
+assert_eq deny "$(top_dec top-late "$CLAUDE_MD" xy)"
 # A shrink needs no word.
 assert_eq "" "$(jq -cn --arg p "$CLAUDE_MD" '{tool_name:"Edit",cwd:"/tmp",session_id:"top-one",
   tool_input:{file_path:$p,old_string:"global rules",new_string:"rules"}}' | live_span bash "$BLOAT")"

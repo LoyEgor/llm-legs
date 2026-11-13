@@ -689,7 +689,7 @@ instruction_top_file() { # path [home]
 }
 
 instruction_top_denial() { # path
-  printf "%s is a top re-read file; it grows only on Egor's word. Stop and ask him in <= 2 short lines in Russian: what you want to add, and whether the task works without it — if yes, the cheaper home (on-demand doc, tool --help/error text, hook). No figures yet. Wait for his answer." "$1"
+  printf "%s is a top re-read file; it grows only on Egor's word. Stop and ask him in <= 2 short lines in Russian: what you want to add, and whether the task works without it — if yes, the cheaper home (on-demand doc, tool --help/error text, hook). No figures yet. As you ask, run \`md-ask %s\`: his yes in any later message then passes one growing write of it. Wait for his answer." "$1" "$1"
 }
 
 # The line a spent word adds to the write: the growth as a share of the Fee index, from the
@@ -713,15 +713,12 @@ instruction_top_spent() { # top-answer delta-bytes|'' file-bytes
 }
 
 # His word reaches the gates through the chat's word store (claude-setup hooks/lib/words.sh, words.py):
-# a denial leaves ask.md-grow naming the file, his next typed turn answers it, and a yes there is
-# grant.md-grow, spent by the next growing write of that file. His turns up to the denial are taken
-# first, so only a turn typed after the question answers it. No word store: no ask, no grant.
+# ask.md-grow names the file — left by the model's md-ask as it asks him, or by a denial — and stands
+# until the write is made or he calls it off; a yes in any later typed turn of his is grant.md-grow,
+# spent by the next growing write of that file, which ends the ask too. No word store: no ask, no grant.
 instruction_top_ask() { # session transcript path
-  ( . "${WORDS_LIB:-${HOME:-}/.claude/hooks/lib/words.sh}" && command -v words_dir || exit 1
-    dir=$(words_dir "$1") || exit 1
-    words_sync "$1" "$2"
-    mkdir -p "$dir" && jq -cn --arg p "$(realpath "$3" 2>/dev/null || printf '%s' "$3")" \
-      '{path: $p, at: (now | floor)}' >"$dir/ask.md-grow" ) >/dev/null 2>&1
+  ( . "${WORDS_LIB:-${HOME:-}/.claude/hooks/lib/words.sh}" && command -v words_ask_open || exit 1
+    words_ask_open "$1" "$2" md-grow "$3" ) >/dev/null 2>&1
 }
 
 instruction_top_granted() { # session transcript path -> 0 once his grant for this file is spent
@@ -729,7 +726,8 @@ instruction_top_granted() { # session transcript path -> 0 once his grant for th
     words_sync "$1" "$2"
     target=$(words_grant_fresh "$1" md-grow | jq -r '.target // ""') && [ -n "$target" ] || exit 1
     case "$target" in "$3"|"$(realpath "$3" 2>/dev/null)") ;; *) exit 1 ;; esac
-    rm "$(words_dir "$1")/grant.md-grow" ) >/dev/null 2>&1
+    dir=$(words_dir "$1") && rm "$dir/grant.md-grow" || exit 1
+    [ "$(jq -r '.path // ""' "$dir/ask.md-grow" 2>/dev/null)" != "$target" ] || rm -f "$dir/ask.md-grow" ) >/dev/null 2>&1
 }
 
 # The nearest ancestor of a path that exists, resolved through every symlink in it. A Write creates
