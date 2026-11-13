@@ -106,7 +106,7 @@
   "claudeb.token-journal-rotate": {
     "value": 2000000,
     "unit": "bytes",
-    "where": "bin/claudeb:531",
+    "where": "share/token-journal.sh:26",
     "set_by": "chat 5f17a755",
     "why": "The token journal keeps one .1 generation; the oldest generation goes at 2 MB.",
     "normal": "A few times a month."

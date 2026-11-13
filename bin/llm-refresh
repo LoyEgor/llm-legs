@@ -172,6 +172,7 @@ repo_root=${script_path%/*/*}
 . "$repo_root/share/limit-hit.sh"
 . "$repo_root/share/processes.sh"
 . "$repo_root/share/presence.sh"
+. "$repo_root/share/claude-relogin.sh"
 collector=${LLM_LIMITS_REFRESH_COLLECTOR:-${LLM_REFRESH_COLLECTOR:-$repo_root/llm-limits.sh}}
 opencode_go=${LLM_LIMITS_REFRESH_OPENCODE_GO:-$repo_root/bin/opencode-go}
 if [ -n "${LLM_LIMITS_REFRESH_CLAUDEB:-}" ]; then
@@ -182,6 +183,18 @@ else
   claudeb_bin=$repo_root/bin/claudeb
   [ -x "$claudeb_bin" ] || claudeb_bin=$(command -v claudeb 2>/dev/null || printf '%s' "$claudeb_bin")
 fi
+# The automatic login of a logged-out Claude account (bin/claude-relogin, relogin_start below). A stubbed claudeb
+# means a fixture store: the real relogin would drive real logins, so it runs there only when named outright.
+if [ -n "${LLM_LIMITS_REFRESH_RELOGIN+x}" ]; then
+  relogin_bin=$LLM_LIMITS_REFRESH_RELOGIN
+elif [ -n "${LLM_LIMITS_REFRESH_CLAUDEB:-}" ]; then
+  relogin_bin=''
+else
+  relogin_bin=$repo_root/bin/claude-relogin
+fi
+relogin_log=${LLM_LIMITS_REFRESH_RELOGIN_LOG:-$HOME/Library/Logs/claude-relogin.log}
+relogin_due=0
+relogin_rc4=''
 revive_timeout=${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}
 case "$revive_timeout" in ''|*[!0-9]*|0) revive_timeout=240 ;; esac
 probe_timeout=${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}
@@ -892,12 +905,14 @@ run_tick() {
     pushback=0
     pushback_note=''
     collector_verdict "$vendor" "$targeted"
+    [ "$vendor" != claude ] || relogin_due=1
     if [ "$vendor" = claude ] && [ "$step" -eq 1 ]; then
       blocked=$(blocked_accounts_json "$vendor" "$interval")
       while IFS="$(printf '\t')" read -r account rc stderr_pushback stderr_hit; do
         [ -n "$account" ] || continue
         if [ "$rc" -eq 4 ]; then
-          claude_note="$account needs a human login; no automated path can refresh it"
+          relogin_rc4+="$account"$'\n'
+          claude_note="$account needs a human login; no refresh can take it (bin/claude-relogin's to try)"
         elif [ "$rc" -ne 0 ]; then
           [ "$stderr_pushback" -eq 1 ] || \
             stderr_hit=$(recorded_errors "$vendor" "$account" "$now" | pushback_hit)
@@ -1060,6 +1075,24 @@ run_tick() {
   refresh_lock_release
 }
 
+# A tick that handled Claude and found an account logged out (revive exit 4 this tick, or auth_needed in its claudeb
+# limits file) starts bin/claude-relogin for it: after the tick let go of its lock, since a login takes minutes of
+# Chrome and Computer Use; double-forked into its own session, so neither the tick's watchdog (it ends the tick's
+# process tree) nor launchd's end of the job (it ends the job's process group) takes it; never while one runs; one
+# a tick; an account in its cool-down (a real attempt, or a refusal such as no Chrome profile) is passed over.
+relogin_start() {
+  local account
+  [ "$relogin_due" = 1 ] && [ -n "$relogin_bin" ] && [ -x "$relogin_bin" ] || return 0
+  ! claude_relogin_live || return 0
+  while IFS= read -r account; do
+    [ -n "$account" ] || continue
+    ! claude_relogin_cooling "$account" "$now" any || continue
+    mkdir -p "${relogin_log%/*}" 2>/dev/null
+    ( perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$relogin_bin" "$account" </dev/null >>"$relogin_log" 2>&1 & )
+    return 0
+  done < <(printf '%s' "$relogin_rc4"; claude_relogin_wanted)
+}
+
 # A rung climbed on a misread signal is not evidence of anything, and the ladder has no fast way
 # down — it tightens once per 24 clean hours — so a spuriously loosened vendor would keep its
 # cadence for weeks. This is the supported way back to the base rung; hand-editing the state file
@@ -1129,7 +1162,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       [ -n "${LLM_REFRESH_SUPERVISED:-}" ] || { supervise_tick; exit; }
       trap 'exit 129' HUP INT TERM
       trap '[ -z "$tick_tmp" ] || rm -f "$tick_tmp"; refresh_lock_release' EXIT
-      run_tick
+      tick_rc=0
+      run_tick || tick_rc=$?
+      refresh_lock_release
+      relogin_start
+      exit "$tick_rc"
       ;;
     reset-cadence)
       shift
