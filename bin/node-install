@@ -150,6 +150,8 @@ def binary_item(name, spec, optional):
         if why:
             raise RuntimeError("after %s: %s" % (how, why))
         found, have = find()
+        if spec["min"] == "0":  # presence only: the version is never asked
+            return "installed %s (%s)" % (name, how)
         return "installed %s %s (%s)" % (name, ".".join(map(str, have)), how.split()[0])
 
     return Item("binary %s" % name, check, None if optional else apply, optional)
@@ -566,11 +568,12 @@ def install_here(args, manifest):
         write_json(CONFIG, node)
         did.append("wrote %s" % tilde(CONFIG))
     # A binary or a hook two modules share is one item, and one module's requirement outranks another's option
-    # (accounts names codex optional, the codex module installs it).
+    # (accounts names codex optional, the codex module installs it), in that module's order: node before codex.
     seen = {}
     for item in items:
-        if item.label not in seen or (seen[item.label].optional and not item.optional):
-            seen[item.label] = item
+        if item.label in seen and seen[item.label].optional and not item.optional:
+            del seen[item.label]
+        seen.setdefault(item.label, item)
     for item in seen.values():
         why = item.check()
         if not why:
