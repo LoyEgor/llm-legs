@@ -99,6 +99,16 @@ class FallBackTests(unittest.TestCase):
 
 
 
+class CallTag(unittest.TestCase):
+    def test_a_call_is_tagged_though_it_has_no_text_or_media(self):
+        action = type("MessageActionPhoneCall", (), {})
+        spoken, missed = action(), action()
+        spoken.duration, missed.duration = 123, None
+        self.assertEqual(tg_read.media_tag(SimpleNamespace(action=spoken, media=None)), "[call 2 min]")
+        self.assertEqual(tg_read.media_tag(SimpleNamespace(action=missed, media=None)), "[missed call]")
+        self.assertEqual(tg_read.media_tag(SimpleNamespace(action=None, media=None)), "")
+
+
 class FakeTg:
     def __init__(self, last):
         self.last, self.from_users = last, []

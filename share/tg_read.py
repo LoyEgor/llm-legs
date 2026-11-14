@@ -127,6 +127,11 @@ def sender_name(message) -> str:
 
 
 def media_tag(message) -> str:
+    call = getattr(message, "action", None)
+    if type(call).__name__ == "MessageActionPhoneCall":  # a call is a service message: no text, no media
+        return f"[call {max(1, round(call.duration / 60))} min]" if call.duration else "[missed call]"
+    if not message.media:
+        return ""
     if message.voice:
         return f"[voice {int(message.voice.attributes[0].duration)}s]"
     if message.video_note:
@@ -263,7 +268,7 @@ async def cmd_read(args) -> int:
         if since and message.date.astimezone() < since:
             break
         text = message.text or ""
-        tag = media_tag(message) if message.media else ""
+        tag = media_tag(message)
         rows.append({
             "id": message.id,
             "time": local_time(message.date),
@@ -631,7 +636,7 @@ async def cmd_wait(args) -> int:
                         shown = latest
                 print(f"answer in {name} after #{args.after}:")
                 for message in shown:
-                    body = " ".join(part for part in (media_tag(message) if message.media else "",
+                    body = " ".join(part for part in (media_tag(message),
                                                       (message.text or "").replace("\n", " ⏎ ")) if part)
                     print(f"{local_time(message.date)}  {sender_name(message)}:  {body}  #{message.id}")
                 span = args.until is not None or args.hours is not None
