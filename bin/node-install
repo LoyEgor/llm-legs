@@ -125,6 +125,8 @@ def binary_item(name, spec, optional):
         found = shutil.which(name, path=node_path())
         if not found:
             return None, None
+        if spec["min"] == "0":  # presence only: a vendor CLI's --version may create its home (codex: ~/.codex)
+            return found, (0, 0, 0)
         return found, version_of(found, spec.get("version", ["--version"]))
 
     def check():

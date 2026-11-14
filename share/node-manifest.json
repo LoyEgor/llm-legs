@@ -8,7 +8,7 @@
   "uv": {"min": "0.4", "version": ["--version"], "brew": "uv"},
   "ffmpeg": {"min": "4.0", "version": ["-version"], "brew": "ffmpeg"},
   "cc": {"min": "0", "version": ["--version"]},
-  "claude": {"min": "2.1", "version": ["--version"]},
+  "claude": {"min": "0", "version": ["--version"]},
   "codex": {"min": "0", "version": ["--version"]},
   "agy": {"min": "0", "version": ["--version"]},
   "grok": {"min": "0", "version": ["--version"]},
