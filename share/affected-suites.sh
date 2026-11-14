@@ -6,7 +6,9 @@
 # 90 days, or with any credit when they also name it; a file with neither keeps the name rule (a suite or helper
 # naming its basename). A suite only naming a file, or with no catch in 90 days but for its own file, leaves
 # targeted runs: the night's full run keeps it.
-# test_consistency.sh too when docs/shared-invariants.md names one. Sourced by
+# test_consistency.sh too when docs/shared-invariants.md names one. Then the slow layer (in a worker) and the
+# scheduled layer (tests/scheduled-suites, below) leave their suites out; tests/hot-paths' questions print first.
+# Sourced by
 # run-suites.sh (--changed); run, it is tests/affected:
 #   affected-suites.sh --repo <dir> [file...]   (no file: every file changed against HEAD, untracked or
 #                                                committed on this branch since main, and in its sibling worktrees)
@@ -91,12 +93,82 @@ slow_layer_split() { # repo names-file suite-path... -> slow_kept (array) and sl
   [ -z "$slow_skipped" ] || printf 'slow layer skipped: %s (the landing and the night full run run them)\n' "$slow_skipped" >&2
 }
 
+# The scheduled layer, tests/scheduled-suites: `<suite> <period hours> [path...]` a line, # comments. Such a suite
+# runs on main every period (bin/scheduled-suites: bisects a failure and hands it off), so a worker's selection and a
+# landing's leave it out, unless the change edits the suite or one of its paths (its budgets), RUN_SCHEDULED=1 asks
+# for it, or it is named (tests/run-all <suite>); the night's full run names every suite. The list is the policy:
+# one line in or out is the whole cost of a change.
+scheduled_list() { # repo -> "suite hours [path...]", one a line
+  [ -r "$1/tests/scheduled-suites" ] || return 0
+  sed 's/#.*//' "$1/tests/scheduled-suites" | awk 'NF >= 2 && $2 ~ /^[0-9]+$/ { $1 = $1; print }'
+}
+
+scheduled_state() { # repo -> the scheduler's state dir of its main checkout (out of Caches)
+  local common
+  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=$1/.git
+  common=${common%/.git}
+  printf '%s/%s\n' "${SCHEDULED_SUITES_DIR:-$HOME/Library/Application Support/scheduled-suites}" "${common##*/}"
+}
+
+scheduled_layer_split() { # repo names-file suite-path... -> sched_kept (array) and sched_skipped (names), noted on stderr
+  local repo=$1 names=$2 list line suite hours path name entry edited state open keep
+  shift 2
+  sched_kept=() sched_skipped=''
+  list=$(scheduled_list "$repo")
+  if [ -z "$list" ]; then [ "$#" -eq 0 ] || sched_kept=("$@"); return 0; fi
+  state=$(scheduled_state "$repo")
+  edited=$'\n'$(cat "$names")$'\n'
+  while read -r suite hours line; do
+    # An open failure of main is everyone's news in this repository, whatever the change selects.
+    [ ! -r "$state/$suite/open" ] || { read -r open <"$state/$suite/open"; printf 'scheduled: %s\n' "$open" >&2; }
+  done <<<"$list"
+  for entry in "$@"; do
+    name=${entry##*/} keep=1
+    line=$(awk -v s="$name" '$1 == s' <<<"$list")
+    if [ -n "$line" ] && [ "${RUN_SCHEDULED:-}" != 1 ]; then
+      read -r suite hours line <<<"$line"
+      keep=''
+      for path in "tests/$suite" $line; do
+        [[ $edited == *$'\n'"$path"$'\n'* || $edited == *"/$path"$'\n'* ]] && keep=1
+      done
+    fi
+    if [ -n "$keep" ]; then sched_kept+=("$entry"); continue; fi
+    sched_skipped+="${sched_skipped:+ }$name"
+    printf 'scheduled layer left out: %s (runs on main every %s h; run it now when the change is large or touches a hot path: tests/run-all %s, or RUN_SCHEDULED=1 in front of tests/affected, tests/run-all --changed or land)\n' \
+      "$name" "$hours" "$name" >&2
+  done
+}
+
+# tests/hot-paths: path patterns (bash globs from the repository root) and the lines to say, each `> `-led. A change
+# touching one gets the project's questions on stderr once, before its suites; any other change, nothing.
+hot_path_questions() { # repo names-file
+  local repo=$1 names=$2 file=$1/tests/hot-paths rel pat hit='' more=0
+  [ -r "$file" ] && [ "${HOT_PATH_QUESTIONS:-}" != off ] || return 0
+  while IFS= read -r rel; do
+    case $rel in "$repo"/*) rel=${rel#"$repo"/} ;; /*) continue ;; esac
+    while IFS= read -r pat; do
+      case $pat in ''|'#'*|'>'*) continue ;; esac
+      # shellcheck disable=SC2053
+      if [[ $rel == $pat ]]; then
+        if [ -z "$hit" ]; then hit=$rel; else more=$((more + 1)); fi
+        break
+      fi
+    done <"$file"
+  done <"$names"
+  [ -n "$hit" ] || return 0
+  [ "$more" -eq 0 ] || hit+=" and $more more"
+  printf 'hot path (%s): answer from the diff before you design\n' "$hit" >&2
+  sed -n 's/^> \{0,1\}/  /p' "$file" >&2
+}
+
 affected_suites() { # repo [file...] -> suite paths covering the files, sorted and unique
   local repo=$1 names suite
   local -a found=()
   shift
   names=$(mktemp "${TMPDIR:-/tmp}/affected.XXXXXX") || return 1
   affected_names "$repo" "$@" | grep -v '^$' >"$names"
+  # The overlap's two passes ask for neither: it splits its own result once.
+  [ -n "${affected_overlap_pass:-}" ] || hot_path_questions "$repo" "$names"
   if [ -s "$names" ]; then
     while IFS= read -r suite; do found+=("$suite"); done < <(
       ls "$repo"/tests/test_*.sh "$repo"/tests/test_*.py "$repo"/tests/e2e_*.sh 2>/dev/null |
@@ -104,13 +176,15 @@ affected_suites() { # repo [file...] -> suite paths covering the files, sorted a
         affected_filter "$repo" "$names" | sort -u)
   fi
   slow_layer_split "$repo" "$names" ${found[@]+"${found[@]}"}
+  if [ -n "${affected_overlap_pass:-}" ]; then sched_kept=(${slow_kept[@]+"${slow_kept[@]}"})
+  else scheduled_layer_split "$repo" "$names" ${slow_kept[@]+"${slow_kept[@]}"}; fi
   rm -f "$names"
-  [ "${#slow_kept[@]}" -eq 0 ] || printf '%s\n' "${slow_kept[@]}"
+  [ "${#sched_kept[@]}" -eq 0 ] || printf '%s\n' "${sched_kept[@]}"
 }
 
 affected_overlap() {
-  local repo=$1 base=$2 branch_files main_files branch_suites main_suites file
-  local -a branch=() upstream=()
+  local repo=$1 base=$2 branch_files main_files branch_suites main_suites file shared names affected_overlap_pass=1
+  local -a branch=() upstream=() both=()
   branch_files=$(git -C "$repo" diff --no-renames --name-only "$base...HEAD" && sibling_names "$repo") || return 4
   main_files=$(git -C "$repo" diff --no-renames --name-only "$base..main" && sibling_names "$repo" main) || return 4
   [ -n "$branch_files" ] && [ -n "$main_files" ] || return 0
@@ -118,8 +192,16 @@ affected_overlap() {
   while IFS= read -r file; do upstream+=("$file"); done <<<"$main_files"
   branch_suites=$(WORKER_RUN_ID= affected_suites "$repo" "${branch[@]}") || return 4
   main_suites=$(WORKER_RUN_ID= affected_suites "$repo" "${upstream[@]}") || return 4
-  LC_ALL=C comm -12 <(printf '%s\n' "$branch_suites" | LC_ALL=C sort) \
-    <(printf '%s\n' "$main_suites" | LC_ALL=C sort) | grep -v '^$'
+  shared=$(LC_ALL=C comm -12 <(printf '%s\n' "$branch_suites" | LC_ALL=C sort) \
+    <(printf '%s\n' "$main_suites" | LC_ALL=C sort) | grep -v '^$')
+  [ -n "$shared" ] || return 0
+  # The scheduled layer once, on what the branch changed: its own edit of a scheduled suite keeps that suite.
+  while IFS= read -r file; do both+=("$file"); done <<<"$shared"
+  names=$(mktemp "${TMPDIR:-/tmp}/affected.XXXXXX") || return 4
+  printf '%s\n' "$branch_files" >"$names"
+  scheduled_layer_split "$repo" "$names" "${both[@]}"
+  rm -f "$names"
+  [ "${#sched_kept[@]}" -eq 0 ] || printf '%s\n' "${sched_kept[@]}"
   return 0
 }
 

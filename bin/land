@@ -179,9 +179,12 @@ in ${repos[$i]} under all 5 passes; nothing holds $branch: land it again now"
     ontos[$i]=$onto bases[$i]=$from
     if [ ! -x "$wt/tests/affected" ]; then suites=''
     # A night worker runs no suites (its branch leaves them to the landing): the first pass runs every covering one,
-    # the slow layer too, which tests/affected drops for a worker run's own selection.
+    # the slow layer too, which tests/affected drops for a worker run's own selection. Either way the scheduled layer
+    # (tests/scheduled-suites) stays out unless the branch edits it or RUN_SCHEDULED=1; design questions are not a
+    # landing's.
     elif [ "$attempt" -eq 1 ] && [[ $branch == night/* ]]; then
-      suites=$(git -C "$wt" diff --name-only "$base...HEAD" | tr '\n' '\0' | WORKER_RUN_ID= xargs -0 bash "$wt/tests/affected") ||
+      suites=$(git -C "$wt" diff --name-only "$base...HEAD" | tr '\n' '\0' |
+        WORKER_RUN_ID= HOT_PATH_QUESTIONS=off xargs -0 bash "$wt/tests/affected") ||
         stop 1 "suite selection failed in $wt"
     else
       suites=$(bash "$wt/tests/affected" --overlap "$base") || stop 1 "suite selection failed in $wt"

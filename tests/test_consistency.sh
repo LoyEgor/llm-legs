@@ -3365,7 +3365,7 @@ assert doc_has 'else `wait_red_s` 600 s'
 assert doc_has 'poll 30 s, blender 3600 s, else'
 # Row ef: every copy an installer deploys is in harness-doctor's DEPLOYS, under the command and name the installer uses.
 for installer in $(cd "$ROOT" && grep -ls '^install_agent()' bin/*); do
-  sub=$(grep -oE '^ *install(-agent)?\)' "$ROOT/$installer" | tr -d ' )' | head -1)
+  sub=$(grep -oE '^ *(--)?install(-agent)?\)' "$ROOT/$installer" | tr -d ' )' | head -1)
   assert grep -qF "(\"$installer $sub\"," "$HARNESS_DOCTOR_BIN"
   wrapper=$(sed -n 's|^wrapper="$HOME/.local/libexec/\([^"]*\)"$|\1|p' "$ROOT/$installer")
   assert grep -qF "(\"libexec\", \"$wrapper\", " "$HARNESS_DOCTOR_BIN"

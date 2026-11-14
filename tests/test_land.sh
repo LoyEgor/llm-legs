@@ -363,4 +363,30 @@ git -C "$wt" reset -q --hard main; change "$wt" file mine 'cf: mine'; change "$W
 assert land feat/cf --repo "$WORK/cf"
 assert test "$(subjects cf | head -2 | tr '\n' ,)" = 'cf: mine,cf: main o3,'
 
+# The scheduled layer with the real selector (Egor 2026-11-14): a landing leaves out a suite of tests/scheduled-suites
+# and says so, runs it when the branch edits a path on its line, and prints no design questions.
+reset_stub; repo sc
+mkdir -p "$WORK/sc/src"
+printf '#!/usr/bin/env bash\nexec bash "%s/share/affected-suites.sh" --repo "$(cd "$(dirname "$0")/.." && pwd -P)" -- "$@"\n' "$ROOT" >"$WORK/sc/tests/affected"
+for s in test_core.sh test_perf.sh; do printf '#!/usr/bin/env bash\ncat src/view.c src/model.c tests/budgets.json\n' >"$WORK/sc/tests/$s"; done
+printf 'test_perf.sh 3 tests/budgets.json\n' >"$WORK/sc/tests/scheduled-suites"
+printf 'src/view.c\n> What does this add at rest?\n' >"$WORK/sc/tests/hot-paths"
+printf 'v\n' >"$WORK/sc/src/view.c"; printf 'm\n' >"$WORK/sc/src/model.c"; printf '{}\n' >"$WORK/sc/tests/budgets.json"
+git -C "$WORK/sc" add -A && git -C "$WORK/sc" commit -qm 'sc: suites'
+wt=$(tree sc feat/sc1); change "$wt" src/view.c v2 'sc: view'; change "$WORK/sc" src/model.c m2 'sc: main model'
+assert land feat/sc1 --repo "$WORK/sc"
+assert test "$(ran)" = "sc $WORK/wt/sc-feat-sc1/tests test_core.sh"
+assert grep -qxF 'scheduled layer left out: test_perf.sh (runs on main every 3 h; run it now when the change is large or touches a hot path: tests/run-all test_perf.sh, or RUN_SCHEDULED=1 in front of tests/affected, tests/run-all --changed or land)' "$WORK/out"
+reset_stub; wt=$(tree sc feat/sc2); change "$wt" tests/budgets.json '{"k":1}' 'sc: budgets'; change "$WORK/sc" src/model.c m3 'sc: main model 3'
+assert land feat/sc2 --repo "$WORK/sc"
+assert test "$(ran | sed 's/.* //' | sort | tr '\n' ,)" = 'test_core.sh,test_perf.sh,'
+reset_stub; wt=$(tree sc feat/sc3); change "$wt" src/view.c v3 'sc: view 3'; change "$WORK/sc" src/model.c m4 'sc: main model 4'
+RUN_SCHEDULED=1 land feat/sc3 --repo "$WORK/sc"; assert test $? = 0
+assert grep -q 'test_perf.sh' <(ran)
+reset_stub; wt=$(tree sc night/n1/sc); change "$wt" src/view.c v4 'sc: night view'
+assert land night/n1/sc
+assert test "$(ran)" = "sc $WORK/wt/sc-night-n1-sc/tests test_core.sh"
+assert grep -q '^scheduled layer left out: test_perf.sh' "$WORK/out"
+assert_fails grep -q '^hot path\|at rest' "$WORK/out"
+
 printf 'PASS: %s asserts; land selects, runs in the worktree, retries a moved main and keeps everything it cannot land\n' "$asserts"

@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [ -x "$modern_bash" ] && exec "$modern_bash" "$0" "$@"
+  done
+fi
+{
+# scheduled-suites: the scheduled layer's runner (Egor 2026-11-14: measurement stops gating every landing; it runs on
+# main every few hours, and whoever finds a regression, not the chat that made it, gets it to fix). A suite listed in
+# a repository's tests/scheduled-suites (`<suite> <period hours> [path...]`; share/affected-suites.sh leaves it out of
+# workers' and landings' selections) runs here against main, in a detached worktree of its own (a bench suite sends
+# itself to the bench). Per tick, per sweep repository with the list, per suite, one decision and one log line:
+#   not due (its period since the last scheduled run has not passed: no git call at all), main unmoved (one
+#   rev-parse), main moved in no file the suite covers (tests/affected's selector over the moved files), a landing
+#   running (a live land-*.lock in the repository: the next tick), or a run on main's commit.
+# PASS records the commit as last good (and settles an open failure's handoff). FAIL runs once more (flakes); red
+# twice, the first bad commit is searched between last good and main: first-parent commits touching covered files,
+# halved, each step the same suite, at most SCHEDULED_SUITES_STEPS (6) steps, a step that does not build (exit 125, or
+# a SKIP line) skipped as git bisect does. One report per failure: a handoff docs/handoffs/<date>-scheduled-<suite>-
+# <sha>.md in the repository's main checkout (untracked; share/handoffs.py and the night's carry take it from there:
+# its owner chat by the edits of the commit's files, else a night job; the LLM doctor names it once 60 h open), and
+# the line every tests/affected run there prints (`scheduled: ...`). Red again while reported: logged, nothing sent.
+# State and the log (scheduled.log, one line a decision) in ~/Library/Application Support/scheduled-suites, never in
+# Caches; never two ticks at once.
+#   scheduled-suites [tick]          one tick (what the LaunchAgent runs every 15 min)
+#   scheduled-suites status          per repository and suite: last good, last run, an open failure
+#   scheduled-suites --install-agent the LaunchAgent com.llm-legs.scheduled-suites (via ~/.local/libexec/scheduled-suites); idempotent
+# Env: SCHEDULED_SUITES_DIR (state), SCHEDULED_SUITES_REPOS (default the sweep list), SCHEDULED_SUITES_STEPS,
+# SCHEDULED_SUITES_CAP_S (one suite run's bound, 5400), SCHEDULED_SUITES_NOW (epoch, tests).
+set -u
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
+
+resolve_script() {
+  local source="${BASH_SOURCE[0]}" directory
+  [[ $source == */* ]] || source=./$source
+  while [ -L "$source" ]; do
+    directory=$(cd -P "${source%/*}" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "${source%/*}" && printf '%s/%s\n' "$PWD" "${source##*/}"
+}
+
+script_path=$(resolve_script)
+legs=${script_path%/*/*}
+. "$legs/share/affected-suites.sh"
+. "$legs/share/store-lock.sh"
+. "$legs/share/processes.sh"
+DIR=${SCHEDULED_SUITES_DIR:-$HOME/Library/Application Support/scheduled-suites}
+LOG=$DIR/scheduled.log
+REPOS=${SCHEDULED_SUITES_REPOS:-${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}}
+STEPS=${SCHEDULED_SUITES_STEPS:-6}
+CAP=${SCHEDULED_SUITES_CAP_S:-5400}
+LABEL=com.llm-legs.scheduled-suites
+PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
+# launchd runs the wrapper (Login Items show its name; harness-doctor's DEPLOYS watches it), the wrapper this script.
+wrapper="$HOME/.local/libexec/scheduled-suites"
+INTERVAL=900
+
+now_s() { echo "${SCHEDULED_SUITES_NOW:-$(date +%s)}"; }
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; [ ! -t 1 ] || printf '%s\n' "$*"; }
+ago() { local s=$1; [ "$s" -ge 86400 ] && echo "$((s / 86400)) d $((s % 86400 / 3600)) h" || echo "$((s / 3600)) h $((s % 3600 / 60)) min"; }
+first_line() { local v=''; read -r v 2>/dev/null <"$1"; printf '%s' "$v"; }
+
+install_agent() {
+  local want wrapper_tmp
+  mkdir -p "$DIR" "${wrapper%/*}"
+  if ! grep -qxF "exec $(printf %q "$script_path") \"\$@\"" "$wrapper" 2>/dev/null; then
+    wrapper_tmp=$(mktemp "$wrapper.tmp.XXXXXX") || return 1
+    printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$script_path" >"$wrapper_tmp"
+    chmod 755 "$wrapper_tmp"
+    mv -f "$wrapper_tmp" "$wrapper"
+  fi
+  want=$(cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$wrapper</string>
+        <string>tick</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>$INTERVAL</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>$DIR/agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>$DIR/agent.log</string>
+</dict>
+</plist>
+EOF
+)
+  if [ "$(cat "$PLIST" 2>/dev/null)" = "$want" ] && launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+    echo "scheduled-suites: agent $LABEL already loaded"; return 0
+  fi
+  mkdir -p "${PLIST%/*}"
+  printf '%s\n' "$want" >"$PLIST"
+  launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" || { echo "scheduled-suites: launchctl bootstrap $PLIST failed" >&2; return 1; }
+  echo "scheduled-suites: agent $LABEL loaded (every $((INTERVAL / 60)) min); log $LOG; remove: launchctl bootout gui/\$(id -u)/$LABEL; rm $PLIST"
+}
+
+land_running() { # repo -> "pid N" of a live landing there
+  local lock pid
+  for lock in "$1"/.git/land-*.lock; do
+    pid=$(first_line "$lock/pid")
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && { printf 'pid %s, %s' "$pid" "${lock##*/}"; return 0; }
+  done
+  return 1
+}
+
+covers() { # files... -> 0 when the suite ($repo, $suite, $paths) covers one: its own file, a listed path, the selector
+  local f names hit
+  [ "$#" -gt 0 ] || return 1
+  for f in "$@"; do
+    [ "$f" != "tests/$suite" ] || return 0
+    for p in ${paths[@]+"${paths[@]}"}; do [ "$f" != "$p" ] || return 0; done
+  done
+  names=$(mktemp "${TMPDIR:-/tmp}/scheduled.XXXXXX") || return 0
+  printf '%s\n' "$@" >"$names"
+  hit=$(printf '%s\n' "$repo/tests/$suite" | affected_filter "$repo" "$names" 2>/dev/null | grep -cxF "$repo/tests/$suite")
+  rm -f "$names"
+  [ "${hit:-0}" -gt 0 ]
+}
+
+run_at() { # sha log -> pass, fail or skip on stdout: the suite at sha in the suite's own detached worktree
+  local sha=$1 out=$2 wt=$st/wt pid watch rc
+  if [ -e "$wt/.git" ]; then
+    git -C "$wt" checkout -q --force --detach "$sha" >"$out" 2>&1 || { echo skip; return; }
+  else
+    git -C "$repo" worktree prune 2>/dev/null
+    git -C "$repo" worktree add -q --force --detach "$wt" "$sha" >"$out" 2>&1 || { echo skip; return; }
+  fi
+  (cd "$wt" && exec env -u WORKER_RUN_ID -u WORKER_RUN_RECORD -u CLAUDE_CODE_SESSION_ID -u CLAUDE_LAUNCHER_SESSION \
+    bash "tests/$suite") >"$out" 2>&1 </dev/null &
+  pid=$!
+  (end=$((SECONDS + CAP)); while kill -0 "$pid" 2>/dev/null; do
+    [ "$SECONDS" -lt "$end" ] || { printf 'scheduled-suites: ended past %s s\n' "$CAP" >>"$out"; process_tree_end "$pid" 10; break; }
+    sleep 2; done) &
+  watch=$!
+  wait "$pid"; rc=$?
+  kill "$watch" 2>/dev/null; wait "$watch" 2>/dev/null
+  if [ "$rc" -eq 125 ] || { [ "$rc" -eq 0 ] && grep -q '^SKIP' "$out"; }; then echo skip
+  elif [ "$rc" -eq 0 ]; then echo pass
+  else echo fail; fi
+}
+
+perf_value() { # log key -> the number a perf line of key reads there (tests/lib/perf-judge.sh's `perf <key>: <n> <unit>`)
+  sed -nE "s/^(FAIL: )?perf $2: ([^ ]+) .*/\\2/p" "$1" 2>/dev/null | tail -1
+}
+
+findings() { # now-log was-log -> one line a failed budget key (key: was W, now N unit), else the first FAIL lines
+  local key got unit was any=''
+  while read -r key got unit; do
+    any=1 was=$(perf_value "$2" "$key")
+    printf -- '- `%s`: was %s, now %s %s\n' "$key" "${was:-unknown}" "$got" "$unit"
+  done < <(sed -nE 's/^FAIL: perf ([^:]+): ([^ ]+) ([^ ]+) .*/\1 \2 \3/p' "$1")
+  [ -n "$any" ] || grep -m 3 '^FAIL' "$1" | cut -c1-300 | sed 's/^/- /'
+  [ -n "$any" ] || grep -q '^FAIL' "$1" || printf -- '- no FAIL line; the log: %s\n' "$1"
+}
+
+report() { # first-bad last-pass now-log was-log range-note -> the handoff and the open line
+  local bad=$1 good=$2 now_log=$3 was_log=$4 note=$5 subject when doc files rel
+  subject=$(git -C "$repo" log -1 --format=%s "$bad" | cut -c1-200)
+  when=$(git -C "$repo" log -1 --format=%cd --date=format:'%F %R' "$bad")
+  files=$(git -C "$repo" diff --name-only "$bad^1" "$bad" 2>/dev/null | head -20 | sed 's/.*/`&`/' | paste -sd, - | sed 's/,/, /g')
+  mkdir -p "$repo/docs/handoffs"
+  rel=docs/handoffs/$(date +%F)-scheduled-${suite%.*}-${bad:0:7}.md
+  doc=$repo/$rel
+  {
+    printf '# Hand-off: tests/%s red on main from %s (the scheduled run)\n\nStatus: open\n\n' "$suite" "${bad:0:12}"
+    printf 'From: bin/scheduled-suites (llm-legs), %s. The suite is in tests/scheduled-suites: no worker or landing runs it, so whoever reads this fixes it, not necessarily the chat of the commit.\n\n' "$(date '+%F %R')"
+    printf '## What failed\n\n`tests/%s` %s `%s` (%s): %s\n\n' "$suite" \
+      "$([ -n "$good" ] && printf 'passed at `%s` and fails from' "${good:0:12}" || printf 'fails at')" "${bad:0:12}" "$when" "$subject"
+    [ -z "$note" ] || printf '%s\n\n' "$note"
+    findings "$now_log" "$was_log"
+    printf '\nThe commit'"'"'s files: %s.\n\n' "${files:-none listed}"
+    printf '## Settle\n\nFix it on main (or the budget, with its measurement), `tests/run-all %s` to check. The next scheduled pass on main sets this Status to settled by itself. Logs: `%s`, `%s`.\n' \
+      "$suite" "$now_log" "$was_log"
+  } >"$doc"
+  printf '%s red on main from %s %s (passed at %s): %s\n' "$suite" "${bad:0:12}" "$(printf %s "$subject" | cut -c1-80)" \
+    "${good:0:12}" "$doc" >"$st/open"
+  log "$tag: red from ${bad:0:12} (passed at ${good:0:12}); reported in $rel"
+}
+
+settle() { # sha: an open failure's handoff settled by a pass at sha
+  local open doc
+  open=$(first_line "$st/open")
+  doc=${open##*: }
+  if [ -f "$doc" ] && grep -qm1 '^Status: open' "$doc"; then
+    awk -v s="Status: settled $(date +%F): the scheduled run passed on main at ${1:0:12}" \
+      '!done && /^Status:/ { print s; done = 1; next } { print }' "$doc" >"$doc.tmp" && mv "$doc.tmp" "$doc"
+  fi
+  rm -f "$st/open"
+  log "$tag: green again at ${1:0:12}; settled ${doc#"$repo"/}"
+}
+
+bisect() { # good head -> report the first bad commit: first-parent commits touching covered files, halved
+  local good=$1 head=$2 line sha lo hi mid v steps=0 i try found
+  local -a cands=() files=() verdict=()
+  if [ -z "$good" ] || ! git -C "$repo" merge-base --is-ancestor "$good" "$head" 2>/dev/null; then
+    report "$head" '' "$st/head.log" "$st/good.log" 'No earlier scheduled pass to search from: the commit is main as first measured.'
+    return
+  fi
+  sha=''
+  while IFS= read -r line; do
+    if [[ $line == @* ]]; then
+      [ -z "$sha" ] || { covers ${files[@]+"${files[@]}"} && cands+=("$sha"); }
+      sha=${line#@} files=()
+    elif [ -n "$line" ]; then files+=("$line"); fi
+  done < <(git -C "$repo" log --first-parent --diff-merges=first-parent --reverse --format=@%H --name-only "$good..$head")
+  [ -z "$sha" ] || { covers ${files[@]+"${files[@]}"} && cands+=("$sha"); }
+  [ "${#cands[@]}" -gt 0 ] || cands=("$head")
+  # cands[lo] passes (lo = -1: the last good), cands[hi] fails (the last covered commit holds main's covered files).
+  lo=-1 hi=$((${#cands[@]} - 1))
+  while [ $((hi - lo)) -gt 1 ] && [ "$steps" -lt "$STEPS" ]; do
+    mid=$(((lo + hi) / 2)) found=''
+    # A step that does not build is skipped: the nearest untried commit inside the range instead.
+    for try in $(seq 0 $((hi - lo - 2))); do
+      for i in $((mid + try)) $((mid - try)); do
+        [ "$i" -gt "$lo" ] && [ "$i" -lt "$hi" ] && [ -z "${verdict[$i]:-}" ] || continue
+        [ "$steps" -lt "$STEPS" ] || break 3
+        steps=$((steps + 1))
+        v=$(run_at "${cands[$i]}" "$st/step-${cands[$i]:0:12}.log")
+        verdict[$i]=$v
+        log "$tag: step $steps at ${cands[$i]:0:12}: $v"
+        [ "$v" = skip ] || { found=$i; break 2; }
+      done
+    done
+    [ -n "$found" ] || break
+    if [ "${verdict[$found]}" = pass ]; then lo=$found; else hi=$found; fi
+  done
+  local was=$st/good.log now=$st/head.log note=''
+  [ "$lo" -lt 0 ] || was=$st/step-${cands[$lo]:0:12}.log
+  [ ! -r "$st/step-${cands[$hi]:0:12}.log" ] || now=$st/step-${cands[$hi]:0:12}.log
+  [ $((hi - lo)) -le 1 ] || note="Not narrowed to one commit (step cap $STEPS or unbuildable steps): the first bad is one of the $((hi - lo)) first-parent commits after $([ "$lo" -lt 0 ] && echo "${good:0:12}" || echo "${cands[$lo]:0:12}") up to this one."
+  report "${cands[$hi]}" "$([ "$lo" -lt 0 ] && echo "$good" || echo "${cands[$lo]}")" "$now" "$was" "$note"
+}
+
+decide() { # one suite of one repository: the decision, and the run when one is due
+  local now ran tested checked head files v
+  local -a moved=()
+  mkdir -p "$st"
+  now=$(now_s) ran=$(first_line "$st/ran")
+  if [ $((now - ${ran:-0})) -lt $((hours * 3600)) ]; then
+    log "$tag: not due (ran $(ago $((now - ran))) ago, every $hours h)"; return 0
+  fi
+  head=$(git -C "$repo" rev-parse --verify -q refs/heads/main) || { log "$tag: no main"; return 0; }
+  checked=$(first_line "$st/checked")
+  if [ "$head" = "$checked" ]; then log "$tag: main unmoved at ${head:0:12}"; return 0; fi
+  tested=$(first_line "$st/tested")
+  if [ -n "$tested" ]; then
+    while IFS= read -r files; do [ -z "$files" ] || moved+=("$files"); done < <(git -C "$repo" diff --name-only "$tested" "$head" 2>/dev/null)
+    if ! covers ${moved[@]+"${moved[@]}"}; then
+      printf '%s\n' "$head" >"$st/checked"
+      log "$tag: main moved to ${head:0:12} in no file the suite covers"; return 0
+    fi
+  fi
+  if v=$(land_running "$repo"); then log "$tag: a landing runs ($v): the next tick"; return 0; fi
+  printf '%s\n' "$now" >"$st/ran"
+  v=$(run_at "$head" "$st/head.log")
+  if [ "$v" = fail ]; then
+    log "$tag: red at ${head:0:12}, run once more"
+    v=$(run_at "$head" "$st/head.log")
+    [ "$v" != pass ] || log "$tag: green on the rerun at ${head:0:12} (flaky)"
+  fi
+  case $v in
+    skip) log "$tag: ${head:0:12} not judged (did not build, or SKIP: $(grep -m1 '^SKIP' "$st/head.log" | cut -c1-120))" ;;
+    pass)
+      printf '%s\n' "$head" >"$st/good"; printf '%s\n' "$head" >"$st/tested"; printf '%s\n' "$head" >"$st/checked"
+      cp "$st/head.log" "$st/good.log"
+      if [ -e "$st/open" ]; then settle "$head"; else log "$tag: green at ${head:0:12}"; fi ;;
+    fail)
+      printf '%s\n' "$head" >"$st/tested"; printf '%s\n' "$head" >"$st/checked"
+      cp "$st/head.log" "$st/red.log"
+      if [ -e "$st/open" ]; then log "$tag: still red at ${head:0:12}, reported: $(first_line "$st/open" | sed 's/.*: //')"
+      else bisect "$(first_line "$st/good")" "$head"; fi ;;
+  esac
+}
+
+tick_lock=$DIR/.tick.lock
+tick() {
+  local line
+  mkdir -p "$DIR"
+  LLM_STORE_LOCK_RETRIES=1 LLM_STORE_LOCK_CEILING_SECONDS=86400 store_lock_acquire "$tick_lock" 2>/dev/null ||
+    { log "another tick runs (pid $(first_line "$tick_lock/pid")): this one ends"; return 0; }
+  trap 'store_lock_release "$tick_lock"' EXIT
+  while IFS= read -r repo; do
+    [ -n "$repo" ] && [ -r "$repo/tests/scheduled-suites" ] || continue
+    while read -r suite hours line; do
+      read -r -a paths <<<"$line"
+      st=$DIR/${repo##*/}/$suite tag="${repo##*/} $suite"
+      decide
+    done < <(scheduled_list "$repo")
+  done <"$REPOS"
+}
+
+status() {
+  local repo suite hours line s
+  while IFS= read -r repo; do
+    [ -n "$repo" ] && [ -r "$repo/tests/scheduled-suites" ] || continue
+    while read -r suite hours line; do
+      s=$DIR/${repo##*/}/$suite
+      printf '%s %s every %s h: good %s, ran %s%s\n' "${repo##*/}" "$suite" "$hours" "$(first_line "$s/good" | cut -c1-12)" \
+        "$( r=$(first_line "$s/ran"); [ -z "$r" ] && echo never || echo "$(ago $(($(now_s) - r))) ago")" \
+        "$( [ -r "$s/open" ] && echo "; open: $(first_line "$s/open")")"
+    done < <(scheduled_list "$repo")
+  done <"$REPOS"
+}
+
+case ${1:-tick} in
+  tick) tick ;;
+  status) status ;;
+  --install-agent) install_agent ;;
+  *) sed -n '/^#   scheduled-suites/p' "$script_path" | sed 's/^# *//' >&2; exit 2 ;;
+esac
+exit; }

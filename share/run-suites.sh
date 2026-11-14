@@ -59,7 +59,9 @@ Exit 1 if any suite failed, with the last 30 lines of each failure.
 Machine-wide at most RUN_SUITES_SLOTS runs at once (default cores / 3 clamped 2 to 4 always, up to 4
 while the machine has room); a run waits for a free slot under RUN_SUITES_SLOTS_DIR, its wait a
 limiter hold, and frees it once only its last suite runs; a direct `bash tests/x.sh` takes one too. Inside a worker (WORKER_RUN_ID set) --changed skips the slow layer, tests/slow-suites,
-except a suite the worker edited; the landing and the night full run run them.
+except a suite the worker edited; the landing and the night full run run them. --changed, a worker's or anyone's,
+leaves out the scheduled layer, tests/scheduled-suites (bin/scheduled-suites runs it on main), unless the change edits
+the suite or a path its line names, or RUN_SCHEDULED=1; named, it runs.
 
 A suite whose first 5 lines hold `# shards: N` runs as N jobs, each with SUITE_SHARD=i/N and only
 the sections `suite_shard_owns i <name>` (tests/lib/suite-journal.sh) gives it; one verdict, one
@@ -308,11 +310,14 @@ if [ "$changed" = true ]; then
     mapfile -t committed < <(git -C "$repo" diff --name-only "$base" HEAD 2>/dev/null)
     [ "${#committed[@]}" -eq 0 ] || affected_names "$repo" "${committed[@]}" >>"$names_file"
   fi
+  hot_path_questions "$repo" "$names_file"
   mapfile -t suites < <(printf '%s\n' "${suites[@]}" | affected_filter "$repo" "$names_file" | sort -u)
   slow_layer_split "$repo" "$names_file" ${suites[@]+"${suites[@]}"}
-  suites=(${slow_kept[@]+"${slow_kept[@]}"})
+  scheduled_layer_split "$repo" "$names_file" ${slow_kept[@]+"${slow_kept[@]}"}
+  suites=(${sched_kept[@]+"${sched_kept[@]}"})
   rm -f "$names_file"
-  [ "${#suites[@]}" -gt 0 ] || [ -n "$slow_skipped" ] || { printf 'run-suites: nothing changed that any suite names\n'; exit 0; }
+  [ "${#suites[@]}" -gt 0 ] || [ -n "$slow_skipped" ] || [ -n "$sched_skipped" ] ||
+    { printf 'run-suites: nothing changed that any suite names\n'; exit 0; }
 fi
 
 # Brew relinks `python3` to each new minor release, which arrives without pytest.

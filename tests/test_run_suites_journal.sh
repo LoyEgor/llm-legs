@@ -435,6 +435,61 @@ assert test "$(RUN_SUITES_JOURNAL="$WORK/slow.jsonl" bash "$ROOT/share/affected-
 # The checked-in layer lists suites that exist.
 while IFS= read -r s; do assert test -r "$ROOT/tests/$s"; done <"$ROOT/tests/slow-suites"
 
+# The scheduled layer (Egor 2026-11-14): a suite of tests/scheduled-suites leaves every selection, worker's or not,
+# with one line naming its period and how to run it now; the suite's own edit, a path on its line, RUN_SCHEDULED=1 or
+# its name brings it back. tests/hot-paths' questions print once, before the suites, for a matching change only.
+R7="$WORK/r7"
+new_repo "$R7"
+mkdir -p "$R7/bin" "$R7/docs"
+printf 'echo v1\n' >"$R7/bin/tool.sh"
+suite "$R7" test_fast.sh ': tool.sh; exit 0'
+suite "$R7" test_sched.sh ': tool.sh tests/budgets.json; exit 0'
+printf '{}\n' >"$R7/tests/budgets.json"
+printf '# comment\ntest_sched.sh 3 tests/budgets.json\n' >"$R7/tests/scheduled-suites"
+printf '# the hot ones\nbin/*.sh\n> What runs at rest?\n> Name its cost.\n' >"$R7/tests/hot-paths"
+git -C "$R7" add -A
+git -C "$R7" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q -m suites
+sched_line='scheduled layer left out: test_sched.sh (runs on main every 3 h; run it now when the change is large or touches a hot path: tests/run-all test_sched.sh, or RUN_SCHEDULED=1 in front of tests/affected, tests/run-all --changed or land)'
+hot_lines=$'hot path (bin/tool.sh): answer from the diff before you design\n  What runs at rest?\n  Name its cost.'
+export SCHEDULED_SUITES_DIR="$WORK/sched-state"
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R7" bin/tool.sh 2>"$WORK/sched.err")" = "$R7/tests/test_fast.sh"
+assert test "$(cat "$WORK/sched.err")" = "$hot_lines"$'\n'"$sched_line"
+assert test "$(WORKER_RUN_ID=wr-9 bash "$ROOT/share/affected-suites.sh" --repo "$R7" bin/tool.sh 2>/dev/null)" = "$R7/tests/test_fast.sh"
+assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R7" docs/notes.md 2>"$WORK/sched.err")"
+assert test ! -s "$WORK/sched.err"
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R7" tests/budgets.json 2>"$WORK/sched.err")" = "$R7/tests/test_sched.sh"
+assert test ! -s "$WORK/sched.err"
+assert grep -qxF "$R7/tests/test_sched.sh" <(bash "$ROOT/share/affected-suites.sh" --repo "$R7" bin/tool.sh tests/test_sched.sh 2>/dev/null)
+assert test "$(RUN_SCHEDULED=1 bash "$ROOT/share/affected-suites.sh" --repo "$R7" bin/tool.sh 2>"$WORK/sched.err")" = \
+  "$R7/tests/test_fast.sh"$'\n'"$R7/tests/test_sched.sh"
+assert test "$(cat "$WORK/sched.err")" = "$hot_lines"
+mkdir -p "$SCHEDULED_SUITES_DIR/r7/test_sched.sh"
+printf 'test_sched.sh red on main from abc (passed at def): /x/docs/handoffs/h.md\n' >"$SCHEDULED_SUITES_DIR/r7/test_sched.sh/open"
+bash "$ROOT/share/affected-suites.sh" --repo "$R7" docs/notes.md 2>"$WORK/sched.err" >/dev/null
+assert test "$(cat "$WORK/sched.err")" = 'scheduled: test_sched.sh red on main from abc (passed at def): /x/docs/handoffs/h.md'
+rm -r "$SCHEDULED_SUITES_DIR"
+printf 'echo v2\n' >"$R7/bin/tool.sh"
+sched_out=$(bash "$ROOT/share/run-suites.sh" --repo "$R7" -j 2 --changed 2>&1)
+assert grep -qxF "$sched_line" <<<"$sched_out"
+assert grep -qxF '  What runs at rest?' <<<"$sched_out"
+assert jqe '(.suites | keys) == ["test_fast.sh"]' <(tail -1 "$JOURNAL")
+bash "$ROOT/share/run-suites.sh" --repo "$R7" -j 2 test_sched.sh >/dev/null 2>&1
+assert jqe '(.suites | keys) == ["test_sched.sh"]' <(tail -1 "$JOURNAL")
+git -C "$R7" checkout -q -- .
+# The picker: a document a suite or a code file only cites (a comment, a docstring) selects nothing; one read on a line
+# of code selects its reader; a code file named in a comment line (a sources list) still selects (chats-app's
+# CONTRACT.md pulled test_pages_app.sh and test_pages.sh by their header comments).
+suite "$R7" test_cite.sh '# checks the routes of docs/spec.md
+exit 0'
+suite "$R7" test_read.sh 'grep -q x docs/read.md; exit 0'
+suite "$R7" test_list.sh '# bin/listed.sh
+exit 0'
+printf '"""The tool docs/spec.md describes."""\nimport os\n' >"$R7/bin/doc_user.py"
+assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R7" docs/spec.md 2>/dev/null)"
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R7" docs/read.md 2>/dev/null)" = "$R7/tests/test_read.sh"
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R7" bin/listed.sh 2>/dev/null)" = "$R7/tests/test_list.sh"
+rm "$R7/tests/test_cite.sh" "$R7/tests/test_read.sh" "$R7/tests/test_list.sh" "$R7/bin/doc_user.py"
+
 # A suite that posts into the runner's own report queue fails though it exits 0; one on a cache of its
 # own passes, and the live queue receives nothing.
 R5="$WORK/r5"

@@ -36,6 +36,8 @@ SOURCE = r"""(?:^|[\s;&|(])(?:\.|source)[ \t]+(?:[^\n;&|]*?[/"'])?%s(?![\w.@+-])
 NOT_CODE = (":!tests/", ":!docs/", ":!*.md", ":!*.json", ":!*.jsonl")
 TOKEN = re.compile(r"[\w@+-]+")
 COMMENT = re.compile(r"\s*(?:#|-- |//)")
+# A document's mention in prose: also a docstring's or an HTML comment's opening line.
+DOC_COMMENT = re.compile(r"\s*(?:#|-- |//|<!--|\"\"\"|\'\'\')")
 INDEX_AT = 16
 WHOLE = 1.0
 
@@ -136,10 +138,18 @@ def lines(text, needle):
         i = text.find(needle, end)
 
 
+def document(rel):
+    """A markdown file outside tests/ (a fixture's is a suite's data)."""
+    return rel.endswith(".md") and not rel.startswith("tests/")
+
+
 def match(text, rel, kind):
-    pat = patterns(rel)[kind]
+    """A line of text holding rel by kind's pattern. A comment line never loads a file, and for a document() it
+    never holds one either: a suite citing CONTRACT.md in its header reads nothing of it (a code file named in a
+    comment may still be a list's entry, a Swift source in a sources list)."""
+    pat, skip = patterns(rel)[kind], DOC_COMMENT if document(rel) else COMMENT if kind == 1 else None
     return any(pat.search(line) for line in lines(text, os.path.basename(rel) if kind == 2 else stem(rel))
-               if kind != 1 or not COMMENT.match(line))
+               if not (skip and skip.match(line)))
 
 
 def importers(top, rels):
@@ -229,8 +239,10 @@ def select(top, rels, names, now=None, held=None, siblings=()):
             naming = {n for n, t in texts.items() if match(t, rel, 2) or users.intersection(via[n])}
             proven |= given.keys() & naming
         keep = set() if rel in siblings else {os.path.basename(rel)} | named(names, rel)
+        # A document no suite or loader reads on a line of code has no suite: naming it is citing it.
+        fallback = naming if not own and not proven and not document(rel) else set()
         out[rel] = {k: {n for n in v if n not in zero or n in keep} for k, v in
-                    (("own", own), ("evidence", proven), ("fallback", naming if not own and not proven else set()))}
+                    (("own", own), ("evidence", proven), ("fallback", fallback))}
     return out
 
 
