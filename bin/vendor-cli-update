@@ -52,7 +52,7 @@ grok_profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
 geminib="${VENDOR_CLI_UPDATE_GEMINIB:-$repo_root/bin/geminib}"
 native_claude="${VENDOR_CLI_UPDATE_NATIVE_CLAUDE:-$HOME/.local/bin/claude}"
 agy="${AGY_BIN:-$HOME/.local/bin/agy}"
-agy_manifest="${VENDOR_CLI_UPDATE_AGY_MANIFEST:-https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_arm64.json}"
+agy_manifest="${VENDOR_CLI_UPDATE_AGY_MANIFEST:-}"
 agent_dir="$HOME/Library/LaunchAgents"
 label="com.llm-legs.vendor-cli-update"
 plist="$agent_dir/$label.plist"
@@ -383,6 +383,9 @@ check_agy() {
     return 0
   fi
   installed=$(version_of timeout_command 30 "$agy" --version)
+  # The updater manifest is the one bin/node-install installs a node's agy from.
+  [ -n "$agy_manifest" ] ||
+    agy_manifest=$(jq -r '.binaries.agy.download.manifest // empty' "$repo_root/share/node-manifest.json" 2>/dev/null)
   latest=$(curl -fsS -m 30 "$agy_manifest" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
   if [ -z "$installed" ] || [ -z "$latest" ]; then
     record gemini check-failed "$installed" "$latest"

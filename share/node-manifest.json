@@ -9,9 +9,10 @@
   "ffmpeg": {"min": "4.0", "version": ["-version"], "brew": "ffmpeg"},
   "cc": {"min": "0", "version": ["--version"]},
   "claude": {"min": "0", "version": ["--version"]},
-  "codex": {"min": "0", "version": ["--version"]},
-  "agy": {"min": "0", "version": ["--version"]},
-  "grok": {"min": "0", "version": ["--version"]},
+  "node": {"min": "18.0", "version": ["--version"], "brew": "node"},
+  "codex": {"min": "0", "version": ["--version"], "npm": "@openai/codex"},
+  "agy": {"min": "0", "version": ["--version"], "download": {"manifest": "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_arm64.json", "member": "antigravity", "to": ".local/bin/agy"}},
+  "grok": {"min": "0", "version": ["--version"], "npm": "@xai-official/grok"},
   "hs": {"min": "0", "version": ["-h"]}
  },
  "modules": {
@@ -37,6 +38,9 @@
     ".local/bin/opencode-go": "llm-legs/bin/opencode-go"
    }
   },
+  "codex": {"requires": ["node", "codex"]},
+  "gemini": {"requires": ["agy"]},
+  "grok": {"requires": ["node", "grok"]},
   "limits": {
    "requires": ["bash", "python3", "jq"],
    "links": {

@@ -140,20 +140,83 @@ def binary_item(name, spec, optional):
         return None
 
     def apply():
-        prefix = brew_prefix()
-        if not spec.get("brew") or not prefix:
-            raise RuntimeError("install %s %s+ by hand: no Homebrew formula to use" % (name, spec["min"]))
-        done = run([prefix + "/bin/brew", "install", "--quiet", spec["brew"]], env=dict(os.environ, **BREW_ENV),
-                   timeout=1800)
-        if done.returncode:
-            raise RuntimeError("brew install %s: %s" % (spec["brew"], (done.stderr or done.stdout).strip()[-300:]))
+        if spec.get("npm"):
+            how = install_npm(spec["npm"])
+        elif spec.get("download"):
+            how = install_download(spec["download"])
+        else:
+            how = install_brew(name, spec)
         why = check()
         if why:
-            raise RuntimeError("after brew install %s: %s" % (spec["brew"], why))
+            raise RuntimeError("after %s: %s" % (how, why))
         found, have = find()
-        return "installed %s %s (brew)" % (name, ".".join(map(str, have)))
+        return "installed %s %s (%s)" % (name, ".".join(map(str, have)), how.split()[0])
 
     return Item("binary %s" % name, check, None if optional else apply, optional)
+
+
+def install_brew(name, spec):
+    prefix = brew_prefix()
+    if not spec.get("brew") or not prefix:
+        raise RuntimeError("install %s %s+ by hand: no Homebrew formula to use" % (name, spec["min"]))
+    done = run([prefix + "/bin/brew", "install", "--quiet", spec["brew"]], env=dict(os.environ, **BREW_ENV),
+               timeout=1800)
+    if done.returncode:
+        raise RuntimeError("brew install %s: %s" % (spec["brew"], (done.stderr or done.stdout).strip()[-300:]))
+    return "brew install %s" % spec["brew"]
+
+
+def install_npm(package):
+    """A vendor CLI published on npm (codex, grok: how mac-m4 has them), a global install of the node's npm."""
+    npm = shutil.which("npm", path=node_path())
+    if not npm:
+        raise RuntimeError("npm install -g %s: no npm (the binary node comes first)" % package)
+    done = run([npm, "install", "-g", "--no-fund", "--no-audit", package],
+               env=dict(os.environ, PATH=node_path()), timeout=1800)
+    if done.returncode:
+        raise RuntimeError("npm install -g %s: %s" % (package, (done.stderr or done.stdout).strip()[-300:]))
+    return "npm install -g %s" % package
+
+
+def install_download(spec):
+    """A vendor CLI from its own updater manifest ({version, url, sha512}: agy's, which mac-m4's agy updates itself
+    from): the archive, checked against the manifest's sha512, then its one member put in place."""
+    import hashlib
+    import tarfile
+    import tempfile
+    target = os.path.join(HOME, spec["to"])
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    got = run(["curl", "-fsSL", "-m", "60", spec["manifest"]], timeout=90)
+    try:
+        latest = json.loads(got.stdout)
+        url, digest = latest["url"], latest["sha512"]
+    except (ValueError, KeyError, TypeError):
+        raise RuntimeError("the manifest %s gave no url and sha512 (curl exit %d)" % (spec["manifest"], got.returncode))
+    scratch = tempfile.mkdtemp(prefix=".node-install.", dir=os.path.dirname(target))
+    try:
+        archive = os.path.join(scratch, "archive")
+        fetched = run(["curl", "-fsSL", "-m", "1500", "-o", archive, url], timeout=1600)
+        if fetched.returncode:
+            raise RuntimeError("curl %s: exit %d %s" % (url, fetched.returncode, fetched.stderr.strip()[-200:]))
+        sha = hashlib.sha512()
+        with open(archive, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                sha.update(block)
+        if sha.hexdigest() != digest:
+            raise RuntimeError("%s does not match the manifest's sha512" % url)
+        with tarfile.open(archive) as tar:
+            member = tar.getmember(spec["member"])
+            source = tar.extractfile(member)
+            if source is None:
+                raise RuntimeError("%s holds no file %s" % (url, spec["member"]))
+            part = os.path.join(scratch, "binary")
+            with open(part, "wb") as handle:
+                shutil.copyfileobj(source, handle)
+        os.chmod(part, 0o755)
+        os.replace(part, target)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return "download %s %s to %s" % (latest.get("version", "?"), url.rsplit("/", 1)[-1], tilde(target))
 
 
 def zshenv_block(prefix):
@@ -502,11 +565,13 @@ def install_here(args, manifest):
     if config != node and not args.dry_run:
         write_json(CONFIG, node)
         did.append("wrote %s" % tilde(CONFIG))
-    seen = set()
+    # A binary or a hook two modules share is one item, and one module's requirement outranks another's option
+    # (accounts names codex optional, the codex module installs it).
+    seen = {}
     for item in items:
-        if item.label in seen:  # a binary or a hook two modules share
-            continue
-        seen.add(item.label)
+        if item.label not in seen or (seen[item.label].optional and not item.optional):
+            seen[item.label] = item
+    for item in seen.values():
         why = item.check()
         if not why:
             continue
@@ -541,7 +606,8 @@ def install_here(args, manifest):
         for line in left:
             print("FAILED " + line, file=sys.stderr)
     if notes:
-        print("optional, absent: %s (an account of that vendor needs its CLI)" % "; ".join(notes))
+        print("optional, absent: %s (an account of that vendor needs its CLI: the module named after the vendor "
+              "installs it)" % "; ".join(notes))
     return 1 if left else 0
 
 
