@@ -109,7 +109,7 @@ printf '%s %s\n' "$host" "${*:-forward $forward}" >>"$STUB/ssh.log"
 [ "$host" = node1 ] || { printf 'ssh: Could not resolve hostname %s\n' "$host" >&2; exit 255; }
 [ -z "$forward" ] || exec python3 -c 'import http.server as h, sys
 h.HTTPServer(("127.0.0.1", int(sys.argv[1])), h.BaseHTTPRequestHandler).serve_forever()' "$forward"
-export STUB_CALLBACK="$STUB/callback" HOME="$NODE" CLAUDEB_DIR="$NODE/.claude-profiles/.claudeb" STUB="$NODE/stub"
+export STUB_CALLBACK="$STUB/callback" HOME="$NODE" CLAUDEB_DIR="$NODE/.claude-profiles/.claudeb" STUB="$NODE/stub" TMPDIR="$NODE/tmp"
 exec /bin/sh -c "$*"
 EOF
 mkdir -p "$NODE/.local/bin"
@@ -144,8 +144,8 @@ EOF
 
 reset() { # account... -> logged out, flagged, enrolled; no stamps, logs or lock; the node empty
   local a
-  rm -rf "$STUB" "$STATE" "$JOURNAL" "$CLAUDEB_DIR/claude-relogin.lock" "$CLAUDEB_DIR/limits" "$NODE/stub" "$NODE/.claude-profiles"
-  mkdir -p "$STUB" "$CLAUDEB_DIR/limits" "$NODE/stub"
+  rm -rf "$STUB" "$STATE" "$JOURNAL" "$CLAUDEB_DIR/claude-relogin.lock" "$CLAUDEB_DIR/limits" "$NODE/stub" "$NODE/.claude-profiles" "$NODE/tmp"
+  mkdir -p "$STUB" "$CLAUDEB_DIR/limits" "$NODE/stub" "$NODE/tmp"
   printf '{}\n' >"$STUB/registry.json"
   for a in "$@"; do
     mkdir -p "$CLAUDE_RELOGIN_PROFILES_ROOT/$a"
@@ -307,6 +307,7 @@ assert_eq '{}' "$(jq -c . "$STATE")" "a node success leaves no stamp"
 ! answers "$port" || fail "the forward of $port outlived the run"
 pid=$(cat "$NODE/stub/login.pid") && ! kill -0 "$pid" 2>/dev/null || fail "the node's login outlived the run"
 asserts=$((asserts + 2))
+assert_eq '' "$(ls -A "$NODE/tmp")" "the node kept a scratch directory"
 # Run again: nothing to do, nothing started.
 : >"$STUB/worker-run.log"
 relogin alpha --on node1
@@ -327,6 +328,7 @@ assert_eq attempt "$(jq -r '."alpha@node1".verdict' "$STATE")"
 assert_eq null "$(jq -c '.alpha // null' "$STATE")"
 pid=$(cat "$NODE/stub/login.pid") && ! kill -0 "$pid" 2>/dev/null || fail "a failed node attempt left its login waiting"
 asserts=$((asserts + 1))
+assert_eq '' "$(ls -A "$NODE/tmp")" "a failed node attempt kept its scratch directory"
 # A node that cannot hold a login, and one that does not answer.
 reset alpha
 STUB_SUDO=no relogin alpha --on node1

@@ -119,9 +119,10 @@ case $verb in
     rc=0
     wait "$holder" || rc=$?
     kill "$watchdog" 2>/dev/null
-    tail -n 3 "$work/log" 2>/dev/null
-    echo "EXIT=$rc"
-    rm -rf "$work" ;;
+    # Gone before the last lines: a caller that hangs up first ends this script on the write (SIGPIPE).
+    tail=$(tail -n 3 "$work/log" 2>/dev/null)
+    rm -rf "$work"
+    printf '%s\nEXIT=%s\n' "$tail" "$rc" ;;
   # The waiting login, ended by the pid its PID= line named.
   stop) kill "$3" 2>/dev/null; : ;;
 esac
@@ -168,9 +169,14 @@ auth_status() { # -> the `claude auth status` JSON of the account's profile, her
   run_bounded "$status_timeout" env CLAUDE_CONFIG_DIR="$profile_dir" "$claude_bin" auth status --json 2>/dev/null
 }
 
-# The node's login ends with the ssh session that holds it; one still held is stopped there by its pid.
+# The node's login ends with the ssh session that holds it; one still held is stopped there by its pid, and the
+# session is given a moment to end by itself, so the node's script tidies up before the hang-up.
 node_stop() {
-  [ -n "$node_pid" ] && [ -n "$login_pid" ] && kill -0 "$login_pid" 2>/dev/null && node_run 20 stop "$node_pid" >/dev/null 2>&1
+  local waited=0
+  if [ -n "$node_pid" ] && [ -n "$login_pid" ] && kill -0 "$login_pid" 2>/dev/null; then
+    node_run 20 stop "$node_pid" >/dev/null 2>&1
+    while kill -0 "$login_pid" 2>/dev/null && [ "$waited" -lt 15 ]; do sleep 0.2; waited=$((waited + 1)); done
+  fi
   node_pid=''
 }
 
