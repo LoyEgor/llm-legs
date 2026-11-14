@@ -631,7 +631,9 @@ reconcile_vendor_shields() {
   [ "$pool_vendor" != claude ] || pool_vendor=claudeb
   worker_pool_dir_r "$pool_vendor" || return 1
   dir=$WORKER_POOL_DIR_R
-  rows=$(jq -r --arg vendor "$vendor" --argjson now "$now_epoch" \
+  # Claude's main is the account a human chat last opened (`.claudeb-state`), never the display's
+  # alphabetical fallback: a node no one chats on has no main, so a fresh login there stays in the pool.
+  rows=$(jq -r --arg vendor "$vendor" --argjson now "$now_epoch" --arg chat "${claude_chat_account:-}" \
     --argjson floor "$WORKER_POOL_SHIELD_PER_DAY" "$iso_def$LIMITS_VIEW_JQ"'
     (.accounts // [])[] |
     (.weekly.resets_at | iso2epoch) as $reset |
@@ -640,7 +642,7 @@ reconcile_vendor_shields() {
     (limits_daily_budget($effective; limits_days_remaining($reset; $now))) as $budget |
     [ .account,
       ($reset // ""),
-      (if $vendor == "claude" then (.is_current == true)
+      (if $vendor == "claude" then (.is_current == true and .account == $chat)
        elif $vendor == "codex" then (.account == "main")
        else false end),
       (($budget | type) == "number" and $budget < $floor)
@@ -1129,6 +1131,7 @@ if vendor_paused claude; then
   :
 elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
   current=$(tr -d '\r\n' <"$claudeb_root/.claudeb-state" 2>/dev/null || true)
+  claude_chat_account=$current
   claudeb_disabled="$claudeb_root/disabled"
   accounts_lines=''
   for claude_file in "${claudeb_files[@]}"; do

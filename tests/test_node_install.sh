@@ -86,6 +86,45 @@ mv "$HOME" "$WORK/home-used" && mkdir -p "$HOME"
 real=$("$ROOT/bin/node-install" --dry-run --modules accounts,limits --root "$WORK/root" --name fixture); rc=$?
 check test "$rc" -eq 1
 check has "$real" "link ~/.local/bin/claudeb: its source $WORK/root/llm-legs/bin/claudeb is missing"
+check has "$real" "link ~/.local/bin/claude-relogin: its source $WORK/root/llm-legs/bin/claude-relogin is missing"
 check test -z "$(ls -A "$HOME")"
 
-printf 'PASS: node-install dry run, first run, idempotent second run, kept-aside file, missing source fails (%d asserts)\n' "$asserts"
+# --to: every ssh call of the run rides one master opened in a private 0700 dir and closed at the end
+# (share/ssh-mux.sh), so a run never trips sshd's MaxStartups by itself; a banner timeout opening it is retried once.
+cat >"$WORK/ssh" <<'EOF'
+#!/usr/bin/env bash
+path='' verb='' open=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) case "$2" in ControlPath=*) path=${2#ControlPath=} ;; esac; shift 2 ;;
+    -O) verb=$2; shift 2 ;;
+    -f) open=true; shift ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+printf '%s\n' "${path:--}" >>"$SSH_LOG.paths"
+if [ -n "$verb" ]; then printf '%s\n' "$verb" >>"$SSH_LOG"; exit 0; fi
+if $open; then
+  printf 'open %s\n' "$(stat -f %Lp "${path%/*}")" >>"$SSH_LOG"
+  [ "$(grep -c '^open' "$SSH_LOG")" -gt "${STUB_BANNER:-0}" ] ||
+    { printf 'Connection timed out during banner exchange\n' >&2; exit 255; }
+  exit 0
+fi
+case "$2" in
+  *'print -r -- "$HOME"'*) printf 'probe\n' >>"$SSH_LOG"; printf '/nodehome\n' ;;
+  *node-install*) printf 'install\n' >>"$SSH_LOG"; printf 'node mac-x: the dry run there\n' ;;
+esac
+EOF
+chmod +x "$WORK/ssh"
+there=$(SSH_LOG="$WORK/ssh.log" NODE_INSTALL_SSH="$WORK/ssh" STUB_BANNER=1 \
+  "$ROOT/bin/node-install" --to mac-x --host u@h --modules core --dry-run 2>"$WORK/err"); rc=$?
+check test "$rc" -eq 0
+check has "$there" "the dry run there"
+check test "$(paste -sd' ' - <"$WORK/ssh.log")" = "open 700 open 700 probe install exit"
+check test "$(sort -u "$WORK/ssh.log.paths" | wc -l | tr -d ' ')" = 1
+mux_path=$(head -n 1 "$WORK/ssh.log.paths")
+check test "$mux_path" != -
+check test ! -e "${mux_path%/*}"
+
+printf 'PASS: node-install dry run, first run, idempotent second run, kept-aside file, missing source fails, one ssh connection per --to run (%d asserts)\n' "$asserts"

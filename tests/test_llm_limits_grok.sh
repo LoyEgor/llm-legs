@@ -458,6 +458,16 @@ jq -e '[.vendors.claude.accounts[] | select(.account == "primary")][0].shielded 
 cmp -s "$SHIELD_STORE/disabled" "$WORK/shield-disabled.expected" \
   || fail "shield lifecycle changed the manual disabled file"
 
+# A node no human chat ever opened (no .claudeb-state) has no main: the display still marks the first
+# account current, but a fresh low-budget login there stays in the pool (mac-m1, 2026-11-14).
+write_shield_snapshot primary 90 "$shield_far"
+rm "$SHIELD_STORE/.claudeb-state"
+shield_node_json=$(collect_shield_fixture) || fail "no-chat-state shield collection failed"
+[ ! -e "$SHIELD_STORE/shielded/primary" ] || fail "an account no chat opened was shielded as main"
+jq -e '[.vendors.claude.accounts[] | select(.account == "primary")][0] |
+  .is_current == true and .shielded == false and .enabled == true' <<<"$shield_node_json" >/dev/null \
+  || fail "the display's current account left the pool with no chat state"
+
 EMPTY="$WORK/empty-home"
 mkdir -p "$EMPTY"
 missing_json=$(HOME="$EMPTY" bash "$SCRIPT" --no-write 2>/dev/null)

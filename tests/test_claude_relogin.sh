@@ -13,6 +13,7 @@ cleanup() {
   for pid in ${holders[@]+"${holders[@]}"}; do kill "$pid" 2>/dev/null; done
   [ ! -s "$WORK/stub/login.pid" ] || kill "$(cat "$WORK/stub/login.pid")" 2>/dev/null
   [ ! -s "$WORK/node/stub/login.pid" ] || kill "$(cat "$WORK/node/stub/login.pid")" 2>/dev/null
+  for pid in "$WORK"/stub/forward-*.pid; do [ ! -s "$pid" ] || kill "$(cat "$pid")" 2>/dev/null; done
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -89,26 +90,50 @@ fi
 exit "${STUB_REVIVE_RC:-0}"
 EOF
 # ssh: node1 is this machine under $NODE (its own HOME, claudeb store and stub dir, whose claude waits for this side's
-# callback); sudo and stat there stand in for the desktop session and the screen's user. A forward (-N -L p:…) is a
-# listener on p that answers any request, as the node's waiting login does through a real one.
+# callback); sudo and stat there stand in for the desktop session and the screen's user. A forward (-O forward -L p:…)
+# is a listener on p that answers any request, as the node's waiting login does through a real one, until -O cancel or
+# the master's -O exit. Every call writes the ControlPath it names to ssh-paths.log ("-" for none); the master's open
+# (-N -f) logs "open <mode of the socket's dir>" and fails the first $STUB_BANNER times with a banner timeout.
 export NODE="$WORK/node"
 cat >"$WORK/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
-forward=''
+forward='' verb='' path='' open=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -o) shift 2 ;;
+    -o) case "$2" in ControlPath=*) path=${2#ControlPath=} ;; esac; shift 2 ;;
+    -O) verb=$2; shift 2 ;;
     -L) forward=${2%%:*}; shift 2 ;;
+    -f) open=true; shift ;;
     -*) shift ;;
     *) break ;;
   esac
 done
 host=$1
 shift
-printf '%s %s\n' "$host" "${*:-forward $forward}" >>"$STUB/ssh.log"
+printf '%s\n' "${path:--}" >>"$STUB/ssh-paths.log"
 [ "$host" = node1 ] || { printf 'ssh: Could not resolve hostname %s\n' "$host" >&2; exit 255; }
-[ -z "$forward" ] || exec python3 -c 'import http.server as h, sys
-h.HTTPServer(("127.0.0.1", int(sys.argv[1])), h.BaseHTTPRequestHandler).serve_forever()' "$forward"
+serve='import http.server as h, sys
+h.HTTPServer(("127.0.0.1", int(sys.argv[1])), h.BaseHTTPRequestHandler).serve_forever()'
+case "$verb" in
+  forward)
+    printf '%s forward %s\n' "$host" "$forward" >>"$STUB/ssh.log"
+    python3 -c "$serve" "$forward" </dev/null >/dev/null 2>&1 &
+    printf '%s\n' "$!" >"$STUB/forward-$forward.pid"
+    exit 0 ;;
+  cancel|exit)
+    printf '%s %s%s\n' "$host" "$verb" "${forward:+ $forward}" >>"$STUB/ssh.log"
+    for f in "$STUB"/forward-${forward:-*}.pid; do [ ! -s "$f" ] || kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done
+    exit 0 ;;
+esac
+if $open; then
+  printf '%s open %s\n' "$host" "$(stat -f %Lp "${path%/*}" 2>/dev/null)" >>"$STUB/ssh.log"
+  n=$(($(cat "$STUB/banner" 2>/dev/null || echo 0) + 1))
+  printf '%s\n' "$n" >"$STUB/banner"
+  [ "$n" -gt "${STUB_BANNER:-0}" ] || { printf 'Connection timed out during banner exchange\n' >&2; exit 255; }
+  exit 0
+fi
+printf '%s %s\n' "$host" "${*:-forward $forward}" >>"$STUB/ssh.log"
+[ -z "$forward" ] || exec python3 -c "$serve" "$forward"
 export STUB_CALLBACK="$STUB/callback" HOME="$NODE" CLAUDEB_DIR="$NODE/.claude-profiles/.claudeb" STUB="$NODE/stub" TMPDIR="$NODE/tmp"
 exec /bin/sh -c "$*"
 EOF
@@ -300,6 +325,15 @@ assert_eq '{}' "$(jq -c . "$NODE/.claude-profiles/.claudeb/limits/alpha.json")" 
 assert grep -q '^-n launchctl asuser [0-9]* sudo -n -u .* auth login --claudeai' "$NODE/stub/sudo.log"
 assert grep -q '^-n launchctl asuser [0-9]* sudo -n -u .* auth status --json$' "$NODE/stub/sudo.log"
 assert grep -qx "node1 forward $port" "$STUB/ssh.log"
+# One connection for the whole run: one master, opened in a private 0700 dir, every call over its socket, the
+# forward cancelled with the login and the master closed at exit.
+assert_eq 'node1 open 700' "$(grep ' open ' "$STUB/ssh.log")"
+assert_eq 1 "$(sort -u "$STUB/ssh-paths.log" | wc -l | tr -d ' ')" "every ssh call names the one socket"
+mux_path=$(head -n 1 "$STUB/ssh-paths.log")
+assert [ "$mux_path" != - ]
+assert grep -qx "node1 cancel $port" "$STUB/ssh.log"
+assert_eq 'node1 exit' "$(tail -n 1 "$STUB/ssh.log")" "the master is the run's last ssh call"
+assert [ ! -e "${mux_path%/*}" ]
 assert grep -q "alpha alpha@example.com Profile 9 .*/authorize-url $port\$" "$STUB/brief.seen"
 assert_eq 'browse --json|browse --window|run auto' "$(cut -d' ' -f1-2 "$STUB/worker-run.log" | paste -sd'|' -)"
 assert_eq 'alpha@node1 success' "$(jq -r 'select(.kind == "relogin") | "\(.account) \(.outcome)"' "$JOURNAL")"
@@ -345,6 +379,16 @@ relogin alpha --on node1 --dry-run
 assert_eq 0 "$rc"
 assert_eq 'DRY-RUN: would log alpha in on node1 as alpha@example.com through Chrome profile Profile 9' "$out"
 assert [ ! -e "$NODE/stub/login.pid" ]
+# A banner timeout (sshd's MaxStartups dropping a fresh connection) is retried once; a second is weather.
+reset alpha
+STUB_BANNER=1 relogin alpha --on node1 --dry-run
+assert_eq 0 "$rc" "one banner timeout: $out $(cat "$WORK/err")"
+assert_eq 2 "$(grep -c ' open ' "$STUB/ssh.log")"
+reset alpha
+STUB_BANNER=2 relogin alpha --on node1
+assert_eq 7 "$rc"
+assert_eq 'REASON: weather — node1 did not answer over ssh (exit 255: Connection timed out during banner exchange); `machines wake node1` if it sleeps' "$out"
+assert_eq 2 "$(grep -c ' open ' "$STUB/ssh.log")"
 relogin alpha --on
 assert_eq 2 "$rc"
 relogin alpha --on 'a b'

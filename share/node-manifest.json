@@ -29,6 +29,7 @@
    "optional": ["claude", "codex", "agy", "grok"],
    "links": {
     ".local/bin/claudeb": "llm-legs/bin/claudeb",
+    ".local/bin/claude-relogin": "llm-legs/bin/claude-relogin",
     ".local/bin/codexb": "llm-legs/bin/codexb",
     ".local/bin/geminib": "llm-legs/bin/geminib",
     ".local/bin/grokb": "llm-legs/bin/grokb",

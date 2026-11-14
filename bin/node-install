@@ -550,9 +550,22 @@ def remote_line(*argv):
 
 
 def install_there(args, manifest):
-    """Pushes the repositories the modules need to the node, then runs node-install there."""
+    """Pushes the repositories the modules need to the node over one ssh connection (share/ssh-mux.sh: the probe,
+    the checkouts' setup, every git push and the install there share its master), then runs node-install there."""
     ssh = shlex.split(os.environ.get("NODE_INSTALL_SSH") or "ssh -o BatchMode=yes -o ConnectTimeout=10")
+    mux = os.path.join(CHECKOUT, "share", "ssh-mux.sh")
+    opened = run(["bash", mux, "open"] + ssh + [args.host], timeout=120)
+    if opened.returncode:
+        print("node-install: %s did not answer: %s" % (args.to, opened.stderr.strip()), file=sys.stderr)
+        return 1
+    lines = opened.stdout.splitlines()
+    try:
+        return push_and_install(args, manifest, ssh + lines[1:])
+    finally:
+        run(["bash", mux, "close", lines[0]] + ssh + [args.host], timeout=60)
 
+
+def push_and_install(args, manifest, ssh):
     def remote(line):
         # Held awake while it runs, as `machines run` holds a Mac.
         return run(ssh + [args.host, "exec caffeinate -s -i /bin/zsh -c " + shlex.quote(line)], timeout=3600)

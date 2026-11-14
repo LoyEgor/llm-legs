@@ -44,6 +44,7 @@ root=$(resolve_root)
 . "$root/share/processes.sh"
 . "$root/share/token-journal.sh"
 . "$root/share/claude-relogin.sh"
+. "$root/share/ssh-mux.sh"
 
 base_dir=$claude_relogin_dir
 profiles_root=${CLAUDE_RELOGIN_PROFILES_ROOT:-$HOME/.claude-profiles}
@@ -60,7 +61,7 @@ revive_timeout=$(seconds CLAUDE_RELOGIN_REVIVE_TIMEOUT_S 240)
 # machines' ssh options: no prompt, and a node that sleeps mid-call drops the session in ~30 s instead of hanging it.
 read -r -a node_ssh <<<"${CLAUDE_RELOGIN_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR -o ServerAliveInterval=10 -o ServerAliveCountMax=3}"
 
-account='' node='' key='' dry_run=false work='' login_pid='' node_pid='' forward_pid='' locked=false prev_stamp=null
+account='' node='' key='' dry_run=false work='' login_pid='' node_pid='' forward='' locked=false prev_stamp=null
 
 usage() { printf 'usage: claude-relogin <account> [--on <node>] [--dry-run]\n' >&2; exit 2; }
 note() { printf 'claude-relogin: %s: %s\n' "$key" "$*" >&2; }
@@ -138,8 +139,9 @@ node_run() {
 
 cleanup() {
   node_stop
-  [ -z "$forward_pid" ] || ! kill -0 "$forward_pid" 2>/dev/null || process_tree_end "$forward_pid" 2
+  forward_end
   if [ -n "$login_pid" ] && kill -0 "$login_pid" 2>/dev/null; then process_tree_end "$login_pid" 2; fi
+  [ -z "$node" ] || ssh_mux_close "${node_ssh[@]}" "$node"
   ! $locked || store_lock_release "$claude_relogin_lock"
   [ -z "$work" ] || rm -rf "$work"
 }
@@ -180,10 +182,16 @@ node_stop() {
   node_pid=''
 }
 
+# The callback port's forward lives in the run's ssh master; it ends with the login it served.
+forward_end() {
+  [ -n "$forward" ] || return 0
+  run_bounded 20 "${node_ssh[@]}" -O cancel -L "$forward" "$node" </dev/null >/dev/null 2>&1
+  forward=''
+}
+
 kill_login() {
   node_stop
-  [ -z "$forward_pid" ] || ! kill -0 "$forward_pid" 2>/dev/null || process_tree_end "$forward_pid" 2
-  forward_pid=''
+  forward_end
   [ -n "$login_pid" ] || return 0
   ! kill -0 "$login_pid" 2>/dev/null || process_tree_end "$login_pid" 2
   wait "$login_pid" 2>/dev/null
@@ -235,6 +243,12 @@ else
 fi
 
 if [ -n "$node" ]; then
+  # One connection carries every node call of the run, the forward included (share/ssh-mux.sh).
+  mux_rc=0
+  ssh_mux_open "${node_ssh[@]}" "$node" || mux_rc=$?
+  [ "$mux_rc" -eq 0 ] ||
+    verdict 7 weather "$node did not answer over ssh (exit $mux_rc${SSH_MUX_ERR:+: $(tail -n 1 <<<"$SSH_MUX_ERR")}); \`machines wake $node\` if it sleeps"
+  node_ssh+=("${SSH_MUX_OPTS[@]}")
   ready_rc=0
   ready=$(node_run 30 ready 2>&1) || ready_rc=$?
   case "$ready_rc" in
@@ -333,10 +347,13 @@ port=${BASH_REMATCH[2]}
 if [ -n "$node" ]; then
   # Authorize redirects this Mac's browser to localhost:<port>; the forward carries it to the node's waiting login.
   # Ready once that login answers through it (any HTTP status: a GET of / leaves it waiting).
-  "${node_ssh[@]}" -N -o ExitOnForwardFailure=yes -L "$port:localhost:$port" "$node" </dev/null >"$work/forward.log" 2>&1 &
-  forward_pid=$!
+  # The run's master holds it, beside the login's own session: no second connection.
+  forward_rc=0
+  run_bounded 20 "${node_ssh[@]}" -O forward -L "$port:localhost:$port" "$node" </dev/null >"$work/forward.log" 2>&1 ||
+    forward_rc=$?
+  [ "$forward_rc" -ne 0 ] || forward=$port:localhost:$port
   answer=000 waited=0
-  while [ "$waited" -lt 75 ] && kill -0 "$forward_pid" 2>/dev/null; do
+  while [ "$waited" -lt 75 ] && [ "$forward_rc" -eq 0 ]; do
     answer=$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://localhost:$port/" 2>/dev/null) || answer=000
     [ "$answer" = 000 ] || break
     sleep 0.2
