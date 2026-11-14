@@ -183,9 +183,15 @@ affected_suites() { # repo [file...] -> suite paths covering the files, sorted a
 }
 
 affected_overlap() {
-  local repo=$1 base=$2 branch_files main_files branch_suites main_suites file shared names affected_overlap_pass=1
+  local repo=$1 base=$2 own fork branch_files main_files branch_suites main_suites file shared names affected_overlap_pass=1
   local -a branch=() upstream=() both=()
-  branch_files=$(git -C "$repo" diff --no-renames --name-only "$base...HEAD" && sibling_names "$repo") || return 4
+  # The branch's files are its own commits' only, from where it leaves main (or a base past that, a night snapshot it
+  # holds): an older base (land's mark from before a hand rebase) would count main's commits since it as the branch's,
+  # keep a scheduled suite they edit and add suites only they select (chats-app deploy-head, 2026-11-14).
+  own=$base
+  if fork=$(git -C "$repo" merge-base main HEAD 2>/dev/null) && git -C "$repo" merge-base --is-ancestor "$base" "$fork" 2>/dev/null
+  then own=$fork; fi
+  branch_files=$(git -C "$repo" diff --no-renames --name-only "$own...HEAD" && sibling_names "$repo") || return 4
   main_files=$(git -C "$repo" diff --no-renames --name-only "$base..main" && sibling_names "$repo" main) || return 4
   [ -n "$branch_files" ] && [ -n "$main_files" ] || return 0
   while IFS= read -r file; do branch+=("$file"); done <<<"$branch_files"

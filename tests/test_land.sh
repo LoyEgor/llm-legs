@@ -388,5 +388,21 @@ assert land night/n1/sc
 assert test "$(ran)" = "sc $WORK/wt/sc-night-n1-sc/tests test_core.sh"
 assert grep -q '^scheduled layer left out: test_perf.sh' "$WORK/out"
 assert_fails grep -q '^hot path\|at rest' "$WORK/out"
+# A land mark from before the worker's own rebase over main's commits (chats-app deploy-head, 2026-11-14): those
+# commits are main's, so their edit of a scheduled suite's path keeps nothing and a suite only they select stays out;
+# the same branch editing the path itself still runs the suite.
+reset_stub; printf '#!/usr/bin/env bash\ncat src/other.c\n' >"$WORK/sc/tests/test_other.sh"; printf 'o\n' >"$WORK/sc/src/other.c"
+git -C "$WORK/sc" add tests/test_other.sh src/other.c && git -C "$WORK/sc" commit -qm 'sc: other suite'
+wt=$(tree sc feat/sc4); change "$wt" src/view.c v5 'sc: view 5'; git -C "$WORK/sc" update-ref refs/land/feat/sc4 main
+change "$WORK/sc" tests/budgets.json '{"k":2}' 'sc: main budgets'; change "$WORK/sc" src/other.c o2 'sc: main other'
+change "$WORK/sc" src/model.c m5 'sc: main model 5'; git -C "$wt" rebase -q main
+assert land feat/sc4 --repo "$WORK/sc"
+assert test "$(ran | sed 's/.* //' | sort | tr '\n' ,)" = 'test_core.sh,'
+assert grep -q '^scheduled layer left out: test_perf.sh' "$WORK/out"
+reset_stub; wt=$(tree sc feat/sc5); change "$wt" tests/budgets.json '{"k":3}' 'sc: budgets 5'
+git -C "$WORK/sc" update-ref refs/land/feat/sc5 main; change "$WORK/sc" src/other.c o3 'sc: main other 3'
+change "$WORK/sc" src/model.c m6 'sc: main model 6'; git -C "$wt" rebase -q main
+assert land feat/sc5 --repo "$WORK/sc"
+assert test "$(ran | sed 's/.* //' | sort | tr '\n' ,)" = 'test_core.sh,test_perf.sh,'
 
 printf 'PASS: %s asserts; land selects, runs in the worktree, retries a moved main and keeps everything it cannot land\n' "$asserts"
