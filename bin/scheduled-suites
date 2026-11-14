@@ -141,7 +141,13 @@ EOF
   mkdir -p "${PLIST%/*}"
   printf '%s\n' "$want" >"$PLIST"
   launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$(id -u)" "$PLIST" || { echo "scheduled-suites: launchctl bootstrap $PLIST failed" >&2; return 1; }
+  # bootout answers before a running tick's job is gone, and bootstrap then fails (seen 2026-11-14): a few tries.
+  local wait loaded=0
+  for wait in 0 1 2 4; do
+    sleep "$wait"
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && { loaded=1; break; }
+  done
+  [ "$loaded" = 1 ] || { echo "scheduled-suites: launchctl bootstrap $PLIST failed" >&2; return 1; }
   echo "scheduled-suites: agent $LABEL loaded (every $((INTERVAL / 60)) min); log $LOG; remove: launchctl bootout gui/\$(id -u)/$LABEL; rm $PLIST"
 }
 

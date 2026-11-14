@@ -288,5 +288,11 @@ assert grep -q '^bootstrap ' "$WORK/launchctl.calls"
 touch "$WORK/loaded"
 "$S" --install-agent >"$WORK/agent.out"
 assert grep -q 'already loaded' "$WORK/agent.out"
+# A reload while a tick runs: bootout answers before the job is gone and the first bootstrap fails; tried again.
+rm -f "$WORK/loaded"; touch "$WORK/busy"; : >"$WORK/launchctl.calls"
+printf '#!/bin/sh\necho "$*" >>"%s/launchctl.calls"\nif [ "$1" = bootstrap ] && [ -e "%s/busy" ]; then rm "%s/busy"; exit 5; fi\n[ "$1" != print ] || [ -e "%s/loaded" ]\n' "$WORK" "$WORK" "$WORK" "$WORK" >"$WORK/shim/launchctl"
+"$S" --install-agent >"$WORK/agent.out" 2>&1
+assert grep -q 'loaded (every' "$WORK/agent.out"
+assert test "$(grep -c '^bootstrap ' "$WORK/launchctl.calls")" = 2
 
 printf 'PASS: %s asserts; scheduled-suites decides cheaply, bisects a red main to its commit, reports it once and settles it\n' "$asserts"
