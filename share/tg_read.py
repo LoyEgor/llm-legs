@@ -554,6 +554,15 @@ async def cmd_send(args) -> int:
     return 0
 
 
+def rpc_error():
+    """Telegram's refusal class (edit window passed, ...); a test env without telethon gets one nothing raises."""
+    try:
+        from telethon.errors import RPCError
+    except ImportError:
+        return type("RPCError", (Exception,), {})
+    return RPCError
+
+
 async def own_message(tg, args, verb: str):
     """(entity, message) for Egor's own message #id in a non-channel chat, or an exit-2 reason."""
     entity = await resolve(tg, args.chat)
@@ -588,11 +597,9 @@ async def cmd_edit(args) -> int:
         if text == (message.message or ""):
             print(f"tg-read: #{args.id} already says that; nothing to change", file=sys.stderr)
             return 2
-        from telethon.errors import RPCError
-
         try:
             edited = await tg.edit_message(entity, message, text, parse_mode=None, link_preview=False)
-        except RPCError as error:
+        except rpc_error() as error:
             print(f"tg-read: Telegram refused the edit: {error}", file=sys.stderr)
             return 1
         name = "Saved Messages" if args.chat == "me" else chat_name(entity)
@@ -614,11 +621,9 @@ async def cmd_delete(args) -> int:
             print(f"#{args.id}: {(message.message or media_tag(message))[:80]}")
             print("add --yes to delete", file=sys.stderr)
             return 2
-        from telethon.errors import RPCError
-
         try:
             await tg.delete_messages(entity, [args.id], revoke=True)
-        except RPCError as error:
+        except rpc_error() as error:
             print(f"tg-read: Telegram refused the delete: {error}", file=sys.stderr)
             return 1
         name = "Saved Messages" if args.chat == "me" else chat_name(entity)
