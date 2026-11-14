@@ -23,7 +23,7 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
     tg-read send me --text "test"            # or --file /abs/message.txt
     tg-read send "Гапоненко" --file /abs/msg.txt --photo /abs/a.png --photo /abs/b.png   # an album, the text as its caption
     tg-read send me --text "Сертификат" --doc /abs/mac-chats-ca.crt      # one file as a document, the text as its caption
-    tg-read wait 5136327405 --after 223868   # [--hours 1 | --until 23:00] [--every 15] [--settle 20]
+    tg-read wait 5136327405 --after 223868   # [--hours N | --until 23:00] [--every 15] [--settle 20]
 
 - `chats`, `read`, `voice`, `photo` and `file` are read-only: they never send, mark read or delete.
 - `send` posts exactly the given text as Egor, once, plain text (no Markdown), and prints
@@ -42,10 +42,10 @@ revoked server-side shows as `not logged in`: run `login --qr` again.
 - `wait` runs as a background Bash right after `send` (which prints its line), so the answer wakes the
   chat: exit 0 once the chat has been quiet for --settle seconds after an answer (a person: any message,
   and the whole exchange is printed, Egor's phone replies too; a group: a reply to that message or a
-  mention of Egor). Its last line re-arms the watch from the newest message with the same deadline: run
-  it. The deadline is 1 h after the send, or the span Egor named for following answers (`--hours N`,
-  `--until HH:MM`); no exchange extends it. At the deadline it prints `watch ended` (no re-arm), and it
-  stops silently when the chat that started it closes (claude-setup `hooks/lib/chat_watch.py`).
+  mention of Egor). Its last line re-arms the watch from the newest message: run it. No deadline by
+  default: it follows answers while the chat that started it lives; a span Egor named (`--hours N`,
+  `--until HH:MM`) is a hard end the re-arm carries. Only a span or the idle limit (off) prints `watch
+  ended`; it stops silently when its chat closes (claude-setup `hooks/lib/chat_watch.py`).
 - `voice` takes voice messages (`.ogg`) and video notes (round videos, `.mp4`) alike; `--transcribe` writes
   `<file>.txt` next to each download and appends its path to the line.
 - `transcribe` prints `transcript=<dest> engine=<elevenlabs|groq> chars=<n>`; default dest `<audio>.txt`.
