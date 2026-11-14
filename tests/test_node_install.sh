@@ -44,7 +44,8 @@ check test ! -e "$HOME/.config/llm-legs/node.json"
 
 first=$("$ROOT/bin/node-install" --modules one --root "$WORK/root" --name fixture); rc=$?
 check test "$rc" -eq 0
-check has "$first" "did 6: wrote ~/.config/llm-legs/node.json; linked ~/.local/bin/tool;"
+check has "$first" "did 6: wrote ~/.config/llm-legs/node.json; settings.json: statusLine set;"
+check has "$first" "; linked 1 in ~/.local/bin; linked 1 in ~/.claude"
 check test "$(readlink "$HOME/.local/bin/tool")" = "$WORK/root/proj/bin/tool"
 check test "$("$HOME/.claude/tool-again")" = tool
 check jq -e --arg c "$WORK/root/proj/bin/tool stop" '.model == "opus" and .statusLine.command == "~/x"

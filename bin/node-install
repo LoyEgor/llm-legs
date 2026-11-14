@@ -477,6 +477,18 @@ def resolve_config(args, manifest):
     return config, wanted
 
 
+def summary(did):
+    """The actions in a few words: plain links counted per folder, every other action as said."""
+    folders, rest = {}, []
+    for said in did:
+        if said.startswith("linked ") and "," not in said:
+            folder = os.path.dirname(said[len("linked "):])
+            folders[folder] = folders.get(folder, 0) + 1
+        else:
+            rest.append(said)
+    return rest + ["linked %d in %s" % (n, folder) for folder, n in folders.items()]
+
+
 def install_here(args, manifest):
     config, node = resolve_config(args, manifest)
     root, modules = node["root"], node["modules"]
@@ -523,7 +535,7 @@ def install_here(args, manifest):
     elif not did and not left:
         print("nothing to do: %d items in place" % len(seen))
     else:
-        print("did %d: %s" % (len(did), "; ".join(did)) if did else "did nothing")
+        print("did %d: %s" % (len(did), "; ".join(summary(did))) if did else "did nothing")
         for line in left:
             print("FAILED " + line, file=sys.stderr)
     if notes:
