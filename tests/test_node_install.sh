@@ -127,4 +127,51 @@ mux_path=$(head -n 1 "$WORK/ssh.log.paths")
 check test "$mux_path" != -
 check test ! -e "${mux_path%/*}"
 
-printf 'PASS: node-install dry run, first run, idempotent second run, kept-aside file, missing source fails, one ssh connection per --to run (%d asserts)\n' "$asserts"
+# Vendor CLIs: node by brew, then an npm package by that node's npm (a module's requirement outranks another's
+# option, so node comes first), and a download from an updater manifest, checked by its sha512. A fixture brew prefix
+# and a PATH without npm: no real Homebrew or npm is reached; curl reads file:// URLs.
+V="$WORK/vendor"
+mkdir -p "$V/brew/bin" "$V/home"
+cat >"$V/brew/bin/brew" <<'EOF'
+#!/bin/sh
+[ "$*" = "install --quiet node" ] || exit 1
+d=$(dirname "$0")
+printf '#!/bin/sh\necho v20.1.0\n' >"$d/node"
+printf '#!/bin/sh\n[ "$1 $2" = "install -g" ] || exit 1\nfor p; do :; done\nprintf "#!/bin/sh\\necho %%s\\n" "$p" >"$(dirname "$0")/fixcli"\nchmod 755 "$(dirname "$0")/fixcli"\n' >"$d/npm"
+chmod 755 "$d/node" "$d/npm"
+EOF
+printf '#!/bin/sh\necho fixagy 9.9\n' >"$V/antigravity"
+chmod 755 "$V/brew/bin/brew" "$V/antigravity"
+tar -czf "$V/agy.tar.gz" -C "$V" antigravity
+jq -n --arg u "file://$V/agy.tar.gz" --arg s "$(shasum -a 512 "$V/agy.tar.gz" | cut -d' ' -f1)" \
+  '{version: "9.9", url: $u, sha512: $s}' >"$V/agy.json"
+jq '.sha512 = "00"' "$V/agy.json" >"$V/agy-bad.json"
+vendor_manifest() { # the agy manifest's file
+  jq -n --arg m "file://$1" '{binaries: {node: {min: "18.0", version: ["--version"], brew: "node"},
+      fixcli: {min: "0", npm: "@fix/cli"},
+      fixagy: {min: "0", download: {manifest: $m, member: "antigravity", to: ".local/bin/fixagy"}}},
+    modules: {accounts: {optional: ["fixcli", "fixagy"]}, codex: {requires: ["node", "fixcli"]},
+      gemini: {requires: ["fixagy"]}}}'
+}
+vendor_manifest "$V/agy.json" >"$V/manifest.json"
+vendor_manifest "$V/agy-bad.json" >"$V/manifest-bad.json"
+vendor_install() { # home manifest modules
+  HOME=$1 NODE_MANIFEST=$2 NODE_INSTALL_BREW_PREFIXES="$V/brew" PATH=/usr/bin:/bin \
+    "$ROOT/bin/node-install" --modules "$3" --root "$WORK/root" --name fixture 2>&1
+}
+out=$(vendor_install "$V/home" "$V/manifest.json" accounts,codex,gemini); rc=$?
+check test "$rc" -eq 0
+check has "$out" "installed node 20.1.0 (brew); installed fixcli (npm install -g @fix/cli); installed fixagy (download 9.9 agy.tar.gz to ~/.local/bin/fixagy)"
+check test "$("$V/brew/bin/fixcli")" = @fix/cli
+check test "$("$V/home/.local/bin/fixagy")" = 'fixagy 9.9'
+out=$(vendor_install "$V/home" "$V/manifest.json" accounts,codex,gemini); rc=$?
+check test "$rc" -eq 0
+check has "$out" "nothing to do"
+mkdir -p "$V/home2"
+out=$(vendor_install "$V/home2" "$V/manifest-bad.json" gemini); rc=$?
+check test "$rc" -eq 1
+check has "$out" "FAILED binary fixagy: file://$V/agy.tar.gz does not match the manifest's sha512"
+check test ! -e "$V/home2/.local/bin/fixagy"
+check test -z "$(ls -A "$V/home2/.local/bin")"
+
+printf 'PASS: node-install dry run, first run, idempotent second run, kept-aside file, missing source fails, one ssh connection per --to run, vendor CLIs by npm and checked download (%d asserts)\n' "$asserts"

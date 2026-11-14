@@ -34,7 +34,7 @@ HOME = os.path.expanduser("~")
 CONFIG = os.environ.get("NODE_CONFIG") or os.path.join(HOME, ".config", "llm-legs", "node.json")
 # What sshd hands a non-interactive shell on macOS: the PATH a `machines run` command starts from.
 SSH_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
-BREW_PREFIXES = ("/opt/homebrew", "/usr/local")
+BREW_PREFIXES = tuple(p for p in os.environ.get("NODE_INSTALL_BREW_PREFIXES", "/opt/homebrew:/usr/local").split(":") if p)
 ZSHENV_MARK = "# llm-legs node (bin/node-install)"
 # brew must not upgrade or touch anything else on a node (mac-m1 is a performance lab).
 BREW_ENV = {"HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_INSTALL_UPGRADE": "1",

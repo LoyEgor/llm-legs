@@ -394,6 +394,165 @@ assert_eq 2 "$rc"
 relogin alpha --on 'a b'
 assert_eq 2 "$rc"
 
+# codex, gemini (agy) and grok: bin/relogin's node logins. The node's CLIs are stubs that wait for the callback the
+# consent stub (the hidden clone's clicks) writes; agy reads its code only from a terminal, as the real one does
+# (a pipe on its stdin is a prompt: "authentication required"). Every tool the node script calls is a stub here.
+unset CHATGPT_WEB_DIR GEMINI_WEB_DIR
+export CLAUDE_RELOGIN_CONSENT="$WORK/bin/consent"
+VTOOL="$ROOT/bin/relogin"
+cat >"$WORK/bin/consent" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STUB/consent.log"
+if [ "${3:-}" = --identity ]; then
+  [ ! -e "$STUB/no-clone" ] || { echo '{"ok": false, "reason": "no hidden clone profile with an email for beta"}'; exit 4; }
+  printf '{"ok": true, "email": "beta@example.com", "profile": "/clone/%s"}\n' "$2"
+  exit 0
+fi
+code=''
+while [ "$#" -gt 0 ]; do case "$1" in --email) email=$2; shift ;; --code-file) code=$2; shift ;; esac; shift; done
+case "${STUB_CONSENT:-ok}" in
+  ok) if [ -n "$code" ]; then printf 'C:%s\n' "${STUB_CALLBACK_EMAIL:-$email}" >"$code"
+      else printf '%s\n' "${STUB_CALLBACK_EMAIL:-$email}" >"$STUB/callback"; fi
+      echo '{"ok": true}' ;;
+  wall) echo '{"ok": false, "reason": "accounts.google.com shows a password field; sign in by hand"}'; exit 4 ;;
+  busy) echo '{"ok": false, "reason": "timed out waiting for the lock"}'; exit 5 ;;
+esac
+EOF
+cat >"$NODE/.local/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  'login status') jq -e '(.tokens.refresh_token // "") != ""' "$CODEX_HOME/auth.json" >/dev/null 2>&1 || { echo 'Not logged in'; exit 1; } ;;
+  'login ')
+    printf '%s\n' "$$" >"$STUB/login.pid"
+    printf 'navigate to this URL to authenticate:\n\nhttps://auth.openai.com/oauth/authorize?response_type=code&redirect_uri=http%%3A%%2F%%2Flocalhost%%3A%s%%2Fauth%%2Fcallback&state=s\n' "$STUB_PORT"
+    for _ in $(seq 1 300); do
+      if [ -s "$STUB_CALLBACK" ]; then
+        claims=$(printf '{"email":"%s"}' "$(cat "$STUB_CALLBACK")" | base64 | tr '+/' '-_' | tr -d '=\n')
+        printf '{"tokens":{"id_token":"h.%s.s","refresh_token":"r"}}\n' "$claims" >"$CODEX_HOME/auth.json"
+        exit 0
+      fi
+      sleep 0.1
+    done
+    exit 1 ;;
+  'logout ') rm -f "$CODEX_HOME/auth.json" ;;
+esac
+EOF
+cat >"$NODE/.local/bin/grok" <<'EOF'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  'login --device-auth')
+    printf '%s\n' "$$" >"$STUB/login.pid"
+    printf 'Open https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH to sign in\n'
+    for _ in $(seq 1 300); do
+      if [ -s "$STUB_CALLBACK" ]; then
+        jq -n --arg e "$(cat "$STUB_CALLBACK")" '{"https://auth.x.ai::c": {key: "k", email: $e, refresh_token: "r"}}' >"$GROK_HOME/auth.json"
+        exit 0
+      fi
+      sleep 0.1
+    done
+    exit 1 ;;
+  'logout ') rm -f "$GROK_HOME/auth.json" ;;
+esac
+EOF
+cat >"$NODE/.local/bin/agy" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$STUB/login.pid"
+[ -t 0 ] || { echo "Error: authentication required. Run 'agy' to log in, then retry."; exit 1; }
+printf 'Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%%3A%%2F%%2Fantigravity.google%%2Foauth-callback&state=s\n'
+printf 'Or, paste the authorization code here and press Enter:\n'
+IFS= read -r code || exit 1
+code=${code%$'\r'}
+case "$code" in C:*) ;; *) echo 'error: authentication failed or timed out'; exit 1 ;; esac
+mkdir -p "$HOME/.gemini/antigravity-cli"
+jq -n --arg e "${code#C:}" '{id_token_email: $e, token: {refresh_token: "r"}}' >"$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+EOF
+for b in codexb geminib grokb; do
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$STUB/%s.log"\n[ "$1" != add ] || mkdir -p "$HOME/.%s-profiles/$2"\n' \
+    "$b" "${b%b}" >"$NODE/.local/bin/$b"
+done
+cat >"$NODE/.local/bin/llm-limits" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  --refresh-account) printf '%s\n' "$2" >>"$STUB/refreshed" ;;
+  --json) jq -Rn '[inputs | split("/") | {v: .[0], a: .[1]}]
+            | {vendors: (group_by(.v) | map({key: .[0].v, value: {accounts: map({account: .a})}}) | from_entries)}' \
+            "$STUB/refreshed" 2>/dev/null || echo '{}' ;;
+esac
+EOF
+chmod +x "$WORK/bin/consent" "$NODE/.local/bin/"*
+vreset() { # the node empty; beta's profiles here, its hidden clone known to the consent stub
+  local v
+  rm -rf "$STUB" "$STATE" "$JOURNAL" "$CLAUDEB_DIR/claude-relogin.lock" "$NODE/stub" "$NODE/tmp" \
+    "$NODE/.codex-profiles" "$NODE/.gemini-profiles" "$NODE/.grok-profiles"
+  mkdir -p "$STUB" "$NODE/stub" "$NODE/tmp"
+  for v in codex gemini grok; do mkdir -p "$HOME/.$v-profiles/beta"; done
+}
+vrelogin() { rc=0; out=$("$VTOOL" "$@" 2>"$WORK/err") || rc=$?; }
+vreset
+port=$(free_port)
+STUB_PORT=$port vrelogin codex beta --on node1
+assert_eq 0 "$rc" "codex node success: $out $(cat "$WORK/err")"
+assert_eq 'RELOGIN: codex/beta logged in as beta@example.com on node1; revived' "$out"
+assert_eq 'add beta' "$(cat "$NODE/stub/codexb.log")" "the node's codexb made the profile"
+assert grep -q '^codex beta --url-file .* --email beta@example.com$' "$STUB/consent.log"
+assert grep -qx "node1 forward $port" "$STUB/ssh.log"
+assert grep -qx "node1 cancel $port" "$STUB/ssh.log"
+assert_eq codex/beta "$(cat "$NODE/stub/refreshed")" "the revive read the node's row"
+assert [ ! -e "$HOME/.codex-profiles/beta/auth.json" ]
+assert_eq 'codex/beta@node1 success' "$(jq -r 'select(.kind == "relogin") | "\(.account) \(.outcome)"' "$JOURNAL")"
+assert_eq '' "$(ls -A "$NODE/tmp")" "the node kept a scratch directory"
+pid=$(cat "$NODE/stub/login.pid") && ! kill -0 "$pid" 2>/dev/null || fail "codex's login outlived the run"
+asserts=$((asserts + 1))
+vrelogin codex beta --on node1
+assert_eq 3 "$rc"
+assert_eq 'REASON: already-logged-in — beta is logged in as beta@example.com on node1; nothing to do' "$out"
+vreset
+vrelogin grok beta --on node1
+assert_eq 0 "$rc" "grok node success: $out $(cat "$WORK/err")"
+assert_eq 'RELOGIN: grok/beta logged in as beta@example.com on node1; revived' "$out"
+assert_eq 0 "$(grep -c ' forward ' "$STUB/ssh.log")" "a device login needs no forward"
+assert_eq beta@example.com "$(jq -r '.[].email' "$NODE/.grok-profiles/beta/auth.json")"
+vreset
+vrelogin gemini beta --on node1
+assert_eq 0 "$rc" "gemini node success: $out $(cat "$WORK/err")"
+assert_eq 'RELOGIN: gemini/beta logged in as beta@example.com on node1; revived' "$out"
+assert grep -q '^gemini beta --url-file .* --email beta@example.com --code-file .* --lock-wait 30$' "$STUB/consent.log"
+assert_eq 'add beta' "$(cat "$NODE/stub/geminib.log")"
+assert_eq beta@example.com "$(jq -r .id_token_email "$NODE/.gemini-profiles/beta/.gemini/antigravity-cli/antigravity-oauth-token")"
+assert_eq '' "$(ls -A "$NODE/tmp")" "the node kept the code"
+# Refusals and failures keep claude-relogin's codes; the stamp is keyed <vendor>/<account>@<node>.
+vreset
+STUB_PORT=$(free_port) STUB_CONSENT=wall vrelogin codex beta --on node1
+assert_eq 8 "$rc"
+assert_eq 'REASON: failed:wall' "${out%% — *}"
+assert_eq attempt "$(jq -r '."codex/beta@node1".verdict' "$STATE")"
+pid=$(cat "$NODE/stub/login.pid") && ! kill -0 "$pid" 2>/dev/null || fail "a failed attempt left codex's login waiting"
+asserts=$((asserts + 1))
+vreset
+STUB_CONSENT=busy vrelogin grok beta --on node1
+assert_eq 7 "$rc"
+assert_eq 'REASON: weather' "${out%% — *}"
+assert_eq null "$(jq -c '."grok/beta@node1" // null' "$STATE")" "weather leaves no stamp"
+vreset
+STUB_CALLBACK_EMAIL=other@example.com vrelogin grok beta --on node1
+assert_eq 8 "$rc"
+assert_eq 'REASON: failed:wrong-email' "${out%% — *}"
+assert [ ! -e "$NODE/.grok-profiles/beta/auth.json" ]
+vreset
+: >"$STUB/no-clone"
+vrelogin codex beta --on node1
+assert_eq 4 "$rc"
+assert_eq 'REASON: no-profile' "${out%% — *}"
+vreset
+vrelogin gemini beta --on node1 --dry-run
+assert_eq 0 "$rc"
+assert_eq "DRY-RUN: would log gemini/beta in on node1 as beta@example.com through the hidden clone /clone/beta" "$out"
+assert [ ! -e "$NODE/stub/login.pid" ]
+vrelogin codex beta
+assert_eq 2 "$rc" "a codex login goes to a node"
+vrelogin nosuch beta --on node1
+assert_eq 2 "$rc"
+
 # The llm-refresh trigger: a Claude tick with a logged-out account starts claude-relogin once, detached; not while
 # one is live; not for an account in its cool-down.
 RELOGIN_STUB="$WORK/bin/relogin-stub"
