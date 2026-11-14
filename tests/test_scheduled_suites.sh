@@ -190,6 +190,12 @@ assert test "$(last)" = 'repo2 test_box.sh: owed bench: not due (tried 0 h 1 min
 tick $((T2 + 11 * H))
 assert test "$(brun)" = 1
 assert test "$(last)" = 'repo2 test_box.sh: owed bench: not ready: stub bench closed'
+# The same second again: a tick does not ask a box it has just tried; `retry` does (he says the M1 is free now).
+tick $((T2 + 11 * H))
+assert test "$(last)" = 'repo2 test_box.sh: owed bench: not due (tried 0 h 0 min ago, every 3 h)'
+: >"$GIT_CALLS"; SCHEDULED_SUITES_NOW=$((T2 + 11 * H)) "$S" retry
+assert test "$(brun)" = 1
+assert test "$(last)" = 'repo2 test_box.sh: owed bench: not ready: stub bench closed'
 # Ready: the bench pays main, once; then nothing is owed and the period holds again.
 touch "$BOX/open"
 tick $((T2 + 12 * H))

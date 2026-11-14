@@ -42,6 +42,7 @@ fi
 # Caches; never two ticks at once.
 #   scheduled-suites [tick]          one tick (what the LaunchAgent runs every 15 min)
 #   scheduled-suites status          per repository, suite and box: finished on, owed since and why, an open failure
+#   scheduled-suites retry           a tick that asks an owed box now, whatever it tried last (he says the box is free)
 #   scheduled-suites --install-agent the LaunchAgent com.llm-legs.scheduled-suites (via ~/.local/libexec/scheduled-suites); idempotent
 # State per suite: ran tested good checked (the 9f866159 files, read as they are: any box), open, open.box, run (a live
 # run: pid box start); per box box-<name>/: done good ran checked tried owed (`<since> <why>`) told.
@@ -439,7 +440,7 @@ decide() { # one suite of one repository: the decision, and the run when one is 
       last=$ran
     fi
     t=$(first_line "$st/box-$b/tried") why=ran
-    [ "${t:-0}" -le "${last:-0}" ] || last=$t why=tried
+    [ -n "${RETRY:-}" ] || [ "${t:-0}" -le "${last:-0}" ] || last=$t why=tried  # `retry`: an owed box is asked now
     if [ $((now - ${last:-0})) -lt $((hours * 3600)) ]; then
       notes+="; owed $b: not due ($why $(ago $((now - last))) ago, every $hours h)"; continue
     fi
@@ -545,6 +546,7 @@ status() { # per suite one line, then per box: finished on, owed since and why
 
 case ${1:-tick} in
   tick) tick ;;
+  retry) RETRY=1 tick ;;
   status) status ;;
   --install-agent) install_agent ;;
   *) sed -n '/^#   scheduled-suites/p' "$script_path" | sed 's/^# *//' >&2; exit 2 ;;
