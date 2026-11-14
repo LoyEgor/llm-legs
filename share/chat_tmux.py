@@ -235,6 +235,20 @@ end repeat
 end tell
 return found
 end run"""
+# A one-tab window with nothing left in it: a viewer whose client ended without its window closing (the tmux server
+# crashed under it, 2026-11-13 22:43: an attach that fails exits non-zero, which Terminal's "close if the shell exited
+# cleanly" keeps on screen). Nothing runs there, so nothing is lost when mirror off closes it.
+DEAD_WINDOWS = """on run argv
+set dead to ""
+tell application id "com.apple.Terminal"
+repeat with w in windows
+try
+if (count of tabs of w) is 1 and (count of (processes of tab 1 of w)) is 0 then set dead to dead & (id of w) & " "
+end try
+end repeat
+end tell
+return dead
+end run"""
 CLOSE_ENDED = """on run argv
 tell application id "com.apple.Terminal"
 repeat 12 times
@@ -336,7 +350,9 @@ def view(word):
     os.makedirs(folder, mode=0o700, exist_ok=True)
     path = os.path.join(folder, session + ".command")
     with open(path, "w", encoding="utf-8") as handle:
-        handle.write("#!/bin/sh\nexec %s -B %s attach %s\n" % (
+        # No exec, and exit 0: however the client ends (a detach, the server gone), the shell exits cleanly and
+        # Terminal closes the window instead of leaving a dead one behind.
+        handle.write("#!/bin/sh\n%s -B %s attach %s\nexit 0\n" % (
             shlex.quote(sys.executable or "/usr/bin/python3"), shlex.quote(os.path.abspath(__file__)),
             shlex.quote(session)))
     os.chmod(path, 0o700)
@@ -467,7 +483,7 @@ def unview(word):
 
 def mirror(on):
     """Terminal windows for every chat on (each session with no viewer gets a window now) or off (every viewer's
-    window closes) -> how many windows it opened or closed. A session that fails is skipped: the rest still go."""
+    window closes, and so does every window a viewer left with nothing in it) -> how many windows it opened or closed. A session that fails is skipped: the rest still go."""
     if on:
         os.makedirs(os.path.dirname(MIRROR), mode=0o700, exist_ok=True)
         with open(MIRROR, "a", encoding="utf-8"):
@@ -486,6 +502,15 @@ def mirror(on):
                 done += unview(session)
         except TmuxError:
             continue
+    if not on:
+        try:
+            listed = subprocess.run([OSASCRIPT, "-e", DEAD_WINDOWS], capture_output=True, timeout=10)
+            dead = [w for w in listed.stdout.decode("utf-8", "replace").split() if w.isdigit()]
+        except (OSError, subprocess.TimeoutExpired):
+            dead = []
+        if dead:
+            close_ended(dead)
+        done += len(dead)
     return done
 
 

@@ -161,10 +161,16 @@ viewer=$(outer display -p '#{pane_tty}')
 : >"$WORK/osa"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>%s/osa\ncase "$2" in *"set found"*) [ "$3" = "%s" ] && echo 42;; esac\nexit 0\n' \
   "$WORK" "$viewer" >"$WORK/osascript"
-assert [ "$(helper mirror off)" = "off 1" ]
+assert grep -qx "exit 0" "$WORK/s/view/scr.command"  # a client that ends badly still leaves a clean exit: no dead window
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>%s/osa\ncase "$2" in *"set found"*) [ "$3" = "%s" ] && echo 42;; *"set dead"*) echo 77;; esac\nexit 0\n' \
+  "$WORK" "$viewer" >"$WORK/osascript"
+assert [ "$(helper mirror off)" = "off 2" ]
 until_ok seen "0 90x40" || fail "the viewer stayed attached after mirror off"
 asserts=$((asserts + 1))
 until_ok closed || fail "no close of the viewer's window 42: $(tail -3 "$WORK/osa")"
+asserts=$((asserts + 1))
+dead_closed() { grep -qxF "end run 77" "$WORK/osa"; }  # a window a crashed client left behind closes on mirror off too
+until_ok dead_closed || fail "no close of the dead window 77: $(tail -3 "$WORK/osa")"
 asserts=$((asserts + 1))
 assert grep -q '^scr ' <(helper ls)
 assert [ "$(helper mirror)" = off ] && assert [ ! -e "$WORK/s/mirror" ]
