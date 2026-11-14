@@ -54,7 +54,7 @@ T=1800000000 H=10801
 tick $T
 assert test "$(runs)" = 1
 assert test "$(cat "$ST/good")" = "$(sha main)"
-assert test "$(last)" = "repo test_stub.sh: green at $(sha main | cut -c1-12)"
+assert test "$(last)" = "repo test_stub.sh: ran here: green at $(sha main | cut -c1-12)"
 # Not due: no git call at all.
 tick $((T + 60))
 assert test ! -s "$GIT_CALLS"
@@ -79,10 +79,11 @@ assert grep -qF '`src/value`' "$doc"
 assert grep -qF "test_stub.sh red on main from ${bad:0:12} value 5: the regression" "$ST/open"
 assert grep -q 'red at .*, run once more' "$LOG"
 assert grep -q 'step [0-9]* at .*: skip' "$LOG"
-assert test "$(last)" = "repo test_stub.sh: red from ${bad:0:12} (passed at $(sha "$bad~1" | cut -c1-12)); reported in ${doc#"$R"/}"
-# 1 + 2 at main + steps (value 3 skipped, value 4 pass, value 5 fail, at most one more)
-assert test "$(runs)" -ge 6
-assert test "$(runs)" -le 7
+assert test "$(last)" = "repo test_stub.sh: ran here: red from ${bad:0:12} (passed at $(sha "$bad~1" | cut -c1-12)); reported in ${doc#"$R"/}"
+# 1 + 2 at main + 1 at the last good (green: the cause is in the diff) + steps (value 3 skipped, value 4 pass, value 5
+# fail, at most one more)
+assert test "$(runs)" -ge 7
+assert test "$(runs)" -le 8
 # The picker's line names the open failure to the next chat working there.
 assert grep -qF "scheduled: test_stub.sh red on main from ${bad:0:12}" <(bash "$ROOT/share/affected-suites.sh" --repo "$R" docs/x.md 2>&1)
 
@@ -97,7 +98,7 @@ assert test "$(last)" = "repo test_stub.sh: main unmoved at $(sha main | cut -c1
 commit src/value 7 'value 7'
 tick $((T + 3 * H))
 assert test "$(ls "$R"/docs/handoffs | wc -l | tr -d ' ')" = 1
-assert test "$(last)" = "repo test_stub.sh: still red at $(sha main | cut -c1-12), reported: $doc"
+assert test "$(last)" = "repo test_stub.sh: ran here: still red at $(sha main | cut -c1-12), reported: $doc"
 # A docs-only move: nothing runs.
 n=$(runs)
 commit docs/notes.md n3 'notes 3'
@@ -120,11 +121,158 @@ tick $((T + 5 * H))
 assert test "$(runs)" = $((n + 1))
 assert grep -q '^Status: settled .*: the scheduled run passed on main at ' "$doc"
 assert test ! -e "$ST/open"
-assert test "$(last)" = "repo test_stub.sh: green again at $(sha main | cut -c1-12); settled ${doc#"$R"/}"
+assert test "$(last)" = "repo test_stub.sh: ran here: green again at $(sha main | cut -c1-12); settled ${doc#"$R"/}"
 assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R" docs/x.md 2>&1)"
 # The run's worktree is its own, detached, and the main checkout stays on main.
 assert test "$(git -C "$R" symbolic-ref --short HEAD)" = main
 assert test -z "$(git -C "$ST/wt" symbolic-ref -q HEAD)"
+
+# ---- Boxes and debts (Egor 2026-11-14), on a second repository whose stub suite sends itself to a stub bench when
+# $BOX/open exists (its last line `[bench ...]`), else runs here and says so, as tests/rig/bench-entry.sh does.
+R2="$WORK/repo2" BOX="$WORK/box"
+ST2="$SCHEDULED_SUITES_DIR/repo2/test_box.sh"
+export BOX LIMIT_HITS_LOG="$WORK/hits.jsonl"
+mkdir -p "$R2/tests" "$R2/src" "$BOX"
+git -C "$R2" init -q
+cat >"$R2/tests/test_box.sh" <<'EOF'
+#!/usr/bin/env bash
+where=here; [ -e "$BOX/open" ] && where=bench
+[ "$where" = bench ] || echo "test_box.sh: on this Mac, the bench is closed (stub)" >&2
+echo "$where $(cat src/value)" >>"$BOX/runs"
+case $(cat "$BOX/mode" 2>/dev/null) in
+  hang) echo $$ >"$BOX/hang.pid"; sleep 60; exit 0 ;;
+  nofail) echo "bench: no run lock on stub (it does not answer)" >&2; exit 1 ;;
+  failall) echo "FAIL: test_box.sh: the Release build failed: xcode-select: no developer tools"; exit 1 ;;
+esac
+rc=0; [ "$(cat src/value)" -lt 5 ] || { echo "FAIL: perf box_k: $(cat src/value) n over budget 4 (set at: t). Fix: f"; rc=1; }
+[ "$where" = here ] || echo "[bench 1 s, fallback alone] done"
+exit $rc
+EOF
+cat >"$R2/tests/scheduled-suites" <<'EOF'
+box bench ready [ -e "$BOX/open" ] || { echo "stub bench closed"; exit 1; }
+box bench says ^\[bench [0-9]+ s,
+box here says : on this Mac, the bench is closed
+test_box.sh 3 boxes=bench,here needs=bench
+EOF
+printf '1\n' >"$R2/src/value"
+git -C "$R2" add -A && git -C "$R2" commit -qm init
+printf '%s\n' "$R2" >"$SCHEDULED_SUITES_REPOS"
+c2() { printf '%s\n' "$1" >"$R2/src/value" && git -C "$R2" commit -qam "value $1"; }
+s2() { git -C "$R2" rev-parse main | cut -c1-12; }
+brun() { cat "$BOX/runs" 2>/dev/null | wc -l | tr -d ' '; }
+T2=$((T + 100 * H))
+
+# The state 9f866159 wrote (no box-* directory: one record, any box) is read as every box's: main unmoved, no run.
+mkdir -p "$ST2"
+for f in tested checked good; do git -C "$R2" rev-parse main >"$ST2/$f"; done
+echo $((T2 - 4 * 3600)) >"$ST2/ran"
+tick $T2
+assert test "$(wc -l <"$GIT_CALLS" | tr -d ' ')" = 1
+assert test "$(brun)" = 0
+assert test "$(last)" = "repo2 test_box.sh: main unmoved at $(s2)"
+SCHEDULED_SUITES_NOW=$T2 "$S" status >"$WORK/status.out"
+assert grep -qxF "  bench  finished on $(s2) 4 h 0 min ago, green (state before boxes: any box)" "$WORK/status.out"
+
+# Many ticks missed (the Mac off over three moves): one run, on the newest main. The bench closed: here takes the
+# counted readings and the bench is owed.
+c2 2; c2 3; c2 4
+tick $((T2 + 10 * H))
+assert test "$(cat "$BOX/runs")" = 'here 4'
+assert test "$(last)" = "repo2 test_box.sh: ran here: green at $(s2)"
+assert test "$(cat "$ST2/box-here/done" | cut -c1-12)" = "$(s2)"
+assert test ! -e "$ST2/box-bench/done"
+assert grep -q ' not ready: stub bench closed$' "$ST2/box-bench/owed"
+# A tick later: the bench owed, nothing runs, and a box that was not ready is asked again only after the period (its
+# probe wakes the M1's display).
+tick $((T2 + 10 * H + 60))
+assert test "$(brun)" = 1
+assert test "$(last)" = 'repo2 test_box.sh: owed bench: not due (tried 0 h 1 min ago, every 3 h)'
+tick $((T2 + 11 * H))
+assert test "$(brun)" = 1
+assert test "$(last)" = 'repo2 test_box.sh: owed bench: not ready: stub bench closed'
+# Ready: the bench pays main, once; then nothing is owed and the period holds again.
+touch "$BOX/open"
+tick $((T2 + 12 * H))
+assert test "$(tail -1 "$BOX/runs")" = 'bench 4'
+assert test "$(last)" = "repo2 test_box.sh: ran bench: green at $(s2)"
+assert test ! -e "$ST2/box-bench/owed"
+tick $((T2 + 12 * H + 60))
+assert test "$(brun)" = 2
+assert test ! -s "$GIT_CALLS"
+
+# A counted regression found here is reported once; the bench, paying later, finds it red and sends nothing.
+rm "$BOX/open"
+c2 5; bad2=$(s2)
+tick $((T2 + 15 * H))
+assert test "$(ls "$R2"/docs/handoffs | wc -l | tr -d ' ')" = 1
+assert test "$(cat "$ST2/open.box")" = here
+touch "$BOX/open"
+tick $((T2 + 18 * H))
+assert test "$(tail -1 "$BOX/runs")" = 'bench 5'
+assert test "$(last)" = "repo2 test_box.sh: ran bench: still red at $bad2, reported: $(ls "$R2"/docs/handoffs/*)"
+assert test "$(ls "$R2"/docs/handoffs | wc -l | tr -d ' ')" = 1
+c2 1
+tick $((T2 + 21 * H))
+assert test "$(last)" = "repo2 test_box.sh: ran bench: green again at $(s2); settled $(cd "$R2" && ls docs/handoffs/*)"
+
+# Could not run (a non-zero exit with no FAIL line: the bench's ssh, here closed): no bisect, no handoff; owed; past a
+# day one limit hit per owed box, once.
+rm "$BOX/open"; echo nofail >"$BOX/mode"
+c2 2
+steps=$(grep -c ' step ' "$LOG")
+T3=$((T2 + 24 * H))
+tick $T3
+assert test "$(last)" = "repo2 test_box.sh: owed here: could not run at $(s2): bench: no run lock on stub (it does not answer)"
+assert test "$(ls "$R2"/docs/handoffs | wc -l | tr -d ' ')" = 1
+assert test "$(grep -c ' step ' "$LOG")" = "$steps"
+assert test ! -e "$ST2/open"
+# A could-not-run run holds that box for its period; a tick between is cheap.
+n=$(brun)
+tick $((T3 + 60))
+assert test "$(brun)" = "$n"
+assert test "$(last)" = 'repo2 test_box.sh: owed bench: not due (tried 0 h 1 min ago, every 3 h); owed here: not due (tried 0 h 1 min ago, every 3 h)'
+tick $((T3 + 86400 + 60))
+assert test "$(grep -c 'owed on here since' "$LIMIT_HITS_LOG")" = 1
+assert test "$(grep -c 'owed on bench since' "$LIMIT_HITS_LOG")" = 1
+assert test "$(jq -r .limit "$LIMIT_HITS_LOG" | sort -u)" = 'llm-legs:scheduled-suites.owed'
+tick $((T3 + 86400 + 4 * H))
+assert test "$(wc -l <"$LIMIT_HITS_LOG" | tr -d ' ')" = 2
+SCHEDULED_SUITES_NOW=$((T3 + 86400 + 4 * H)) "$S" status >"$WORK/status.out"
+assert grep -qE "^  here   finished on [0-9a-f]{12} .*, red; owed since .* \(1 d 12 h\): could not run at $(s2): bench: no run lock on stub \(it does not answer\); the doctor told$" "$WORK/status.out"
+# The build broken outside the diff (red at main and at its last good too): could not run, no bisect, no handoff.
+echo failall >"$BOX/mode"
+tick $((T3 + 86400 + 8 * H))
+assert test "$(last)" = "repo2 test_box.sh: owed here: red at $(s2) and at its last good $(cut -c1-12 "$ST2/box-here/good") too: the cause is not in the diff (FAIL: test_box.sh: the Release build failed: xcode-select: no developer tools)"
+assert test "$(ls "$R2"/docs/handoffs | wc -l | tr -d ' ')" = 1
+assert test "$(grep -c ' step ' "$LOG")" = "$steps"
+
+# A cut run (the Mac slept or rebooted mid-run: every process gone at once) records nothing: the next tick runs it
+# again, the period not eaten.
+echo hang >"$BOX/mode"; rm -f "$BOX/hang.pid"
+T4=$((T3 + 86400 + 12 * H))
+SCHEDULED_SUITES_NOW=$T4 "$S" tick &
+tp=$!
+"$ROOT/bin/wait-until" --max 30 files "$BOX/hang.pid" 1 >/dev/null
+tree() { local p; echo "$1"; for p in $(pgrep -P "$1"); do tree "$p"; done; }
+pids=$(tree "$tp")
+kill -STOP $pids 2>/dev/null; kill -9 $pids 2>/dev/null; wait "$tp" 2>/dev/null
+rm -f "$BOX/mode"; n=$(brun)
+tick $((T4 + 60))
+assert grep -q "repo2 test_box.sh: owed here: the run started .* was cut (no result)$" "$LOG"
+assert test "$(brun)" = $((n + 1))
+assert test "$(last)" = "repo2 test_box.sh: ran here: green at $(s2)"
+# The cap cuts the same way: no result, owed, run again by the next tick.
+echo hang >"$BOX/mode"; c2 3
+SCHEDULED_SUITES_CAP_S=1 tick $((T4 + 4 * H))
+assert test "$(last)" = "repo2 test_box.sh: owed here: cut at the cap (1 s) at $(s2) (no result): it runs again"
+rm -f "$BOX/mode"
+tick $((T4 + 4 * H + 60))
+assert test "$(last)" = "repo2 test_box.sh: ran here: green at $(s2)"
+# A tick lock written before the boot names a pid of the last boot, maybe reused now: cleared.
+mkdir -p "$SCHEDULED_SUITES_DIR/.tick.lock" && printf '%s\n' "$$" >"$SCHEDULED_SUITES_DIR/.tick.lock/pid"
+touch -t 202601010000 "$SCHEDULED_SUITES_DIR/.tick.lock/pid"
+SCHEDULED_SUITES_BOOT=$(date +%s) tick $((T4 + 4 * H + 120))
+assert test "$(last)" = 'repo2 test_box.sh: owed bench: not due (tried 0 h 2 min ago, every 3 h)'
 
 # --install-agent: the plist starts the libexec wrapper of the script (Login Items show its name), every 15 min; again,
 # a no-op.
@@ -134,6 +282,8 @@ assert test "$(plutil -extract ProgramArguments.0 raw "$PL")" = "$HOME/.local/li
 assert grep -qxF "exec $S \"\$@\"" "$HOME/.local/libexec/scheduled-suites"
 assert test "$(plutil -extract ProgramArguments.1 raw "$PL")" = tick
 assert test "$(plutil -extract StartInterval raw "$PL")" = 900
+# After a boot the owed runs start at the login, not 15 min later.
+assert test "$(plutil -extract RunAtLoad raw "$PL")" = true
 assert grep -q '^bootstrap ' "$WORK/launchctl.calls"
 touch "$WORK/loaded"
 "$S" --install-agent >"$WORK/agent.out"

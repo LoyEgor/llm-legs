@@ -799,6 +799,14 @@
     "why": "A timed-out suite's tree gets 10 s between TERM and KILL to clean up.",
     "normal": "Only beside a suite TIMEOUT; processes ignoring TERM leave their own cleanup undone."
   },
+  "scheduled-suites.owed": {
+    "value": 86400,
+    "unit": "s",
+    "where": "bin/scheduled-suites:76",
+    "set_by": "Egor",
+    "why": "A scheduled suite owed main for a day on one box (not ready, could not run, cut) tells the doctor once (Egor 2026-11-14: could-not-run is not a failure, but a day of it is news).",
+    "normal": "Rare: the bench closed a whole day while he works at the M1, or a toolchain broken outside the diff."
+  },
   "spend.tokenmap": {
     "value": 180,
     "unit": "s",
