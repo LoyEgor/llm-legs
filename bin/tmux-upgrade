@@ -1,0 +1,500 @@
+#!/usr/bin/env python3
+"""Upgrade the chats' tmux (Homebrew) and move every chat onto the new server, unattended, while nobody needs them.
+
+A running tmux server keeps the binary it started from, so an upgrade is: `brew upgrade tmux`, then the chats'
+server (share/chat_tmux.py) ends and every chat in it is resumed in a new one. That runs only when it is ready:
+Egor away from the Mac (speed-doctor presence/away, share/presence.sh), no dictation (transcriptions-gpt `status`
+idle), no live worker run (share/run-liveness.sh), and every chat in the server at rest by chat-refresh's judge
+(idle, an empty prompt box, nothing running but Claude Code's own helpers, no `worker-run wait`) and quiet for
+10 min (its transcript; away from the Mac is not away from the iPad's app); a pane running anything but a chat
+holds it too. Each chat is recorded first (record-<time>.json beside the state), then brought
+back the way the Chats app opens one: chat-refresh's resume line (chat_resume: same account, model and name,
+bypassPermissions) started by chat_tmux.start in its own session c-<sid8>, its Terminal window too while the
+mirror is on, and checked: the same session id live again in that session. A chat that did not come back is a
+macOS notification and a LOST line in the log. Brew failing, or leaving the version short, does nothing else.
+
+  tmux-upgrade check        "ready", else one line per reason it would wait; exit 0 ready, 1 not
+  tmux-upgrade tick         the agent's: inside the window (22-9 local), the sequence when ready; once tmux and
+                            its server are both on the wanted version, the agent removes itself
+  tmux-upgrade run          the sequence now, the window aside (still only when ready)
+  tmux-upgrade arm          the LaunchAgent com.llm-legs.tmux-upgrade: a tick every 5 min
+  tmux-upgrade disarm       its removal
+  tmux-upgrade status       installed and server versions, armed or not
+"""
+
+import fcntl
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "share"))
+import chat_names  # noqa: E402
+import chat_tmux  # noqa: E402
+import launch_agent  # noqa: E402
+import machine_probe  # noqa: E402
+
+_loader = importlib.machinery.SourceFileLoader("chat_refresh", os.path.join(ROOT, "bin", "chat-refresh"))
+refresh = importlib.util.module_from_spec(importlib.util.spec_from_loader("chat_refresh", _loader))
+_loader.exec_module(refresh)
+
+HOME = os.path.expanduser("~")
+WANT = os.environ.get("TMUX_UPGRADE_WANT") or "3.8"
+TMUX_LINK = os.environ.get("TMUX_UPGRADE_TMUX") or "/opt/homebrew/bin/tmux"
+BREW = os.environ.get("TMUX_UPGRADE_BREW") or "/opt/homebrew/bin/brew"
+LOG = os.environ.get("TMUX_UPGRADE_LOG") or os.path.join(HOME, "Library", "Logs", "tmux-upgrade.log")
+DIR = os.environ.get("TMUX_UPGRADE_DIR") or os.path.join(HOME, "Library", "Application Support", "tmux-upgrade")
+WINDOW = os.environ.get("TMUX_UPGRADE_WINDOW") or "22-9"
+VOICE = os.environ.get("TMUX_UPGRADE_VOICE_SOCK") or os.path.join(HOME, ".transcriptions-gpt", "control.sock")
+RUNS = os.environ.get("WORKER_RUN_DIR") or os.path.join(HOME, ".cache", "claude-worker-runs")
+NOTIFY = os.environ.get("TMUX_UPGRADE_NOTIFY")  # a command given the text; else a macOS notification
+LAUNCHCTL = os.environ.get("TMUX_UPGRADE_LAUNCHCTL") or "/bin/launchctl"
+AGENT_DIR = os.environ.get("TMUX_UPGRADE_AGENT_DIR") or os.path.join(HOME, "Library", "LaunchAgents")
+LIBEXEC = os.environ.get("TMUX_UPGRADE_LIBEXEC_DIR") or os.path.join(HOME, ".local", "libexec")
+# s every chat's transcript must have stood still: away from the Mac is not away from the chats (the iPad's app)
+QUIET_S = float(os.environ.get("TMUX_UPGRADE_QUIET_S") or 600)
+START_WAIT = float(os.environ.get("TMUX_UPGRADE_START_WAIT") or 90)  # s for every chat to be live again
+# "path": a binary's version is its Homebrew Cellar folder (…/tmux/<version>/bin/tmux), the suite's copies of one
+# binary; else what `tmux -V` says.
+VERSION_FROM = os.environ.get("TMUX_UPGRADE_VERSION_FROM") or "-V"
+LABEL = "com.llm-legs.tmux-upgrade"
+WRAPPER = "tmux-upgrade"
+INTERVAL = 300
+BREW_RETRY_S = 3600  # a brew that failed is not tried again sooner (the log and one notification each time)
+RUN_HORIZON = 2 * 86400  # chats-app's runs(): a run launched earlier is past every cap worker-run puts on it
+RUN_NAME = re.compile(r"^([a-z]+)-([0-9]{9,11})-[0-9]+-[0-9a-f]+$")
+MODE = re.compile(r"(?:^|\s)--permission-mode[= ](\S+)")
+VERSION = re.compile(r"(\d+)\.(\d+)([a-z]?)")
+
+
+def log(text):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    with open(LOG, "a", encoding="utf-8") as handle:
+        for line in str(text).splitlines() or [""]:
+            handle.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), line))
+    if sys.stdout.isatty():
+        print(text)
+
+
+def notify(text):
+    """A macOS notification (Notification Center keeps it for the morning), as system-doctor posts its own."""
+    command = [NOTIFY, text] if NOTIFY else ["/usr/bin/osascript", "-e", "on run argv", "-e",
+                                             'display notification (item 1 of argv) with title "tmux upgrade"',
+                                             "-e", "end run", text]
+    try:
+        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def version(binary):
+    """'3.8' / '3.7b' of a tmux binary, None when it cannot say."""
+    if not binary:
+        return None
+    if VERSION_FROM == "path":
+        got = re.search(r"/tmux/([0-9][^/]*)/bin/tmux$", os.path.realpath(binary))
+        return got.group(1) if got else None
+    try:
+        out = subprocess.run([binary, "-V"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    got = VERSION.search(out)
+    return got.group(0) if got else None
+
+
+def at_least(have, want=None):
+    a, b = VERSION.search(have or ""), VERSION.search(want or WANT)
+    if not a or not b:
+        return False
+    key = lambda m: (int(m.group(1)), int(m.group(2)), m.group(3))
+    return key(a) >= key(b)
+
+
+def server(table):
+    """The chats' tmux server: the daemon (parent 1) whose command names the chats' socket -> (pid, its binary), or
+    (None, None). Its binary is the file it runs (proc_pidpath), the one that still speaks its protocol after brew
+    has moved the link on."""
+    for pid, (ppid, _, _, command) in table.items():
+        words = command.split()
+        if ppid == 1 and words and os.path.basename(words[0]) == "tmux" and any(
+                words[i] == "-S" and words[i + 1] == chat_tmux.SOCKET for i in range(len(words) - 1)):
+            return pid, machine_probe.proc_path(pid) or TMUX_LINK
+    return None, None
+
+
+def in_window(now=None):
+    start, _, end = WINDOW.partition("-")
+    hour = time.localtime(now).tm_hour
+    start, end = int(start), int(end or start)
+    if start == end:
+        return False
+    return start <= hour < end if start < end else hour >= start or hour < end
+
+
+def away():
+    done = subprocess.run(["/bin/bash", "-c", '. "$1"; presence_away "$(date +%s)"', "_",
+                           os.path.join(ROOT, "share", "presence.sh")])
+    return done.returncode == 0
+
+
+def dictation():
+    """transcriptions-gpt's state: None idle or no daemon (no socket, or a dead one's socket refusing), else its
+    word ("recording", "processing", "transforming", "no answer")."""
+    if not os.path.exists(VOICE):
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(3)
+            conn.connect(VOICE)
+            conn.sendall(b"status\n")
+            answer = conn.recv(256).decode("utf-8", "replace").strip()
+    except (ConnectionRefusedError, FileNotFoundError):
+        return None
+    except OSError:
+        return "no answer"
+    return None if answer == "idle" else answer or "no answer"
+
+
+def live_runs():
+    """worker-run's runs whose supervisor still lives (share/run-liveness.sh, every reader's rule) -> names."""
+    now, wanted = time.time(), []
+    try:
+        names = os.listdir(RUNS)
+    except OSError:
+        return []
+    for name in names:
+        m = RUN_NAME.match(name)
+        folder = os.path.join(RUNS, name)
+        if not m or now - int(m.group(2)) > RUN_HORIZON or os.path.exists(os.path.join(folder, "exit_code")):
+            continue
+        try:
+            with open(os.path.join(folder, "meta.json")) as handle:
+                meta = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        if isinstance(meta, dict) and isinstance(meta.get("pid"), int) and meta["pid"] > 0:
+            wanted.append("%s %d %s" % (name, meta["pid"], meta.get("pid_started_at") or ""))
+    if not wanted:
+        return []
+    done = subprocess.run(["/bin/bash", "-c", '. "$1"; pids_alive_since', "_",
+                           os.path.join(ROOT, "share", "run-liveness.sh")], input="\n".join(wanted) + "\n",
+                          capture_output=True, text=True)
+    return done.stdout.split()
+
+
+def survey(binary):
+    """What the server holds, asked through `binary` -> (reasons it would wait, chats to bring back, panes)."""
+    chat_tmux.TMUX = binary
+    reasons = []
+    if not away():
+        reasons.append("Egor is at the Mac")
+    word = dictation()
+    if word:
+        reasons.append("dictation: %s" % word)
+    reasons += ["worker run %s" % name for name in live_runs()]
+    table = refresh.ps_table()
+    try:
+        panes = chat_tmux.panes()
+    except chat_tmux.TmuxError as error:
+        return reasons + ["tmux: %s" % error], [], {}
+    records = refresh.live(table, refresh.registry())
+    sids = [r["sessionId"] for r in records.values()]
+    now, chats, hosting = time.time(), [], set()
+    for pid, record in sorted(records.items(), key=lambda kv: kv[1].get("startedAt") or 0):
+        tty = "/dev/" + table[pid][1]
+        if tty not in panes:
+            continue  # a Terminal tab's chat: the server's end does not touch it
+        hosting.add(tty)
+        why, pane, _ = refresh.judge(pid, record, table, panes, False, sids.count(record["sessionId"]) > 1, now)
+        line = refresh.resume_line(record, pid, table[pid][3]) if why != "empty" else None
+        if why not in (None, "noshell", "empty"):
+            reasons.append("%s: %s" % (refresh.label(record), why))
+        elif why != "empty" and not line:
+            reasons.append("%s: no account for its resume line" % refresh.label(record))
+        spoke = quiet_for(record["sessionId"], now)
+        if spoke is not None and spoke < QUIET_S:
+            reasons.append("%s: spoke %d s ago" % (refresh.label(record), spoke))
+        mode = MODE.search(table[pid][3])
+        chats.append({"sid": record["sessionId"], "label": refresh.label(record), "pid": pid,
+                      "profile": refresh.account(pid), "cwd": record.get("cwd"),
+                      "mode": mode.group(1) if mode else None, "line": line, "session": pane["session"],
+                      "tty": tty, "empty": why == "empty"})
+    for tty, pane in panes.items():
+        if tty in hosting:
+            continue
+        kids = [p for p, row in table.items() if row[0] == pane["pid"]]
+        if kids:
+            reasons.append("pane %s runs %s" % (pane["session"], table[kids[0]][3][:80]))
+    return reasons, chats, panes
+
+
+def quiet_for(sid, now):
+    """Seconds since the chat's transcript last moved, None with no transcript."""
+    try:
+        return now - os.path.getmtime(chat_names.transcript_path(sid))
+    except (OSError, TypeError):
+        return None
+
+
+def wait_gone(pids, seconds):
+    end = time.monotonic() + seconds
+    left = set(pids)
+    while left and time.monotonic() < end:
+        left = {p for p in left if alive(p)}
+        if left:
+            time.sleep(0.2)
+    return left
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def end_server(pid, chats):
+    """The old server ends (SIGTERM, SIGKILL after 10 s), its viewers' windows closed first (unview: their client
+    leaving ends no chat), then every recorded chat process is waited for (SIGTERM, SIGKILL after 20 s)."""
+    sessions = {c["session"] for c in chats}
+    for name in sorted(sessions):
+        try:
+            chat_tmux.unview(name)
+        except chat_tmux.TmuxError as error:
+            log("  unview %s: %s" % (name, error))
+    os.kill(pid, signal.SIGTERM)
+    if wait_gone([pid], 10):
+        os.kill(pid, signal.SIGKILL)
+        wait_gone([pid], 5)
+    left = wait_gone([c["pid"] for c in chats], 20)
+    for sig, pids in ((signal.SIGTERM, left), (signal.SIGKILL, wait_gone(left, 5) if left else ())):
+        for p in pids:
+            log("  chat process %d outlived the server: %s" % (p, sig.name))
+            try:
+                os.kill(p, sig)
+            except ProcessLookupError:
+                pass
+
+
+def bring_back(chats):
+    """Each chat's line in a new session of the new server (chat_tmux.start, as the Chats app's open), its window
+    while the mirror is on; then each one checked live again in that session -> the chats that did not come back,
+    with why."""
+    chat_tmux.TMUX = TMUX_LINK
+    started, lost = [], []
+    for chat in chats:
+        if chat["empty"]:
+            log("  %s: nothing said yet, nothing to resume (dropped)" % chat["label"])
+            continue
+        try:
+            got = chat_tmux.start(chat["line"])
+        except chat_tmux.TmuxError as error:
+            lost.append((chat, "tmux: %s" % error))
+            continue
+        if chat_tmux.mirrored():
+            try:
+                chat_tmux.view(got["pane"])
+            except chat_tmux.TmuxError as error:
+                log("  %s: view: %s" % (chat["sid"][:8], error))
+        started.append((chat, got))
+    waiting, end = list(started), time.monotonic() + START_WAIT
+    while waiting:
+        table = refresh.ps_table()
+        records = refresh.live(table, refresh.registry())
+        try:
+            panes = chat_tmux.panes()
+        except chat_tmux.TmuxError:
+            panes = {}
+        up = {(r["sessionId"], panes.get("/dev/" + table[pid][1], {}).get("session")) for pid, r in records.items()}
+        for chat, got in list(waiting):
+            if (chat["sid"], got["session"]) in up:
+                log("  back %s in %s" % (chat["label"], got["session"]))
+                waiting.remove((chat, got))
+        if not waiting or time.monotonic() >= end:
+            break
+        time.sleep(1)
+    for chat, got in waiting:
+        try:
+            screen = " | ".join(s.strip() for s in chat_tmux.capture(got["pane"]).splitlines() if s.strip())[-300:]
+        except chat_tmux.TmuxError:
+            screen = "no pane"
+        lost.append((chat, "not live in %s after %ds: %s" % (got["session"], START_WAIT, screen)))
+    return lost
+
+
+def record(chats, pid, binary, installed):
+    os.makedirs(DIR, exist_ok=True)
+    path = os.path.join(DIR, "record-%s.json" % time.strftime("%Y%m%d-%H%M%S"))
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"at": int(time.time()), "server_pid": pid, "server_binary": binary, "server_version":
+                   version(binary), "installed": installed, "chats": chats}, handle, indent=1)
+    log("recorded %d chats in %s" % (len(chats), path))
+    for chat in chats:
+        log("  %s %s profile=%s mode=%s cwd=%s session=%s%s" % (
+            chat["sid"], chat["label"][9:] or "-", chat["profile"], chat["mode"], chat["cwd"], chat["session"],
+            " (nothing said)" if chat["empty"] else ""))
+
+
+def brew_stamp():
+    return os.path.join(DIR, "brew-failed")
+
+
+def brew_paused():
+    """Why brew is not tried now (it failed less than BREW_RETRY_S ago), or None."""
+    try:
+        with open(brew_stamp()) as handle:
+            failed = float(handle.read().strip() or 0)
+    except (OSError, ValueError):
+        return None
+    if time.time() - failed >= BREW_RETRY_S:
+        return None
+    return "brew failed at %s: not tried again before %s" % (
+        time.strftime("%H:%M", time.localtime(failed)), time.strftime("%H:%M", time.localtime(failed + BREW_RETRY_S)))
+
+
+def upgrade():
+    """brew upgrade tmux -> the installed version, None when brew failed (logged, notified, stamped)."""
+    log("brew upgrade tmux")
+    env = dict(os.environ, HOMEBREW_NO_INSTALL_CLEANUP="1", HOMEBREW_NO_ENV_HINTS="1", HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK="1")
+    try:
+        done = subprocess.run([BREW, "upgrade", "tmux"], capture_output=True, text=True, timeout=1800, env=env)
+        out, code = (done.stdout + done.stderr).strip(), done.returncode
+    except (OSError, subprocess.TimeoutExpired) as error:
+        out, code = str(error), -1
+    for line in out.splitlines()[-40:]:
+        log("  brew: %s" % line)
+    have = version(TMUX_LINK)
+    if code != 0 or not at_least(have):
+        os.makedirs(DIR, exist_ok=True)
+        with open(brew_stamp(), "w") as handle:
+            handle.write("%d\n" % time.time())
+        log("FAILED: brew exit %d, tmux -V %s (wanted %s); nothing else done, the chats run on" % (code, have, WANT))
+        notify("brew upgrade tmux failed (exit %d, tmux %s): chats untouched; %s" % (code, have, LOG))
+        return None
+    log("tmux -V: %s" % have)
+    return have
+
+
+def sequence():
+    """One pass: brew when the installed tmux is short, then the server swap when the server is -> 0 done, 1 not."""
+    table = refresh.ps_table()
+    pid, binary = server(table)
+    installed = version(TMUX_LINK)
+    running = version(binary) if pid else None
+    if at_least(installed) and (not pid or at_least(running)):
+        log("done: tmux %s, server %s" % (installed, running or "none running"))
+        return 0
+    reasons, chats, _ = survey(binary or TMUX_LINK)
+    if reasons:
+        log("waits (tmux %s, server %s): %s" % (installed, running or "none", "; ".join(reasons)))
+        return 1
+    lock_path = os.path.join(os.path.dirname(chat_tmux.SOCKET), "refresh.lock")
+    os.makedirs(os.path.dirname(lock_path), mode=0o700, exist_ok=True)
+    lock = open(lock_path, "w")  # chat-refresh's: no refresh types into a pane while the server is swapped
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        log("waits: a chat-refresh run holds %s" % lock_path)
+        return 1
+    if not at_least(installed):
+        paused = brew_paused()
+        if paused:
+            log(paused)
+            return 1
+        if pid:
+            record(chats, pid, binary, installed)  # first, before brew touches anything
+        installed = upgrade()
+        if not installed:
+            return 1
+    if not pid:
+        log("done: tmux %s, no chats' server was running" % installed)
+        return 0
+    reasons, chats, _ = survey(binary)  # brew took minutes: asked again, through the old server's own binary
+    if reasons:
+        log("upgraded; the server swap waits: %s" % "; ".join(reasons))
+        return 1
+    record(chats, pid, binary, installed)
+    log("ending server %d (%s %s)" % (pid, binary, running))
+    end_server(pid, chats)
+    lost = bring_back(chats)
+    new_pid, new_binary = server(refresh.ps_table())
+    log("server %s (%s %s)" % (new_pid, new_binary, version(new_binary)))
+    for chat, why in lost:
+        log("LOST %s %s: %s; reopen it: %s" % (chat["sid"], chat["label"][9:] or "-", why, chat["line"]))
+    if lost:
+        notify("%d chat%s did not come back after the tmux upgrade: %s. Reopen from the Chats app; %s" % (
+            len(lost), "" if len(lost) == 1 else "s", ", ".join(c["label"] for c, _ in lost), LOG))
+    if new_pid and not at_least(version(new_binary)):
+        log("FAILED: the new server runs %s" % version(new_binary))
+        return 1
+    log("done: tmux %s, %d chats back, %d lost" % (installed, sum(1 for c in chats if not c["empty"]) - len(lost),
+                                                    len(lost)))
+    return 0
+
+
+def plist_path():
+    return os.path.join(AGENT_DIR, LABEL + ".plist")
+
+
+def arm():
+    wrapper = os.path.join(LIBEXEC, WRAPPER)
+    plist = {"Label": LABEL, "ProgramArguments": [wrapper, "tick"], "StartInterval": INTERVAL, "RunAtLoad": True,
+             "ProcessType": "Background",
+             "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
+             "StandardOutPath": LOG, "StandardErrorPath": LOG}
+    error = launch_agent.install(plist_path(), plist, wrapper, os.path.realpath(__file__), LAUNCHCTL)
+    if error:
+        print("tmux-upgrade: launchctl bootstrap %s failed: %s" % (plist_path(), error), file=sys.stderr)
+        return 1
+    log("armed %s: a tick every %d min, window %s, wanted tmux %s" % (LABEL, INTERVAL // 60, WINDOW, WANT))
+    print("armed %s (every %d min, %s local); disarm: %s disarm; log %s" % (
+        LABEL, INTERVAL // 60, WINDOW, os.path.realpath(__file__), LOG))
+    return 0
+
+
+def disarm():
+    log("disarmed %s" % LABEL)  # first: a tick removing itself ends with its own bootout
+    launch_agent.uninstall(LABEL, plist_path(), os.path.join(LIBEXEC, WRAPPER), LAUNCHCTL)
+    return 0
+
+
+def main(argv):
+    verb = argv[0] if argv else ""
+    if verb == "check":
+        pid, binary = server(refresh.ps_table())
+        reasons = survey(binary or TMUX_LINK)[0]
+        print("\n".join(reasons) if reasons else "ready")
+        return 1 if reasons else 0
+    if verb in ("tick", "run"):
+        if verb == "tick" and not in_window():
+            return 0
+        code = sequence()
+        if code == 0 and os.path.exists(plist_path()):
+            disarm()
+        return code
+    if verb == "arm":
+        return arm()
+    if verb == "disarm":
+        return disarm()
+    if verb == "status":
+        pid, binary = server(refresh.ps_table())
+        print("installed %s, server %s (pid %s), wanted %s, %s" % (
+            version(TMUX_LINK), version(binary) if pid else "none", pid, WANT,
+            "armed" if os.path.exists(plist_path()) else "not armed"))
+        return 0
+    print(__doc__.split("\n\n", 2)[2].strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

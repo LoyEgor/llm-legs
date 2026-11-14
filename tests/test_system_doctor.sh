@@ -617,7 +617,7 @@ os.chmod(busy, 0o755)
 
 
 def install_waits(tries):
-    waits, out, err, real_time = [], io.StringIO(), io.StringIO(), m.time
+    waits, out, err, real_time = [], io.StringIO(), io.StringIO(), m.launch_agent.time
 
     # Never the shared time.sleep: subprocess's wait polls through it and would count as bootstrap pauses.
     class PausesOnly:
@@ -627,12 +627,12 @@ def install_waits(tries):
             return getattr(real_time, name)
 
     os.environ.update(SYSTEM_DOCTOR_LAUNCHCTL=busy, BUSY_TRIES=tries)
-    m.time = PausesOnly()
+    m.launch_agent.time = PausesOnly()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = m.install_agent()
     finally:
-        m.time = real_time
+        m.launch_agent.time = real_time
         os.environ["SYSTEM_DOCTOR_LAUNCHCTL"] = os.path.join(work, "bin", "launchctl")
         del os.environ["BUSY_TRIES"]
     return rc, out.getvalue(), err.getvalue(), waits

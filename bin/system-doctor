@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import account_roster as roster_reader  # noqa: E402
 import collector_runs  # noqa: E402
 from cpu_audit import STATUSLINE  # noqa: E402
+import launch_agent  # noqa: E402
 import limit_hit  # noqa: E402
 import log_stores  # noqa: E402
 import machine_probe  # noqa: E402
@@ -3943,33 +3944,16 @@ def plist_path():
 
 def install_agent():
     wrapper = os.path.join(libexec_dir(), WRAPPER)
-    script = os.path.realpath(__file__)
-    os.makedirs(libexec_dir(), exist_ok=True)
-    temporary = wrapper + ".tmp"
-    with open(temporary, "w") as handle:
-        handle.write("#!/usr/bin/env bash\nscript=%s\n[ -r \"$script\" ] || exit 0\nexec \"$script\" \"$@\"\n"
-                     % shlex.quote(script))
-    os.chmod(temporary, 0o755)
-    os.replace(temporary, wrapper)
     logs = os.path.join(HOME, "Library", "Logs")
     plist = {"Label": LABEL, "ProgramArguments": [wrapper, "agent"], "StartInterval": 60, "RunAtLoad": True,
              "ProcessType": "Standard", "Nice": 10, "LowPriorityIO": True,
              "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
              "StandardOutPath": os.path.join(logs, "system-doctor.log"),
              "StandardErrorPath": os.path.join(logs, "system-doctor.log")}
-    os.makedirs(os.path.dirname(plist_path()), exist_ok=True)
-    with open(plist_path(), "wb") as handle:
-        plistlib.dump(plist, handle)
-    domain = "gui/%d" % os.getuid()
-    machine_probe.run("launchctl", ["bootout", domain, plist_path()])
-    for wait in (0, 0.5, 1, 2):
-        time.sleep(wait)
-        loaded = subprocess.run([machine_probe.command("launchctl"), "bootstrap", domain, plist_path()],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        if loaded.returncode == 0:
-            break
-    else:
-        print("system-doctor: launchctl bootstrap %s failed: %s" % (plist_path(), loaded.stderr.strip()), file=sys.stderr)
+    error = launch_agent.install(plist_path(), plist, wrapper, os.path.realpath(__file__),
+                                 machine_probe.command("launchctl"))
+    if error:
+        print("system-doctor: launchctl bootstrap %s failed: %s" % (plist_path(), error), file=sys.stderr)
         return 1
     print("Installed %s: a light tick every minute, the nightly pass after %02d:00, the document every %d min." % (
         LABEL, NIGHTLY_HOUR, JUDGE_EVERY_S // 60))
@@ -3977,12 +3961,7 @@ def install_agent():
 
 
 def uninstall_agent():
-    machine_probe.run("launchctl", ["bootout", "gui/%d" % os.getuid(), plist_path()])
-    for path in (plist_path(), os.path.join(libexec_dir(), WRAPPER)):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    launch_agent.uninstall(LABEL, plist_path(), os.path.join(libexec_dir(), WRAPPER), machine_probe.command("launchctl"))
     print("Uninstalled %s." % LABEL)
 
 
