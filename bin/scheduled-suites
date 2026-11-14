@@ -9,11 +9,12 @@ fi
 # main every few hours, and whoever finds a regression, not the chat that made it, gets it to fix). A suite listed in
 # a repository's tests/scheduled-suites (`<suite> <period hours> [path...]`; share/affected-suites.sh leaves it out of
 # workers' and landings' selections) runs here against main, in a detached worktree of its own (a bench suite sends
-# itself to the bench). Per tick, per sweep repository with the list, per suite, one decision and one log line naming
-# the box and the reason: not due (no box owed and the period since the last FINISHED run has not passed: no git call
-# at all), main unmoved (one rev-parse), main moved in no file the suite covers (tests/affected's selector over the
-# moved files), a landing running (a live land-*.lock in the repository: the next tick), owed <box>: <why> (not ready,
-# could not run, cut), or ran <box> on main's commit.
+# itself to the bench). Per tick, per sweep repository with the list, per suite, one decision and one log line (none
+# when it would only repeat an unchanged "not ready") naming the box and the reason: not due (no box owed and the
+# period since the last FINISHED run has not passed: no git call at all), main unmoved (one rev-parse), main moved in
+# no file the suite covers (tests/affected's selector over the moved files), a landing running (a live land-*.lock in
+# the repository: the next tick), owed <box>: <why> (not ready, opened, could not run, cut), or ran <box> on main's
+# commit.
 # No work, no run (Egor 2026-11-14): the only trigger is main having moved in a covered file since the commit the suite
 # last FINISHED on; the period is only the shortest gap between two finished runs. The state is that commit per box,
 # so a run that did not happen is owed: a tick after the Mac slept or was off (launchd fires once after a wake,
@@ -22,19 +23,26 @@ fi
 # Boxes: where a run goes is data in the list. `box <name> ready <command...>` (from the main checkout; exit 0 = ready,
 # else its last line is why), `box <name> says <ERE>` (a line of a run's output that shows the run went there: a suite
 # that sends itself, test_swift_perf.sh through tests/rig/bench-entry.sh), `box <name> run <command...>` (how a suite
-# is sent there, {} its path; default `bash {}` in the run's worktree). A box with no `ready` is always ready; a run
+# is sent there, {} its path; default `bash {}` in the run's worktree), `box <name> open <command...>` (from the main
+# checkout: what opens a box that is not ready, tests/rig/bench up). A box with no `ready` is always ready; a run
 # went to the box whose `says` matches, else to the one it was sent to. An entry's `boxes=a,b` (default here) is the
 # order of preference; `needs=a` names a box whose readings no other box takes (the bench's time readings): main owes
 # it a run even after another box ran it, paid when it is ready, never reported twice (the open failure is one).
-# Could not run (a box not ready; exit 125 or 75, a SKIP line, a non-zero exit with no FAIL line; red at the box's last
-# good commit too, so the cause is not in the diff) is not a failure: no bisect, no handoff; the box stays owed, tried
-# again after the period, and owed past SCHEDULED_SUITES_OWED_S (a day) one limit hit (scheduled-suites.owed) tells
-# the harness doctor, once.
+# A box owed, due and not ready (nothing ran) is asked again the next tick, not after the period; first its `open`
+# runs, at most once a period (its stamp box-<name>/opened; SCHEDULED_SUITES_OPEN_S bounds it, 600), one log line,
+# then `ready` again. Its "not ready" line is logged when the why changes, not every tick.
+# Could not run (exit 125 or 75, a SKIP line, a non-zero exit with no FAIL line; red at the box's last good commit too,
+# so the cause is not in the diff) is not a failure: no bisect, no handoff; the box stays owed, tried again after the
+# period. Owed past SCHEDULED_SUITES_OWED_S (a day, not ready or could not run): one limit hit
+# (scheduled-suites.owed) tells the harness doctor, once.
 # PASS records the commit as last good (and settles an open failure's handoff, when the box that reported it or a
 # `needs` box passes). FAIL runs once more (flakes); red twice and green at the box's last good, the first bad commit
 # is searched between them: first-parent commits touching covered files,
 # halved, each step the same suite on the same box, at most SCHEDULED_SUITES_STEPS (6) steps, a step that does not
-# build (could not run, or went to another box) skipped as git bisect does. A box with no green commit of its own (its
+# build (could not run, or went to another box) skipped as git bisect does. Before a blame is reported, the search's
+# last passing commit runs once more on the same box: red now, the search did not hold ("red on main at <sha>, the
+# search did not hold": the commit that passed once and failed once, both readings, no commit named as the cause);
+# green, reported as found. A box with no green commit of its own (its
 # first run) searches from the newest commit another box finished green on, once a control there passes on it ("green
 # on <box> at <sha>; first run on <this box>"); no green commit anywhere, or red at that one too: "red at <sha>, first
 # measured", no commit named. "was" readings come from the same box's green run; another box's are labelled with it,
@@ -50,9 +58,11 @@ fi
 #   scheduled-suites retry           a tick that asks an owed box now, whatever it tried last (he says the box is free)
 #   scheduled-suites --install-agent the LaunchAgent com.llm-legs.scheduled-suites (via ~/.local/libexec/scheduled-suites); idempotent
 # State per suite: ran tested good checked (the 9f866159 files, read as they are: any box), open, open.box, run (a live
-# run: pid box start); per box box-<name>/: done good ran checked tried owed (`<since> <why>`) told.
+# run: pid box start), confirm.log; per box box-<name>/: done good ran checked tried owed (`<since> <why>`) told,
+# notready (the why last logged), opened (the last `open`'s epoch), open.log.
 # Env: SCHEDULED_SUITES_DIR (state), SCHEDULED_SUITES_REPOS (default the sweep list), SCHEDULED_SUITES_STEPS,
-# SCHEDULED_SUITES_CAP_S (one suite run's bound, 5400), SCHEDULED_SUITES_OWED_S (86400), SCHEDULED_SUITES_NOW and
+# SCHEDULED_SUITES_CAP_S (one suite run's bound, 5400), SCHEDULED_SUITES_OWED_S (86400), SCHEDULED_SUITES_OPEN_S
+# (one `open`'s bound, 600), SCHEDULED_SUITES_NOW and
 # SCHEDULED_SUITES_BOOT (epochs, tests).
 set -u
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
@@ -74,12 +84,14 @@ legs=${script_path%/*/*}
 . "$legs/share/store-lock.sh"
 . "$legs/share/processes.sh"
 . "$legs/share/limit-hit.sh"
+. "$legs/share/run-bounded.sh"
 DIR=${SCHEDULED_SUITES_DIR:-$HOME/Library/Application Support/scheduled-suites}
 LOG=$DIR/scheduled.log
 REPOS=${SCHEDULED_SUITES_REPOS:-${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}}
 STEPS=${SCHEDULED_SUITES_STEPS:-6}
 CAP=${SCHEDULED_SUITES_CAP_S:-5400}
 OWED_S=${SCHEDULED_SUITES_OWED_S:-86400}
+OPEN_S=${SCHEDULED_SUITES_OPEN_S:-600}
 LABEL=com.llm-legs.scheduled-suites
 PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
 # launchd runs the wrapper (Login Items show its name; harness-doctor's DEPLOYS watches it), the wrapper this script.
@@ -255,15 +267,18 @@ findings() { # now-log was-log [was-box] -> one line a failed budget key, once (
   [ -n "$any" ] || grep -q '^FAIL' "$1" || printf -- '- no FAIL line; the log: %s\n' "$1"
 }
 
-report() { # first-bad last-pass now-log was-log range-note [was-box] [since] -> the handoff and the open line
-  # last-pass empty: no green run anywhere to search from, "red at <sha>, first measured", no commit named. was-box:
-  # the box was-log's readings are from when not $went; since: the clause naming where the search started (default
-  # "passed at <last-pass>").
-  local bad=$1 good=$2 now_log=$3 was_log=$4 note=$5 was_box=${6:-} since=${7:-} subject when doc files rel red
+report() { # first-bad last-pass now-log was-log range-note [was-box] [since] [unheld unheld-log] -> the handoff and the
+  # open line. last-pass empty: no green run anywhere to search from, "red at <sha>, first measured", no commit named.
+  # was-box: the box was-log's readings are from when not $went; since: the clause naming where the search started
+  # (default "passed at <last-pass>"). unheld: the search's last pass that failed when confirmed ($st/confirm.log;
+  # unheld-log its passing run): first-bad is main's head, "red on main at <sha>, the search did not hold", no commit named.
+  local bad=$1 good=$2 now_log=$3 was_log=$4 note=$5 was_box=${6:-} since=${7:-} unheld=${8:-} unheld_log=${9:-}
+  local subject when doc files rel red
   subject=$(git -C "$repo" log -1 --format=%s "$bad" | cut -c1-200)
   when=$(git -C "$repo" log -1 --format=%cd --date=format:'%F %R' "$bad")
   [ -z "$good" ] || files=$(git -C "$repo" diff --name-only "$bad^1" "$bad" 2>/dev/null | head -20 | sed 's/.*/`&`/' | paste -sd, - | sed 's/,/, /g')
-  if [ -z "$good" ]; then red="red at ${bad:0:12}, first measured" since=''
+  if [ -n "$unheld" ]; then red="red on main at ${bad:0:12}, the search did not hold" since="${unheld:0:12} passed once, failed once"
+  elif [ -z "$good" ]; then red="red at ${bad:0:12}, first measured" since=''
   else red="red on main from ${bad:0:12}" since=${since:-passed at ${good:0:12}}; fi
   mkdir -p "$repo/docs/handoffs"
   rel=docs/handoffs/$(date +%F)-scheduled-${suite%.*}-${bad:0:7}.md
@@ -271,7 +286,13 @@ report() { # first-bad last-pass now-log was-log range-note [was-box] [since] ->
   {
     printf '# Hand-off: tests/%s %s (the scheduled run)\n\nStatus: open\n\n' "$suite" "$red"
     printf 'From: bin/scheduled-suites (llm-legs), %s. The suite is in tests/scheduled-suites: no worker or landing runs it, so whoever reads this fixes it, not necessarily the chat of the commit.\n\n' "$(date '+%F %R')"
-    if [ -z "$good" ]; then
+    if [ -n "$unheld" ]; then
+      printf '## What failed\n\n`tests/%s` on %s is red at main `%s`. The search for the first bad commit did not hold: `%s` (%s) passed in the search and failed when run again on the same box, so its readings swing across the budget and no commit is named as the cause.\n\n' \
+        "$suite" "$went" "${bad:0:12}" "${unheld:0:12}" "$(git -C "$repo" log -1 --format=%s "$unheld" | cut -c1-120)"
+      printf 'At `%s`, the passing run (was) and the run again (now):\n\n' "${unheld:0:12}"
+      findings "$st/confirm.log" "$([ ! -r "$unheld_log" ] || echo "$unheld_log")" ''
+      printf '\nAt main `%s`:\n\n' "${bad:0:12}"
+    elif [ -z "$good" ]; then
       printf '## What failed\n\n`tests/%s` on %s is red at main `%s`, first measured: no box finished it green on an earlier commit of main, so no commit is searched or named.\n\n' \
         "$suite" "$went" "${bad:0:12}"
     else
@@ -281,9 +302,10 @@ report() { # first-bad last-pass now-log was-log range-note [was-box] [since] ->
     findings "$now_log" "$([ ! -r "$was_log" ] || echo "$was_log")" "$was_box"
     [ -z "$good" ] || printf '\nThe commit'"'"'s files: %s.\n' "${files:-none listed}"
     printf '\n## Settle\n\nFix it on main (or the budget, with its measurement), `tests/run-all %s` to check. The next scheduled pass on main sets this Status to settled by itself. Logs: `%s`%s.\n' \
-      "$suite" "$now_log" "$([ ! -r "$was_log" ] || printf ', `%s`' "$was_log")"
+      "$suite" "$now_log" "$([ ! -r "$was_log" ] || printf ', `%s`' "$was_log")$([ -z "$unheld" ] || printf ', `%s`%s' "$st/confirm.log" "$([ ! -r "$unheld_log" ] || printf ', `%s`' "$unheld_log")")"
   } >"$doc"
-  if [ -z "$good" ]; then printf '%s %s: %s\n' "$suite" "$red" "$doc"
+  if [ -n "$unheld" ]; then printf '%s %s (%s): %s\n' "$suite" "$red" "$since" "$doc"
+  elif [ -z "$good" ]; then printf '%s %s: %s\n' "$suite" "$red" "$doc"
   else printf '%s %s %s (%s): %s\n' "$suite" "$red" "$(printf %s "$subject" | cut -c1-80)" "$since" "$doc"; fi >"$st/open"
   put "$st/open.box" "$went"
   log "$tag: ran $went: ${red/#red on main from/red from}${since:+ ($since)}; reported in $rel"
@@ -345,7 +367,19 @@ bisect() { # good head was-log [was-box] [good-box] [note] -> report the first b
   [ "$lo" -lt 0 ] || { was=$st/step-${cands[$lo]:0:12}.log was_box=''; [ -z "$since" ] || since="passed at ${cands[$lo]:0:12}; $since"; }
   [ ! -r "$st/step-${cands[$hi]:0:12}.log" ] || now=$st/step-${cands[$hi]:0:12}.log
   [ $((hi - lo)) -le 1 ] || note="Not narrowed to one commit (step cap $STEPS or unbuildable steps): the first bad is one of the $((hi - lo)) first-parent commits after $([ "$lo" -lt 0 ] && echo "${good:0:12}" || echo "${cands[$lo]:0:12}") up to this one."
-  report "${cands[$hi]}" "$([ "$lo" -lt 0 ] && echo "$good" || echo "${cands[$lo]}")" "$now" "$was" "$note" "$was_box" "$since"
+  # The blame is confirmed first (2026-11-14: 292ef3f, a note edit, blamed on a reading at the budget's edge): the last
+  # passing commit once more on the same box. Red now: the search did not hold, no commit is named.
+  local pass_sha pass_log
+  if [ "$lo" -lt 0 ]; then pass_sha=$good pass_log=$was; else pass_sha=${cands[$lo]} pass_log=$st/step-${cands[$lo]:0:12}.log; fi
+  v=$(run_at "$pass_sha" "$st/confirm.log" "$went")
+  case $v in "pass $went" | "fail $went") v=${v%% *} ;; *) v=skip ;; esac
+  log "$tag: confirm at ${pass_sha:0:12}: $v"
+  if [ "$v" = fail ]; then
+    report "$head" '' "$st/head.log" '' '' '' '' "$pass_sha" "$pass_log"
+    return
+  fi
+  [ "$v" = pass ] || note+="${note:+ }The confirming run at ${pass_sha:0:12} could not run ($(why_not_run "$st/confirm.log")): the blame is unconfirmed."
+  report "${cands[$hi]}" "$pass_sha" "$now" "$was" "$note" "$was_box" "$since"
 }
 
 green_elsewhere() { # -> good, from: the newest commit another box of the suite finished green on, an ancestor of main
@@ -360,12 +394,14 @@ green_elsewhere() { # -> good, from: the newest commit another box of the suite 
   done
 }
 
-declare -A box_ready=() box_says=() box_run=()
-read_boxes() { # repo -> box_ready, box_says, box_run from the `box <name> ready|says|run ...` lines of its list
+declare -A box_ready=() box_says=() box_run=() box_open=()
+read_boxes() { # repo -> box_ready, box_says, box_run, box_open from the `box <name> ready|says|run|open ...` lines
   local name attr rest
-  box_ready=() box_says=() box_run=()
+  box_ready=() box_says=() box_run=() box_open=()
   while read -r _ name attr rest; do
-    case $attr in ready) box_ready[$name]=$rest ;; says) box_says[$name]=$rest ;; run) box_run[$name]=$rest ;; esac
+    case $attr in
+      ready) box_ready[$name]=$rest ;; says) box_says[$name]=$rest ;; run) box_run[$name]=$rest ;; open) box_open[$name]=$rest ;;
+    esac
   done < <(sed 's/#.*//' "$1/tests/scheduled-suites" | awk '$1 == "box" && NF >= 2')
 }
 
@@ -409,7 +445,30 @@ owe() { # box why -> box-<box>/owed (`<since> <why>`, since kept); owed past OWE
     log "$tag: owed $1 for $(ago $((now - since))): told the doctor (limit hit scheduled-suites.owed)"
   fi
 }
-paid() { rm -f "$st/box-$1/owed" "$st/box-$1/told" "$st/box-$1/tried"; }
+paid() { rm -f "$st/box-$1/owed" "$st/box-$1/told" "$st/box-$1/tried" "$st/box-$1/notready"; }
+
+probe_box() { # box -> its `ready`'s status; why: its last line when not ready
+  why=$(cd "$repo" && bash -c "${box_ready[$1]}" </dev/null 2>&1) && return 0
+  why=$(printf '%s\n' "$why" | grep -v '^[[:space:]]*$' | tail -1 | cut -c1-160) why=${why:-no answer}
+  return 1
+}
+ready_box() { # box -> 0 when ready, else why. Not ready and its `open` not run this period: `open` (bounded by OPEN_S),
+  # one log line, asked again. The stamp box-<name>/opened holds a box that cannot open from a reboot every tick.
+  local b=$1 o rc=0 took said
+  probe_box "$b" && return 0
+  [ -n "${box_open[$b]:-}" ] || return 1
+  o=$(first_line "$st/box-$b/opened")
+  [ $((now - ${o:-0})) -ge $((hours * 3600)) ] || return 1
+  mkdir -p "$st/box-$b"; put "$st/box-$b/opened" "$now"
+  took=$SECONDS
+  (cd "$repo" && run_bounded "$OPEN_S" bash -c "${box_open[$b]}") </dev/null >"$st/box-$b/open.log" 2>&1 || rc=$?
+  took=$((SECONDS - took))
+  said=$(grep -v '^[[:space:]]*$' "$st/box-$b/open.log" | tail -1 | cut -c1-160)
+  if [ "$rc" -eq 124 ] || [ "$took" -ge "$OPEN_S" ]; then said="cut at $OPEN_S s"; elif [ "$rc" -ne 0 ]; then said="exit $rc${said:+: $said}"; else said="exit 0"; fi
+  if probe_box "$b"; then log "$tag: opened $b ($said, $took s): ready"; return 0; fi
+  log "$tag: opened $b ($said, $took s): still not ready: $why"
+  return 1
+}
 
 debt() { # done-file checked-file -> 0 owed (debt_why), 1 main unmoved, 2 moved in no covered file (checked written)
   local fin checked list f
@@ -445,7 +504,8 @@ finished() { # verdict: main's head finished on $went (pass or fail): the suite'
 
 decide() { # one suite of one repository: the decision, and the run when one is due
   local now ran head v went='' b why last t target='' notes='' legacy='' pay_any='' moved='' rc good c was was_box from first
-  local run_pid='' run_box='' run_from=''
+  local run_pid='' run_box='' run_from='' i
+  local -a shown=()
   local -A owes=()
   mkdir -p "$st"
   now=$(now_s) ran=$(first_line "$st/ran")
@@ -495,16 +555,21 @@ decide() { # one suite of one repository: the decision, and the run when one is 
     if [ $((now - ${last:-0})) -lt $((hours * 3600)) ]; then
       notes+="; owed $b: not due ($why $(ago $((now - last))) ago, every $hours h)"; continue
     fi
-    # A box not ready is asked again after the period, as one that could not run: the bench's probe wakes the M1's
-    # sleeping display (tests/rig/bench), never every 15 min.
-    if [ -n "${box_ready[$b]:-}" ] && ! why=$(cd "$repo" && bash -c "${box_ready[$b]}" </dev/null 2>&1); then
-      why=$(printf '%s\n' "$why" | grep -v '^[[:space:]]*$' | tail -1 | cut -c1-160)
-      owe "$b" "not ready: ${why:-no answer}"; put "$st/box-$b/tried" "$now"
-      notes+="; owed $b: not ready: ${why:-no answer}"; continue
+    # A box not ready (nothing ran) is asked again the next tick (2026-11-14: the locked bench stayed owed 8 h on a
+    # 3 h period); its `open`, once a period, may open it first. Its line is logged when the why changes.
+    if [ -n "${box_ready[$b]:-}" ] && ! ready_box "$b"; then
+      owe "$b" "not ready: $why"
+      if [ -z "${RETRY:-}" ] && [ "$(cat "$st/box-$b/notready" 2>/dev/null)" = "$why" ]; then continue; fi
+      notes+="; owed $b: not ready: $why"; shown+=("$b" "$why"); continue
     fi
+    rm -f "$st/box-$b/notready"
     target=$b; break
   done
-  [ -n "$target" ] || { log "$tag: ${notes#; }"; return 0; }
+  if [ -z "$target" ]; then
+    [ -n "$notes" ] || return 0
+    for ((i = 0; i < ${#shown[@]}; i += 2)); do put "$st/box-${shown[i]}/notready" "${shown[i + 1]}"; done
+    log "$tag: ${notes#; }"; return 0
+  fi
   v=$(run_at "$head" "$st/head.log" "$target"); went=${v#* } v=${v%% *}
   if [ "$v" = fail ]; then
     log "$tag: ran $went: red at ${head:0:12}, run once more"

@@ -81,9 +81,10 @@ assert grep -q 'red at .*, run once more' "$LOG"
 assert grep -q 'step [0-9]* at .*: skip' "$LOG"
 assert test "$(last)" = "repo test_stub.sh: ran here: red from ${bad:0:12} (passed at $(sha "$bad~1" | cut -c1-12)); reported in ${doc#"$R"/}"
 # 1 + 2 at main + 1 at the last good (green: the cause is in the diff) + steps (value 3 skipped, value 4 pass, value 5
-# fail, at most one more)
-assert test "$(runs)" -ge 7
-assert test "$(runs)" -le 8
+# fail, at most one more) + 1 confirming the last pass (value 4) before the blame
+assert test "$(runs)" -ge 8
+assert test "$(runs)" -le 9
+assert grep -qF "repo test_stub.sh: confirm at $(sha "$bad~1" | cut -c1-12): pass" "$LOG"
 # The picker's line names the open failure to the next chat working there.
 assert grep -qF "scheduled: test_stub.sh red on main from ${bad:0:12}" <(bash "$ROOT/share/affected-suites.sh" --repo "$R" docs/x.md 2>&1)
 
@@ -149,7 +150,7 @@ rc=0; [ "$(cat src/value)" -lt 5 ] || { echo "FAIL: perf box_k: $(cat src/value)
 exit $rc
 EOF
 cat >"$R2/tests/scheduled-suites" <<'EOF'
-box bench ready [ -e "$BOX/open" ] || { echo "stub bench closed"; exit 1; }
+box bench ready echo probe >>"$BOX/probes"; [ -e "$BOX/open" ] || { echo "stub bench closed"; exit 1; }
 box bench says ^\[bench [0-9]+ s,
 box here says : on this Mac, the bench is closed
 test_box.sh 3 boxes=bench,here needs=bench
@@ -160,6 +161,8 @@ printf '%s\n' "$R2" >"$SCHEDULED_SUITES_REPOS"
 c2() { printf '%s\n' "$1" >"$R2/src/value" && git -C "$R2" commit -qam "value $1"; }
 s2() { git -C "$R2" rev-parse main | cut -c1-12; }
 brun() { cat "$BOX/runs" 2>/dev/null | wc -l | tr -d ' '; }
+probes() { cat "$BOX/probes" 2>/dev/null | wc -l | tr -d ' '; }
+loglines() { wc -l <"$LOG" | tr -d ' '; }
 T2=$((T + 100 * H))
 
 # The state 9f866159 wrote (no box-* directory: one record, any box) is read as every box's: main unmoved, no run.
@@ -182,27 +185,31 @@ assert test "$(last)" = "repo2 test_box.sh: ran here: green at $(s2)"
 assert test "$(cat "$ST2/box-here/done" | cut -c1-12)" = "$(s2)"
 assert test ! -e "$ST2/box-bench/done"
 assert grep -q ' not ready: stub bench closed$' "$ST2/box-bench/owed"
-# A tick later: the bench owed, nothing runs, and a box that was not ready is asked again only after the period (its
-# probe wakes the M1's display).
+# A tick later: the bench owed, nothing runs; a box that was not ready (nothing ran) is asked again the next tick, not
+# after the period (2026-11-14: the locked bench stayed owed 8 h), its line logged once.
+n=$(probes)
 tick $((T2 + 10 * H + 60))
 assert test "$(brun)" = 1
-assert test "$(last)" = 'repo2 test_box.sh: owed bench: not due (tried 0 h 1 min ago, every 3 h)'
-tick $((T2 + 11 * H))
-assert test "$(brun)" = 1
+assert test "$(probes)" = $((n + 1))
 assert test "$(last)" = 'repo2 test_box.sh: owed bench: not ready: stub bench closed'
-# The same second again: a tick does not ask a box it has just tried; `retry` does (he says the M1 is free now).
-tick $((T2 + 11 * H))
-assert test "$(last)" = 'repo2 test_box.sh: owed bench: not due (tried 0 h 0 min ago, every 3 h)'
-: >"$GIT_CALLS"; SCHEDULED_SUITES_NOW=$((T2 + 11 * H)) "$S" retry
+# Unchanged: probed again, no line.
+l=$(loglines)
+tick $((T2 + 10 * H + 120))
+assert test "$(probes)" = $((n + 2))
+assert test "$(loglines)" = "$l"
 assert test "$(brun)" = 1
+# `retry` (he says the M1 is free now) says it again.
+: >"$GIT_CALLS"; SCHEDULED_SUITES_NOW=$((T2 + 10 * H + 120)) "$S" retry
+assert test "$(brun)" = 1
+assert test "$(loglines)" = $((l + 1))
 assert test "$(last)" = 'repo2 test_box.sh: owed bench: not ready: stub bench closed'
-# Ready: the bench pays main, once; then nothing is owed and the period holds again.
+# Ready the next tick: the bench pays main, once; then nothing is owed and the period holds again.
 touch "$BOX/open"
-tick $((T2 + 12 * H))
+tick $((T2 + 10 * H + 180))
 assert test "$(tail -1 "$BOX/runs")" = 'bench 4'
 assert test "$(last)" = "repo2 test_box.sh: ran bench: green at $(s2)"
 assert test ! -e "$ST2/box-bench/owed"
-tick $((T2 + 12 * H + 60))
+tick $((T2 + 10 * H + 240))
 assert test "$(brun)" = 2
 assert test ! -s "$GIT_CALLS"
 
@@ -236,7 +243,7 @@ assert test ! -e "$ST2/open"
 n=$(brun)
 tick $((T3 + 60))
 assert test "$(brun)" = "$n"
-assert test "$(last)" = 'repo2 test_box.sh: owed bench: not due (tried 0 h 1 min ago, every 3 h); owed here: not due (tried 0 h 1 min ago, every 3 h)'
+assert test "$(last)" = 'repo2 test_box.sh: owed bench: not ready: stub bench closed; owed here: not due (tried 0 h 1 min ago, every 3 h)'
 tick $((T3 + 86400 + 60))
 assert test "$(grep -c 'owed on here since' "$LIMIT_HITS_LOG")" = 1
 assert test "$(grep -c 'owed on bench since' "$LIMIT_HITS_LOG")" = 1
@@ -277,8 +284,54 @@ assert test "$(last)" = "repo2 test_box.sh: ran here: green at $(s2)"
 # A tick lock written before the boot names a pid of the last boot, maybe reused now: cleared.
 mkdir -p "$SCHEDULED_SUITES_DIR/.tick.lock" && printf '%s\n' "$$" >"$SCHEDULED_SUITES_DIR/.tick.lock/pid"
 touch -t 202601010000 "$SCHEDULED_SUITES_DIR/.tick.lock/pid"
+n=$(probes)
 SCHEDULED_SUITES_BOOT=$(date +%s) tick $((T4 + 4 * H + 120))
-assert test "$(last)" = 'repo2 test_box.sh: owed bench: not due (tried 0 h 2 min ago, every 3 h)'
+assert test "$(probes)" = $((n + 1))
+assert test "$(last)" = "repo2 test_box.sh: ran here: green at $(s2)"
+
+# ---- A box's `open` (2026-11-14: the locked bench stayed owed 8 h; tests/rig/bench up opens it): run when the box is
+# owed, due and not ready, at most once a period (its own stamp), then `ready` again.
+BOX="$WORK/box7" R7="$WORK/repo7"; mkdir -p "$BOX" "$R7/tests" "$R7/src"
+git -C "$R7" init -q
+cp "$R2/tests/test_box.sh" "$R7/tests/test_box.sh"
+cat >"$R7/tests/scheduled-suites" <<'EOF'
+box bench ready [ -e "$BOX/open" ] || { echo "stub bench closed"; exit 1; }
+box bench says ^\[bench [0-9]+ s,
+box bench open echo up >>"$BOX/opens"; [ ! -e "$BOX/hangopen" ] || sleep 30; [ ! -e "$BOX/openable" ] || touch "$BOX/open"
+box here says : on this Mac, the bench is closed
+test_box.sh 3 boxes=bench,here needs=bench
+EOF
+printf '1\n' >"$R7/src/value"
+git -C "$R7" add -A && git -C "$R7" commit -qm init
+printf '%s\n' "$R7" >"$SCHEDULED_SUITES_REPOS"
+opens() { cat "$BOX/opens" 2>/dev/null | wc -l | tr -d ' '; }
+T7=$((T4 + 50 * H))
+# Not ready: opened once, still closed; here takes the run.
+tick $T7
+assert test "$(opens)" = 1
+assert grep -qE '^[0-9-]+ [0-9:]+ repo7 test_box.sh: opened bench \(exit 0, [0-9]+ s\): still not ready: stub bench closed$' "$LOG"
+assert test "$(cat "$BOX/runs")" = 'here 1'
+# Inside the period: probed, not opened again, even when an open would work now.
+tick $((T7 + 60))
+assert test "$(opens)" = 1
+assert test "$(last)" = 'repo7 test_box.sh: owed bench: not ready: stub bench closed'
+touch "$BOX/openable"
+tick $((T7 + 120))
+assert test "$(opens)" = 1
+assert test "$(brun)" = 1
+# Past the period: opened, ready, the bench runs.
+tick $((T7 + H + 60))
+assert test "$(opens)" = 2
+assert grep -qE '^[0-9-]+ [0-9:]+ repo7 test_box.sh: opened bench \(exit 0, [0-9]+ s\): ready$' "$LOG"
+assert test "$(tail -1 "$BOX/runs")" = 'bench 1'
+assert test "$(last)" = "repo7 test_box.sh: ran bench: green at $(git -C "$R7" rev-parse main | cut -c1-12)"
+# An open that hangs is cut at SCHEDULED_SUITES_OPEN_S.
+rm "$BOX/open" "$BOX/openable"; touch "$BOX/hangopen"
+printf '2\n' >"$R7/src/value" && git -C "$R7" commit -qam 'value 2'
+SCHEDULED_SUITES_OPEN_S=1 tick $((T7 + 3 * H))
+assert test "$(opens)" = 3
+assert grep -qE '^[0-9-]+ [0-9:]+ repo7 test_box.sh: opened bench \(cut at 1 s, [0-9]+ s\): still not ready: stub bench closed$' "$LOG"
+assert test "$(tail -1 "$BOX/runs")" = 'here 2'
 
 # ---- A box's first red run (Egor 2026-11-14 04:20, chats-app test_swift_perf.sh: the bench red on its first run named
 # main's innocent newest commit, "(passed at )" empty, this Mac's readings as the bench's "was", each key twice). A
@@ -368,6 +421,45 @@ assert grep -qxF "Red on bench at $a5 too, where here was green: no commit of ma
 assert grep -qxF -- '- `k3`: was 3 on here, now 6 n' "$doc5"
 assert grep -qxF -- '- `w3`: now 15 n' "$doc5"
 assert test -z "$(grep -e "commit's files" -e 'src/other' "$doc5")"
+
+# ---- A blame confirmed before it is reported (2026-11-14: 292ef3f, a note edit in perf-budgets.json, blamed on 80.6 at
+# its parent and 82.9 at it against 82). The stub reads per commit subject the next number of $SEQ/<subject> (else 80).
+R8="$WORK/repo8" SEQ="$WORK/seq"; export SEQ; mkdir -p "$R8/tests" "$R8/src" "$SEQ"
+git -C "$R8" init -q
+cat >"$R8/tests/test_flap.sh" <<'EOF'
+#!/usr/bin/env bash
+s=$(git log -1 --format=%s) r=80 v=$(cat src/value)
+if [ -s "$SEQ/$s" ]; then r=$(head -1 "$SEQ/$s"); tail -n +2 "$SEQ/$s" >"$SEQ/$s.t"; mv "$SEQ/$s.t" "$SEQ/$s"; fi
+echo "$s $r $v" >>"$SEQ/runs"
+if awk -v r="$r" 'BEGIN { exit !(r <= 82) }'; then echo "perf flap_k: $r ms (budget 82)"
+else echo "FAIL: perf flap_k: $r ms over budget 82 (set at: t). Fix: f"; exit 1; fi
+EOF
+printf 'test_flap.sh 3 tests/budgets.json\n' >"$R8/tests/scheduled-suites"
+printf '{}\n' >"$R8/tests/budgets.json"; printf '1\n' >"$R8/src/value"
+git -C "$R8" add -A && git -C "$R8" commit -qm init
+printf '%s\n' "$R8" >"$SCHEDULED_SUITES_REPOS"
+T8=$((T5 + 10 * H))
+tick $T8
+assert test "$(last)" = "repo8 test_flap.sh: ran here: green at $(s12 "$R8")"
+c8() { printf '%s\n' "$2" >"$R8/$1" && git -C "$R8" commit -qam "$3"; }
+c8 src/value 2 p1
+c8 src/value 3 p2; p2=$(s12 "$R8")
+c8 tests/budgets.json '{"note": 1}' note; n8=$(s12 "$R8")
+c8 src/value 4 p4; h8=$(s12 "$R8")
+printf '80.6\n82.9\n' >"$SEQ/p2"; printf '82.9\n' >"$SEQ/note"; printf '83.0\n83.0\n' >"$SEQ/p4"
+# The search: p2 passes (80.6), note fails (82.9); p2 run again fails (82.9): no commit blamed.
+tick $((T8 + H))
+assert grep -qF "repo8 test_flap.sh: confirm at $p2: fail" "$LOG"
+assert test -z "$(ls "$R8"/docs/handoffs/*-"${n8:0:7}".md 2>/dev/null)"
+doc8=$(ls "$R8"/docs/handoffs/*-scheduled-test_flap-"${h8:0:7}".md 2>/dev/null)
+assert test -n "$doc8"
+assert grep -qxF "# Hand-off: tests/test_flap.sh red on main at $h8, the search did not hold (the scheduled run)" "$doc8"
+assert grep -qF "\`$p2\` (p2) passed in the search and failed when run again on the same box" "$doc8"
+assert grep -qxF -- '- `flap_k`: was 80.6, now 82.9 ms' "$doc8"
+assert grep -qxF -- '- `flap_k`: now 83.0 ms' "$doc8"
+assert test -z "$(grep -e 'fails from' -e "commit's files" -e "$n8" "$doc8")"
+assert test "$(cat "$SCHEDULED_SUITES_DIR/repo8/test_flap.sh/open")" = "test_flap.sh red on main at $h8, the search did not hold ($p2 passed once, failed once): $doc8"
+assert test "$(last)" = "repo8 test_flap.sh: ran here: red on main at $h8, the search did not hold ($p2 passed once, failed once); reported in ${doc8#"$R8"/}"
 
 # --install-agent: the plist starts the libexec wrapper of the script (Login Items show its name), every 15 min; again,
 # a no-op.
