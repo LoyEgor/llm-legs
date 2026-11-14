@@ -280,6 +280,95 @@ touch -t 202601010000 "$SCHEDULED_SUITES_DIR/.tick.lock/pid"
 SCHEDULED_SUITES_BOOT=$(date +%s) tick $((T4 + 4 * H + 120))
 assert test "$(last)" = 'repo2 test_box.sh: owed bench: not due (tried 0 h 2 min ago, every 3 h)'
 
+# ---- A box's first red run (Egor 2026-11-14 04:20, chats-app test_swift_perf.sh: the bench red on its first run named
+# main's innocent newest commit, "(passed at )" empty, this Mac's readings as the bench's "was", each key twice). A
+# stub suite with two keys: k3's budget the same on both boxes (the bench reads $BOX/off more), w3's 20 here and 10 on
+# the bench (marked `, m1`, as perf-judge prints); each FAIL line printed again at the end, as perf-judge's summary.
+mkperf() { # repo
+  mkdir -p "$1/tests" "$1/src"
+  git -C "$1" init -q
+  cat >"$1/tests/test_perf3.sh" <<'EOF'
+#!/usr/bin/env bash
+where=here; [ -e "$BOX/open" ] && where=bench
+[ "$where" = bench ] || echo "test_perf3.sh: on this Mac, the bench is closed (stub)" >&2
+echo "$where $(cat src/value) $(cat src/wait)" >>"$BOX/runs"
+bad=''
+judge() { # key got budget mark
+  if [ "$2" -le "$3" ]; then echo "perf $1: $2 n (budget $3$4)"
+  else echo "FAIL: perf $1: $2 n over budget $3 (set at: t). Fix: f"; bad+="FAIL: perf $1: $2 n over budget $3 (set at: t). Fix: f"$'\n'; fi
+}
+off=0; [ "$where" = here ] || off=$(cat "$BOX/off" 2>/dev/null || echo 0)
+judge k3 $(($(cat src/value) + off)) 4 ''
+if [ "$where" = bench ]; then judge w3 "$(cat src/wait)" 10 ', m1'; else judge w3 "$(cat src/wait)" 20 ''; fi
+[ "$where" = here ] || echo "[bench 1 s, fallback alone] done"
+[ -z "$bad" ] || { printf '%s' "$bad"; exit 1; }
+EOF
+  cat >"$1/tests/scheduled-suites" <<'EOF'
+box bench ready [ -e "$BOX/open" ] || { echo "stub bench closed"; exit 1; }
+box bench says ^\[bench [0-9]+ s,
+box here says : on this Mac, the bench is closed
+test_perf3.sh 3 boxes=bench,here needs=bench
+EOF
+  printf '%s\n' "$1" >"$SCHEDULED_SUITES_REPOS"
+}
+cv() { # repo value wait subject
+  printf '%s\n' "$2" >"$1/src/value"; printf '%s\n' "$3" >"$1/src/wait"; git -C "$1" add -A; git -C "$1" commit -qm "$4"
+}
+s12() { git -C "$1" rev-parse "${2:-main}" | cut -c1-12; }
+T5=$((T4 + 100 * H))
+
+# The bench's first run red, here green two covered commits back: searched from here's green commit, on the bench.
+BOX="$WORK/box3" R3="$WORK/repo3"; mkdir -p "$BOX"; mkperf "$R3"
+cv "$R3" 1 5 init; a3=$(s12 "$R3")
+tick $T5
+assert test "$(last)" = "repo3 test_perf3.sh: ran here: green at $a3"
+cv "$R3" 2 5 'value 2'; b3=$(s12 "$R3")
+cv "$R3" 5 15 'value 5, wait 15: the regression'; c3=$(s12 "$R3")
+mkdir -p "$R3/docs" && echo n >"$R3/docs/notes.md" && git -C "$R3" add -A && git -C "$R3" commit -qm 'notes: not covered'
+touch "$BOX/open"
+tick $((T5 + H))
+doc3=$(ls "$R3"/docs/handoffs/*-scheduled-test_perf3-"${c3:0:7}".md 2>/dev/null)
+assert test -n "$doc3"
+assert test "$(last)" = "repo3 test_perf3.sh: ran bench: red from $c3 (passed at $b3; green on here at $a3; first run on bench); reported in ${doc3#"$R3"/}"
+assert grep -qF "on bench fails from \`$c3\` (" "$doc3"
+assert grep -qF "; passed at $b3; green on here at $a3; first run on bench): value 5, wait 15: the regression" "$doc3"
+assert grep -qxF -- '- `k3`: was 2, now 5 n' "$doc3"
+assert grep -qxF -- '- `w3`: was 5, now 15 n' "$doc3"
+assert test "$(grep -c '^- `' "$doc3")" = 2
+assert grep -qxF 'The commit'"'"'s files: `src/value`, `src/wait`.' "$doc3"
+assert grep -qF "test_perf3.sh red on main from $c3 value 5, wait 15: the regression (passed at $b3; green on here at $a3; first run on bench): $doc3" "$SCHEDULED_SUITES_DIR/repo3/test_perf3.sh/open"
+cp "$doc3" "$WORK/first-run-searched.md"
+
+# No green run on any box: no search, "red at <sha>, first measured", no commit's files.
+BOX="$WORK/box4" R4="$WORK/repo4"; mkdir -p "$BOX"; mkperf "$R4"; touch "$BOX/open"
+cv "$R4" 5 5 'value 5 from the start'; a4=$(s12 "$R4")
+tick $T5
+doc4=$(ls "$R4"/docs/handoffs/*-scheduled-test_perf3-"${a4:0:7}".md 2>/dev/null)
+assert test -n "$doc4"
+assert test "$(last)" = "repo4 test_perf3.sh: ran bench: red at $a4, first measured; reported in ${doc4#"$R4"/}"
+assert grep -qxF "# Hand-off: tests/test_perf3.sh red at $a4, first measured (the scheduled run)" "$doc4"
+assert grep -qxF -- '- `k3`: now 5 n' "$doc4"
+assert test "$(grep -c '^- `' "$doc4")" = 1
+assert test -z "$(grep -e "commit's files" -e 'src/value' -e 'passed at' -e ' from ' "$doc4")"
+assert test "$(cat "$SCHEDULED_SUITES_DIR/repo4/test_perf3.sh/open")" = "test_perf3.sh red at $a4, first measured: $doc4"
+SCHEDULED_SUITES_NOW=$T5 "$S" status >"$WORK/status.out"
+assert grep -qF "; open: test_perf3.sh red at $a4, first measured: $doc4" "$WORK/status.out"
+cp "$doc4" "$WORK/first-measured.md"
+
+# Red on the bench at here's green commit too: first measured; here's reading labelled, w3's (a budget by box) left out.
+BOX="$WORK/box5" R5="$WORK/repo5"; mkdir -p "$BOX"; mkperf "$R5"
+cv "$R5" 3 15 init; a5=$(s12 "$R5")
+tick $T5
+echo x >"$R5/src/other" && git -C "$R5" add -A && git -C "$R5" commit -qm other; c5=$(s12 "$R5")
+touch "$BOX/open"; echo 3 >"$BOX/off"
+tick $((T5 + H))
+doc5=$(ls "$R5"/docs/handoffs/*-scheduled-test_perf3-"${c5:0:7}".md 2>/dev/null)
+assert test "$(last)" = "repo5 test_perf3.sh: ran bench: red at $c5, first measured; reported in ${doc5#"$R5"/}"
+assert grep -qxF "Red on bench at $a5 too, where here was green: no commit of main is the cause." "$doc5"
+assert grep -qxF -- '- `k3`: was 3 on here, now 6 n' "$doc5"
+assert grep -qxF -- '- `w3`: now 15 n' "$doc5"
+assert test -z "$(grep -e "commit's files" -e 'src/other' "$doc5")"
+
 # --install-agent: the plist starts the libexec wrapper of the script (Login Items show its name), every 15 min; again,
 # a no-op.
 "$S" --install-agent >"$WORK/agent.out"

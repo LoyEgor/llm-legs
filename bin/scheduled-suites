@@ -34,7 +34,12 @@ fi
 # `needs` box passes). FAIL runs once more (flakes); red twice and green at the box's last good, the first bad commit
 # is searched between them: first-parent commits touching covered files,
 # halved, each step the same suite on the same box, at most SCHEDULED_SUITES_STEPS (6) steps, a step that does not
-# build (could not run, or went to another box) skipped as git bisect does. One report per failure: a handoff docs/handoffs/<date>-scheduled-<suite>-
+# build (could not run, or went to another box) skipped as git bisect does. A box with no green commit of its own (its
+# first run) searches from the newest commit another box finished green on, once a control there passes on it ("green
+# on <box> at <sha>; first run on <this box>"); no green commit anywhere, or red at that one too: "red at <sha>, first
+# measured", no commit named. "was" readings come from the same box's green run; another box's are labelled with it,
+# and left out for a key whose budget differs by box (`(budget N, m1)`, or another budget); each key once, the later
+# reading. One report per failure: a handoff docs/handoffs/<date>-scheduled-<suite>-
 # <sha>.md in the repository's main checkout (untracked; share/handoffs.py and the night's carry take it from there:
 # its owner chat by the edits of the commit's files, else a night job; the LLM doctor names it once 60 h open), and
 # the line every tests/affected run there prints (`scheduled: ...`). Red again while reported: logged, nothing sent.
@@ -218,39 +223,70 @@ perf_value() { # log key -> the number a perf line of key reads there (tests/lib
   sed -nE "s/^(FAIL: )?perf $2: ([^ ]+) .*/\\2/p" "$1" 2>/dev/null | tail -1
 }
 
-findings() { # now-log was-log -> one line a failed budget key (key: was W, now N unit), else the first FAIL lines
+perf_line() { # log key -> the last perf line of key there
+  grep -E "^(FAIL: )?perf $2: " "$1" 2>/dev/null | tail -1
+}
+budget_of() { # a perf line -> its budget: `(budget N[, box])`, `(floor N...`, `over budget N`, `under floor N`
+  sed -nE 's/.*(\((budget|floor)|over budget|under floor) ([^ ,)]+).*/\3/p' <<<"$1"
+}
+box_bound() { # now-log was-log key -> 0 when the key's budget differs by box: a line marked for its box (perf-judge's
+  # `(budget N, m1)`), or the two runs judged against different budgets
+  local a b
+  a=$(perf_line "$1" "$3") b=$(perf_line "$2" "$3")
+  grep -qE '\((budget|floor) [^,)]+, [^)]+\)' <<<"$a"$'\n'"$b" && return 0
+  [ "$(budget_of "$a")" != "$(budget_of "$b")" ]
+}
+
+findings() { # now-log was-log [was-box] -> one line a failed budget key, once (the later run's reading: key: was W, now N
+  # unit), else the first FAIL lines. A was-log of another box: its reading labelled with the box, none for a key whose
+  # budget differs by box; no was-log (no green run anywhere): the reading alone.
   local key got unit was any=''
   while read -r key got unit; do
-    any=1 was=$(perf_value "$2" "$key")
-    printf -- '- `%s`: was %s, now %s %s\n' "$key" "${was:-unknown}" "$got" "$unit"
-  done < <(sed -nE 's/^FAIL: perf ([^:]+): ([^ ]+) ([^ ]+) .*/\1 \2 \3/p' "$1")
-  [ -n "$any" ] || grep -m 3 '^FAIL' "$1" | cut -c1-300 | sed 's/^/- /'
+    any=1 was=''
+    if [ -z "$2" ]; then printf -- '- `%s`: now %s %s\n' "$key" "$got" "$unit"; continue; fi
+    was=$(perf_value "$2" "$key")
+    if [ -n "$3" ] && { [ -z "$was" ] || box_bound "$1" "$2" "$key"; }; then
+      printf -- '- `%s`: now %s %s\n' "$key" "$got" "$unit"; continue
+    fi
+    printf -- '- `%s`: was %s%s, now %s %s\n' "$key" "${was:-unknown}" "${3:+ on $3}" "$got" "$unit"
+  done < <(sed -nE 's/^FAIL: perf ([^:]+): ([^ ]+) ([^ ]+) .*/\1 \2 \3/p' "$1" |
+    awk '!($1 in v) { o[++n] = $1 } { v[$1] = $0 } END { for (i = 1; i <= n; i++) print v[o[i]] }')
+  [ -n "$any" ] || grep '^FAIL' "$1" | awk '!seen[$0]++' | head -3 | cut -c1-300 | sed 's/^/- /'
   [ -n "$any" ] || grep -q '^FAIL' "$1" || printf -- '- no FAIL line; the log: %s\n' "$1"
 }
 
-report() { # first-bad last-pass now-log was-log range-note -> the handoff and the open line
-  local bad=$1 good=$2 now_log=$3 was_log=$4 note=$5 subject when doc files rel
+report() { # first-bad last-pass now-log was-log range-note [was-box] [since] -> the handoff and the open line
+  # last-pass empty: no green run anywhere to search from, "red at <sha>, first measured", no commit named. was-box:
+  # the box was-log's readings are from when not $went; since: the clause naming where the search started (default
+  # "passed at <last-pass>").
+  local bad=$1 good=$2 now_log=$3 was_log=$4 note=$5 was_box=${6:-} since=${7:-} subject when doc files rel red
   subject=$(git -C "$repo" log -1 --format=%s "$bad" | cut -c1-200)
   when=$(git -C "$repo" log -1 --format=%cd --date=format:'%F %R' "$bad")
-  files=$(git -C "$repo" diff --name-only "$bad^1" "$bad" 2>/dev/null | head -20 | sed 's/.*/`&`/' | paste -sd, - | sed 's/,/, /g')
+  [ -z "$good" ] || files=$(git -C "$repo" diff --name-only "$bad^1" "$bad" 2>/dev/null | head -20 | sed 's/.*/`&`/' | paste -sd, - | sed 's/,/, /g')
+  if [ -z "$good" ]; then red="red at ${bad:0:12}, first measured" since=''
+  else red="red on main from ${bad:0:12}" since=${since:-passed at ${good:0:12}}; fi
   mkdir -p "$repo/docs/handoffs"
   rel=docs/handoffs/$(date +%F)-scheduled-${suite%.*}-${bad:0:7}.md
   doc=$repo/$rel
   {
-    printf '# Hand-off: tests/%s red on main from %s (the scheduled run)\n\nStatus: open\n\n' "$suite" "${bad:0:12}"
+    printf '# Hand-off: tests/%s %s (the scheduled run)\n\nStatus: open\n\n' "$suite" "$red"
     printf 'From: bin/scheduled-suites (llm-legs), %s. The suite is in tests/scheduled-suites: no worker or landing runs it, so whoever reads this fixes it, not necessarily the chat of the commit.\n\n' "$(date '+%F %R')"
-    printf '## What failed\n\n`tests/%s` %s `%s` (%s): %s\n\n' "$suite" \
-      "$([ -n "$good" ] && printf 'passed at `%s` and fails from' "${good:0:12}" || printf 'fails at')" "${bad:0:12}" "$when" "$subject"
+    if [ -z "$good" ]; then
+      printf '## What failed\n\n`tests/%s` on %s is red at main `%s`, first measured: no box finished it green on an earlier commit of main, so no commit is searched or named.\n\n' \
+        "$suite" "$went" "${bad:0:12}"
+    else
+      printf '## What failed\n\n`tests/%s` on %s fails from `%s` (%s; %s): %s\n\n' "$suite" "$went" "${bad:0:12}" "$when" "$since" "$subject"
+    fi
     [ -z "$note" ] || printf '%s\n\n' "$note"
-    findings "$now_log" "$was_log"
-    printf '\nThe commit'"'"'s files: %s.\n\n' "${files:-none listed}"
-    printf '## Settle\n\nFix it on main (or the budget, with its measurement), `tests/run-all %s` to check. The next scheduled pass on main sets this Status to settled by itself. Logs: `%s`, `%s`.\n' \
-      "$suite" "$now_log" "$was_log"
+    findings "$now_log" "$([ ! -r "$was_log" ] || echo "$was_log")" "$was_box"
+    [ -z "$good" ] || printf '\nThe commit'"'"'s files: %s.\n' "${files:-none listed}"
+    printf '\n## Settle\n\nFix it on main (or the budget, with its measurement), `tests/run-all %s` to check. The next scheduled pass on main sets this Status to settled by itself. Logs: `%s`%s.\n' \
+      "$suite" "$now_log" "$([ ! -r "$was_log" ] || printf ', `%s`' "$was_log")"
   } >"$doc"
-  printf '%s red on main from %s %s (passed at %s): %s\n' "$suite" "${bad:0:12}" "$(printf %s "$subject" | cut -c1-80)" \
-    "${good:0:12}" "$doc" >"$st/open"
+  if [ -z "$good" ]; then printf '%s %s: %s\n' "$suite" "$red" "$doc"
+  else printf '%s %s %s (%s): %s\n' "$suite" "$red" "$(printf %s "$subject" | cut -c1-80)" "$since" "$doc"; fi >"$st/open"
   put "$st/open.box" "$went"
-  log "$tag: ran $went: red from ${bad:0:12} (passed at ${good:0:12}); reported in $rel"
+  log "$tag: ran $went: ${red/#red on main from/red from}${since:+ ($since)}; reported in $rel"
 }
 
 settle() { # sha: an open failure's handoff settled by a pass at sha
@@ -265,11 +301,12 @@ settle() { # sha: an open failure's handoff settled by a pass at sha
   log "$tag: ran $went: green again at ${1:0:12}; settled ${doc#"$repo"/}"
 }
 
-bisect() { # good head was-log -> report the first bad commit on $went: first-parent commits touching covered files, halved
-  local good=$1 head=$2 was_log=$3 line sha lo hi mid v steps=0 i try found
+bisect() { # good head was-log [was-box] [good-box] [note] -> report the first bad commit on $went: first-parent commits
+  # touching covered files, halved; good-box: the box good was green on when not $went (its first run there)
+  local good=$1 head=$2 was_log=$3 was_box=${4:-} from=${5:-} first=${6:-} line sha lo hi mid v steps=0 i try found
   local -a cands=() files=() verdict=()
   if [ -z "$good" ] || ! git -C "$repo" merge-base --is-ancestor "$good" "$head" 2>/dev/null; then
-    report "$head" '' "$st/head.log" "$was_log" 'No earlier scheduled pass to search from: the commit is main as first measured.'
+    report "$head" '' "$st/head.log" "$was_log" "$first" "$was_box"
     return
   fi
   sha=''
@@ -302,11 +339,25 @@ bisect() { # good head was-log -> report the first bad commit on $went: first-pa
     [ -n "$found" ] || break
     if [ "${verdict[$found]}" = pass ]; then lo=$found; else hi=$found; fi
   done
-  local was=$was_log now=$st/head.log note=''
-  [ "$lo" -lt 0 ] || was=$st/step-${cands[$lo]:0:12}.log
+  local was=$was_log now=$st/head.log note='' since=''
+  [ -z "$from" ] || since="green on $from at ${good:0:12}; first run on $went"
+  # A green step ran on $went: its readings are this box's own.
+  [ "$lo" -lt 0 ] || { was=$st/step-${cands[$lo]:0:12}.log was_box=''; [ -z "$since" ] || since="passed at ${cands[$lo]:0:12}; $since"; }
   [ ! -r "$st/step-${cands[$hi]:0:12}.log" ] || now=$st/step-${cands[$hi]:0:12}.log
   [ $((hi - lo)) -le 1 ] || note="Not narrowed to one commit (step cap $STEPS or unbuildable steps): the first bad is one of the $((hi - lo)) first-parent commits after $([ "$lo" -lt 0 ] && echo "${good:0:12}" || echo "${cands[$lo]:0:12}") up to this one."
-  report "${cands[$hi]}" "$([ "$lo" -lt 0 ] && echo "$good" || echo "${cands[$lo]}")" "$now" "$was" "$note"
+  report "${cands[$hi]}" "$([ "$lo" -lt 0 ] && echo "$good" || echo "${cands[$lo]}")" "$now" "$was" "$note" "$was_box" "$since"
+}
+
+green_elsewhere() { # -> good, from: the newest commit another box of the suite finished green on, an ancestor of main
+  local b g
+  good='' from=''
+  for b in "${boxes[@]}"; do
+    [ "$b" != "$went" ] || continue
+    g=$(first_line "$st/box-$b/good")
+    [ -n "$g" ] && git -C "$repo" merge-base --is-ancestor "$g" "$head" 2>/dev/null || continue
+    [ -z "$good" ] || git -C "$repo" merge-base --is-ancestor "$good" "$g" 2>/dev/null || continue
+    good=$g from=$b
+  done
 }
 
 declare -A box_ready=() box_says=() box_run=()
@@ -393,7 +444,7 @@ finished() { # verdict: main's head finished on $went (pass or fail): the suite'
 }
 
 decide() { # one suite of one repository: the decision, and the run when one is due
-  local now ran head v went='' b why last t target='' notes='' legacy='' pay_any='' moved='' rc good c was
+  local now ran head v went='' b why last t target='' notes='' legacy='' pay_any='' moved='' rc good c was was_box from first
   local run_pid='' run_box='' run_from=''
   local -A owes=()
   mkdir -p "$st"
@@ -461,15 +512,21 @@ decide() { # one suite of one repository: the decision, and the run when one is 
     [ "$v" != pass ] || log "$tag: ran $went: green on the rerun at ${head:0:12} (flaky)"
   fi
   # Red twice with nothing reported: once more at the box's last good. Red there too, the cause is not in the diff.
-  was=$st/good.log
+  # A box with no green commit of its own (its first run) searches from the newest one another box finished green on.
+  was='' was_box='' from='' first=''
   if [ "$v" = fail ] && [ ! -e "$st/open" ]; then
-    good=$(first_line "$(box_file "$went" good)"); [ -n "$good" ] || in_needs "$went" || good=$(first_line "$st/good")
-    [ ! -r "$(box_file "$went" good.log)" ] || was=$(box_file "$went" good.log)
+    good=$(first_line "$(box_file "$went" good)")
+    if [ -n "$good" ]; then [ ! -r "$(box_file "$went" good.log)" ] || was=$(box_file "$went" good.log)
+    else green_elsewhere; [ -z "$from" ] || { was=$st/box-$from/good.log was_box=$from; }; fi
     if [ -n "$good" ] && [ "$good" != "$head" ]; then
       c=$(run_at "$good" "$st/control.log" "$went")
-      if [ "$c" = "fail $went" ]; then v=could-not
+      if [ "$c" = "fail $went" ] && [ -n "$from" ]; then
+        # Red on its first run at the other box's green commit too: this box's readings, no commit's.
+        first="Red on $went at ${good:0:12} too, where $from was green: no commit of main is the cause."
+        good='' was=$st/box-$from/good.log
+      elif [ "$c" = "fail $went" ]; then v=could-not
         why="red at ${head:0:12} and at its last good ${good:0:12} too: the cause is not in the diff ($(why_not_run "$st/control.log"))"
-      elif [ "$c" = "pass $went" ]; then was=$st/control.log; fi
+      elif [ "$c" = "pass $went" ]; then was=$st/control.log was_box=''; fi
     fi
   fi
   case $v in
@@ -490,7 +547,7 @@ decide() { # one suite of one repository: the decision, and the run when one is 
     fail)
       finished fail
       if [ -e "$st/open" ]; then log "$tag: ran $went: still red at ${head:0:12}, reported: $(first_line "$st/open" | sed 's/.*: //')"
-      else bisect "$good" "$head" "$was"; fi ;;
+      else bisect "$good" "$head" "$was" "$was_box" "$from" "$first"; fi ;;
   esac
 }
 
