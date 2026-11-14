@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # claude-relogin — logs a logged-out Claude account back in with no password: `claude auth login` under its profile,
 # its Chrome profile's surviving Google session, and a codex Computer Use run that clicks Authorize; then revive.
-# usage: claude-relogin <account> [--dry-run]
+# usage: claude-relogin <account> [--on <node>] [--dry-run]
 #
 # The flow Egor proved by hand (2026-11-13): (1) `claude auth login --claudeai` with a BROWSER stub that writes the
 # authorize URL (localhost:<port>/callback redirect) to a file while the process waits for the callback; (2)
@@ -10,13 +10,20 @@
 # Authorize, stopping on any password, code, captcha, passkey or other email; (4) `claude auth status` shows the
 # registry email and `claudeb revive` clears auth_needed. bin/llm-refresh starts it detached for a logged-out account.
 #
+# --on <node> gives another Mac (an ssh name, `machines`) its OWN login of the account, so the node refreshes its own
+# token and keeps working with this Mac off; a copied login would not, its refresh token being single-use. Steps 1
+# and 4 and the revive run on the node, in its desktop session (`sudo -n launchctl asuser`: an ssh session cannot read
+# the keychain); steps 2 and 3 stay here, where the Chrome profile and Computer Use are, and an ssh forward of the
+# callback port carries Authorize's redirect to the node's waiting login. Stamps and journal lines are <account>@<node>.
+#
 # Exit codes, each with one `REASON:` line (0 prints `RELOGIN:`):
 #   0 logged in and revived            2 usage, unknown account or no brief template
 #   3 already logged in (refused)      4 no enrolled Chrome profile (refused)
 #   5 another relogin is live (lock)   6 cool-down: a real attempt within CLAUDE_RELOGIN_COOLDOWN_S (refused)
-#   7 weather: no codex account can serve Computer Use, or a read failed; no attempt stamp, retried next time
+#   7 weather: no codex account can serve Computer Use, the node or a read failed; no attempt stamp, retried next time
 #   8 the attempt failed; the waiting login is killed and "login needed" stays
 #   9 logged in, but `claudeb revive` failed
+#  10 the node cannot hold a login: no claude, claudeb or jq there, no passwordless sudo, nobody at its screen
 # Every verdict but usage reaches token-attempts.jsonl as kind `relogin`; --dry-run journals, stamps and starts nothing.
 {
 set -u
@@ -50,20 +57,87 @@ run_timeout=$(seconds CLAUDE_RELOGIN_RUN_TIMEOUT_S 1200)
 login_wait=$(seconds CLAUDE_RELOGIN_LOGIN_WAIT_S 60)
 status_timeout=$(seconds CLAUDE_RELOGIN_STATUS_TIMEOUT_S 30)
 revive_timeout=$(seconds CLAUDE_RELOGIN_REVIVE_TIMEOUT_S 240)
+# machines' ssh options: no prompt, and a node that sleeps mid-call drops the session in ~30 s instead of hanging it.
+read -r -a node_ssh <<<"${CLAUDE_RELOGIN_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR -o ServerAliveInterval=10 -o ServerAliveCountMax=3}"
 
-account='' dry_run=false work='' login_pid='' locked=false prev_stamp=null
+account='' node='' key='' dry_run=false work='' login_pid='' node_pid='' forward_pid='' locked=false prev_stamp=null
 
-usage() { printf 'usage: claude-relogin <account> [--dry-run]\n' >&2; exit 2; }
-note() { printf 'claude-relogin: %s: %s\n' "$account" "$*" >&2; }
+usage() { printf 'usage: claude-relogin <account> [--on <node>] [--dry-run]\n' >&2; exit 2; }
+note() { printf 'claude-relogin: %s: %s\n' "$key" "$*" >&2; }
 
 # One verdict: journal (kind relogin), one REASON line, the exit code.
 verdict() { # code outcome text
-  $dry_run || token_journal "$account" relogin "$2"
+  $dry_run || token_journal "$key" relogin "$2"
   printf 'REASON: %s — %s\n' "$2" "$3"
   exit "$1"
 }
 
+# The node's half, a POSIX sh script read from ssh's stdin: `sh -s -- <verb> <account> [args]`. Every claude or
+# claudeb call goes through the desktop session, where the login keychain is open (an ssh session gets "User
+# interaction is not allowed", rc 36). Exits 10 for a node that cannot hold a login, with the why on stdout.
+node_script=$(cat <<'NODE'
+set -u
+verb=$1 account=$2
+PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH
+profile="$HOME/.claude-profiles/$account"
+gui() { sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" env HOME="$HOME" PATH="$PATH" "$@"; }
+case $verb in
+  ready)
+    for tool in claude claudeb jq; do
+      command -v "$tool" >/dev/null 2>&1 || { echo "no $tool on its PATH (machines install <node>)"; exit 10; }
+    done
+    sudo -n true 2>/dev/null || { echo "no passwordless sudo, so an ssh session cannot reach its keychain"; exit 10; }
+    [ "$(stat -f %Su /dev/console 2>/dev/null)" = "$(id -un)" ] ||
+      { echo "$(id -un) is not logged in at its screen, so no keychain is open"; exit 10; } ;;
+  status) gui env CLAUDE_CONFIG_DIR="$profile" "$(command -v claude)" auth status --json ;;
+  logout) gui env CLAUDE_CONFIG_DIR="$profile" "$(command -v claude)" auth logout ;;
+  revive) gui "$(command -v claudeb)" revive "$account" ;;
+  # 0 when the node's claudeb store holds a snapshot of the account with no login flag: nothing left to do.
+  snapshot) jq -e 'type == "object" and .auth_needed != true' "$HOME/.claude-profiles/.claudeb/limits/$account.json" >/dev/null 2>&1 ;;
+  # The waiting login: PID= and URL= lines as soon as the BROWSER stub has the URL, EXIT= when it ends; a watchdog
+  # ends it after $4 s, so a caller that died without its cleanup leaves no login waiting on the node.
+  login)
+    work=$(mktemp -d "${TMPDIR:-/tmp}/claude-relogin.XXXXXX") || exit 1
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >>"%s/url"\n' "$work" >"$work/browser"
+    chmod 755 "$work/browser"
+    mkdir -p "$profile"
+    gui /bin/sh -c 'echo $$ >"$1/pid"; exec env CLAUDE_CONFIG_DIR="$2" BROWSER="$1/browser" "$3" auth login --claudeai </dev/null >"$1/log" 2>&1' \
+      sh "$work" "$profile" "$(command -v claude)" >/dev/null 2>&1 &
+    holder=$! pid='' n=0
+    while [ ! -s "$work/url" ] && [ "$n" -lt $(($3 * 5)) ]; do
+      [ -n "$pid" ] || pid=$(cat "$work/pid" 2>/dev/null)
+      [ -z "$pid" ] || kill -0 "$pid" 2>/dev/null || break
+      sleep 0.2
+      n=$((n + 1))
+    done
+    [ -n "$pid" ] || pid=$(cat "$work/pid" 2>/dev/null)
+    echo "PID=$pid"
+    [ ! -s "$work/url" ] || sed -n '1s/^/URL=/p' "$work/url"
+    ( sleep "$4" & s=$!; trap 'kill $s 2>/dev/null; exit 0' TERM; wait $s; [ -z "$pid" ] || kill "$pid" 2>/dev/null ) &
+    watchdog=$!
+    rc=0
+    wait "$holder" || rc=$?
+    kill "$watchdog" 2>/dev/null
+    tail -n 3 "$work/log" 2>/dev/null
+    echo "EXIT=$rc"
+    rm -rf "$work" ;;
+  # The waiting login, ended by the pid its PID= line named.
+  stop) kill "$3" 2>/dev/null; : ;;
+esac
+NODE
+)
+
+# node_run <seconds> <verb> [args...]: the verb on the node, bounded; 255 is ssh's own failure.
+node_run() {
+  local limit=$1
+  shift
+  run_bounded "$limit" "${node_ssh[@]}" "$node" sh -s -- "$1" "$account" "${@:2}" <<<"$node_script"
+}
+
 cleanup() {
+  node_stop
+  [ -z "$forward_pid" ] || ! kill -0 "$forward_pid" 2>/dev/null || process_tree_end "$forward_pid" 2
   if [ -n "$login_pid" ] && kill -0 "$login_pid" 2>/dev/null; then process_tree_end "$login_pid" 2; fi
   ! $locked || store_lock_release "$claude_relogin_lock"
   [ -z "$work" ] || rm -rf "$work"
@@ -77,7 +151,7 @@ state_write() { # jq filter over $old, $a, $now, $v, $prev
   old=$(jq -c 'if type == "object" then . else {} end' "$claude_relogin_state" 2>/dev/null) || old=''
   [ -n "$old" ] || old='{}'
   tmp="$claude_relogin_state.tmp.$$"
-  if jq -n --argjson old "$old" --arg a "$account" --argjson now "${EPOCHSECONDS:-$(date +%s)}" \
+  if jq -n --argjson old "$old" --arg a "$key" --argjson now "${EPOCHSECONDS:-$(date +%s)}" \
       --arg v "${2:-}" --argjson prev "$prev_stamp" "$1" >"$tmp" 2>/dev/null; then
     mv -f "$tmp" "$claude_relogin_state" || rm -f "$tmp"
   else
@@ -89,15 +163,31 @@ stamp() { state_write '$old + {($a): {at: $now, verdict: $v}}' "$1"; }
 # Weather is no attempt: the stamp the attempt wrote goes back to what it was.
 unstamp() { state_write 'if $prev == null then $old | del(.[$a]) else $old + {($a): $prev} end'; }
 
-auth_status() { # -> the `claude auth status` JSON of the account's profile
+auth_status() { # -> the `claude auth status` JSON of the account's profile, here or on the node
+  if [ -n "$node" ]; then node_run "$status_timeout" status 2>/dev/null; return; fi
   run_bounded "$status_timeout" env CLAUDE_CONFIG_DIR="$profile_dir" "$claude_bin" auth status --json 2>/dev/null
 }
 
+# The node's login ends with the ssh session that holds it; one still held is stopped there by its pid.
+node_stop() {
+  [ -n "$node_pid" ] && [ -n "$login_pid" ] && kill -0 "$login_pid" 2>/dev/null && node_run 20 stop "$node_pid" >/dev/null 2>&1
+  node_pid=''
+}
+
 kill_login() {
+  node_stop
+  [ -z "$forward_pid" ] || ! kill -0 "$forward_pid" 2>/dev/null || process_tree_end "$forward_pid" 2
+  forward_pid=''
   [ -n "$login_pid" ] || return 0
   ! kill -0 "$login_pid" 2>/dev/null || process_tree_end "$login_pid" 2
   wait "$login_pid" 2>/dev/null
   login_pid=''
+}
+
+# The revive that clears login needed, on the node when there is one.
+revive() { # -> claudeb revive's exit code, its output on stdout
+  if [ -n "$node" ]; then node_run "$revive_timeout" revive 2>&1; return; fi
+  run_bounded "$revive_timeout" "$claudeb_bin" revive "$account" 2>&1
 }
 
 # A failed attempt: the waiting login dies, the stamp stays, the flag is left as it was.
@@ -109,6 +199,7 @@ attempt_failed() { # cause text
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=true ;;
+    --on) [ -n "${2:-}" ] && [ -z "$node" ] || usage; node=$2; shift ;;
     -h|--help) usage ;;
     -*) usage ;;
     *) [ -z "$account" ] || usage; account=$1 ;;
@@ -117,6 +208,9 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$account" ] || usage
 case "$account" in main|-|*[!A-Za-z0-9._-]*) printf 'claude-relogin: not an account name: %s\n' "$account" >&2; exit 2 ;; esac
+case "$node" in -*|*[!A-Za-z0-9._@-]*) printf 'claude-relogin: not a node name: %s\n' "$node" >&2; exit 2 ;; esac
+key=$account${node:+@$node}
+# The account is this Mac's: its profile here names it, even when the login goes to a node.
 profile_dir=$profiles_root/$account
 [ -d "$profile_dir" ] || { printf 'claude-relogin: unknown account %s (no %s)\n' "$account" "$profile_dir" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { printf 'claude-relogin: jq is required\n' >&2; exit 2; }
@@ -134,22 +228,41 @@ else
   locked=true
 fi
 
-status=$(auth_status) && jq -e 'type == "object" and has("loggedIn")' >/dev/null 2>&1 < <(printf '%s\n' "$status") ||
-  verdict 7 weather "claude auth status gave no answer for $profile_dir; retried next time"
+if [ -n "$node" ]; then
+  ready_rc=0
+  ready=$(node_run 30 ready 2>&1) || ready_rc=$?
+  case "$ready_rc" in
+    0) ;;
+    10) verdict 10 node-not-ready "$node: $ready" ;;
+    *) verdict 7 weather "$node did not answer over ssh (exit $ready_rc${ready:+: $(tail -n 1 <<<"$ready")}); \`machines wake $node\` if it sleeps" ;;
+  esac
+fi
+# The JSON is the answer, not the exit code: the CLI exits 1 for a logged-out profile (2.1.322-2.1.325).
+status=$(auth_status)
+jq -e 'type == "object" and has("loggedIn")' >/dev/null 2>&1 < <(printf '%s\n' "$status") ||
+  verdict 7 weather "claude auth status gave no answer for $account${node:+ on $node}; retried next time"
 if jq -e '.loggedIn == true' >/dev/null 2>&1 < <(printf '%s\n' "$status"); then
   email=$(jq -r '.email // "?"' < <(printf '%s\n' "$status"))
   # A login made by hand leaves the flag until a revive merges a usage read: clear it here, or the heartbeat asks
-  # for this account every tick.
-  if ! $dry_run && jq -e '.auth_needed == true' "$claude_relogin_dir/limits/$account.json" >/dev/null 2>&1; then
-    revive_rc=0
-    run_bounded "$revive_timeout" "$claudeb_bin" revive "$account" >/dev/null 2>&1 || revive_rc=$?
-    verdict 3 already-logged-in "$account is logged in as $email; login needed cleared by claudeb revive (exit $revive_rc)"
+  # for this account every tick. A node's store may also hold no snapshot yet (a login made there by hand).
+  if [ -n "$node" ]; then
+    flagged=false
+    node_run "$status_timeout" snapshot >/dev/null 2>&1 || flagged=true
+  elif jq -e '.auth_needed == true' "$claude_relogin_dir/limits/$account.json" >/dev/null 2>&1; then
+    flagged=true
+  else
+    flagged=false
   fi
-  verdict 3 already-logged-in "$account is logged in as $email"
+  if ! $dry_run && $flagged; then
+    revive_rc=0
+    revive >/dev/null || revive_rc=$?
+    verdict 3 already-logged-in "$account is logged in as $email${node:+ on $node}; login needed cleared by claudeb revive (exit $revive_rc)"
+  fi
+  verdict 3 already-logged-in "$account is logged in as $email${node:+ on $node}; nothing to do"
 fi
 
-! claude_relogin_cooling "$account" "${EPOCHSECONDS:-$(date +%s)}" attempt ||
-  verdict 6 cooldown "a real attempt on $account ran within ${claude_relogin_cooldown}s ($claude_relogin_state); the hand fallback is \`claudeb profile $account\` + /login"
+! claude_relogin_cooling "$key" "${EPOCHSECONDS:-$(date +%s)}" attempt ||
+  verdict 6 cooldown "a real attempt on $key ran within ${claude_relogin_cooldown}s ($claude_relogin_state); the hand fallback is \`claudeb profile $account\` + /login${node:+ on $node}"
 
 registry=$(run_bounded 60 "$worker_run" browse --json 2>/dev/null) &&
   jq -e 'type == "object"' >/dev/null 2>&1 < <(printf '%s\n' "$registry") ||
@@ -164,12 +277,12 @@ fi
 [ -r "$brief_template" ] || verdict 2 no-brief "the brief template $brief_template is missing"
 
 if $dry_run; then
-  printf 'DRY-RUN: would log %s in as %s through Chrome profile %s\n' "$account" "$email" "$chrome_profile"
+  printf 'DRY-RUN: would log %s in%s as %s through Chrome profile %s\n' "$account" "${node:+ on $node}" "$email" "$chrome_profile"
   exit 0
 fi
 
 # The attempt is stamped before anything runs: a relogin killed half way still counts, so a wall never loops.
-prev_stamp=$(jq -c --arg a "$account" '.[$a] // null' "$claude_relogin_state" 2>/dev/null) || prev_stamp=null
+prev_stamp=$(jq -c --arg a "$key" '.[$a] // null' "$claude_relogin_state" 2>/dev/null) || prev_stamp=null
 [ -n "$prev_stamp" ] || prev_stamp=null
 stamp attempt
 
@@ -179,17 +292,29 @@ printf '#!/bin/sh\nprintf '"'"'%%s\\n'"'"' "$1" >>'"'"'%s'"'"'\n' "$url_file" >"
 chmod +x "$work/browser"
 
 # Step 1: the waiting login; the stub stands in for the browser and only writes the URL down.
-note "step 1: claude auth login --claudeai"
-CLAUDE_CONFIG_DIR="$profile_dir" BROWSER="$work/browser" "$claude_bin" auth login --claudeai \
-  </dev/null >"$work/login.log" 2>&1 &
+note "step 1: claude auth login --claudeai${node:+ on $node}"
+url_ticks=$((url_wait * 5))
+if [ -n "$node" ]; then
+  # The ssh session lasts as long as the login there: PID= and URL= first, EXIT= once the callback has landed.
+  node_run $((url_wait + run_timeout + login_wait + 180)) login "$url_wait" $((url_wait + run_timeout + login_wait + 120)) \
+    >"$work/login.log" 2>&1 &
+  url_ticks=$((url_ticks + 75))
+else
+  CLAUDE_CONFIG_DIR="$profile_dir" BROWSER="$work/browser" "$claude_bin" auth login --claudeai \
+    </dev/null >"$work/login.log" 2>&1 &
+fi
 login_pid=$!
 url='' waited=0
-while [ "$waited" -lt $((url_wait * 5)) ]; do
-  if [ -s "$url_file" ]; then IFS= read -r url <"$url_file"; break; fi
+while [ "$waited" -lt "$url_ticks" ]; do
+  if [ -n "$node" ]; then
+    url=$(sed -n 's/^URL=//p' "$work/login.log" 2>/dev/null | head -n1)
+    [ -z "$url" ] || break
+  elif [ -s "$url_file" ]; then IFS= read -r url <"$url_file"; break; fi
   kill -0 "$login_pid" 2>/dev/null || break
   sleep 0.2
   waited=$((waited + 1))
 done
+[ -z "$node" ] || node_pid=$(sed -n 's/^PID=\([1-9][0-9]*\)$/\1/p' "$work/login.log" 2>/dev/null | head -n1)
 # A CLI that prints the URL instead of opening it still names it in its own output.
 [ -n "$url" ] || url=$(grep -Eo 'https://[^[:space:]]*authorize[^[:space:]]*' "$work/login.log" 2>/dev/null | head -n1)
 kill -0 "$login_pid" 2>/dev/null ||
@@ -198,6 +323,25 @@ kill -0 "$login_pid" 2>/dev/null ||
   attempt_failed no-authorize-url "no authorize URL with a localhost callback within ${url_wait}s"
 port=${BASH_REMATCH[2]}
 [ -s "$url_file" ] || printf '%s\n' "$url" >"$url_file"
+
+if [ -n "$node" ]; then
+  # Authorize redirects this Mac's browser to localhost:<port>; the forward carries it to the node's waiting login.
+  # Ready once that login answers through it (any HTTP status: a GET of / leaves it waiting).
+  "${node_ssh[@]}" -N -o ExitOnForwardFailure=yes -L "$port:localhost:$port" "$node" </dev/null >"$work/forward.log" 2>&1 &
+  forward_pid=$!
+  answer=000 waited=0
+  while [ "$waited" -lt 75 ] && kill -0 "$forward_pid" 2>/dev/null; do
+    answer=$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://localhost:$port/" 2>/dev/null) || answer=000
+    [ "$answer" = 000 ] || break
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+  if [ "$answer" = 000 ]; then
+    kill_login
+    unstamp
+    verdict 7 weather "no forward of port $port to the login on $node: $(tail -n 1 "$work/forward.log" 2>/dev/null)"
+  fi
+fi
 
 # Step 2: the account's Chrome profile, brought up the one way Chrome may start.
 note "step 2: worker-run browse --window"
@@ -227,12 +371,18 @@ if grep -Eq '^OUTCOME: (CODEX_UNAVAILABLE|CODEX_USAGE_LIMIT)|^REASON: codex comp
   unstamp
   verdict 7 weather "no codex account can serve Computer Use now: $(grep -Em1 '^(OUTCOME|REASON): ' "$work/run.out")"
 fi
+# A refusal before launch (e.g. from inside a headless worker) clicked nothing either: no attempt, retried next time.
+if refusal=$(grep -Em1 '^worker-run: .*Nothing was launched' "$work/run.out"); then
+  kill_login
+  unstamp
+  verdict 7 weather "worker-run launched nothing: ${refusal#worker-run: }"
+fi
 outcome=$(sed -nE 's/^`?(OUTCOME: [A-Z_]+.*)$/\1/p' "$work/run.out" | tail -n1)
 outcome=${outcome%\`}
 case "$outcome" in
   'OUTCOME: COMPUTER_OK'*) ;;
   'OUTCOME: COMPUTER_UNAVAILABLE'*) attempt_failed wall "the Computer Use run stopped: ${outcome#OUTCOME: }" ;;
-  *) attempt_failed run "worker-run exited $run_rc with ${outcome:-no OUTCOME line}" ;;
+  *) attempt_failed run "worker-run exited $run_rc with ${outcome:-no OUTCOME line}$(grep -Em1 '^(worker-run|REASON): ' "$work/run.out" | sed 's/^/: /')" ;;
 esac
 
 # Step 4: the callback lands, then the CLI's own word and the registry email must agree.
@@ -240,23 +390,24 @@ note "step 4: verify"
 waited=0
 while kill -0 "$login_pid" 2>/dev/null && [ "$waited" -lt $((login_wait * 5)) ]; do sleep 0.2; waited=$((waited + 1)); done
 kill_login
-status=$(auth_status) || status='{}'
+status=$(auth_status)
 got=$(jq -r 'if .loggedIn == true then (.email // "?") else "" end' 2>/dev/null < <(printf '%s\n' "$status"))
 if [ -z "$got" ]; then
-  attempt_failed not-logged-in "the run reported Authorize, yet claude auth status shows $account logged out"
+  attempt_failed not-logged-in "the run reported Authorize, yet claude auth status shows $account logged out${node:+ on $node}"
 fi
 if [ "$(tr '[:upper:]' '[:lower:]' < <(printf '%s' "$got"))" != "$(tr '[:upper:]' '[:lower:]' < <(printf '%s' "$email"))" ]; then
   # Another account in this profile would spend the wrong quota under this name: back to logged out.
-  run_bounded "$status_timeout" env CLAUDE_CONFIG_DIR="$profile_dir" "$claude_bin" auth logout >/dev/null 2>&1
+  if [ -n "$node" ]; then node_run "$status_timeout" logout >/dev/null 2>&1
+  else run_bounded "$status_timeout" env CLAUDE_CONFIG_DIR="$profile_dir" "$claude_bin" auth logout >/dev/null 2>&1; fi
   attempt_failed wrong-email "the profile logged in as $got, not $email; logged out again"
 fi
 # A success leaves no cool-down: the next logout is served at once.
 state_write '$old | del(.[$a])'
 revive_rc=0
-run_bounded "$revive_timeout" "$claudeb_bin" revive "$account" >"$work/revive.out" 2>&1 || revive_rc=$?
+revive >"$work/revive.out" || revive_rc=$?
 if [ "$revive_rc" -ne 0 ]; then
-  verdict 9 revive-failed "$account is logged in as $email, but claudeb revive exited $revive_rc: $(tail -n 1 "$work/revive.out")"
+  verdict 9 revive-failed "$account is logged in as $email${node:+ on $node}, but claudeb revive exited $revive_rc: $(tail -n 1 "$work/revive.out")"
 fi
-token_journal "$account" relogin success
-printf 'RELOGIN: %s logged in as %s; revived\n' "$account" "$email"
+token_journal "$key" relogin success
+printf 'RELOGIN: %s logged in as %s%s; revived\n' "$account" "$email" "${node:+ on $node}"
 exit; }

@@ -12,6 +12,7 @@ cleanup() {
   local pid
   for pid in ${holders[@]+"${holders[@]}"}; do kill "$pid" 2>/dev/null; done
   [ ! -s "$WORK/stub/login.pid" ] || kill "$(cat "$WORK/stub/login.pid")" 2>/dev/null
+  [ ! -s "$WORK/node/stub/login.pid" ] || kill "$(cat "$WORK/node/stub/login.pid")" 2>/dev/null
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -29,23 +30,24 @@ mkdir -p "$HOME" "$CLAUDEB_DIR/limits" "$WORK/bin" "$STUB"
 STATE="$CLAUDEB_DIR/claude-relogin.json"
 JOURNAL="$CLAUDEB_DIR/token-attempts.jsonl"
 
-# claude: `auth status` answers from $STUB/logged-<profile>; `auth login` hands its URL to $BROWSER, then waits for
-# the callback the worker-run stub fakes and logs in as the email that callback carries.
+# claude: `auth status` answers from $STUB/logged-<profile>, exiting 1 when logged out as the real CLI does;
+# `auth login` hands its URL to $BROWSER, then waits for the callback the worker-run stub fakes and logs in as the
+# email that callback carries.
 cat >"$WORK/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 profile=${CLAUDE_CONFIG_DIR##*/}
 case "$1 $2" in
   'auth status')
     if [ -s "$STUB/logged-$profile" ]; then printf '{"loggedIn":true,"email":"%s"}\n' "$(cat "$STUB/logged-$profile")"
-    else printf '{"loggedIn":false}\n'; fi ;;
+    else printf '{"loggedIn":false}\n'; exit 1; fi ;;
   'auth logout') rm -f "$STUB/logged-$profile" ;;
   'auth login')
     printf '%s\n' "$$" >"$STUB/login.pid"
     printf '%s\n' "$*" >>"$STUB/login.args"
-    "$BROWSER" 'https://claude.ai/oauth/authorize?code=true&redirect_uri=http%3A%2F%2Flocalhost%3A54545%2Fcallback&state=s'
+    "$BROWSER" "https://claude.ai/oauth/authorize?code=true&redirect_uri=http%3A%2F%2Flocalhost%3A${STUB_PORT:-54545}%2Fcallback&state=s"
     for _ in $(seq 1 300); do
-      if [ -s "$STUB/callback" ]; then
-        cat "$STUB/callback" >"$STUB/logged-$profile"
+      if [ -s "${STUB_CALLBACK:-$STUB/callback}" ]; then
+        cat "${STUB_CALLBACK:-$STUB/callback}" >"$STUB/logged-$profile"
         echo 'Login successful.'
         exit 0
       fi
@@ -70,20 +72,67 @@ case "$1 ${2:-}" in
           printf 'STATUS: done\nRESULT:\nclicked Authorize\nOUTCOME: COMPUTER_OK authorized=alpha@example.com\n' ;;
       wall) printf 'STATUS: done\nRESULT:\na password field\nOUTCOME: COMPUTER_UNAVAILABLE reason=password\n' ;;
       weather) printf 'OUTCOME: CODEX_USAGE_LIMIT\n'; exit 3 ;;
+      refused) printf 'worker-run: `worker-run run` runs from the chat that owns the run, never inside a headless worker. Nothing was launched and no account was spent.\n' >&2; exit 4 ;;
     esac ;;
 esac
 EOF
-# claudeb: revive clears the flag the way the real usage merge does.
+# claudeb: revive writes the snapshot and clears the flag the way the real usage merge does.
 cat >"$WORK/bin/claudeb" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB/claudeb.log"
 if [ "$1" = revive ] && [ "${STUB_REVIVE_RC:-0}" = 0 ]; then
+  mkdir -p "$CLAUDEB_DIR/limits"
+  [ -s "$CLAUDEB_DIR/limits/$2.json" ] || printf '{}\n' >"$CLAUDEB_DIR/limits/$2.json"
   jq 'del(.auth_needed)' "$CLAUDEB_DIR/limits/$2.json" >"$CLAUDEB_DIR/limits/$2.json.tmp" &&
     mv "$CLAUDEB_DIR/limits/$2.json.tmp" "$CLAUDEB_DIR/limits/$2.json"
 fi
 exit "${STUB_REVIVE_RC:-0}"
 EOF
-chmod +x "$WORK/bin/"*
+# ssh: node1 is this machine under $NODE (its own HOME, claudeb store and stub dir, whose claude waits for this side's
+# callback); sudo and stat there stand in for the desktop session and the screen's user. A forward (-N -L p:…) is a
+# listener on p that answers any request, as the node's waiting login does through a real one.
+export NODE="$WORK/node"
+cat >"$WORK/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+forward=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) shift 2 ;;
+    -L) forward=${2%%:*}; shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+host=$1
+shift
+printf '%s %s\n' "$host" "${*:-forward $forward}" >>"$STUB/ssh.log"
+[ "$host" = node1 ] || { printf 'ssh: Could not resolve hostname %s\n' "$host" >&2; exit 255; }
+[ -z "$forward" ] || exec python3 -c 'import http.server as h, sys
+h.HTTPServer(("127.0.0.1", int(sys.argv[1])), h.BaseHTTPRequestHandler).serve_forever()' "$forward"
+export STUB_CALLBACK="$STUB/callback" HOME="$NODE" CLAUDEB_DIR="$NODE/.claude-profiles/.claudeb" STUB="$NODE/stub"
+exec /bin/sh -c "$*"
+EOF
+mkdir -p "$NODE/.local/bin"
+cat >"$NODE/.local/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STUB/sudo.log"
+[ "${STUB_SUDO:-ok}" = ok ] || exit 1
+[ "$1" != -n ] || shift
+case "$1" in
+  true) exit 0 ;;
+  launchctl) shift 3; exec "$@" ;;
+  -u) shift 2; exec "$@" ;;
+esac
+EOF
+cat >"$NODE/.local/bin/stat" <<'EOF'
+#!/bin/sh
+[ "$*" = '-f %Su /dev/console' ] || exec /usr/bin/stat "$@"
+printf '%s\n' "${STUB_CONSOLE:-$(id -un)}"
+EOF
+chmod +x "$WORK/bin/"* "$NODE/.local/bin/"*
+ln -s "$WORK/bin/claude" "$NODE/.local/bin/claude"
+ln -s "$WORK/bin/claudeb" "$NODE/.local/bin/claudeb"
+export CLAUDE_RELOGIN_SSH="$WORK/bin/ssh"
 cat >"$CLAUDE_RELOGIN_BRIEF" <<'EOF'
 # fixture brief
 ```
@@ -93,10 +142,10 @@ EFFORT: low
 ```
 EOF
 
-reset() { # account... -> logged out, flagged, enrolled; no stamps, logs or lock
+reset() { # account... -> logged out, flagged, enrolled; no stamps, logs or lock; the node empty
   local a
-  rm -rf "$STUB" "$STATE" "$JOURNAL" "$CLAUDEB_DIR/claude-relogin.lock" "$CLAUDEB_DIR/limits"
-  mkdir -p "$STUB" "$CLAUDEB_DIR/limits"
+  rm -rf "$STUB" "$STATE" "$JOURNAL" "$CLAUDEB_DIR/claude-relogin.lock" "$CLAUDEB_DIR/limits" "$NODE/stub" "$NODE/.claude-profiles"
+  mkdir -p "$STUB" "$CLAUDEB_DIR/limits" "$NODE/stub"
   printf '{}\n' >"$STUB/registry.json"
   for a in "$@"; do
     mkdir -p "$CLAUDE_RELOGIN_PROFILES_ROOT/$a"
@@ -186,6 +235,13 @@ assert_eq weather "$(journal_outcomes)"
 printf '{"alpha":{"at":1000,"verdict":"attempt"}}\n' >"$STATE"
 STUB_RUN=weather relogin alpha
 assert_eq '{"at":1000,"verdict":"attempt"}' "$(jq -c '.alpha' "$STATE")" "weather restores the earlier stamp"
+# worker-run refusing before launch (a headless worker's shell) clicked nothing: weather, with its own words, no stamp.
+reset alpha
+STUB_RUN=refused relogin alpha
+assert_eq 7 "$rc" "refused exit: $out"
+assert_eq 'REASON: weather — worker-run launched nothing: `worker-run run` runs from the chat that owns the run' "${out%%, never*}"
+assert_eq null "$(jq -c '.alpha // null' "$STATE")" "a refused launch left an attempt stamp"
+assert login_dead
 
 # Another relogin live: the lock refuses, whatever the account.
 reset alpha
@@ -224,6 +280,72 @@ assert [ ! -e "$JOURNAL" ]
 relogin
 assert_eq 2 "$rc"
 relogin nobody
+assert_eq 2 "$rc"
+
+# --on <node>: the node's own login. Steps 1 and 4 and the revive run there, in its desktop session; the window and
+# the run stay here; the forward carries the callback port. This Mac's login and store are left alone.
+free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+answers() { [ "$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://localhost:$1/" 2>/dev/null)" != 000 ]; }
+reset alpha
+port=$(free_port)
+STUB_PORT=$port relogin alpha --on node1
+assert_eq 0 "$rc" "node success: $out $(cat "$WORK/err")"
+assert_eq 'RELOGIN: alpha logged in as alpha@example.com on node1; revived' "$out"
+assert_eq alpha@example.com "$(cat "$NODE/stub/logged-alpha")" "the node's profile is logged in"
+assert [ ! -e "$STUB/logged-alpha" ]
+assert_eq 'revive alpha' "$(cat "$NODE/stub/claudeb.log")" "revive ran on the node"
+assert [ ! -e "$STUB/claudeb.log" ]
+assert_eq true "$(jq '.auth_needed' "$CLAUDEB_DIR/limits/alpha.json")" "this Mac's flag is not the node's"
+assert_eq '{}' "$(jq -c . "$NODE/.claude-profiles/.claudeb/limits/alpha.json")" "the node's store got its snapshot"
+assert grep -q '^-n launchctl asuser [0-9]* sudo -n -u .* auth login --claudeai' "$NODE/stub/sudo.log"
+assert grep -q '^-n launchctl asuser [0-9]* sudo -n -u .* auth status --json$' "$NODE/stub/sudo.log"
+assert grep -qx "node1 forward $port" "$STUB/ssh.log"
+assert grep -q "alpha alpha@example.com Profile 9 .*/authorize-url $port\$" "$STUB/brief.seen"
+assert_eq 'browse --json|browse --window|run auto' "$(cut -d' ' -f1-2 "$STUB/worker-run.log" | paste -sd'|' -)"
+assert_eq 'alpha@node1 success' "$(jq -r 'select(.kind == "relogin") | "\(.account) \(.outcome)"' "$JOURNAL")"
+assert_eq '{}' "$(jq -c . "$STATE")" "a node success leaves no stamp"
+! answers "$port" || fail "the forward of $port outlived the run"
+pid=$(cat "$NODE/stub/login.pid") && ! kill -0 "$pid" 2>/dev/null || fail "the node's login outlived the run"
+asserts=$((asserts + 2))
+# Run again: nothing to do, nothing started.
+: >"$STUB/worker-run.log"
+relogin alpha --on node1
+assert_eq 3 "$rc"
+assert_eq 'REASON: already-logged-in — alpha is logged in as alpha@example.com on node1; nothing to do' "$out"
+assert_eq '' "$(cat "$STUB/worker-run.log")"
+assert_eq 'revive alpha' "$(cat "$NODE/stub/claudeb.log")" "a node with its snapshot is not revived again"
+# Logged in there by hand, no snapshot yet: the revive writes it.
+rm -f "$NODE/.claude-profiles/.claudeb/limits/alpha.json"
+relogin alpha --on node1
+assert_eq 3 "$rc"
+assert_eq 'REASON: already-logged-in — alpha is logged in as alpha@example.com on node1; login needed cleared by claudeb revive (exit 0)' "$out"
+# A node failure stamps <account>@<node>, which never cools this Mac's own relogin of the account.
+reset alpha
+STUB_PORT=$(free_port) STUB_RUN=wall relogin alpha --on node1
+assert_eq 8 "$rc" "node wall: $out"
+assert_eq attempt "$(jq -r '."alpha@node1".verdict' "$STATE")"
+assert_eq null "$(jq -c '.alpha // null' "$STATE")"
+pid=$(cat "$NODE/stub/login.pid") && ! kill -0 "$pid" 2>/dev/null || fail "a failed node attempt left its login waiting"
+asserts=$((asserts + 1))
+# A node that cannot hold a login, and one that does not answer.
+reset alpha
+STUB_SUDO=no relogin alpha --on node1
+assert_eq 10 "$rc"
+assert_eq 'REASON: node-not-ready — node1: no passwordless sudo, so an ssh session cannot reach its keychain' "$out"
+STUB_CONSOLE=somebody-else relogin alpha --on node1
+assert_eq 10 "$rc"
+relogin alpha --on node2
+assert_eq 7 "$rc"
+assert_eq 'REASON: weather' "${out%% — *}"
+assert_eq 'node-not-ready node-not-ready weather' "$(journal_outcomes)"
+assert [ ! -e "$STATE" ]
+relogin alpha --on node1 --dry-run
+assert_eq 0 "$rc"
+assert_eq 'DRY-RUN: would log alpha in on node1 as alpha@example.com through Chrome profile Profile 9' "$out"
+assert [ ! -e "$NODE/stub/login.pid" ]
+relogin alpha --on
+assert_eq 2 "$rc"
+relogin alpha --on 'a b'
 assert_eq 2 "$rc"
 
 # The llm-refresh trigger: a Claude tick with a logged-out account starts claude-relogin once, detached; not while
