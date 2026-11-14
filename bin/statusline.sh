@@ -2697,6 +2697,13 @@ if [ -n "$session_id" ]; then
   { IFS= read -r -d '' statusline_prev < "$statusline_cache_dir/render-full-$session_id"; } 2>/dev/null
   [ "$statusline_prev" = "$statusline_full" ] ||
     printf '%s' "$statusline_full" 2>/dev/null > "$statusline_cache_dir/render-full-$session_id"
+  # The chat's model, effort and context as this render drew them, for the Chats app (contract "Model state").
+  printf -v statusline_state 'state1\t%s\t%s\t%s\t%s\t%s\t%s\tend\n' "$model_id" "${model#\?}" "$effort" \
+    "$ctx_tokens" "$ctx_size" "$ctx_pct"
+  statusline_prev=''
+  { IFS= read -r -d '' statusline_prev < "$statusline_cache_dir/render-state-$session_id"; } 2>/dev/null
+  [ "$statusline_prev" = "$statusline_state" ] ||
+    printf '%s' "$statusline_state" 2>/dev/null > "$statusline_cache_dir/render-state-$session_id"
   # The record the first pass replays from — none while a work line's clock runs, none with no cap, and none
   # under a session name other than the one the first pass read.
   if [ "$session_id" = "$statusline_sid" ] && [ "$rest_s" -gt 0 ] && [ "$statusline_rc" = 0 ] &&

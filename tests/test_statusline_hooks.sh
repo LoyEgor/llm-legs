@@ -2339,6 +2339,18 @@ ctx_200k=$(run_statusline "$(statusline_payload ctx-200k \
   "$(jq -cn --arg tp "$CTX_TRUTH_TRANSCRIPT" \
     '{transcript_path:$tp,model:{id:"fixmodel"},context_window:{used_percentage:10,context_window_size:200000,current_usage:{input_tokens:180000}}}')")")
 assert grep -Fq "ctx ${RED}90%${RESET}" <<< "$ctx_200k"
+# The Chats app's record (contract "Model state") holds the numbers the ctx cell printed, after the >200k
+# correction, and the model as the payload names it; a render that changes none of them leaves the file alone.
+state_payload=$(statusline_payload ctx-state "$(jq -cn --arg tp "$CTX_TRUTH_TRANSCRIPT" \
+  '{transcript_path:$tp,model:{id:"claude-opus-5-5[1m]",display_name:"Opus 5.5"},effort:{level:"medium"},
+    context_window:{used_percentage:100,context_window_size:1000000,current_usage:{input_tokens:248000}}}')")
+run_statusline "$state_payload" >/dev/null
+assert_eq $'state1\tclaude-opus-5-5\tOpus 5.5\tmedium\t248000\t1000000\t25\tend' "$(cat "$STATE_DIR/render-state-ctx-state")"
+touch -t 202001010000 "$STATE_DIR/render-state-ctx-state"
+run_statusline "$state_payload" >/dev/null
+assert test "$(find "$STATE_DIR/render-state-ctx-state" -newermt 2021-01-01)" = ""
+run_statusline "$(jq -c '.effort.level = "high"' <<< "$state_payload")" >/dev/null
+assert_eq $'state1\tclaude-opus-5-5\tOpus 5.5\thigh\t248000\t1000000\t25\tend' "$(cat "$STATE_DIR/render-state-ctx-state")"
 
 # Warmth anchors on completed responses: non-sidechain, non-<synthetic>
 # assistant entries (timestamp + message.model + message.usage). Fixture
