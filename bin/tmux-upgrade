@@ -448,8 +448,10 @@ def plist_path():
 
 def arm():
     wrapper = os.path.join(LIBEXEC, WRAPPER)
+    # Interactive, as pagesd's agent (com.llm-legs.pages), which starts the server otherwise: the server it starts and
+    # every chat in it inherit the job's class, and Background would throttle them all.
     plist = {"Label": LABEL, "ProgramArguments": [wrapper, "tick"], "StartInterval": INTERVAL, "RunAtLoad": True,
-             "ProcessType": "Background",
+             "ProcessType": "Interactive",
              "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
              "StandardOutPath": LOG, "StandardErrorPath": LOG}
     error = launch_agent.install(plist_path(), plist, wrapper, os.path.realpath(__file__), LAUNCHCTL)

@@ -61,6 +61,8 @@ upgrade arm >/dev/null
 assert [ -f "$WORK/agents/com.llm-legs.tmux-upgrade.plist" ]
 assert grep -q '^bootstrap gui/' "$WORK/launchctl.calls"
 assert [ -x "$WORK/libexec/tmux-upgrade" ]
+# The new server and every chat inherit the job's class: never Background.
+assert [ "$(plutil -extract ProcessType raw "$WORK/agents/com.llm-legs.tmux-upgrade.plist")" = Interactive ]
 
 # Not ready: each reason waits (a chat that spoke within QUIET_S too), and nothing is touched (no brew, the same server and chats).
 present
