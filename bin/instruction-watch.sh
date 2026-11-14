@@ -533,7 +533,7 @@ cmd_baseline() {
   # Every age here is a day or more, so the sweep runs once an hour.
   if [ -z "$(find "$STATE_DIR/baseline.swept" -mmin -60 2>/dev/null)" ] && : >"$STATE_DIR/baseline.swept" 2>/dev/null; then
     find "$STATE_DIR" -mindepth 1 -maxdepth 1 \( -name 'session-*' ! -path "${ref:-/}" -mtime +7 \
-      -o -name 'visible-*' -mtime +1 -o -name 'pending-*' -mtime +1 \) -delete 2>/dev/null
+      -o -name 'visible-*' -mtime +1 -o -name 'pending-*' -mtime +1 -o -name 'settings-asked-*' -mtime +1 \) -delete 2>/dev/null
     find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +90 -delete 2>/dev/null
     find "$RECEIPT_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
     find "$ALERT_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.last' -mtime +30 -delete 2>/dev/null
@@ -569,6 +569,44 @@ report() {
 
 pin() { # vis mtime size ino hash link real
   pinned="$pinned$1$_watch_tab$2$_watch_tab$3$_watch_tab$4$_watch_tab$5$_watch_tab$6$_watch_tab$7$_watch_nl"
+}
+
+# settings.json is Egor's, shared by every chat and every profile through one symlink, and a byte
+# count says nothing about it: on 2026-11-14 a worker driving a nested claude's /config switched both
+# compactions off (+31 and +27 bytes) and every chat stopped compacting for a day, while the only
+# record read "CHANGED settings.json (+31 bytes)". So the report names the keys, and a chat whose call
+# was in flight when the bytes landed is told which keys to put back — by key, never by copying the
+# old file over, which would also undo whatever Egor switched (/model) since this session's baseline.
+# model and effort are /model's own writes, and a step back toward what this session was already
+# told to restore is that restore, so neither is news.
+# Sets skeys (every change, for the log) and settings_msg (the instruction, when one is due).
+settings_note() { # baseline-row-index
+  local i=$1 old asked out pending
+  old="$SNAP_DIR/$(snap_key "${b_vis[$i]}")-${b_hash[$i]}"
+  [ -f "$old" ] || return 0
+  asked="$STATE_DIR/settings-asked-$(instruction_sid_name "$sid")"
+  out=$(jq -rn --slurpfile a "$old" --slurpfile b "${b_real[$i]}" \
+    --slurpfile c "$( [ -f "$(cat "$asked" 2>/dev/null)" ] && cat "$asked" || echo /dev/null)" '
+    def flat: [paths(if type == "object" or type == "array" then length == 0 else true end) as $p
+      | {key: ($p | map(tostring) | join(".")), value: getpath($p)}] | from_entries;
+    def show($m; $k): if ($m | has($k)) | not then "absent"
+      elif $k | test("^env\\..*(TOKEN|KEY|SECRET|PASS)"; "i") then "***"
+      else $m[$k] | tojson | if length > 60 then .[:57] + "..." else . end end;
+    def cap: if length > 6 then .[:6] + ["+\(length - 6) more"] else . end | join("; ");
+    ($a[0] | flat) as $x | ($b[0] | flat) as $y | ($c[0] // null | if . == null then null else flat end) as $z
+    | [($x + $y) | keys[] as $k
+       | select($k | test("^(model|permissions\\.defaultMode)$|(^|\\.)effortLevel$") | not)
+       | select(($x | has($k)) != ($y | has($k)) or $x[$k] != $y[$k])
+       | {s: "\($k): \(show($x; $k)) -> \(show($y; $k))",
+          back: ($z != null and ($z | has($k)) == ($y | has($k)) and $z[$k] == $y[$k])}]
+    | (map(.s) | cap), (map(select(.back | not) | .s) | cap)' 2>/dev/null) || return 0
+  skeys=${out%%$'\n'*}
+  pending=${out#*$'\n'}
+  [ "$out" != "$skeys" ] || pending=''
+  [ -n "$pending" ] && [ "$mode" = check ] || return 0
+  case "$attr" in this-call|ambiguous) ;; *) return 0 ;; esac
+  [ -f "$(cat "$asked" 2>/dev/null)" ] || printf '%s\n' "$old" >"$asked" 2>/dev/null
+  settings_msg="~/.claude/settings.json changed while your tool call was running: $pending. These are Egor's settings, shared by every chat and profile. Unless he asked for this change in this chat, put those keys back to the values before the arrow now (Edit the keys only; the full previous file is $old) and tell him in one line — a worker says it in its report. If neither your commands nor anything they started (a nested claude, its /config, a script) wrote it, ignore this."
 }
 
 # Only a file the baseline vouches for gets a restore command. One that appeared unreviewed has
@@ -859,7 +897,7 @@ cmd_check() {
   local -a b_mtime=() b_size=() b_ino=() b_trust=() b_hash=() b_link=() b_vis=() b_real=() c_real=() c_vis=()
   local roots_known='' unw_known='' pinned='' b_all='' kind=change sfx='' moved=0 top_rate=''
   local ranked_known='' ranked_rec=''
-  local relay_revert='' grown_key=''
+  local relay_revert='' grown_key='' skeys='' settings_msg=''
   local attr='' own_start='' now_ns='' pending_attr='' pending_cands=''
   local -a other_sids=() other_starts=() other_ends=()
   [ "$mode" != check ] || load_inflight
@@ -966,7 +1004,9 @@ cmd_check() {
       fi
       pin "$vis" "$cur_mtime" "$cur_size" "$cur_ino" "$cur_hash" "${b_link[$i]}" "$real"
       [ "$delta" -ge 0 ] && delta="+$delta"
-      report "CHANGED$sfx $vis ($delta bytes)" "$vis" "$cur_hash@$cur_mtime" "${delta#+}"
+      skeys=''
+      case "$vis" in */.claude/settings.json) settings_note "$i" ;; esac
+      report "CHANGED$sfx $vis ($delta bytes${skeys:+: $skeys})" "$vis" "$cur_hash@$cur_mtime" "${delta#+}"
       offer_restore "$i"
     done
   fi
@@ -1084,10 +1124,14 @@ cmd_check() {
   [ -n "$top_rate" ] && cost=" (up to ~$top_rate full-read equivalents/month)"
   case "$CHAT" in
     all) ;;
-    reverts) [ "${#reverted[@]}" -gt 0 ] || exit 0 ;;
+    reverts) if [ "${#reverted[@]}" -eq 0 ]; then
+               # The one report a chat gets without a revert: Egor's settings, named by key.
+               [ -z "$settings_msg" ] || emit_context "$event" "$settings_msg"
+               exit 0
+             fi ;;
     *) exit 0 ;;
   esac
-  emit_context "$event" "Instruction-file tripwire: $joined.$stale$undone$undo $(instruction_standing_rule)${cost:+ These cost$cost.} If this change keeps to that rule, nothing to do; this line is the audit trail. If it does not: tell him in ONE line what changed, hand him the restore command if there is one, and carry on with your task. Do NOT run that command and do not undo the change any other way — the writer may be another chat, a worker of yours, a tool that rewrote the file wholesale, or Egor himself, and this hook cannot tell which, so a rollback you decide on your own destroys someone's live work. Restore only if he asks for it."
+  emit_context "$event" "Instruction-file tripwire: $joined.$stale$undone$undo $(instruction_standing_rule)${cost:+ These cost$cost.} If this change keeps to that rule, nothing to do; this line is the audit trail. If it does not: tell him in ONE line what changed, hand him the restore command if there is one, and carry on with your task. Do NOT run that command and do not undo the change any other way — the writer may be another chat, a worker of yours, a tool that rewrote the file wholesale, or Egor himself, and this hook cannot tell which, so a rollback you decide on your own destroys someone's live work. Restore only if he asks for it.${settings_msg:+ Settings are the one exception: $settings_msg}"
   exit 0
 }
 

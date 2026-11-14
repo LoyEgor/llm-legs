@@ -459,6 +459,35 @@ assert_eq ambiguous "$(tail -1 "$J" | jq -r .writer)"
 rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
 printf 'tier doc\n' > "$DOC"
 
+echo "== in flight: Egor's settings changed under this call are named by key, and only this chat is told"
+# 2026-11-14: a worker's nested claude switched both compactions off; the record said "+31 bytes"
+# and the chat that did it was told nothing, so nobody put them back for a day.
+S="$HOME/.claude/settings.json"
+set_check() { INSTRUCTION_WATCH_CHAT=reverts span_check "$1" Bash command "$ANY_CALL" "$NOSPAN_T"; }
+printf '{"model":"opus","autoCompactEnabled":true,"hooks":{}}\n' > "$S"
+span_base sid-set >/dev/null
+span_base sid-set-o >/dev/null
+pre_call sid-set Bash command "$ANY_CALL" "$NOSPAN_T"
+printf '{"model":"opus","autoCompactEnabled":false,"idleCompaction":false,"hooks":{}}\n' > "$S"
+ctx=$(set_check sid-set)
+assert_contains "autoCompactEnabled: true -> false; idleCompaction: absent -> false" "$ctx"
+assert_contains "put those keys back" "$ctx"
+assert_contains "autoCompactEnabled: true -> false" "$(tail -1 "$INSTRUCTION_WATCH_LOG")"
+# A chat whose call was not running when the bytes landed keeps quiet; the log still names the keys.
+rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
+assert_eq "" "$(set_check sid-set-o)"
+# The restore this chat was asked for is not a new change to put back.
+pre_call sid-set Bash command "$ANY_CALL" "$NOSPAN_T"
+printf '{"model":"opus","autoCompactEnabled":true,"hooks":{}}\n' > "$S"
+assert_eq "" "$(set_check sid-set)"
+# /model writes model and effort: Egor's own switch, never news.
+pre_call sid-set Bash command "$ANY_CALL" "$NOSPAN_T"
+printf '{"model":"fable","effortLevel":"high","autoCompactEnabled":true,"hooks":{}}\n' > "$S"
+assert_eq "" "$(set_check sid-set)"
+rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
+printf '{"hooks":{}}\n' > "$S"
+span_base sid-set >/dev/null
+
 echo "== journal: a delivery that could not even be attempted says so"
 saved_alert=$INSTRUCTION_WATCH_ALERT
 INSTRUCTION_WATCH_ALERT="$WORK/no-such-hammerspoon"
