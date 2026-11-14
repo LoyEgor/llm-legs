@@ -535,6 +535,54 @@ stop_command() {
   wait_run "$1" --max 0
 }
 
+# `worker-run in-flight <session-id> [<pid>...]`, read-only, for a tool that ends a chat and starts it again (the
+# Chats app's account switch, APP_DETACHED): the chat's runs in flight (its launcher, state.json's session and phase
+# start or wait, the supervisor alive: run_live), each with the line that waits on it again, and those of the given
+# pids whose process tree runs `worker-run wait <id>` of it: the chat's background waits, which end with the chat
+# while the detached run goes on. -> {"jobs": [{"id", "attach", "waits": [pid...]}]}
+inflight_run() { # session-id [pid...]
+  [ "$#" -ge 1 ] || usage
+  local session=$1 root entry directory line jobs='' waits=''
+  local -a ids=()
+  shift
+  case "$session" in ''|.|..|*[!A-Za-z0-9._-]*) fail "invalid session id: $session" ;; esac
+  for line; do [[ "$line" =~ ^[1-9][0-9]*$ ]] || fail "invalid pid: $line"; done
+  root=${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}
+  while IFS= read -r entry; do
+    directory=${entry%/launcher}
+    valid_run_id "${directory##*/}" &&
+      jq -e --arg s "$session" '.session == $s and (.phase == "start" or .phase == "wait")' \
+        "$directory/state.json" >/dev/null 2>&1 && run_live "$directory" || continue
+    ids+=("${directory##*/}")
+    line=$(run_wait_line "$directory")
+    line=${line#WAIT: }
+    jobs+="${directory##*/}"$'\t'"${line% (as a background Bash)}"$'\n'
+  done < <(refuse_live_matches "$session" "$root" launcher)
+  # One listing: each given pid's tree walked for a wait naming one of these runs.
+  [ "${#ids[@]}" -eq 0 ] || [ "$#" -eq 0 ] || waits=$(ps -A -o pid=,ppid=,args= 2>/dev/null |
+    awk -v roots="$*" -v ids=" ${ids[*]} " '
+      match($0, /^ *[0-9]+ +[0-9]+ /) { split($0, f, " "); kids[f[2]] = kids[f[2]] " " f[1]; args[f[1]] = " " substr($0, RLENGTH + 1) }
+      END {
+        n = split(roots, root, " ")
+        for (i = 1; i <= n; i++) {
+          q = 1; queue[1] = root[i]
+          for (j = 1; j <= q; j++) {
+            p = queue[j]
+            if (match(args[p], /[^A-Za-z0-9._-]worker-run +wait +[a-z0-9-]+/)) {
+              id = substr(args[p], RSTART, RLENGTH); sub(/.* /, "", id)
+              if (index(ids, " " id " ") && !((root[i], id) in said)) { said[root[i], id] = 1; print root[i], id }
+            }
+            m = split(kids[p], k, " ")
+            for (x = 1; x <= m; x++) queue[++q] = k[x]
+          }
+        }
+      }')
+  jq -cn --arg jobs "$jobs" --arg waits "$waits" '
+    [$waits | split("\n")[] | select(. != "") | split(" ")] as $w
+    | {jobs: [$jobs | split("\n")[] | select(. != "") | split("\t") as [$id, $attach]
+              | {id: $id, attach: $attach, waits: [$w[] | select(.[1] == $id) | .[0] | tonumber]}]}'
+}
+
 exit_file_wait() { # directory seconds: back as soon as exit_code appears, else after the seconds; fails without kqueue
   python3 - "$1" "$2" 2>/dev/null <<'PY'
 import os, select, sys, time

@@ -19,6 +19,7 @@ usage() {
     '       worker-run report <run-id>' \
     '       worker-run handoff <run-id|session-id>' \
     '       worker-run say [<run-id>] <text>' \
+    '       worker-run in-flight <session-id> [<pid>...]' \
     '       worker-run transcript <run-id>...' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
     '       worker-run browse [--enroll <account|all> [--pin <dir>] | --canary | --window <account> | --seen <token> [--target dia] | --json | --hide | --show | --toggle]' >&2
@@ -175,6 +176,7 @@ case "${1:-}" in
   transcript) shift; transcript_run "$@"; exit $? ;;
   claim) shift; claim_run "$@"; exit $? ;;
   say) shift; say_run "$@"; exit $? ;;
+  in-flight) shift; inflight_run "$@"; exit $? ;;
   browse) shift; browse_run "$@"; exit $? ;;
   _deliver) complete_run "$2" "$3"; chrome_run_end "$2"; exit 0 ;;
   _chrome-runs) chrome_runs; exit 0 ;;
