@@ -234,6 +234,7 @@ list_accounts() {
       printf '%s: %s%s\n' "$name" "$(login_text "$email" "$refresh")" "$(pool_suffix "$name")"
     fi
   done < <(account_names)
+  account_names | grep -q . || printf 'grokb: no accounts configured; add one with `grokb add <name>`\n' >&2
 }
 
 show_status() {

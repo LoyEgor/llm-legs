@@ -2764,7 +2764,8 @@ case "${1:-}" in
     shift
     remove_account "$@"
     ;;
-  accounts|status|st)
+  # `list` as codexb, geminib and grokb spell it.
+  accounts|status|st|list)
     command_name="$1"
     shift
     # --spend/--no-spend/--start-windows/--heal are meaningless on cached data, so
@@ -2787,6 +2788,11 @@ case "${1:-}" in
       esac
       shift
     done
+    # No account is a state to name, not a failure (selection's exit 1 is for a caller about to launch one).
+    if ! account_names | grep -q .; then
+      printf 'claudeb: no accounts configured; add one with `claudeb add <name>`\n' >&2
+      exit 0
+    fi
     show_accounts "$accounts_mode_arg" "$accounts_plain_arg" "$accounts_spend_arg" "$accounts_windows_arg" "$accounts_heal_arg"
     ;;
   --refresh)

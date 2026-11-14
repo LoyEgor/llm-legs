@@ -2710,6 +2710,12 @@ fi
 
 available=$(jq '[.vendors[] | select(.available == true)] | length' < <(printf '%s\n' "$result"))
 if [ "$available" -eq 0 ]; then
+  # The table is a person's view: a node nothing is signed in on yet says so and is not a failure. The JSON and
+  # plain readers keep exit 3.
+  if [ "$format" = table ] && why_unreadable=$(accounts_unreadable_here); then
+    printf 'llm-limits: no account to read on this machine yet (%s); add one with `claudeb add <name>` (codexb, geminib, grokb alike)\n' "$why_unreadable"
+    exit 0
+  fi
   exit 3
 fi
 # Only a full refresh with zero successful vendor outcomes is a process-level failure.

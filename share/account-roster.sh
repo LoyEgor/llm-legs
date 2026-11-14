@@ -48,6 +48,33 @@ grok_account_names() {
   fi
 }
 
+# Why no vendor can be read on this machine, one clause per vendor, or a failure when one could: no login here,
+# or a login whose vendor CLI is not installed (a fresh node). grok reads its auth.json without its CLI. The roster
+# keeps a Codex or Gemini `main` with nothing behind it; this asks whether anything is signed in at all.
+accounts_unreadable_here() {
+  local clauses=() codex_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
+  local gemini_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
+  claude_account_names | grep -q . && return 1
+  clauses+=("claude: no account")
+  if [ -f "$HOME/.codex/auth.json" ] || [ -n "$(ls -A "$codex_dir" 2>/dev/null)" ]; then
+    command -v codex >/dev/null 2>&1 && return 1
+    clauses+=("codex: CLI not installed")
+  else
+    clauses+=("codex: no account")
+  fi
+  if [ -d "$HOME/.gemini" ] || [ -n "$(ls -A "$gemini_dir" 2>/dev/null)" ]; then
+    { command -v agy || [ -x "${AGY_BIN:-$HOME/.local/bin/agy}" ]; } >/dev/null 2>&1 && return 1
+    clauses+=("gemini: agy not installed")
+  else
+    clauses+=("gemini: no account")
+  fi
+  grok_account_names | grep -q . && return 1
+  clauses+=("grok: no account")
+  local joined
+  printf -v joined '%s; ' "${clauses[@]}"
+  printf '%s\n' "${joined%; }"
+}
+
 # The profiles file, one name per line in key-priority order; an absent file is the one default
 # profile `-` (row al).
 opencode_account_names() {

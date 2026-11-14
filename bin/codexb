@@ -80,7 +80,10 @@ login_status() {
   local name="$1" home output rc
   home=$(account_home "$name")
   rc=0
-  if [ "$name" = main ]; then
+  # A node without the CLI says so, not `env: codex: No such file or directory`.
+  if ! command -v codex >/dev/null 2>&1; then
+    output="codex CLI not installed on this machine"; rc=1
+  elif [ "$name" = main ]; then
     output=$(env -u CODEX_HOME codex login status 2>&1) || rc=$?
   else
     output=$(env CODEX_HOME="$home" codex login status 2>&1) || rc=$?
@@ -242,6 +245,7 @@ list_accounts() {
       printf '%s: %s%s\n' "$name" "${status#*$'\t'}" "$(pool_suffix "$name")"
     fi
   done < <(account_names)
+  account_names | grep -q . || printf 'codexb: no accounts configured; add one with `codexb add <name>`\n' >&2
 }
 
 render_plain_status() {

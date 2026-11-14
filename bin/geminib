@@ -296,6 +296,8 @@ quota_snapshot() {
 
 login_status() {
   local snapshot rc data
+  # A node without agy says so: the quota helper only answers `unavailable` there.
+  [ -x "$agy_bin" ] || { printf '1\tagy not installed on this machine\n'; return; }
   snapshot=$(quota_snapshot "$1")
   rc=${snapshot%%$'\t'*}
   data=${snapshot#*$'\t'}
@@ -408,6 +410,7 @@ status_account_line() {
     hused=-; wused=-; hreset=unknown; wreset=unknown
   else
     state='Login status unavailable'
+    [ -x "$agy_bin" ] || state='agy not installed on this machine'
     hused=-; wused=-; hreset=unknown; wreset=unknown
   fi
   printf '%s: %s%s | 5H %s reset %s | WEEKLY %s reset %s\n' \
@@ -445,6 +448,7 @@ parallel_account_output() {
 list_accounts() {
   ensure_profiles
   parallel_account_output list_account_line
+  gemini_account_names | grep -q . || printf 'geminib: no accounts configured; add one with `geminib add <name>`\n' >&2
 }
 
 show_status() {

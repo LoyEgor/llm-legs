@@ -450,9 +450,14 @@ fail_safe() {
     exit 3
   fi
   fs_next=""
+  # A machine nothing is signed in on yet (a fresh node) has nothing to route to and says so. Sourced
+  # here only: this path exits.
+  if [ ! -e "$LIMITS_FILE" ] && . "$worker_pick_share/account-roster.sh" &&
+     fs_why=$(accounts_unreadable_here); then
+    fs_next="none — no account on this machine yet ($fs_why); add one with \`claudeb add <name>\` (codexb, geminib, grokb alike)"
   # No data means no ranking, so the lead is the first vendor of the fixed order still running:
   # claudeb rotating where it is, and its successor where Egor parked it.
-  if [ "$cb_paused" = false ]; then
+  elif [ "$cb_paused" = false ]; then
     fs_next=$(printf 'claudeb (rotating) — %s' "$1")
     [ "$gm_paused" = true ] || fs_next="$fs_next  |  gemini unavailable"
   elif [ "$cx_paused" = false ]; then fs_next=$(printf 'codex unavailable (%s)' "$1")

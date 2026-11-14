@@ -1,0 +1,258 @@
+{
+ "binaries": {
+  "bash": {"min": "4.0", "version": ["--version"], "brew": "bash"},
+  "python3": {"min": "3.11", "version": ["--version"], "brew": "python@3.13"},
+  "jq": {"min": "1.6", "version": ["--version"], "brew": "jq"},
+  "git": {"min": "2.30", "version": ["--version"], "brew": "git"},
+  "tmux": {"min": "3.0", "version": ["-V"], "brew": "tmux"},
+  "uv": {"min": "0.4", "version": ["--version"], "brew": "uv"},
+  "ffmpeg": {"min": "4.0", "version": ["-version"], "brew": "ffmpeg"},
+  "cc": {"min": "0", "version": ["--version"]},
+  "claude": {"min": "2.1", "version": ["--version"]},
+  "codex": {"min": "0", "version": ["--version"]},
+  "agy": {"min": "0", "version": ["--version"]},
+  "grok": {"min": "0", "version": ["--version"]},
+  "hs": {"min": "0", "version": ["-h"]}
+ },
+ "modules": {
+  "core": {
+   "requires": ["bash", "python3", "jq", "git"],
+   "shell_path": true,
+   "links": {
+    ".local/bin/tools": "llm-legs/bin/tools",
+    ".local/bin/cyrillic-share": "llm-legs/bin/cyrillic-share",
+    ".local/bin/node-install": "llm-legs/bin/node-install"
+   }
+  },
+  "accounts": {
+   "requires": ["bash", "python3", "jq"],
+   "optional": ["claude", "codex", "agy", "grok"],
+   "links": {
+    ".local/bin/claudeb": "llm-legs/bin/claudeb",
+    ".local/bin/codexb": "llm-legs/bin/codexb",
+    ".local/bin/geminib": "llm-legs/bin/geminib",
+    ".local/bin/grokb": "llm-legs/bin/grokb",
+    ".local/bin/claudegpt": "llm-legs/bin/claudegpt",
+    ".local/bin/opencode-go": "llm-legs/bin/opencode-go"
+   }
+  },
+  "limits": {
+   "requires": ["bash", "python3", "jq"],
+   "links": {
+    ".local/bin/llm-limits": "llm-legs/llm-limits.sh",
+    ".local/bin/llm-reset-redeem": "llm-legs/bin/llm-reset-redeem",
+    ".local/bin/vendor-fingerprint": "llm-legs/bin/vendor-fingerprint",
+    ".local/bin/gemini-probe": "llm-legs/bin/gemini-probe"
+   }
+  },
+  "workers": {
+   "requires": ["bash", "python3", "jq", "git"],
+   "links": {
+    ".local/bin/worker-run": "llm-legs/bin/worker-run",
+    ".local/bin/worker-pick": "llm-legs/bin/worker-pick",
+    ".local/bin/light-research": "llm-legs/bin/light-research",
+    ".local/bin/report-bus": "llm-legs/bin/report-bus"
+   }
+  },
+  "media": {
+   "requires": ["python3", "uv", "ffmpeg"],
+   "links": {
+    ".local/bin/media-run": "llm-legs/bin/media-run",
+    ".local/bin/audio-score": "llm-legs/bin/audio-score",
+    ".local/bin/audiokit": "llm-legs/bin/audiokit",
+    ".local/bin/blender-render": "llm-legs/bin/blender-render",
+    ".local/bin/codex-image": "llm-legs/bin/codex-image",
+    ".local/bin/frame-sheet": "llm-legs/bin/frame-sheet",
+    ".local/bin/gemini-image": "llm-legs/bin/gemini-image",
+    ".local/bin/gemini-listen": "llm-legs/bin/gemini-listen",
+    ".local/bin/gemini-music": "llm-legs/bin/gemini-music",
+    ".local/bin/gemini-sfx": "llm-legs/bin/gemini-sfx",
+    ".local/bin/gemini-video": "llm-legs/bin/gemini-video",
+    ".local/bin/grok-image": "llm-legs/bin/grok-image",
+    ".local/bin/grok-video": "llm-legs/bin/grok-video",
+    ".local/bin/image-cutout": "llm-legs/bin/image-cutout",
+    ".local/bin/image-enhance": "llm-legs/bin/image-enhance",
+    ".local/bin/image-fanout": "llm-legs/bin/image-fanout",
+    ".local/bin/logo-vectorize": "llm-legs/bin/logo-vectorize",
+    ".local/bin/suno-music": "llm-legs/bin/suno-music",
+    ".local/bin/suno-speech": "llm-legs/bin/suno-speech",
+    ".local/bin/video-chain": "llm-legs/bin/video-chain",
+    ".local/bin/ck-key": "llm-legs/bin/ck-key"
+   }
+  },
+  "web": {
+   "requires": ["python3", "uv"],
+   "links": {
+    ".local/bin/gemini-web": "llm-legs/bin/gemini-web",
+    ".local/bin/chatgpt-web": "llm-legs/bin/chatgpt-web",
+    ".local/bin/dia-js": "llm-legs/bin/dia-js",
+    ".local/bin/dia-mcp": "llm-legs/bin/dia-mcp",
+    ".local/bin/chrome-applescript-js": "llm-legs/bin/chrome-applescript-js"
+   }
+  },
+  "chats": {
+   "requires": ["python3", "tmux"],
+   "links": {
+    ".local/bin/chat-find": "llm-legs/bin/chat-find",
+    ".local/bin/chat-name": "llm-legs/bin/chat-name",
+    ".local/bin/chat-pin": "llm-legs/bin/chat-pin",
+    ".local/bin/chats": "llm-legs/bin/chats",
+    ".local/bin/claude-chat-switch": "llm-legs/bin/claude-chat-switch",
+    ".local/bin/claude-resume-timer": "llm-legs/bin/claude-resume-timer",
+    ".local/bin/page": "chats-app/bin/page",
+    ".local/bin/share": "chats-app/bin/share"
+   }
+  },
+  "hooks": {
+   "requires": ["bash", "python3", "jq"],
+   "links": {
+    ".local/bin/pgrep": "llm-legs/bin/pgrep",
+    ".local/bin/pkill": "llm-legs/bin/pkill",
+    ".local/bin/atlassian-mcp-headers": "claude-setup/bin/atlassian-mcp-headers",
+    ".local/bin/connections": "claude-setup/bin/connections",
+    ".local/bin/hooks": "claude-setup/bin/hooks",
+    ".local/bin/jira-mcp": "claude-setup/bin/jira-mcp",
+    ".local/bin/mattermost-mcp": "claude-setup/bin/mattermost-mcp",
+    ".local/bin/md-ask": "claude-setup/bin/md-ask",
+    ".local/bin/mm-pr": "claude-setup/bin/mm-pr",
+    ".local/bin/review-range": "claude-setup/bin/review-range",
+    ".local/bin/stop-gate": "claude-setup/bin/stop-gate",
+    ".local/bin/words-log": "claude-setup/bin/words-log",
+    ".local/bin/trash": "claude-setup/hooks/session-trash.sh",
+    ".claude/CLAUDE.md": "claude-setup/global/CLAUDE.md",
+    ".claude/agents": "claude-setup/agents",
+    ".claude/commands": "claude-setup/commands",
+    ".claude/docs": "claude-setup/global/docs",
+    ".claude/hooks": "claude-setup/hooks",
+    ".claude/keybindings.json": "claude-setup/keybindings.json",
+    ".claude/skills": "claude-setup/skills"
+   },
+   "hooks": [
+    ["PreToolUse", "Agent|Task", "~/.claude/hooks/worker-spawn-hook.sh", {"timeout": 10}],
+    ["PreToolUse", "AskUserQuestion", "~/.claude/hooks/away-dispatch.sh", {"timeout": 5}],
+    ["PreToolUse", "Workflow", "~/.claude/hooks/workflow-burn-gate.sh", {"timeout": 10, "statusMessage": "Checking session account limits..."}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/worker-git-guard.sh", {"timeout": 5}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/worker-edit-guard.sh", {"timeout": 5}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/review-flow-gate.sh", {"timeout": 30, "statusMessage": "Review flow gate..."}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/eod-sorted-gate.sh", {"timeout": 5}],
+    ["PreToolUse", "Edit|Write|MultiEdit", "~/.claude/hooks/instruction-bloat-gate.sh", {"timeout": 10, "statusMessage": "Instruction-bloat gate..."}],
+    ["PreToolUse", "Edit|Write|MultiEdit", "~/.claude/hooks/worker-pin-gate.sh write", {"timeout": 5}],
+    ["PreToolUse", "Edit|Write|MultiEdit", "~/.claude/hooks/slash-collision-gate.sh", {"timeout": 5}],
+    ["PreToolUse", "Edit|Write|MultiEdit", "~/.claude/hooks/launchagent-name-gate.sh", {"timeout": 5}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/dia-not-chrome.sh", {"timeout": 5}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/instruction-write-gate.sh", {"timeout": 10, "statusMessage": "Instruction write gate..."}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/worker-pin-gate.sh bash", {"timeout": 5}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/worker-launch-gate.sh", {"timeout": 5}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/review-owner-gate.sh bash", {"timeout": 10, "statusMessage": "Review owner gate..."}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/chat-switch-link.sh", {"timeout": 5}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/resume-timer-guard.sh", {"timeout": 5}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/word-gate.sh", {"timeout": 10}],
+    ["PreToolUse", "Bash", "~/.claude/hooks/skill-install-scope-gate.sh"],
+    ["PreToolUse", "Bash", "~/.claude/hooks/connections-gate.sh"],
+    ["PreToolUse", "Bash", "~/.claude/hooks/launchagent-name-gate.sh", {"timeout": 5}],
+    ["PreToolUse", "Monitor|mcp__codex__codex|mcp__codex__codex-reply", "~/.claude/hooks/worker-launch-gate.sh", {"timeout": 5}],
+    ["PreToolUse", "Edit|Write|NotebookEdit", "~/.claude/hooks/edit-conflict-notice.sh", {"timeout": 10}],
+    ["PreToolUse", "Agent|SendMessage|Workflow|mcp__codex__codex|mcp__codex__codex-reply|Bash|Write|Edit|MultiEdit", "~/.claude/hooks/english-gate.sh", {"timeout": 10, "statusMessage": "English gate..."}],
+    ["PreToolUse", "mcp__.*[Aa]tlassian__(addCommentToJiraIssue|addOrEditJiraIssueComment|createJiraIssue|editJiraIssue)|mcp__jira__(add_comment|create_issue|update_issue)", "~/.claude/hooks/jira-mention-gate.sh", {"timeout": 10}],
+    ["PreToolUse", "mcp__.*[Aa]tlassian__(addCommentToJiraIssue|addOrEditJiraIssueComment|createJiraIssue|editJiraIssue)|mcp__jira__(add_comment|create_issue|update_issue)", "~/.claude/hooks/demo-link-gate.sh", {"timeout": 10}],
+    ["PreToolUse", "mcp__claude-in-chrome__(computer|form_input|browser_batch)", "~/.claude/hooks/owner-text.sh"],
+    ["PreToolUse", "Bash", "~/.claude/hooks/owner-text.sh"],
+    ["PreToolUse", "Write|Bash", "~/.claude/hooks/pages-hint.sh", {"timeout": 5}],
+    ["PostToolUse", "Bash|Edit|Write|MultiEdit|NotebookEdit", "~/.claude/hooks/instruction-watch.sh check", {"timeout": 60}],
+    ["PostToolUse", "Bash", "~/.claude/hooks/limits-triage-nudge.sh", {"timeout": 5}],
+    ["PostToolUse", "Bash", "~/.claude/hooks/word-spend.sh", {"timeout": 10}],
+    ["PostToolUse", "Bash", "~/.claude/hooks/commit-report.sh", {"timeout": 30}],
+    ["PostToolUse", "Bash", "~/.claude/hooks/pr-auto-reviewers.sh", {"timeout": 30}],
+    ["PostToolUse", "Bash", "~/.claude/hooks/pr-ready-mattermost.sh", {"timeout": 10}],
+    ["PostToolUse", "*", "~/.claude/hooks/report-flush.sh", {"timeout": 10}],
+    ["PostToolUse", "Edit|Write", "~/.claude/hooks/memory-prune.sh hook", {"timeout": 15}],
+    ["PostToolUse", "mcp__mattermost__send_message|mcp__mattermost__reply", "~/.claude/hooks/word-spend.sh", {"timeout": 10}],
+    ["SessionStart", "", "b=$(git branch --show-current 2>/dev/null); case \"$b\" in claude/*|worktree-*) echo \"Branch '$b' is an auto-generated slug. Git UIs list worktrees by ACTIVE BRANCH, so once the task is clear, silently rename in place: git branch -m <ticket>-<short-words> (no ticket -> 2-4 clear words; name taken -> add suffix). If the work belongs to an existing ticket branch and this auto branch holds nothing, check it out and delete the auto branch. Safe either way: the harness tracks worktrees by directory path; never rename the folder instead. Skip read-only sessions.\";; esac", {"timeout": 5}],
+    ["SessionStart", "", "~/.claude/hooks/session-trash.sh sweep", {"timeout": 15, "async": true}],
+    ["SessionStart", "", "~/.claude/hooks/instruction-watch.sh baseline", {"timeout": 60}],
+    ["SessionStart", "compact", "~/.claude/hooks/compact-auto.sh hook-session-start", {"timeout": 20}],
+    ["SessionStart", "compact", "~/.claude/hooks/word-intake.sh"],
+    ["SessionStart", "compact", "~/.claude/hooks/context-nudge.sh", {"timeout": 10}],
+    ["SessionStart", "compact|resume", "~/.claude/hooks/pages-session.sh", {"timeout": 10}],
+    ["SessionStart", "resume", "~/.claude/hooks/chat-twice.py", {"timeout": 10}],
+    ["SessionStart", "resume", "~/.claude/hooks/cache-keepalive.py", {"timeout": 7200, "asyncRewake": true, "rewakeMessage": "Worker runs from the harness:", "rewakeSummary": "worker runs"}],
+    ["UserPromptSubmit", "", "~/.claude/hooks/eod-commits-notice.sh", {"timeout": 5}],
+    ["UserPromptSubmit", "", "~/.claude/hooks/report-flush.sh", {"timeout": 10}],
+    ["UserPromptSubmit", "", "~/.claude/hooks/session-trash.sh sweep-bg", {"timeout": 5, "async": true}],
+    ["UserPromptSubmit", "", "~/.claude/hooks/word-intake.sh", {"timeout": 5}],
+    ["SessionEnd", "", "~/.claude/hooks/session-trash.sh hook-end", {"timeout": 10, "statusMessage": "Session trash check..."}],
+    ["Stop", "", "~/.claude/hooks/stop-dispatch.sh", {"timeout": 15}],
+    ["Stop", "", "~/.claude/hooks/cache-keepalive.py", {"timeout": 7200, "asyncRewake": true, "rewakeMessage": "Cache keepalive from the harness:", "rewakeSummary": "cache keepalive"}],
+    ["PreCompact", "", "~/.claude/hooks/precompact-preserve.sh", {"timeout": 30}]
+   ]
+  },
+  "statusline": {
+   "requires": ["bash", "jq", "cc"],
+   "links": {
+    ".local/bin/statusline-place": "llm-legs/bin/statusline-place",
+    ".claude/statusline.sh": "~/.local/libexec/statusline-fast"
+   },
+   "builds": [{"path": ".local/libexec/statusline-fast", "run": "bin/statusline-fast-build", "check": "--fingerprint"}],
+   "settings": {"statusLine": {"type": "command", "command": "~/.claude/statusline.sh", "refreshInterval": 10}},
+   "hooks": [
+    ["PreToolUse", "Bash|Task|Agent", "~/.claude/hooks/statusline-workdir-hook.sh", {"timeout": 5}],
+    ["PostToolUse", "Bash|Edit|Write|NotebookEdit|EnterWorktree|ExitWorktree", "~/.claude/hooks/statusline-workdir-hook.sh", {"timeout": 5}],
+    ["PostToolUse", "Edit|Write|NotebookEdit", "~/.claude/hooks/statusline-freshness-gate.sh", {"timeout": 5}],
+    ["SessionStart", "", "~/.claude/hooks/statusline-workdir-hook.sh", {"timeout": 5}]
+   ]
+  },
+  "review": {
+   "requires": ["python3", "git"],
+   "links": {
+    ".local/bin/review-anchors": "review-bench/bin/review-anchors",
+    ".local/bin/review-bench": "review-bench/bin/review-bench",
+    ".local/bin/review-debt": "review-bench/bin/review-debt"
+   }
+  },
+  "doctors": {
+   "requires": ["bash", "python3", "jq", "git"],
+   "links": {
+    ".local/bin/code-doctor": "llm-legs/bin/code-doctor",
+    ".local/bin/doctor-fix": "llm-legs/bin/doctor-fix",
+    ".local/bin/harness-doctor": "llm-legs/bin/harness-doctor",
+    ".local/bin/land": "llm-legs/bin/land",
+    ".local/bin/llm-doctor": "llm-legs/bin/llm-doctor",
+    ".local/bin/llm-selfcheck": "llm-legs/bin/llm-selfcheck",
+    ".local/bin/log-audit": "llm-legs/bin/log-audit",
+    ".local/bin/night-run": "llm-legs/bin/night-run",
+    ".local/bin/system-doctor": "llm-legs/bin/system-doctor",
+    ".local/bin/updater-doctor": "llm-legs/bin/updater-doctor",
+    ".local/bin/vendor-cli-update": "llm-legs/bin/vendor-cli-update",
+    ".local/bin/tokenmap": "token-map/bin/tokenmap"
+   },
+   "hooks": [
+    ["StopFailure", "rate_limit", "~/.local/bin/night-run wall", {"timeout": 10}]
+   ]
+  },
+  "daemons": {"requires": ["bash", "python3"], "deploys": ["llm-legs", "review-bench", "claude-setup"]},
+  "menubar": {
+   "requires": ["hs"],
+   "links": {
+    ".local/bin/machines": "hammerspoon/bin/machines",
+    ".local/bin/sudo": "hammerspoon/bin/sudo",
+    ".local/bin/sysdialogs": "hammerspoon/bin/sysdialogs",
+    ".hammerspoon": "hammerspoon"
+   },
+   "deploys": ["hammerspoon"]
+  },
+  "desk": {
+   "requires": ["python3"],
+   "links": {
+    ".local/bin/ipad": "llm-legs/bin/ipad",
+    ".local/bin/iphone": "llm-legs/bin/iphone",
+    ".local/bin/mail-find": "llm-legs/bin/mail-find",
+    ".local/bin/tg-read": "llm-legs/bin/tg-read"
+   }
+  },
+  "dictation": {
+   "hooks": [
+    ["UserPromptSubmit", "", "{root}/transcriptions-gpt/.venv/bin/python -I -S {root}/transcriptions-gpt/transcriber/marks_hook.py", {"timeout": 5}]
+   ]
+  }
+ }
+}

@@ -1,0 +1,634 @@
+#!/usr/bin/env python3
+"""node-install: puts the chosen modules of the LLM tooling on this machine, from share/node-manifest.json.
+
+  node-install [--modules a,b|all] [--name N] [--root DIR] [--dry-run]
+      this machine: binaries, the shell PATH, links, hook entries, builds and launch agents of each enabled module;
+      a second run changes nothing. --dry-run changes nothing and lists every difference; with all modules it also
+      lists what the live install holds that no module names.
+  node-install --to <name> --host <user@address> [--modules ...] [--dry-run]
+      another Mac from this one (`machines install <name>` calls it): pushes each repository the modules need into
+      <its root>/<repo> there (a plain git checkout on branch `node`, so it runs with this Mac off), then runs this
+      command there. Running it again is the update.
+  node-install --list    the modules and what each holds
+
+The node config is ~/.config/llm-legs/node.json: {"name": this machine, "root": the folder holding the checkouts,
+"modules": [...]}. Flags given are written back to it (never by a dry run); an absent key is the machine's host name,
+the folder above this checkout, and no module. Written for the macOS system Python 3.9 too: a bare Mac bootstraps
+with it before Homebrew's Python is in place.
+Exit 0 done or no difference, 1 a difference left or a step failed, 2 usage.
+"""
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+
+BIN = os.path.dirname(os.path.realpath(__file__))
+CHECKOUT = os.path.dirname(BIN)
+MANIFEST = os.environ.get("NODE_MANIFEST") or os.path.join(CHECKOUT, "share", "node-manifest.json")
+HOME = os.path.expanduser("~")
+CONFIG = os.environ.get("NODE_CONFIG") or os.path.join(HOME, ".config", "llm-legs", "node.json")
+# What sshd hands a non-interactive shell on macOS: the PATH a `machines run` command starts from.
+SSH_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+BREW_PREFIXES = ("/opt/homebrew", "/usr/local")
+ZSHENV_MARK = "# llm-legs node (bin/node-install)"
+# brew must not upgrade or touch anything else on a node (mac-m1 is a performance lab).
+BREW_ENV = {"HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_INSTALL_UPGRADE": "1",
+            "HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK": "1", "HOMEBREW_NO_ENV_HINTS": "1"}
+VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def run(argv, **kw):
+    kw.setdefault("stdout", subprocess.PIPE)
+    kw.setdefault("stderr", subprocess.PIPE)
+    kw.setdefault("stdin", subprocess.DEVNULL)
+    kw.setdefault("universal_newlines", True)
+    try:
+        return subprocess.run(argv, **kw)
+    except OSError as error:
+        return subprocess.CompletedProcess(argv, 127, "", str(error))
+
+
+def tilde(path):
+    return "~" + path[len(HOME):] if path == HOME or path.startswith(HOME + "/") else path
+
+
+def read_json(path, default):
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        return default
+
+
+def write_json(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w") as handle:
+        json.dump(value, handle, indent=1, ensure_ascii=False)
+        handle.write("\n")
+    os.replace(path + ".tmp", path)
+
+
+def default_root():
+    """The folder above this repository's main checkout: a linked worktree installs what the main checkout holds."""
+    common = run(["git", "-C", CHECKOUT, "rev-parse", "--path-format=absolute", "--git-common-dir"])
+    main = os.path.dirname(common.stdout.strip()) if common.returncode == 0 else CHECKOUT
+    return os.path.dirname(main)
+
+
+def this_machine():
+    return socket.gethostname().split(".")[0].lower()  # as `machines` names it
+
+
+def brew_prefix():
+    for prefix in BREW_PREFIXES:
+        if os.access(os.path.join(prefix, "bin", "brew"), os.X_OK):
+            return prefix
+    return None
+
+
+def node_path():
+    """The PATH a tool on this node sees once the shell_path block is in: Homebrew's first, ~/.local/bin last."""
+    prefix = brew_prefix()
+    dirs = ([prefix + "/bin"] if prefix else []) + os.environ.get("PATH", SSH_PATH).split(":") + [HOME + "/.local/bin"]
+    seen = []
+    for d in dirs:
+        if d and d not in seen:
+            seen.append(d)
+    return ":".join(seen)
+
+
+def version_of(path, args):
+    out = run([path] + args, timeout=30)
+    found = VERSION_RE.search((out.stdout or "") + (out.stderr or "")) if out.returncode == 0 else None
+    return tuple(int(x or 0) for x in found.groups()) if found else None
+
+
+def as_version(text):
+    return tuple(int(x) for x in (text.split(".") + ["0", "0"])[:3])
+
+
+class Item:
+    """One thing a module puts on the machine: `check()` -> None when in place, else why not; `apply()` puts it
+    there and returns what it did."""
+
+    def __init__(self, label, check, apply=None, optional=False):
+        self.label, self.check, self.apply, self.optional = label, check, apply, optional
+
+
+def binary_item(name, spec, optional):
+    def find():
+        found = shutil.which(name, path=node_path())
+        if not found:
+            return None, None
+        return found, version_of(found, spec.get("version", ["--version"]))
+
+    def check():
+        found, have = find()
+        if not found:
+            return "%s not installed" % name
+        if have is None:
+            return "%s at %s does not say its version" % (name, found)
+        if have < as_version(spec["min"]):
+            return "%s %s at %s, %s+ needed" % (name, ".".join(map(str, have)), found, spec["min"])
+        return None
+
+    def apply():
+        prefix = brew_prefix()
+        if not spec.get("brew") or not prefix:
+            raise RuntimeError("install %s %s+ by hand: no Homebrew formula to use" % (name, spec["min"]))
+        done = run([prefix + "/bin/brew", "install", "--quiet", spec["brew"]], env=dict(os.environ, **BREW_ENV),
+                   timeout=1800)
+        if done.returncode:
+            raise RuntimeError("brew install %s: %s" % (spec["brew"], (done.stderr or done.stdout).strip()[-300:]))
+        why = check()
+        if why:
+            raise RuntimeError("after brew install %s: %s" % (spec["brew"], why))
+        found, have = find()
+        return "installed %s %s (brew)" % (name, ".".join(map(str, have)))
+
+    return Item("binary %s" % name, check, None if optional else apply, optional)
+
+
+def zshenv_block(prefix):
+    lines = [ZSHENV_MARK + ": ssh and other non-interactive shells find the tools, and Homebrew's bash and python",
+             "# ahead of the system ones (macOS bash 3.2, python 3.9)."]
+    if prefix:
+        lines.append('case ":$PATH:" in *":%s/bin:"*) ;; *) PATH="%s/bin:$PATH" ;; esac' % (prefix, prefix))
+    lines += ['case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$PATH:$HOME/.local/bin" ;; esac', "export PATH"]
+    return "\n".join(lines) + "\n"
+
+
+def shell_path_item():
+    zshenv = os.path.join(HOME, ".zshenv")
+
+    def check():
+        probe = run(["/bin/zsh", "-c", 'print -r -- "$PATH"; bash -c \'echo "${BASH_VERSINFO[0]}"\''],
+                    env={"HOME": HOME, "PATH": SSH_PATH, "USER": os.environ.get("USER", "")}, timeout=30)
+        lines = (probe.stdout or "").splitlines()
+        path, bash_major = (lines + ["", ""])[:2]
+        missing = []
+        if HOME + "/.local/bin" not in path.split(":"):
+            missing.append("~/.local/bin")
+        if not bash_major.isdigit() or int(bash_major) < 4:
+            missing.append("bash 4+ ahead of /bin/bash")
+        return ("a non-interactive zsh (ssh, machines run) lacks %s on its PATH" % " and ".join(missing)) \
+            if missing else None
+
+    def apply():
+        try:
+            with open(zshenv) as handle:
+                text = handle.read()
+        except FileNotFoundError:
+            text = ""
+        if ZSHENV_MARK in text:
+            raise RuntimeError("~/.zshenv holds the node block yet the PATH is wrong: something later in it resets PATH")
+        with open(zshenv, "a") as handle:
+            handle.write(("\n" if text and not text.endswith("\n") else "") + zshenv_block(brew_prefix()))
+        why = check()
+        if why:
+            raise RuntimeError("after adding the block to ~/.zshenv: " + why)
+        return "~/.zshenv: PATH block added"
+
+    return Item("shell PATH", check, apply)
+
+
+def link_target(target, root):
+    return os.path.join(HOME, target[2:]) if target.startswith("~/") else os.path.join(root, target)
+
+
+def link_item(rel, target, root):
+    path, want = os.path.join(HOME, rel), link_target(target, root)
+
+    def check():
+        if not os.path.lexists(want) and not target.startswith("~/"):
+            return "its source %s is missing" % tilde(want)
+        if not os.path.islink(path):
+            return "missing" if not os.path.lexists(path) else "a file, not a link to %s" % tilde(want)
+        have = os.readlink(path)
+        return None if have == want else "links to %s, not %s" % (tilde(have), tilde(want))
+
+    def apply():
+        if not os.path.lexists(want) and not target.startswith("~/"):
+            raise RuntimeError("its source %s is missing (the checkout is not in place)" % tilde(want))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        aside = ""
+        if os.path.islink(path):
+            os.remove(path)
+        elif os.path.lexists(path):
+            os.rename(path, path + ".before-node-install")
+            aside = ", the old one kept as %s.before-node-install" % tilde(path)
+        os.symlink(want, path)
+        return "linked %s%s" % (tilde(path), aside)
+
+    return Item("link %s" % tilde(path), check, apply)
+
+
+def settings_path():
+    return os.path.join(HOME, ".claude", "settings.json")
+
+
+def hook_object(entry, root):
+    hook = {"type": "command", "command": entry[2].replace("{root}", root)}
+    hook.update(entry[3] if len(entry) > 3 else {})
+    return hook
+
+
+def hook_item(entry, root):
+    event, matcher, hook = entry[0], entry[1], hook_object(entry, root)
+
+    def present(settings):
+        return any(group.get("matcher", "") == matcher and hook in group.get("hooks", [])
+                   for group in settings.get("hooks", {}).get(event, []))
+
+    def check():
+        return None if present(read_json(settings_path(), {})) else "not in settings.json"
+
+    def apply():
+        settings = read_json(settings_path(), {})
+        groups = settings.setdefault("hooks", {}).setdefault(event, [])
+        group = next((g for g in groups if g.get("matcher", "") == matcher), None)
+        if group is None:
+            group = dict({"matcher": matcher} if matcher else {}, hooks=[])
+            groups.append(group)
+        group.setdefault("hooks", []).append(hook)
+        write_json(settings_path(), settings)
+        return "settings.json: %s hook %s" % (event, entry[2].split()[0])
+
+    return Item("hook %s %s %s" % (event, matcher or "*", tilde(hook["command"])[:80]), check, apply)
+
+
+def setting_item(key, value):
+    def check():
+        have = read_json(settings_path(), {}).get(key)
+        return None if have == value else "settings.json %s is %s" % (key, json.dumps(have))
+
+    def apply():
+        settings = read_json(settings_path(), {})
+        settings[key] = value
+        write_json(settings_path(), settings)
+        return "settings.json: %s set" % key
+
+    return Item("setting %s" % key, check, apply)
+
+
+def build_item(spec, checkout):
+    path = os.path.join(HOME, spec["path"])
+
+    def check():
+        if not os.path.exists(path):
+            return "not built"
+        return None if run([path, spec["check"]], timeout=30).returncode == 0 else "built from older sources"
+
+    def apply():
+        done = run([os.path.join(checkout, spec["run"])], cwd=checkout, timeout=600)
+        if done.returncode:
+            raise RuntimeError("%s: %s" % (spec["run"], (done.stderr or done.stdout).strip()[-300:]))
+        return "built %s" % tilde(path)
+
+    return Item("build %s" % tilde(path), check, apply)
+
+
+def llm_legs_drift(checkout):
+    """{path from home: drift or None} for every copy harness-doctor's DEPLOYS names (the one list of what this
+    repository's installers deploy), judged against `checkout`."""
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("harness_doctor", os.path.join(BIN, "harness-doctor"))
+    spec = importlib.util.spec_from_loader("harness_doctor", loader)
+    doctor = importlib.util.module_from_spec(spec)
+    loader.exec_module(doctor)
+    dirs = {"libexec": ".local/libexec", "agents": "Library/LaunchAgents"}
+    drift = {}
+    for _, copies in doctor.DEPLOYS:
+        for where, name, kind, src in copies:
+            source = os.path.join(HOME, dirs["libexec"], src) if kind == "program" else os.path.join(checkout, src)
+            drift[os.path.join(dirs[where], name)] = doctor.deploy_drift(os.path.join(HOME, dirs[where], name),
+                                                                          kind, source)
+    return drift
+
+
+def deploy_items(repo, root, done_installers):
+    """One item per installer group of `<repo>/bin/deploys` (each repository's list of its copies outside it)."""
+    directory = os.path.join(root, repo)
+    lister = os.path.join(directory, "bin", "deploys")
+    if not os.access(lister, os.X_OK):
+        return [Item("deploys of %s" % repo, lambda: "%s is missing" % tilde(lister))]
+    listed = run([lister], cwd=directory, timeout=120)
+    if listed.returncode:
+        return [Item("deploys of %s" % repo, lambda: "%s failed: %s" % (tilde(lister), listed.stderr.strip()))]
+    groups = {}
+    for line in listed.stdout.splitlines():
+        rel, installer = line.split("\t", 1)
+        groups.setdefault(installer if not installer.startswith("cp ") else rel, []).append((rel, installer))
+    drift = {}
+    if repo == "llm-legs" and any(not i.startswith("cp ") for i in groups):
+        try:
+            drift = llm_legs_drift(directory)
+        except Exception as error:  # an older python than harness-doctor needs: presence is judged alone
+            drift = {"": "harness-doctor unreadable (%s)" % error}
+    items = []
+    for key, copies in groups.items():
+        installer = copies[0][1]
+
+        def check(copies=copies):
+            reasons = []
+            for rel, installer in copies:
+                target = os.path.join(HOME, rel)
+                if not os.path.lexists(target):
+                    reasons.append("%s missing" % rel)
+                elif installer.startswith("cp "):
+                    with open(os.path.join(directory, installer[3:]), "rb") as want, open(target, "rb") as have:
+                        if want.read() != have.read():
+                            reasons.append("%s differs from %s/%s" % (rel, repo, installer[3:]))
+                elif drift.get(rel):
+                    reasons.append("%s %s" % (rel, drift[rel]))
+            return "; ".join(reasons) or None
+
+        def apply(copies=copies, installer=installer):
+            if installer.startswith("cp "):
+                rel = copies[0][0]
+                target = os.path.join(HOME, rel)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.copyfile(os.path.join(directory, installer[3:]), target)
+                shutil.copymode(os.path.join(directory, installer[3:]), target)
+                if target.endswith(".plist"):
+                    domain = "gui/%d" % os.getuid()
+                    run(["/bin/launchctl", "bootout", domain, target], timeout=60)
+                    loaded = run(["/bin/launchctl", "bootstrap", domain, target], timeout=60)
+                    if loaded.returncode:
+                        raise RuntimeError("launchctl bootstrap %s: %s" % (rel, loaded.stderr.strip()))
+                return "copied ~/%s" % rel
+            if installer in done_installers:
+                return None
+            done_installers.add(installer)
+            ran = run(shlex.split(installer), cwd=directory, timeout=600)
+            if ran.returncode:
+                raise RuntimeError("%s/%s: %s" % (repo, installer, (ran.stderr or ran.stdout).strip()[-300:]))
+            return "ran %s/%s" % (repo, installer)
+
+        items.append(Item("deploy %s (%s)" % (copies[0][0] if installer.startswith("cp ") else installer, repo),
+                          check, apply))
+    return items
+
+
+def module_items(name, module, binaries, root, done_installers):
+    items = [binary_item(b, binaries[b], False) for b in module.get("requires", [])]
+    items += [binary_item(b, binaries[b], True) for b in module.get("optional", [])]
+    if module.get("shell_path"):
+        items.append(shell_path_item())
+    items += [link_item(rel, target, root) for rel, target in module.get("links", {}).items()]
+    items += [build_item(spec, os.path.join(root, "llm-legs")) for spec in module.get("builds", [])]
+    items += [setting_item(k, v) for k, v in module.get("settings", {}).items()]
+    items += [hook_item(entry, root) for entry in module.get("hooks", [])]
+    for repo in module.get("deploys", []):
+        items += deploy_items(repo, root, done_installers)
+    return items
+
+
+def repos_of(module):
+    found = {"llm-legs"}
+    for target in module.get("links", {}).values():
+        if not target.startswith("~/"):
+            found.add(target.split("/", 1)[0])
+    found.update(module.get("deploys", []))
+    return found
+
+
+def file_texts(path):
+    """The text of a file, or of the files directly inside a directory (a libexec copy of a whole program)."""
+    paths = [os.path.join(path, f) for f in sorted(os.listdir(path))] if os.path.isdir(path) else [path]
+    texts = []
+    for p in paths:
+        try:
+            with open(p, "rb") as handle:
+                texts.append(handle.read(200000).decode("utf-8", "replace"))
+        except OSError:
+            pass
+    return "\n".join(texts)
+
+
+def unlisted(manifest, root):
+    """([ours], [others]): what the live install holds that no module names. Ours: links into the checkouts
+    from ~/.local/bin, ~/.claude and home, and libexec copies and launch agents naming a repository of the
+    manifest; others: libexec copies and agents of other projects (left alone, named only)."""
+    named, repos = set(), set()
+    for module in manifest["modules"].values():
+        named.update(module.get("links", {}))
+        named.update(b["path"] for b in module.get("builds", []))
+        repos |= repos_of(module)
+        for repo in module.get("deploys", []):
+            listed = run([os.path.join(root, repo, "bin", "deploys")], timeout=120)
+            named.update(line.split("\t", 1)[0] for line in listed.stdout.splitlines())
+    ours_re = re.compile("|".join(re.escape("%s/%s/" % (root, r)) for r in sorted(repos)))
+    ours, others = [], []
+    for folder in (".local/bin", ".claude", ""):
+        directory = os.path.join(HOME, folder)
+        for entry in sorted(os.listdir(directory)):
+            rel = os.path.join(folder, entry) if folder else entry
+            path = os.path.join(directory, entry)
+            if os.path.islink(path) and os.readlink(path).startswith(root + "/") and rel not in named:
+                ours.append("~/%s -> %s" % (rel, tilde(os.readlink(path))))
+    libexec = os.path.join(HOME, ".local", "libexec")
+    our_copies = set()
+    for entry in sorted(os.listdir(libexec)) if os.path.isdir(libexec) else []:
+        rel = os.path.join(".local/libexec", entry)
+        if rel in named:
+            continue
+        if ours_re.search(file_texts(os.path.join(libexec, entry))):
+            our_copies.add(os.path.join(libexec, entry))
+            ours.append("~/%s" % rel)
+        else:
+            others.append(entry)
+    agents = os.path.join(HOME, "Library", "LaunchAgents")
+    for entry in sorted(os.listdir(agents)) if os.path.isdir(agents) else []:
+        rel = os.path.join("Library/LaunchAgents", entry)
+        text = file_texts(os.path.join(agents, entry))
+        if rel in named or not (libexec in text or root + "/" in text):
+            continue
+        if ours_re.search(text) or any(c in text for c in our_copies):
+            ours.append("~/%s" % rel)
+        else:
+            others.append(entry)
+    return ours, others
+
+
+def resolve_config(args, manifest):
+    config = read_json(CONFIG, {})
+    if not isinstance(config, dict):
+        raise SystemExit("node-install: %s is not a JSON object" % tilde(CONFIG))
+    wanted = dict(config)
+    if args.name:
+        wanted["name"] = args.name
+    if args.root:
+        wanted["root"] = os.path.abspath(os.path.expanduser(args.root))
+    if args.modules:
+        wanted["modules"] = list(manifest["modules"]) if args.modules == "all" else args.modules.split(",")
+    unknown = [m for m in wanted.get("modules", []) if m not in manifest["modules"]]
+    if unknown:
+        raise SystemExit("node-install: no module %s; known: %s" % (", ".join(unknown), ", ".join(manifest["modules"])))
+    wanted.setdefault("name", this_machine())
+    wanted.setdefault("root", default_root())
+    wanted.setdefault("modules", [])
+    return config, wanted
+
+
+def install_here(args, manifest):
+    config, node = resolve_config(args, manifest)
+    root, modules = node["root"], node["modules"]
+    head = "node %s: root %s, modules %s" % (node["name"], tilde(root), ", ".join(modules) or "none")
+    done_installers, items = set(), []
+    for name in modules:
+        items += module_items(name, manifest["modules"][name], manifest["binaries"], root, done_installers)
+    did, left, notes = [], [], []
+    if config != node and not args.dry_run:
+        write_json(CONFIG, node)
+        did.append("wrote %s" % tilde(CONFIG))
+    seen = set()
+    for item in items:
+        if item.label in seen:  # a binary or a hook two modules share
+            continue
+        seen.add(item.label)
+        why = item.check()
+        if not why:
+            continue
+        if item.optional:
+            notes.append(why)
+        elif args.dry_run:
+            left.append("%s: %s" % (item.label, why))
+        else:
+            try:
+                said = item.apply()
+                if said:
+                    did.append(said)
+            except Exception as error:
+                left.append("%s: %s" % (item.label, error))
+    print(head)
+    if args.dry_run:
+        print("%d of %d items differ%s" % (len(left), len(seen), ":" if left else ""))
+        for line in left:
+            print("  " + line)
+        if set(modules) == set(manifest["modules"]):
+            ours, others = unlisted(manifest, root)
+            if ours:
+                print("live, in no module (%d):" % len(ours))
+                for line in ours:
+                    print("  " + line)
+            if others:
+                print("other projects' copies and agents, left alone (%d): %s" % (len(others), ", ".join(others)))
+    elif not did and not left:
+        print("nothing to do: %d items in place" % len(seen))
+    else:
+        print("did %d: %s" % (len(did), "; ".join(did)) if did else "did nothing")
+        for line in left:
+            print("FAILED " + line, file=sys.stderr)
+    if notes:
+        print("optional, absent: %s (an account of that vendor needs its CLI)" % "; ".join(notes))
+    return 1 if left else 0
+
+
+def remote_line(*argv):
+    return " ".join(shlex.quote(a) for a in argv)
+
+
+def install_there(args, manifest):
+    """Pushes the repositories the modules need to the node, then runs node-install there."""
+    ssh = shlex.split(os.environ.get("NODE_INSTALL_SSH") or "ssh -o BatchMode=yes -o ConnectTimeout=10")
+
+    def remote(line):
+        # Held awake while it runs, as `machines run` holds a Mac.
+        return run(ssh + [args.host, "exec caffeinate -s -i /bin/zsh -c " + shlex.quote(line)], timeout=3600)
+
+    probe = remote('print -r -- "$HOME"; cat ~/.config/llm-legs/node.json 2>/dev/null; true')
+    if probe.returncode:
+        print("node-install: %s did not answer: %s" % (args.to, probe.stderr.strip()), file=sys.stderr)
+        return 1
+    home, _, text = probe.stdout.partition("\n")
+    there = json.loads(text) if text.strip() else {}
+    root = os.path.abspath(args.root) if args.root else there.get("root") or home + "/Projects"
+    modules = (list(manifest["modules"]) if args.modules == "all" else args.modules.split(",")) if args.modules \
+        else there.get("modules", [])
+    repos = set()
+    for name in modules:
+        if name not in manifest["modules"]:
+            print("node-install: no module %s" % name, file=sys.stderr)
+            return 2
+        repos |= repos_of(manifest["modules"][name])
+    here_root = default_root()
+    sources = {repo: (CHECKOUT if repo == "llm-legs" else os.path.join(here_root, repo)) for repo in sorted(repos)}
+    if not args.dry_run:
+        init = "; ".join(
+            'd=%s; [ -d "$d/.git" ] || { mkdir -p "$d" && git init -q "$d"; } && git -C "$d" config '
+            'receive.denyCurrentBranch updateInstead && git -C "$d" symbolic-ref HEAD refs/heads/node || exit 1'
+            % shlex.quote(os.path.join(root, repo)) for repo in sources)
+        made = remote(init)
+        if made.returncode:
+            print("node-install: preparing the checkouts on %s: %s" % (args.to, made.stderr.strip()), file=sys.stderr)
+            return 1
+        env = dict(os.environ, GIT_SSH_COMMAND=remote_line(*ssh))
+        for repo, source in sources.items():
+            if run(["git", "-C", source, "status", "--porcelain", "--untracked-files=no"]).stdout.strip():
+                print("note: %s has uncommitted changes; only its commit %s travels" % (
+                    tilde(source), run(["git", "-C", source, "rev-parse", "--short", "HEAD"]).stdout.strip()))
+            pushed = run(["git", "-C", source, "push", "--quiet", "ssh://%s%s" % (args.host, os.path.join(root, repo)),
+                          "+HEAD:refs/heads/node"], env=env, timeout=1800)
+            if pushed.returncode:
+                print("node-install: git push of %s to %s: %s" % (repo, args.to, pushed.stderr.strip()),
+                      file=sys.stderr)
+                return 1
+            print("%s: %s at %s" % (repo, tilde(source), run(["git", "-C", source, "log", "-1", "--format=%h %cs"]).stdout.strip()))
+    line = [os.path.join(root, "llm-legs", "bin", "node-install"), "--name", args.to, "--root", root]
+    line += (["--modules", ",".join(modules)] if args.modules else []) + (["--dry-run"] if args.dry_run else [])
+    done = remote(remote_line(*line))
+    sys.stdout.write(done.stdout)
+    sys.stderr.write(done.stderr)
+    return done.returncode
+
+
+def list_modules(manifest):
+    for name, module in manifest["modules"].items():
+        parts = ["requires " + ", ".join(module["requires"])] if module.get("requires") else []
+        for key, word in (("links", "links"), ("hooks", "hook entries"), ("builds", "builds")):
+            if module.get(key):
+                parts.append("%d %s" % (len(module[key]), word))
+        if module.get("deploys"):
+            parts.append("deploys of " + ", ".join(module["deploys"]))
+        print("%-10s %s" % (name, " · ".join(parts)))
+    return 0
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="node-install", add_help=False)
+    parser.add_argument("--modules")
+    parser.add_argument("--name")
+    parser.add_argument("--root")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--to")
+    parser.add_argument("--host")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("-h", "--help", action="store_true")
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit:
+        return 2
+    if args.help:
+        print(__doc__.strip())
+        return 0
+    manifest = read_json(MANIFEST, None)
+    if manifest is None:
+        print("node-install: no manifest at %s" % MANIFEST, file=sys.stderr)
+        return 1
+    if args.list:
+        return list_modules(manifest)
+    if bool(args.to) != bool(args.host):
+        print("node-install: --to and --host go together", file=sys.stderr)
+        return 2
+    return install_there(args, manifest) if args.to else install_here(args, manifest)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
