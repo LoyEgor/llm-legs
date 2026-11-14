@@ -25,6 +25,8 @@ CLI (the first word picks; a target is a pane id %N, a tty /dev/ttysN or a sessi
   chat_tmux.py closed SESSION                                   -> a viewer left it (the hook): its chat ends unless hidden
   chat_tmux.py closed --client TTY                              -> the same for the session that client showed
   chat_tmux.py hook                                             -> sets that hook on the running server
+  chat_tmux.py size COLSxROWS                                   -> every session no viewer shows at that size from
+                                                                   now on: "<n resized>" (FIXED)
   chat_tmux.py mirror [on|off]                                  -> "on"|"off" (with on/off: "<state> <windows>")
 """
 
@@ -143,9 +145,10 @@ def session_name(line):
     return "c-" + (m.group(1).lower() if m else secrets.token_hex(4))
 
 
-def start(line, name=None, cwd=None):
+def start(line, name=None, cwd=None, size=None):
     """A detached session whose pane runs `line` in a login shell (as Terminal's tab has: .zprofile and .zshrc),
-    then stays a shell -> {session, pane, tty}. A name taken (a branch beside its live parent) gets -2, -3..."""
+    then stays a shell -> {session, pane, tty}. A name taken (a branch beside its live parent) gets -2, -3...
+    size (cols, rows): the server's FIXED size from now on (a server this start brings up has none), its own too."""
     taken = {p["session"] for p in panes().values()}
     base = name or session_name(line)
     if not NAME_RE.match(base):
@@ -157,7 +160,7 @@ def start(line, name=None, cwd=None):
     command = "zsh -lic %s" % shlex.quote(line + "; exec zsh -l")
     # The server keeps the argv of the client that started it: started by a new-session, it would show this chat's
     # --session-id for good, and `pgrep -f -- '--session-id <sid>'` (night-run's liveness) would never see it end.
-    tmux("start-server")
+    tmux("start-server", *(fixing(*size) if size else ()))
     hook()
     out = tmux("new-session", "-d", "-s", pick, "-c", cwd or os.path.expanduser("~"), "-P", "-F",
                "#{pane_id} #{pane_tty}", command)
@@ -477,9 +480,72 @@ def unview(word):
     windows = viewer_windows(ttys)
     tmux("set-option", "-t", "=" + session + ":", HIDDEN, str(int(time.time())))  # closed() leaves this chat running
     tmux("detach-client", "-s", "=" + session)
+    fit(session)
     if windows:
         close_ended(windows)
     return len(ttys)
+
+
+# A chat no viewer shows keeps one size (Egor 2026-11-14: "if I am not at the computer and the display of the tmux
+# terminal windows is off, give them some fixed width, so that in the chat UI it looks normal and does not go now
+# wide, now narrow ... If the display of terminals is on, do not change the real terminals"). FIXED, set by whoever
+# owns the number (the Chats app, from its tokens' behaviour.term), is that size and the server's default-size (a new
+# detached session's); with none set nothing is resized and a window keeps its last viewer's size. Applied at events
+# only: a start, unview, a viewer leaving (closed), the owner's own start (fixed_size). A window a client shows, or
+# one at that size already, is never resized (a resize makes Claude Code redraw), and a viewer that attaches sizes
+# the window to its own at once (window-size latest: no `manual` is left behind).
+FIXED = "@fixed_size"
+
+
+def fixing(cols, rows):
+    """The tmux words, to chain after a command, that make cols x rows FIXED and the new sessions' size."""
+    cols, rows = int(cols), int(rows)
+    if cols < 1 or rows < 1:
+        raise TmuxError("bad size %sx%s" % (cols, rows))
+    size = "%dx%d" % (cols, rows)
+    return (";", "set-option", "-g", "default-size", size, ";", "set-option", "-g", FIXED, size)
+
+
+def resize(session, size):
+    """`session`'s window to `size` ("COLSxROWS") in one step of the server: a client that attached since the caller
+    looked keeps its window's size. The resize's window-size `manual` is unset at once: the next viewer sizes it."""
+    cols, _, rows = size.partition("x")
+    if not (cols.isdigit() and rows.isdigit()):
+        return False
+    win = "=%s:" % session
+    tmux("if-shell", "-F", "-t", win,
+         "#{&&:#{==:#{session_attached},0},#{!=:#{window_width}x#{window_height},%s}}" % size,
+         "resize-window -t %s -x %s -y %s ; set-option -wu -t %s window-size" % (win, cols, rows, win))
+    return True
+
+
+def fit(session):
+    """`session`'s window to FIXED when no client shows it and its size is another -> whether it asked a resize (one
+    look, nothing more when it is viewed, already that size, gone, or no size is set)."""
+    try:
+        seen = tmux("display-message", "-p", "-t", "=" + session + ":",
+                    "#{session_attached} #{window_width}x#{window_height} #{%s}" % FIXED).split()
+        return len(seen) == 3 and seen[0] == "0" and seen[1] != seen[2] and resize(session, seen[2])
+    except TmuxError:
+        return False
+
+
+def fixed_size(cols, rows):
+    """cols x rows FIXED from now on, and every session no viewer shows at it now -> how many it resized; with no
+    server running, 0 and nothing started (the owner's next start() sets it)."""
+    found = panes()
+    if not found:
+        return 0
+    words = fixing(cols, rows)
+    tmux(*words[1:])
+    want = words[-1]
+    done = 0
+    for session in sorted({p["session"] for p in found.values() if not p["attached"] and p["size"] != want}):
+        try:
+            done += resize(session, want)
+        except TmuxError:  # gone since the look: the rest still go
+            continue
+    return done
 
 
 def mirror(on):
@@ -571,11 +637,14 @@ def main(args):
         elif verb == "unview":
             print(unview(rest[0]))
         elif verb == "closed":
-            if rest[0] == "--client":
-                session = viewed_by(rest[1])
-                print(closed(session) if session else "unknown")
-            else:
-                print(closed(rest[0]))
+            session = viewed_by(rest[1]) if rest[0] == "--client" else rest[0]
+            became = closed(session) if session else "unknown"
+            if session and became not in ("gone", "closed", "viewed"):
+                fit(session)  # left with no viewer: its fixed size
+            print(became)
+        elif verb == "size":
+            cols, _, rows = rest[0].partition("x")
+            print(fixed_size(cols, rows))
         elif verb == "hook":
             hook()
         elif verb == "mirror":

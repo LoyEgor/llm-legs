@@ -246,6 +246,45 @@ kill "$app_pid"; app_pid=
 export CHAT_TMUX_APP="http://127.0.0.1:9"
 unset CHAT_TMUX_OSASCRIPT CHAT_TMUX_OPEN
 
+# A fixed size for the chats no viewer shows (Egor 2026-11-14; the Chats app's behaviour.term): with none set nothing
+# was resized (scr kept its viewer's 90x40 above). Set by a start, a new session starts at it and every unviewed one
+# takes it (a shown one is never resized); a viewer attaching sizes the window to its own at once; unview and the
+# last viewer leaving (the hook) give it back; an unchanged size asks no resize at all.
+export CHAT_TMUX_OSASCRIPT=/usr/bin/true CHAT_TMUX_OPEN=/usr/bin/true
+fx() { [ "$(t display -p -t "=$1:" '#{session_attached} #{window_width}x#{window_height}')" = "$2" ]; }
+t new-session -d -s fa -x 70 -y 30 'sleep 300'
+t new-session -d -s fv -x 70 -y 30 'sleep 300'
+outer -f "$WORK/outer.conf" new-session -d -s vfv -x 90 -y 40 "env -u TMUX python3 -B $HELPER attach fv"
+until_ok fx fv "1 90x40" || fail "fv not attached"
+asserts=$((asserts + 1))
+assert [ -z "$(t show-options -gqv @fixed_size)" ]
+python3 -B -c "import sys; sys.path.insert(0, '$ROOT/share'); import chat_tmux as c; c.start('sleep 300', 'fn', size=(50, 60))"
+assert [ "$(t show-options -gqv @fixed_size)" = 50x60 ] && assert [ "$(t show-options -gqv default-size)" = 50x60 ]
+assert fx fn "0 50x60"
+assert fx fa "0 70x30"   # a start sets the size: the unviewed ones take it at the next event
+n=$(helper size 50x60)
+assert [ "$n" -ge 2 ]   # fa and scr at least
+assert fx fa "0 50x60" && assert fx scr "0 50x60" && assert fx fv "1 90x40"
+assert [ "$(t show-options -wqv -t =fa: window-size)" = "" ]   # no `manual` left on it
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>%s/calls\nexec %s "$@"\n' "$WORK" "$TMUX_BIN" >"$WORK/tmuxlog"
+chmod 755 "$WORK/tmuxlog"
+assert [ "$(CHAT_TMUX_BIN="$WORK/tmuxlog" helper size 50x60)" = 0 ]   # all at it already, fv shown
+refute grep -q 'resize-window' "$WORK/calls"
+: >"$WORK/calls"
+assert [ "$(CHAT_TMUX_BIN="$WORK/tmuxlog" python3 -B -c "import sys; sys.path.insert(0, '$ROOT/share'); import chat_tmux as c; print(c.fit('fa'), c.fit('fv'))")" = "False False" ]
+assert [ "$(grep -c . "$WORK/calls")" = 2 ] && refute grep -q 'resize-window' "$WORK/calls"   # one look each
+outer -f "$WORK/outer.conf" new-session -d -s vfa -x 90 -y 40 "env -u TMUX python3 -B $HELPER attach fa"
+assert until_ok fx fa "1 90x40"   # a viewer sizes it at once
+assert [ "$(helper unview fa)" = 1 ]
+assert fx fa "0 50x60"   # unview: back at once
+outer kill-session -t =vfv   # the last viewer of fv goes: the hook's closed() (no app: "unknown") fits it
+assert until_ok fx fv "0 50x60"
+outer -f "$WORK/outer.conf" new-session -d -s vfv -x 100 -y 35 "env -u TMUX python3 -B $HELPER attach fv"
+assert until_ok fx fv "1 100x35"
+for s in fa fv fn; do helper end "$s"; done
+outer kill-server 2>/dev/null
+unset CHAT_TMUX_OSASCRIPT CHAT_TMUX_OPEN
+
 # End: by tty, by name; the server stays for the next chat.
 helper end "$tty"
 refute helper pane "$tty"
@@ -260,4 +299,4 @@ assert [ "$(python3 -B -c "import sys; sys.path.insert(0, '$ROOT/share'); import
 assert [ "$(python3 -B -c "import sys; sys.path.insert(0, '$ROOT/share'); import chat_tmux as c; print(repr(c.prompt_box('⏺ ok\n\n───── Rental project career requirements ─\n❯ hi\n' + '─' * 42 + '\n  status')))")" = "'hi'" ]
 assert [ "$(python3 -B -c "import sys; sys.path.insert(0, '$ROOT/share'); import chat_tmux as c; print(repr(c.prompt_box('⏺ ok\n\n Потеря записи в веб-версии Transfo… ─\n❯ hi\n' + '─' * 38 + '\n  status')))")" = "'hi'" ]   # 38 columns: no dash before the cut name
 
-printf 'PASS: %s asserts; chat_tmux starts a chat line detached in a login shell on its own socket (UTF-8, tmux-256color, Homebrew PATH from a launchd-like start), finds its pane by tty, pastes bracketed with LF as CR and clears, sends a lone Escape, types literal text, maps a viewer'\''s tty to its pane and raises it or opens a new view, mirrors every chat in Terminal and back (a window per unviewed session; viewers detached and closed), reads the screen and its scrollback, names sessions c-<sid8> (-2 on a clash), keeps a detached viewer'\''s size, and ends one session leaving the server\n' "$asserts"
+printf 'PASS: %s asserts; chat_tmux starts a chat line detached in a login shell on its own socket (UTF-8, tmux-256color, Homebrew PATH from a launchd-like start), finds its pane by tty, pastes bracketed with LF as CR and clears, sends a lone Escape, types literal text, maps a viewer'\''s tty to its pane and raises it or opens a new view, mirrors every chat in Terminal and back (a window per unviewed session; viewers detached and closed), reads the screen and its scrollback, names sessions c-<sid8> (-2 on a clash), keeps a detached viewer'\''s size until a fixed one is set (then every unviewed session takes it, at a start, unview, the last viewer leaving, never while shown, no resize when unchanged), and ends one session leaving the server\n' "$asserts"
