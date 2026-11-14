@@ -413,6 +413,11 @@ Every full render also keeps lines 1 and 2 as composed before the first fit step
 written only when they changed: the Chats app (chats-app) shows them in full words whatever the tab's
 width. Same freshness as `render-<sid>` (an away or rest replay keeps both), same `render-*` prune.
 
+It also keeps `render-state-<sid>`, one line `state1⇥model id ([1m] stripped)⇥display name⇥effort⇥ctx tokens⇥window⇥pct⇥end`:
+the ctx cell's own numbers after the >200k and boundary corrections, empty when unknown; written only when changed,
+builtins only; a line without `end` was caught mid-write. Read by chats-app `models.py` `params`: the one source
+of a live chat's model, effort and context there. A replay does not rewrite it.
+
 ## Probe snapshots (background, not a rendered segment)
 
 Every chat's probes read one machine-wide copy of what the whole machine looks like, in
