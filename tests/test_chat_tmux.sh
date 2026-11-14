@@ -250,5 +250,7 @@ assert t list-sessions >/dev/null
 for s in $(t list-sessions -F '#{session_name}'); do helper end "$s"; done
 assert [ -z "$(helper ls)" ]   # a server with no session left lists nothing, no error
 assert [ "$(python3 -B -c "import sys; sys.path.insert(0, '$ROOT/share'); import chat_tmux as c; print(' '.join(c.attach_argv('x')[1:3] + c.attach_argv('x')[-2:]))")" = "-S $CHAT_TMUX_SOCKET -t =x" ]
+# The prompt box of a narrow pane (42 columns, a long chat name in its top rule: five dashes before it) is still read.
+assert [ "$(python3 -B -c "import sys; sys.path.insert(0, '$ROOT/share'); import chat_tmux as c; print(repr(c.prompt_box('⏺ ok\n\n───── Rental project career requirements ─\n❯ hi\n' + '─' * 42 + '\n  status')))")" = "'hi'" ]
 
 printf 'PASS: %s asserts; chat_tmux starts a chat line detached in a login shell on its own socket (UTF-8, tmux-256color, Homebrew PATH from a launchd-like start), finds its pane by tty, pastes bracketed with LF as CR and clears, sends a lone Escape, types literal text, maps a viewer'\''s tty to its pane and raises it or opens a new view, mirrors every chat in Terminal and back (a window per unviewed session; viewers detached and closed), reads the screen and its scrollback, names sessions c-<sid8> (-2 on a clash), keeps a detached viewer'\''s size, and ends one session leaving the server\n' "$asserts"

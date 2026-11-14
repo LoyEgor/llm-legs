@@ -193,7 +193,8 @@ def capture(pane, history=0):
 # Claude Code's own children, not a chat's work: a working turn's sleep guard and the hooks' helpers (the Chats app's
 # OWN_KID, chats-app share/pages/app.py, is the same rule). RULE: its prompt box's frame (the app's RULE_RE).
 OWN_KID = re.compile(r"^(\S*/)?caffeinate\s|/\.claude[^/\s]*/hooks/|/claude-setup/hooks/")
-RULE = re.compile(r"^\s*─{8,}(?: .+ ─+)?\s*$")
+# A renamed chat's name sits in the top rule: in a narrow pane a long one leaves few dashes before it (5 at 42 columns).
+RULE = re.compile(r"^\s*(?:─{8,}|─+ .+ ─+)\s*$")
 
 
 def prompt_box(screen):
