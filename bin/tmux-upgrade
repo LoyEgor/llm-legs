@@ -483,7 +483,7 @@ def main(argv):
         code = sequence()
         if code == 0 and os.path.exists(plist_path()):
             disarm()
-        return code
+        return code if verb == "run" else 0  # a tick that waits has not failed (launchd's last exit code)
     if verb == "arm":
         return arm()
     if verb == "disarm":
