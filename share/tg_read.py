@@ -14,13 +14,15 @@ types a code, ever.
     tg-read file <chat> [--last N] [--name S] --dest-dir <abs>          download sent files under their own names
     tg-read transcribe <abs audio> [--dest <abs .txt>] [--language ru] [--engine auto|elevenlabs|groq]
     tg-read send <chat> (--text <text> | --file <abs>) [--as-written]   post ONE plain-text message as Egor
+    tg-read edit <chat> <msg id> (--text <text> | --file <abs>) [--as-written]   replace the text of ONE own message
+    tg-read delete <chat> <msg id> --yes                       delete ONE own message for both sides
     tg-read wait <chat> --after <msg id> [--hours N | --until HH:MM]   print answers as they come (a background Bash)
 
 <chat> is a dialog name (substring, case-insensitive), a @username, a numeric id or `me` (Saved
 Messages). Output is plain text, one message per line; a voice or media message prints a tag instead
 of text. chats/read/voice are read-only: they never send, mark read or delete. `send` posts exactly
-the given text (yo -> ye, em/en dash -> hyphen), once, never to a channel; nothing here edits or
-deletes. Egor greets a person once a day and rarely uses names: `send` drops an opening greeting when
+the given text (yo -> ye, em/en dash -> hyphen), once, never to a channel; `edit` and `delete` act on one own message by id
+(delete only on Egor's explicit word; an edit notifies nobody, the other side sees an "edited" mark). Egor greets a person once a day and rarely uses names: `send` drops an opening greeting when
 the chat (a group: his own messages) already talked today and the person's name used as an address,
 printing what went; --as-written keeps both, only when his own words for the message carry them.
 
@@ -493,19 +495,20 @@ def send_text(args) -> str:
     if not text.strip():
         print("tg-read: refusing to send an empty text", file=sys.stderr)
         sys.exit(2)
-    limit = MAX_CAPTION if args.photo or args.doc else MAX_SEND
+    photo, doc = getattr(args, "photo", []), getattr(args, "doc", None)
+    limit = MAX_CAPTION if photo or doc else MAX_SEND
     if len(text) > limit:
         print(f"tg-read: refusing to send {len(text)} chars (over {limit})", file=sys.stderr)
         sys.exit(2)
-    for photo in args.photo:
-        if not Path(photo).is_absolute() or not Path(photo).is_file():
-            print(f"tg-read: no photo file at {photo!r} (give an absolute path)", file=sys.stderr)
+    for one in photo:
+        if not Path(one).is_absolute() or not Path(one).is_file():
+            print(f"tg-read: no photo file at {one!r} (give an absolute path)", file=sys.stderr)
             sys.exit(2)
-    if args.doc and (args.photo or not Path(args.doc).is_absolute() or not Path(args.doc).is_file()):
-        print(f"tg-read: --doc takes one existing file by absolute path, without --photo (got {args.doc!r})", file=sys.stderr)
+    if doc and (photo or not Path(doc).is_absolute() or not Path(doc).is_file()):
+        print(f"tg-read: --doc takes one existing file by absolute path, without --photo (got {doc!r})", file=sys.stderr)
         sys.exit(2)
-    if len(args.photo) > MAX_PHOTOS:
-        print(f"tg-read: refusing {len(args.photo)} photos (one album holds {MAX_PHOTOS})", file=sys.stderr)
+    if len(photo) > MAX_PHOTOS:
+        print(f"tg-read: refusing {len(photo)} photos (one album holds {MAX_PHOTOS})", file=sys.stderr)
         sys.exit(2)
     return text
 
@@ -549,6 +552,80 @@ async def cmd_send(args) -> int:
         print(f"answer watch: run `tg-read wait {get_peer_id(entity)} --after {message.id}` {watch().SEND_HINT}")
     await tg.disconnect()
     return 0
+
+
+async def own_message(tg, args, verb: str):
+    """(entity, message) for Egor's own message #id in a non-channel chat, or an exit-2 reason."""
+    entity = await resolve(tg, args.chat)
+    if getattr(entity, "broadcast", False):
+        return entity, f"{args.chat!r} is a channel; refusing to {verb}"
+    message = await tg.get_messages(entity, ids=args.id)
+    if message is None:
+        return entity, f"no message #{args.id} in {chat_name(entity)}"
+    if not message.out:
+        return entity, f"#{args.id} in {chat_name(entity)} is not Egor's own message; refusing to {verb}"
+    return entity, message
+
+
+async def cmd_edit(args) -> int:
+    text, yo, dashes = normalize(send_text(args))
+    if yo or dashes:
+        print(f"normalized: yo={yo} dashes={dashes}")
+    tg = client()
+    await ensure_authorized(tg)
+    try:
+        entity, message = await own_message(tg, args, "edit")
+        if isinstance(message, str):
+            print(f"tg-read: {message}", file=sys.stderr)
+            return 2
+        if not args.as_written and not getattr(entity, "is_self", False):
+            text, dropped = await as_egor(tg, entity, text)
+            if dropped:
+                print(f"dropped: {', '.join(dropped)}")
+        if not text.strip():
+            print("tg-read: refusing an empty text", file=sys.stderr)
+            return 2
+        if text == (message.message or ""):
+            print(f"tg-read: #{args.id} already says that; nothing to change", file=sys.stderr)
+            return 2
+        from telethon.errors import RPCError
+
+        try:
+            edited = await tg.edit_message(entity, message, text, parse_mode=None, link_preview=False)
+        except RPCError as error:
+            print(f"tg-read: Telegram refused the edit: {error}", file=sys.stderr)
+            return 1
+        name = "Saved Messages" if args.chat == "me" else chat_name(entity)
+        print(f"edited #{args.id} in {name} at {local_time(edited.edit_date or edited.date)}")
+        return 0
+    finally:
+        await tg.disconnect()
+
+
+async def cmd_delete(args) -> int:
+    tg = client()
+    await ensure_authorized(tg)
+    try:
+        entity, message = await own_message(tg, args, "delete")
+        if isinstance(message, str):
+            print(f"tg-read: {message}", file=sys.stderr)
+            return 2
+        if not args.yes:
+            print(f"#{args.id}: {(message.message or media_tag(message))[:80]}")
+            print("add --yes to delete", file=sys.stderr)
+            return 2
+        from telethon.errors import RPCError
+
+        try:
+            await tg.delete_messages(entity, [args.id], revoke=True)
+        except RPCError as error:
+            print(f"tg-read: Telegram refused the delete: {error}", file=sys.stderr)
+            return 1
+        name = "Saved Messages" if args.chat == "me" else chat_name(entity)
+        print(f"deleted #{args.id} in {name}")
+        return 0
+    finally:
+        await tg.disconnect()
 
 
 def answers(message, after: int, person: bool) -> bool:
@@ -699,6 +776,18 @@ def main(argv=None) -> int:
     send.add_argument("--doc", help="absolute path of one file to post as a document, the text as its caption")
     send.add_argument("--as-written", action="store_true",
                       help="keep an opening greeting and the addressee's name: only when Egor's own words carry them")
+    edit = sub.add_parser("edit", help="replace the text of ONE of Egor's own messages, by id")
+    edit.add_argument("chat")
+    edit.add_argument("id", type=int)
+    body = edit.add_mutually_exclusive_group(required=True)
+    body.add_argument("--text")
+    body.add_argument("--file", help="absolute path of a text file with the new text")
+    edit.add_argument("--as-written", action="store_true",
+                      help="keep an opening greeting and the addressee's name: only when Egor's own words carry them")
+    delete = sub.add_parser("delete", help="delete ONE of Egor's own messages for both sides, by id")
+    delete.add_argument("chat")
+    delete.add_argument("id", type=int)
+    delete.add_argument("--yes", action="store_true", help="really delete (only on Egor's explicit word)")
     wait = sub.add_parser("wait", help="block until the chat answers Egor's message; run as a background Bash")
     wait.add_argument("chat")
     wait.add_argument("--after", type=int, required=True, help="id of Egor's message (`send` prints it)")
@@ -707,10 +796,11 @@ def main(argv=None) -> int:
     wait.add_argument("--every", type=float, default=15.0, help="seconds between polls")
     wait.add_argument("--settle", type=float, default=20.0, help="seconds of quiet after an answer before printing")
     args = parser.parse_args(argv)
-    if args.command == "send":
+    if args.command in ("send", "edit"):
         send_text(args)  # refuse an empty or oversized text before connecting
     handler = {"login": cmd_login, "chats": cmd_chats, "read": cmd_read, "voice": cmd_voice, "photo": cmd_photo,
-               "file": cmd_file, "transcribe": cmd_transcribe, "send": cmd_send, "wait": cmd_wait}[args.command]
+               "file": cmd_file, "transcribe": cmd_transcribe, "send": cmd_send, "edit": cmd_edit,
+               "delete": cmd_delete, "wait": cmd_wait}[args.command]
     code = asyncio.run(handler(args))
     if args.command == "login" and code == 0:
         LOGIN_NEEDED.unlink(missing_ok=True)

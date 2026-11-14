@@ -132,5 +132,79 @@ class AsEgorTests(unittest.TestCase):
                          ("Привіт, Слава", []))
         self.assertEqual(tg.from_users, ["me"])
 
+
+class FakeEditTg:
+    def __init__(self, message):
+        self.message, self.edits, self.deletes = message, [], []
+
+    async def get_messages(self, entity, ids):
+        return self.message
+
+    async def edit_message(self, entity, message, text, **_):
+        self.edits.append(text)
+        return SimpleNamespace(edit_date=datetime.now(timezone.utc), date=None)
+
+    async def delete_messages(self, entity, ids, revoke):
+        self.deletes.append((ids, revoke))
+
+    async def disconnect(self):
+        pass
+
+
+class EditDeleteTests(unittest.TestCase):
+    def run_cmd(self, tg, argv):
+        args = parsed(argv)
+        handler = tg_read.cmd_edit if args.command == "edit" else tg_read.cmd_delete
+        me = SimpleNamespace(is_self=True, first_name="Egor", id=1)
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(tg_read, "client", lambda: tg), patch.object(tg_read, "ensure_authorized", AsyncNoop()), \
+                patch.object(tg_read, "resolve", AsyncValue(me)), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = asyncio.run(handler(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_edit_of_an_own_message(self):
+        tg = FakeEditTg(SimpleNamespace(out=True, message="old"))
+        code, out, _ = self.run_cmd(tg, ["edit", "me", "7", "--text", "new — ёж"])
+        self.assertEqual((code, tg.edits), (0, ["new - еж"]))
+        self.assertIn("edited #7 in Saved Messages at", out)
+        tg = FakeEditTg(SimpleNamespace(out=True, message="new"))
+        code, _, err = self.run_cmd(tg, ["edit", "me", "7", "--text", "new"])
+        self.assertEqual((code, tg.edits), (2, []))
+        self.assertIn("nothing to change", err)
+
+    def test_edit_refuses_a_foreign_message(self):
+        tg = FakeEditTg(SimpleNamespace(out=False, message="theirs"))
+        code, _, err = self.run_cmd(tg, ["edit", "me", "7", "--text", "new"])
+        self.assertEqual((code, tg.edits), (2, []))
+        self.assertIn("not Egor's own", err)
+
+    def test_delete_without_yes_refuses(self):
+        tg = FakeEditTg(SimpleNamespace(out=True, message="x" * 100, media=None, action=None))
+        code, out, err = self.run_cmd(tg, ["delete", "me", "7"])
+        self.assertEqual((code, tg.deletes), (2, []))
+        self.assertIn("x" * 80, out)
+        self.assertNotIn("x" * 81, out)
+        self.assertIn("add --yes to delete", err)
+
+    def test_delete_with_yes_calls_once_with_the_id(self):
+        tg = FakeEditTg(SimpleNamespace(out=True, message="bye"))
+        code, out, _ = self.run_cmd(tg, ["delete", "me", "7", "--yes"])
+        self.assertEqual((code, tg.deletes), (0, [([7], True)]))
+        self.assertEqual(out.strip(), "deleted #7 in Saved Messages")
+
+
+class AsyncNoop:
+    async def __call__(self, *a, **k):
+        return None
+
+
+class AsyncValue:
+    def __init__(self, value):
+        self.value = value
+
+    async def __call__(self, *a, **k):
+        return self.value
+
 if __name__ == "__main__":
     unittest.main()
